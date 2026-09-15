@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+api_keys.json
+config.json
+projects/
+*.log
+Desktop/
+.DS_Store
+modellink/server.log
+backend_stderr.txt
+stderr.txt
+stdout.txt
