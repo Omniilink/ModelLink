@@ -642,10 +642,10 @@ class MultiProviderBalancer:
 
         if stream:
             def error_gen():
-                yield "Sorry, all providers are currently unavailable. Please check your API keys in .env and try again."
+                yield "Sorry, all providers are currently unavailable. Configure your API keys in the Omniilink Settings page or check your server connection."
             return (error_gen(), "none")
         else:
-            return (self._make_response("Sorry, all providers are currently unavailable. Please check your API keys in .env and try again."), "none")
+            return (self._make_response("Sorry, all providers are currently unavailable. Configure your API keys in the Omniilink Settings page or check your server connection."), "none")
 
     def _stream_response(self, resp, provider_name, model):
         def generate_stream():
