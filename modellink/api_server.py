@@ -169,6 +169,10 @@ async def stream_logs():
             log_broadcaster.unsubscribe(q)
     return StreamingResponse(gen(), media_type="text/event-stream")
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "version": "3.0.0", "model": MODEL_NAME}
+
 @app.get("/api/status")
 async def get_status(request: Request):
     try:
