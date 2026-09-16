@@ -17,8 +17,8 @@ CLOUDFLARED = r"C:\Modellink\cloudflared.exe"
 API_HOST = "127.0.0.1"
 API_PORT = 8080
 
-def resolve_via_doh(hostname):
-    """Resolve DNS using Cloudflare DNS-over-HTTPS."""
+def resolve_via_doh(hostname, depth=5):
+    """Resolve DNS using Cloudflare DNS-over-HTTPS. Follows CNAME chains."""
     try:
         url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
         req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
@@ -30,6 +30,12 @@ def resolve_via_doh(hostname):
         for answer in data.get("Answer", []):
             if answer.get("type") == 1:
                 return answer["data"]
+        # No A record — follow CNAME chain
+        for answer in data.get("Answer", []):
+            if answer.get("type") == 5:
+                cname_target = answer["data"].rstrip(".")
+                if depth > 0:
+                    return resolve_via_doh(cname_target, depth - 1)
         print(f"DoH: no A record found for {hostname}")
     except Exception as e:
         print(f"DoH resolve failed: {e}")
