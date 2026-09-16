@@ -545,7 +545,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
               <div id="api-code-python" class="api-code-block">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-python')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>from openai import OpenAI
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-python">from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8080/v1",
@@ -563,7 +563,7 @@ print(response.choices[0].message.content)</code></pre>
               <div id="api-code-node" class="api-code-block" style="display:none">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-node')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>import OpenAI from "openai";
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-node">import OpenAI from "openai";
 
 const client = new OpenAI({
   baseURL: "http://127.0.0.1:8080/v1",
@@ -580,7 +580,7 @@ console.log(response.choices[0].message.content);</code></pre>
               <div id="api-code-curl" class="api-code-block" style="display:none">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-curl')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>curl http://127.0.0.1:8080/v1/chat/completions \
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-curl">curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
@@ -803,6 +803,7 @@ console.log(response.choices[0].message.content);</code></pre>
 
 <script>
 const API = '';
+const API_BASE = window.__OMNILINK_TUNNEL || window.location.origin;
 let selectedModel = 'omnilink';
 let chatHistory = [];
 let isStreaming = false;
@@ -2720,6 +2721,17 @@ function showApiTab(tab, btn) {
   });
 }
 
+function updateApiUrls() {
+  const base = API_BASE || 'http://127.0.0.1:8080';
+  const v1 = base + '/v1';
+  const pyEl = document.getElementById('api-code-python');
+  const nodeEl = document.getElementById('api-code-node');
+  const curlEl = document.getElementById('api-code-curl');
+  if (pyEl) pyEl.textContent = pyEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
+  if (nodeEl) nodeEl.textContent = nodeEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
+  if (curlEl) curlEl.textContent = curlEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
+}
+
 function copyCode(blockId) {
   const code = document.querySelector(`#${blockId} code`);
   if (!code) return;
@@ -2750,6 +2762,7 @@ const TIER_DESCS = {
 };
 
 async function loadApiPage() {
+  updateApiUrls();
   try {
     const r = await fetch(`${API}/api/keys`);
     const data = await r.json();
@@ -2828,13 +2841,14 @@ function renderRoutingInfo(tiers, providers) {
 function renderConfigSnippet(info) {
   const el = document.getElementById('opencode-config-json');
   if (!el) return;
+  const base = API_BASE || 'http://127.0.0.1:8080';
   const config = {
     "$schema": "https://opencode.ai/config.json",
     "provider": {
       "omnilink": {
         "npm": "@ai-sdk/openai-compatible",
         "name": "OmniLink",
-        "options": { "baseURL": (info.base_url || "http://127.0.0.1:8080") + "/v1" },
+        "options": { "baseURL": (info.base_url || base) + "/v1" },
         "models": { "omnilink": { "name": "OmniLink (Auto-Route)" } }
       }
     }
