@@ -21,7 +21,7 @@ APP_DIR = _base_path()
 sys.path.insert(0, APP_DIR)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-logger = logging.getLogger("ModelLink")
+logger = logging.getLogger("OmniLink")
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
@@ -38,7 +38,7 @@ from modellink.splitter import (
     get_language, set_language
 )
 
-app = FastAPI(title="ModelLink API", version="2.0.0")
+app = FastAPI(title="OmniLink API", version="2.0.0")
 
 # ==========================================
 # Log Broadcasting via SSE
@@ -83,7 +83,7 @@ class WebLogHandler(logging.Handler):
 
 web_handler = WebLogHandler(log_broadcaster)
 web_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
-logging.getLogger("ModelLink").addHandler(web_handler)
+logging.getLogger("OmniLink").addHandler(web_handler)
 logging.getLogger().addHandler(web_handler)
 
 # ==========================================
@@ -158,7 +158,7 @@ async def get_status():
 async def discover_models():
     provider_keys = load_all_keys()
     discovered = {}
-    all_models = [{"id": MODEL_NAME, "provider": "modellink", "source": "default"}]
+    all_models = [{"id": MODEL_NAME, "provider": "omnilink", "source": "default"}]
     for prov_name, keys in provider_keys.items():
         discovered[prov_name] = []
         for key_idx, api_key in enumerate(keys):
@@ -322,13 +322,22 @@ async def chat_completions(request: Request):
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
 
+    # Read per-user API keys from header
+    user_keys = None
+    user_keys_header = request.headers.get("X-User-Keys")
+    if user_keys_header:
+        try:
+            user_keys = json.loads(user_keys_header)
+        except: pass
+
     if is_stream:
         stream, used_model = generate(
             messages=messages,
             model=req_model,
             temperature=temp,
             max_tokens=max_tokens,
-            stream=True
+            stream=True,
+            user_keys=user_keys
         )
 
         async def event_generator():
@@ -383,7 +392,8 @@ async def chat_completions(request: Request):
             model=req_model,
             temperature=temp,
             max_tokens=max_tokens,
-            stream=False
+            stream=False,
+            user_keys=user_keys
         )
         return JSONResponse(content=response)
 

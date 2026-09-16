@@ -9,7 +9,7 @@ import threading
 from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-logger = logging.getLogger("ModelLink")
+logger = logging.getLogger("OmniLink")
 
 # ==========================================
 # PyInstaller path resolution
@@ -35,7 +35,7 @@ if os.path.isfile(env_path):
 else:
     load_dotenv(override=True)
 
-MODEL_NAME = "modellink"
+MODEL_NAME = "omnilink"
 
 MODEL_RATE_LIMITS = {
     "gemini-2.5-flash":            {"rpm": 10,  "tpm": 250000},
@@ -330,9 +330,9 @@ def get_backup_model():
     return OLLAMA_MODEL
 
 
-def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True):
+def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
     global lb
-    return lb.generate(messages, model, temperature, max_tokens, stream)
+    return lb.generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys)
 
 
 # ==========================================
@@ -488,8 +488,12 @@ class MultiProviderBalancer:
             return []
         return cfg.get("models", [])
 
-    def _try_provider(self, provider_name, provider_cfg, messages, model, temperature, max_tokens, stream):
-        keys = self.provider_keys.get(provider_name, [])
+    def _try_provider(self, provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=None):
+        keys = []
+        if user_keys and provider_name in user_keys:
+            keys = [{"env_key": f"USER_{provider_name.upper()}", "key": user_keys[provider_name]}]
+        else:
+            keys = self.provider_keys.get(provider_name, [])
         if not keys:
             return None
 
@@ -539,14 +543,14 @@ class MultiProviderBalancer:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         }
 
-    def generate(self, messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True):
+    def generate(self, messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
         messages = self._inject_system_prompt(messages)
         if model == "modellink":
             task = classify_task(messages)
             logger.info(f"[ROUTING] Task classified as '{task}'")
-            return self._smart_generate(messages, task, temperature, max_tokens, stream)
+            return self._smart_generate(messages, task, temperature, max_tokens, stream, user_keys=user_keys)
         else:
-            return self._direct_generate(messages, model, temperature, max_tokens, stream)
+            return self._direct_generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys)
 
     def _inject_system_prompt(self, messages):
         lang = LANGUAGE
@@ -561,13 +565,13 @@ class MultiProviderBalancer:
             messages = [{"role": "system", "content": system_msg}] + list(messages)
         return messages
 
-    def _smart_generate(self, messages, task, temperature, max_tokens, stream):
+    def _smart_generate(self, messages, task, temperature, max_tokens, stream, user_keys=None):
         tier = MODEL_TIERS.get(task, MODEL_TIERS['medium'])
         for provider_name, model_name in tier:
             provider_cfg = PROVIDERS.get(provider_name)
             if not provider_cfg:
                 continue
-            resp = self._try_provider(provider_name, provider_cfg, messages, model_name, temperature, max_tokens, stream)
+            resp = self._try_provider(provider_name, provider_cfg, messages, model_name, temperature, max_tokens, stream, user_keys=user_keys)
             if resp is not None:
                 logger.info(f"[ROUTING] Using {provider_name}/{model_name}")
                 used_model = f"{provider_name}/{model_name}"
@@ -584,7 +588,7 @@ class MultiProviderBalancer:
             if not provider_cfg:
                 continue
             for pm in provider_cfg["models"]:
-                resp = self._try_provider(provider_name, provider_cfg, messages, pm, temperature, max_tokens, stream)
+                resp = self._try_provider(provider_name, provider_cfg, messages, pm, temperature, max_tokens, stream, user_keys=user_keys)
                 if resp is not None:
                     logger.info(f"[ROUTING] Fallback to {provider_name}/{pm}")
                     used_model = f"{provider_name}/{pm}"
@@ -597,11 +601,11 @@ class MultiProviderBalancer:
 
         return self._ollama_fallback(messages, temperature, max_tokens, stream)
 
-    def _direct_generate(self, messages, model, temperature, max_tokens, stream):
+    def _direct_generate(self, messages, model, temperature, max_tokens, stream, user_keys=None):
         for provider_name, provider_cfg in PROVIDERS.items():
             models = provider_cfg.get("models", [])
             if model in models:
-                resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream)
+                resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=user_keys)
                 if resp is not None:
                     used_model = f"{provider_name}/{model}"
                     if stream:

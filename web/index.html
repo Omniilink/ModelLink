@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>ModelLink</title>
+  <title>OmniLink</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -401,7 +401,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
             </g>
           </svg>
         </div>
-        <span class="logo-text">ModelLink</span>
+        <span class="logo-text">OmniLink</span>
       </div>
     </div>
     <div class="nav">
@@ -432,6 +432,10 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         Settings
       </div>
+      <div class="nav-item" data-view="tutorial">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Help
+      </div>
       <div class="nav-section">Providers</div>
       <div id="provider-list"></div>
     </div>
@@ -447,11 +451,11 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
       <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <div class="header-title">ModelLink</div>
+      <div class="header-title">OmniLink</div>
       <div class="header-sep"></div>
       <div class="model-dropdown" id="model-dropdown">
         <button class="model-btn" id="model-btn" onclick="toggleModelMenu()">
-          <span id="model-btn-text">modellink</span>
+          <span id="model-btn-text">omnilink</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         <div class="model-menu" id="model-menu"></div>
@@ -486,7 +490,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
               </g>
             </svg>
           </div>
-          <h2>ModelLink</h2>
+          <h2>OmniLink</h2>
           <p>Multi-provider AI load balancer</p>
         </div>
       </div>
@@ -517,7 +521,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
                 <div>
                   <h3 style="font-size:14px;font-weight:600;color:var(--text-primary)">API Keys</h3>
-                  <p style="font-size:12px;color:var(--text-muted);margin-top:2px">Keys for clients connecting to ModelLink</p>
+                  <p style="font-size:12px;color:var(--text-muted);margin-top:2px">Keys for clients connecting to OmniLink</p>
                 </div>
                 <button class="btn btn-primary" onclick="generateApiKey()" style="font-size:11px;padding:5px 12px">+ New Key</button>
               </div>
@@ -526,7 +530,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
 
             <div style="margin-bottom:32px">
               <h3 style="font-size:14px;font-weight:600;margin-bottom:6px;color:var(--text-primary)">Smart Routing</h3>
-              <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">ModelLink automatically selects the best model based on task complexity</p>
+              <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">OmniLink automatically selects the best model based on task complexity</p>
               <div id="api-routing-info" class="routing-info-grid"></div>
             </div>
 
@@ -548,9 +552,9 @@ client = OpenAI(
     api_key="YOUR_API_KEY"
 )
 
-# Use "modellink" for auto-routing, or a specific model
+# Use "omnilink" for auto-routing, or a specific model
 response = client.chat.completions.create(
-    model="modellink",
+    model="omnilink",
     messages=[{"role": "user", "content": "Hello"}]
 )
 print(response.choices[0].message.content)</code></pre>
@@ -567,7 +571,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: "modellink",
+  model: "omnilink",
   messages: [{ role: "user", content: "Hello" }],
 });
 console.log(response.choices[0].message.content);</code></pre>
@@ -580,7 +584,7 @@ console.log(response.choices[0].message.content);</code></pre>
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "modellink",
+    "model": "omnilink",
     "messages": [{"role": "user", "content": "Hello"}]
   }'</code></pre>
                 </div>
@@ -607,6 +611,45 @@ console.log(response.choices[0].message.content);</code></pre>
         <div class="settings-view-footer">
           <button class="btn btn-ghost" onclick="switchView('chat')">Cancel</button>
           <button class="btn btn-primary" onclick="saveSettings()">Save All</button>
+        </div>
+      </div>
+
+      <div class="settings-view" id="tutorial-view">
+        <div class="settings-view-header">
+          <button class="btn btn-ghost" onclick="switchView('chat')">&larr; Back to Chat</button>
+          <span style="font-weight:600">Help & Tutorial</span>
+          <span></span>
+        </div>
+        <div class="settings-view-body" style="max-width:700px;margin:0 auto;padding:24px;line-height:1.7">
+          <h2 style="margin-bottom:16px">Welcome to OmniLink</h2>
+          <p style="color:var(--text-secondary);margin-bottom:20px">OmniLink is a multi-provider AI load balancer. It routes your prompts to the best available AI model automatically.</p>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Getting Started</h3>
+          <ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px">
+            <li style="margin-bottom:8px"><strong>Add API Keys</strong> &mdash; Go to Settings and add at least one provider key (Groq is free and fast)</li>
+            <li style="margin-bottom:8px"><strong>Start Chatting</strong> &mdash; Type a message and press Enter. OmniLink auto-routes to the best model.</li>
+            <li style="margin-bottom:8px"><strong>Choose a Model</strong> &mdash; Click the model button to pick a specific provider, or leave it on "omnilink" for auto-routing.</li>
+          </ol>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Smart Routing</h3>
+          <p style="color:var(--text-secondary);margin-bottom:20px">When set to "omnilink", the system classifies your message as simple, medium, or complex, then picks the best model for the task. Simple questions go to fast/cheap models, complex tasks go to powerful models.</p>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Coding Mode</h3>
+          <p style="color:var(--text-secondary);margin-bottom:20px">Click the code icon in the header to switch to Coding Mode. This provides a file tree, project management, and a terminal panel for working with code files on the server.</p>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Chat History</h3>
+          <p style="color:var(--text-secondary);margin-bottom:20px">Your chats are saved in the sidebar. Create new chats with the + button. Switch between chats by clicking them in the list.</p>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Free API Keys</h3>
+          <p style="color:var(--text-secondary);margin-bottom:10px">You can get free API keys from:</p>
+          <ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px">
+            <li><strong>Groq</strong> &mdash; console.groq.com (free, fast inference)</li>
+            <li><strong>Gemini</strong> &mdash; aistudio.google.com (free tier)</li>
+            <li><strong>OpenRouter</strong> &mdash; openrouter.ai (free models available)</li>
+          </ul>
+
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Account</h3>
+          <p style="color:var(--text-secondary);margin-bottom:10px">Create an account at <a href="https://signup.omniilink.workers.dev" style="color:var(--accent)">signup.omniilink.workers.dev</a> to save your API keys and access OmniLink from any device. Your keys are stored securely per-account.</p>
         </div>
       </div>
 
@@ -670,7 +713,7 @@ console.log(response.choices[0].message.content);</code></pre>
 
     <div class="input-area" id="input-area">
       <div class="input-box">
-        <textarea id="chat-input" placeholder="Message ModelLink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <textarea id="chat-input" placeholder="Message OmniLink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
@@ -760,7 +803,7 @@ console.log(response.choices[0].message.content);</code></pre>
 
 <script>
 const API = '';
-let selectedModel = 'modellink';
+let selectedModel = 'omnilink';
 let chatHistory = [];
 let isStreaming = false;
 let terminalOpen = false;
@@ -832,7 +875,7 @@ const EMPTY_CHAT_HTML = `
         </g>
       </svg>
     </div>
-    <h2>ModelLink</h2>
+    <h2>OmniLink</h2>
     <p>Multi-provider AI load balancer</p>
   </div>`;
 
@@ -1027,6 +1070,7 @@ function switchView(view) {
   document.getElementById('input-area').style.display = view === 'chat' ? 'block' : 'none';
   document.getElementById('terminal-panel').classList.toggle('open', view === 'terminal');
   document.getElementById('settings-view').classList.toggle('open', view === 'settings');
+  document.getElementById('tutorial-view').classList.toggle('open', view === 'tutorial');
   document.getElementById('api-view').classList.toggle('open', view === 'api');
   document.getElementById('coding-view').classList.toggle('open', view === 'coding');
   document.getElementById('terminal-toggle').classList.toggle('active', view === 'terminal');
@@ -1091,13 +1135,13 @@ function renderModelMenu(models, backupModel) {
 
   const opt = document.createElement('div');
   opt.className = 'model-option selected';
-  opt.dataset.id = 'modellink';
-  opt.innerHTML = '<span>modellink</span><span class="prov">auto-balance</span>';
-  opt.onclick = () => selectModel('modellink');
+  opt.dataset.id = 'omnilink';
+  opt.innerHTML = '<span>omnilink</span><span class="prov">auto-balance</span>';
+  opt.onclick = () => selectModel('omnilink');
   menu.appendChild(opt);
 
   const grouped = {};
-  models.filter(m => m.id !== 'modellink').forEach(m => {
+  models.filter(m => m.id !== 'omnilink').forEach(m => {
     const p = m.provider || 'other';
     if (!grouped[p]) grouped[p] = [];
     grouped[p].push(m);
@@ -1218,7 +1262,7 @@ async function sendMessage() {
         }
       }
     }
-    console.log('[ModelLink] actualModel:', actualModel);
+    console.log('[OmniLink] actualModel:', actualModel);
     const metaEl = assistantEl.closest('.message')?.querySelector('.message-meta');
     if (metaEl) { metaEl.textContent = actualModel; }
     else { console.error('No .message-meta found for assistant message'); }
@@ -2316,7 +2360,7 @@ async function buildCodingSystemPrompt() {
   } catch(e) {}
 
   if (!basePrompt) {
-    basePrompt = `You are ModelLink Coding Assistant. You help with coding tasks in the user's project.
+    basePrompt = `You are OmniLink Coding Assistant. You help with coding tasks in the user's project.
 You can CREATE, EDIT, DELETE files and RUN commands using these blocks:
 FILE_CREATE:path\ncontent\nEND_FILE_CREATE
 FILE_EDIT:path\ncontent\nEND_FILE_EDIT
@@ -2787,11 +2831,11 @@ function renderConfigSnippet(info) {
   const config = {
     "$schema": "https://opencode.ai/config.json",
     "provider": {
-      "modellink": {
+      "omnilink": {
         "npm": "@ai-sdk/openai-compatible",
-        "name": "ModelLink",
+        "name": "OmniLink",
         "options": { "baseURL": (info.base_url || "http://127.0.0.1:8080") + "/v1" },
-        "models": { "modellink": { "name": "ModelLink (Auto-Route)" } }
+        "models": { "omnilink": { "name": "OmniLink (Auto-Route)" } }
       }
     }
   };
