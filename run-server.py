@@ -7,6 +7,7 @@ import os
 import json
 import urllib.request
 import ssl
+import socket
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -17,7 +18,7 @@ API_HOST = "127.0.0.1"
 API_PORT = 8080
 
 def resolve_via_doh(hostname):
-    """Resolve DNS using Cloudflare DNS-over-HTTPS (works even when local DNS fails)."""
+    """Resolve DNS using Cloudflare DNS-over-HTTPS."""
     try:
         url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
         req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
@@ -29,9 +30,20 @@ def resolve_via_doh(hostname):
         for answer in data.get("Answer", []):
             if answer.get("type") == 1:
                 return answer["data"]
+        print(f"DoH: no A record found for {hostname}")
     except Exception as e:
         print(f"DoH resolve failed: {e}")
     return None
+
+def patch_dns(hostname, ip):
+    """Temporarily monkey-patch socket.getaddrinfo to resolve via DoH."""
+    real_getaddrinfo = socket.getaddrinfo
+    def patched_getaddrinfo(host, port, *args, **kwargs):
+        if host == hostname:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port))]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+    socket.getaddrinfo = patched_getaddrinfo
+    return real_getaddrinfo
 
 def report_url(url):
     """Report the tunnel URL to the worker. Uses DoH fallback if DNS fails."""
@@ -44,25 +56,26 @@ def report_url(url):
             else:
                 print(f"Report failed (attempt {attempt+1}): {r.status_code}")
         except requests.exceptions.ConnectionError as e:
-            if "getaddrinfo failed" in str(e) or "NameResolutionError" in str(e):
+            err_str = str(e)
+            if "getaddrinfo" in err_str or "resolve" in err_str.lower():
                 print(f"DNS resolution failed, trying Cloudflare DoH...")
                 ip = resolve_via_doh("signupomniilink.workers.dev")
                 if ip:
+                    print(f"DoH resolved to {ip}, patching DNS and retrying...")
+                    real_getaddrinfo = patch_dns("signupomniilink.workers.dev", ip)
                     try:
-                        r = requests.post(
-                            f"https://{ip}/api/tunnel-update",
-                            json={"url": url, "secret": TUNNEL_SECRET},
-                            headers={"Host": "signupomniilink.workers.dev"},
-                            timeout=10,
-                            verify=False
-                        )
+                        r = requests.post(WORKER_URL, json={"url": url, "secret": TUNNEL_SECRET}, timeout=10)
                         if r.status_code == 200:
                             print(f"Reported URL via DoH: {url}")
                             return
                         else:
-                            print(f"DoH report failed: {r.status_code}")
+                            print(f"DoH report failed: {r.status_code} {r.text[:200]}")
                     except Exception as e2:
                         print(f"DoH report error: {e2}")
+                    finally:
+                        socket.getaddrinfo = real_getaddrinfo
+                else:
+                    print("DoH could not resolve IP")
                 break
             else:
                 print(f"Report failed (attempt {attempt+1}): {e}")
@@ -70,7 +83,7 @@ def report_url(url):
         except Exception as e:
             print(f"Report failed (attempt {attempt+1}): {e}")
             time.sleep(2)
-    print(f"Could not report URL automatically. Update manually in the dashboard.")
+    print("Could not report URL automatically. Update manually in the dashboard.")
 
 def start_api_server():
     """Start the OmniLink API server."""
