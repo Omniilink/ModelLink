@@ -17,6 +17,20 @@ CLOUDFLARED = r"C:\Modellink\cloudflared.exe"
 API_HOST = "127.0.0.1"
 API_PORT = 8080
 
+def get_tunnel_url_from_metrics(metrics_port):
+    """Get tunnel URL from cloudflared's local metrics endpoint (no DNS needed)."""
+    try:
+        r = requests.get(f"http://127.0.0.1:{metrics_port}/quicktunnel", timeout=3)
+        if r.status_code == 200:
+            data = r.json()
+            hostname = data.get("hostname", "")
+            if hostname:
+                url = hostname if hostname.startswith("https://") else f"https://{hostname}"
+                return url
+    except Exception as e:
+        print(f"Metrics query failed: {e}")
+    return None
+
 def resolve_via_doh(hostname, depth=5):
     """Resolve DNS using Cloudflare DNS-over-HTTPS. Follows CNAME chains."""
     try:
@@ -26,14 +40,16 @@ def resolve_via_doh(hostname, depth=5):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         resp = urllib.request.urlopen(req, timeout=5, context=ctx)
-        data = json.loads(resp.read())
+        raw = resp.read()
+        data = json.loads(raw)
+        print(f"DoH response for {hostname}: {json.dumps(data)}")
         for answer in data.get("Answer", []):
             if answer.get("type") == 1:
                 return answer["data"]
-        # No A record — follow CNAME chain
         for answer in data.get("Answer", []):
             if answer.get("type") == 5:
                 cname_target = answer["data"].rstrip(".")
+                print(f"Following CNAME: {hostname} -> {cname_target}")
                 if depth > 0:
                     return resolve_via_doh(cname_target, depth - 1)
         print(f"DoH: no A record found for {hostname}")
@@ -127,8 +143,22 @@ def start_tunnel():
     )
 
     url_reported = False
+    metrics_port = None
     for line in proc.stdout:
         print(line.strip())
+        # Capture metrics port
+        metrics_match = re.search(r'Starting metrics server on 127\.0\.0\.1:(\d+)/metrics', line)
+        if metrics_match:
+            metrics_port = metrics_match.group(1)
+            # Try to get URL from metrics (local, no DNS needed)
+            if not url_reported:
+                time.sleep(1)
+                url = get_tunnel_url_from_metrics(metrics_port)
+                if url:
+                    print(f"\nTunnel URL: {url}\n")
+                    threading.Thread(target=report_url, args=(url,), daemon=True).start()
+                    url_reported = True
+        # Also try from stdout (fallback)
         if "trycloudflare.com" in line and not url_reported:
             match = re.search(r'(https?://[^\s|]+\.trycloudflare\.com)', line)
             if match:
