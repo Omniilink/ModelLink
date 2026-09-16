@@ -11,7 +11,7 @@ import socket
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-WORKER_URL = "https://signupomniilink.workers.dev/api/tunnel-update"
+WORKER_URL = "https://signupomniilink.omniilink.workers.dev/api/tunnel-update"
 TUNNEL_SECRET = "omnilink-tunnel-2024"
 CLOUDFLARED = r"C:\Modellink\cloudflared.exe"
 API_HOST = "127.0.0.1"
@@ -81,10 +81,10 @@ def report_url(url):
             err_str = str(e)
             if "getaddrinfo" in err_str or "resolve" in err_str.lower():
                 print(f"DNS resolution failed, trying Cloudflare DoH...")
-                ip = resolve_via_doh("signupomniilink.workers.dev")
+                ip = resolve_via_doh("signupomniilink.omniilink.workers.dev")
                 if ip:
                     print(f"DoH resolved to {ip}, patching DNS and retrying...")
-                    real_getaddrinfo = patch_dns("signupomniilink.workers.dev", ip)
+                    real_getaddrinfo = patch_dns("signupomniilink.omniilink.workers.dev", ip)
                     try:
                         r = requests.post(WORKER_URL, json={"url": url, "secret": TUNNEL_SECRET}, timeout=10)
                         if r.status_code == 200:
