@@ -37,26 +37,30 @@ def report_url(url):
                 return
             else:
                 print(f"Report failed (attempt {attempt+1}): {r.status_code}")
-        except requests.exceptions.NameResolutionError:
-            print(f"DNS resolution failed, trying Cloudflare DoH...")
-            ip = resolve_via_doh("signupomniilink.workers.dev")
-            if ip:
-                try:
-                    r = requests.post(
-                        f"https://{ip}/api/tunnel-update",
-                        json={"url": url, "secret": TUNNEL_SECRET},
-                        headers={"Host": "signupomniilink.workers.dev"},
-                        timeout=10,
-                        verify=True
-                    )
-                    if r.status_code == 200:
-                        print(f"Reported URL via DoH: {url}")
-                        return
-                    else:
-                        print(f"DoH report failed: {r.status_code}")
-                except Exception as e2:
-                    print(f"DoH report error: {e2}")
-            break
+        except requests.exceptions.ConnectionError as e:
+            if "getaddrinfo failed" in str(e) or "NameResolutionError" in str(e):
+                print(f"DNS resolution failed, trying Cloudflare DoH...")
+                ip = resolve_via_doh("signupomniilink.workers.dev")
+                if ip:
+                    try:
+                        r = requests.post(
+                            f"https://{ip}/api/tunnel-update",
+                            json={"url": url, "secret": TUNNEL_SECRET},
+                            headers={"Host": "signupomniilink.workers.dev"},
+                            timeout=10,
+                            verify=True
+                        )
+                        if r.status_code == 200:
+                            print(f"Reported URL via DoH: {url}")
+                            return
+                        else:
+                            print(f"DoH report failed: {r.status_code}")
+                    except Exception as e2:
+                        print(f"DoH report error: {e2}")
+                break
+            else:
+                print(f"Report failed (attempt {attempt+1}): {e}")
+                time.sleep(2)
         except Exception as e:
             print(f"Report failed (attempt {attempt+1}): {e}")
             time.sleep(2)
