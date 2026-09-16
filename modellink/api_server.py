@@ -41,6 +41,36 @@ from modellink.splitter import (
 app = FastAPI(title="OmniLink API", version="2.0.0")
 
 # ==========================================
+# Per-User Key Parsing (from proxy header)
+# ==========================================
+def _parse_user_keys(header_value):
+    """Parse X-User-Keys header from useomniilink proxy into provider_keys format.
+    Proxy sends: {"gemini": "key123", "openai": "key456"}
+    Backend expects: {"gemini": [{"env_key": "GEMINI_API_KEY", "key": "key123"}], ...}
+    """
+    if not header_value:
+        return None
+    try:
+        raw = json.loads(header_value)
+        if not isinstance(raw, dict):
+            return None
+        provider_keys = {}
+        for provider, key_value in raw.items():
+            if key_value and isinstance(key_value, str) and len(key_value) > 10:
+                provider_keys[provider] = [{"env_key": f"{provider.upper()}_API_KEY", "key": key_value}]
+        return provider_keys if provider_keys else None
+    except Exception:
+        return None
+
+
+def get_provider_keys(request):
+    """Get provider keys: prefer X-User-Keys header (from proxy), fall back to env vars."""
+    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
+    if user_keys:
+        return user_keys
+    return load_all_keys()
+
+# ==========================================
 # Log Broadcasting via SSE
 # ==========================================
 class LogBroadcaster:
@@ -140,8 +170,8 @@ async def stream_logs():
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 @app.get("/api/status")
-async def get_status():
-    provider_keys = load_all_keys()
+async def get_status(request: Request):
+    provider_keys = get_provider_keys(request)
     active = {}
     for prov_name, keys in provider_keys.items():
         active[prov_name] = {
@@ -155,8 +185,8 @@ async def get_status():
     }
 
 @app.get("/api/discover")
-async def discover_models():
-    provider_keys = load_all_keys()
+async def discover_models(request: Request):
+    provider_keys = get_provider_keys(request)
     discovered = {}
     all_models = [{"id": MODEL_NAME, "provider": "omnilink", "source": "default"}]
     for prov_name, keys in provider_keys.items():
@@ -182,8 +212,9 @@ async def ollama_models():
     return {"models": models, "available": len(models) > 0, "base_url": OLLAMA_BASE_URL}
 
 @app.get("/api/settings")
-async def get_settings():
+async def get_settings(request: Request):
     env_path = os.path.join(APP_DIR, ".env")
+    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
     settings = {
         "backup_model": get_backup_model(),
         "ollama_url": OLLAMA_BASE_URL,
@@ -195,20 +226,30 @@ async def get_settings():
             "env_prefix": prefix,
             "keys": [],
         }
-        for i in range(1, 6):
-            key_env = f"{prefix}_{i}"
-            value = os.environ.get(key_env, "")
-            if value and len(value) > 4:
-                masked = value[:4] + "..." + value[-4:]
-            elif value:
-                masked = "***"
-            else:
-                masked = ""
-            settings[prov_name]["keys"].append({
-                "env_name": key_env,
-                "masked": masked,
-                "has_value": bool(value and len(value) > 4),
-            })
+        if user_keys and prov_name in user_keys:
+            for entry in user_keys[prov_name]:
+                key_val = entry["key"]
+                masked = key_val[:4] + "..." + key_val[-4:] if len(key_val) > 4 else "***"
+                settings[prov_name]["keys"].append({
+                    "env_name": entry["env_key"],
+                    "masked": masked,
+                    "has_value": True,
+                })
+        else:
+            for i in range(1, 6):
+                key_env = f"{prefix}_{i}"
+                value = os.environ.get(key_env, "")
+                if value and len(value) > 4:
+                    masked = value[:4] + "..." + value[-4:]
+                elif value:
+                    masked = "***"
+                else:
+                    masked = ""
+                settings[prov_name]["keys"].append({
+                    "env_name": key_env,
+                    "masked": masked,
+                    "has_value": bool(value and len(value) > 4),
+                })
     return settings
 
 @app.post("/api/settings")
@@ -398,15 +439,17 @@ async def chat_completions(request: Request):
         return JSONResponse(content=response)
 
 @app.get("/v1/models")
-async def list_models():
+async def list_models(request: Request):
+    provider_keys = get_provider_keys(request)
     models = [{"id": MODEL_NAME}]
-    for prov_cfg in PROVIDERS.values():
-        for m in prov_cfg.get("models", []):
-            if not any(existing["id"] == m for existing in models):
-                models.append({"id": m})
-        for m in prov_cfg.get("fallback_models", []):
-            if not any(existing["id"] == m for existing in models):
-                models.append({"id": m})
+    for prov_name, prov_cfg in PROVIDERS.items():
+        if prov_name in provider_keys:
+            for m in prov_cfg.get("models", []):
+                if not any(existing["id"] == m for existing in models):
+                    models.append({"id": m})
+            for m in prov_cfg.get("fallback_models", []):
+                if not any(existing["id"] == m for existing in models):
+                    models.append({"id": m})
     return {"data": models}
 
 # ==========================================
@@ -674,16 +717,20 @@ def _save_api_keys(data):
         json.dump(data, f, indent=2)
 
 @app.get("/api/keys")
-async def list_api_keys():
+async def list_api_keys(request: Request):
     data = _load_api_keys()
+    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
     providers_with_keys = {}
     for prov_id, prov_info in PROVIDER_INFO.items():
         env_prefix = prov_info["env"].replace("_API_KEY", "")
         has_key = False
-        for env_key, env_val in os.environ.items():
-            if env_key.startswith(env_prefix) and "_API_KEY" in env_key and env_val and len(env_val) > 10 and not env_val.startswith("your_"):
-                has_key = True
-                break
+        if user_keys and prov_id in user_keys:
+            has_key = True
+        else:
+            for env_key, env_val in os.environ.items():
+                if env_key.startswith(env_prefix) and "_API_KEY" in env_key and env_val and len(env_val) > 10 and not env_val.startswith("your_"):
+                    has_key = True
+                    break
         providers_with_keys[prov_id] = {
             **prov_info,
             "id": prov_id,

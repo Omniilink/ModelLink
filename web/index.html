@@ -545,7 +545,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
               <div id="api-code-python" class="api-code-block">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-python')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-python">from openai import OpenAI
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8080/v1",
@@ -563,7 +563,7 @@ print(response.choices[0].message.content)</code></pre>
               <div id="api-code-node" class="api-code-block" style="display:none">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-node')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-node">import OpenAI from "openai";
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>import OpenAI from "openai";
 
 const client = new OpenAI({
   baseURL: "http://127.0.0.1:8080/v1",
@@ -580,7 +580,7 @@ console.log(response.choices[0].message.content);</code></pre>
               <div id="api-code-curl" class="api-code-block" style="display:none">
                 <div style="position:relative">
                   <button class="copy-btn" onclick="copyCode('api-code-curl')">Copy</button>
-                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code id="api-code-curl">curl http://127.0.0.1:8080/v1/chat/completions \
+                  <pre style="margin:0;font-size:12px;line-height:1.7;color:var(--text-primary)"><code>curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
@@ -1410,7 +1410,7 @@ function editAndResend(editIdx, newText) {
     function read() {
       reader.read().then(({ done, value }) => {
         if (done) {
-    chatHistory.push({ role: 'assistant', content: fullText, model: actualModel });
+    chatHistory.push({ role: 'assistant', content: fullText, model: selectedModel });
           saveCurrentChat();
           isStreaming = false;
           document.getElementById('send-btn').disabled = false;
@@ -2153,11 +2153,11 @@ async function viewCodingFile(name) {
           appAlert(data.error);
           return;
         }
-        if (!isTextFile(name)) {
-          if (!(await appConfirm(`"${name}" may be a binary file. Open as text anyway?`))) return;
+        if (isTextFile(name) || !data.content) {
+          appAlert(data.error || 'Cannot read file');
+          return;
         }
-        appAlert(data.error || 'Cannot read file');
-        return;
+        if (!(await appConfirm(`"${name}" may be a binary file. Open as text anyway?`))) return;
       }
       content = data.content;
     }
@@ -2724,9 +2724,9 @@ function showApiTab(tab, btn) {
 function updateApiUrls() {
   const base = API_BASE || 'http://127.0.0.1:8080';
   const v1 = base + '/v1';
-  const pyEl = document.getElementById('api-code-python');
-  const nodeEl = document.getElementById('api-code-node');
-  const curlEl = document.getElementById('api-code-curl');
+  const pyEl = document.querySelector('#api-code-python code');
+  const nodeEl = document.querySelector('#api-code-node code');
+  const curlEl = document.querySelector('#api-code-curl code');
   if (pyEl) pyEl.textContent = pyEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
   if (nodeEl) nodeEl.textContent = nodeEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
   if (curlEl) curlEl.textContent = curlEl.textContent.replace(/http:\/\/127\.0\.0\.1:8080\/v1/g, v1);
@@ -3102,7 +3102,7 @@ async function deleteProject(name, path) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ==========================================
