@@ -9,7 +9,7 @@ import threading
 from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-logger = logging.getLogger("OmniLink")
+logger = logging.getLogger("Omniilink")
 
 # ==========================================
 # PyInstaller path resolution
@@ -35,7 +35,7 @@ if os.path.isfile(env_path):
 else:
     load_dotenv(override=True)
 
-MODEL_NAME = "omnilink"
+MODEL_NAME = "omniilink"
 
 MODEL_RATE_LIMITS = {
     "gemini-2.5-flash":            {"rpm": 10,  "tpm": 250000},

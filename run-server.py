@@ -108,7 +108,7 @@ def report_url(url):
     print("Could not report URL automatically. Update manually in the dashboard.")
 
 def start_api_server():
-    """Start the OmniLink API server."""
+    """Start the Omniilink API server."""
     venv_python = r"C:\Modellink\venv\Scripts\python.exe"
     subprocess.Popen(
         [venv_python, "-m", "uvicorn", "modellink.api_server:app",
@@ -168,7 +168,7 @@ def start_tunnel():
                 url_reported = True
 
 if __name__ == "__main__":
-    print("Starting OmniLink Server...")
+    print("Starting Omniilink Server...")
     start_api_server()
     if wait_for_server():
         print("Starting Cloudflare Tunnel...")

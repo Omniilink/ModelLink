@@ -21,7 +21,7 @@ APP_DIR = _base_path()
 sys.path.insert(0, APP_DIR)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
-logger = logging.getLogger("OmniLink")
+logger = logging.getLogger("Omniilink")
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
@@ -38,7 +38,7 @@ from modellink.splitter import (
     get_language, set_language
 )
 
-app = FastAPI(title="OmniLink API", version="2.0.0")
+app = FastAPI(title="Omniilink API", version="2.0.0")
 
 # ==========================================
 # Per-User Key Parsing (from proxy header)
@@ -113,7 +113,7 @@ class WebLogHandler(logging.Handler):
 
 web_handler = WebLogHandler(log_broadcaster)
 web_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
-logging.getLogger("OmniLink").addHandler(web_handler)
+logging.getLogger("Omniilink").addHandler(web_handler)
 logging.getLogger().addHandler(web_handler)
 
 # ==========================================
@@ -171,24 +171,27 @@ async def stream_logs():
 
 @app.get("/api/status")
 async def get_status(request: Request):
-    provider_keys = get_provider_keys(request)
-    active = {}
-    for prov_name, keys in provider_keys.items():
-        active[prov_name] = {
-            "key_count": len(keys),
-            "status": "active"
+    try:
+        provider_keys = get_provider_keys(request)
+        active = {}
+        for prov_name, keys in provider_keys.items():
+            active[prov_name] = {
+                "key_count": len(keys),
+                "status": "active"
+            }
+        return {
+            "providers": active,
+            "rate_limits": lb.rate_limiter.get_status(),
+            "model_name": MODEL_NAME,
         }
-    return {
-        "providers": active,
-        "rate_limits": lb.rate_limiter.get_status(),
-        "model_name": MODEL_NAME,
-    }
+    except Exception as e:
+        return {"providers": {}, "rate_limits": {}, "model_name": MODEL_NAME, "error": str(e)}
 
 @app.get("/api/discover")
 async def discover_models(request: Request):
     provider_keys = get_provider_keys(request)
     discovered = {}
-    all_models = [{"id": MODEL_NAME, "provider": "omnilink", "source": "default"}]
+    all_models = [{"id": MODEL_NAME, "provider": "omniilink", "source": "default"}]
     for prov_name, keys in provider_keys.items():
         discovered[prov_name] = []
         for key_idx, api_key in enumerate(keys):
@@ -822,17 +825,27 @@ def _ensure_projects_dir():
 async def list_projects():
     _ensure_projects_dir()
     projects = []
+    total_size = 0
     for name in sorted(os.listdir(PROJECTS_DIR)):
         if name.startswith("_del_"): continue
         path = os.path.join(PROJECTS_DIR, name)
         if not os.path.isdir(path): continue
-        # Skip folders pending delete (marker in parent dir)
         if os.path.exists(os.path.join(PROJECTS_DIR, f".pending_delete_{name}")): continue
         if os.path.isdir(path):
-            file_count = sum(1 for _, _, files in os.walk(path) for f in files if not any(f.endswith(e) for e in IGNORE_EXTS))
+            file_count = 0
+            dir_size = 0
+            for root, dirs, files in os.walk(path):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    if not any(f.endswith(e) for e in IGNORE_EXTS):
+                        file_count += 1
+                    try:
+                        dir_size += os.path.getsize(fp)
+                    except: pass
             mtime = os.path.getmtime(path)
-            projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime})
-    return {"projects": projects, "dir": PROJECTS_DIR}
+            total_size += dir_size
+            projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime, "size_bytes": dir_size})
+    return {"projects": projects, "dir": PROJECTS_DIR, "storage_used_bytes": total_size, "storage_limit_bytes": 5 * 1024 * 1024 * 1024}
 
 class ProjectCreate(BaseModel):
     name: str
@@ -964,10 +977,15 @@ async def serve_index():
     index_path = os.path.join(APP_DIR, "web", "index.html")
     return FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
-@app.get("/favicon.ico")
+@app.get("/favicon.svg")
 async def serve_favicon():
-    favicon_path = os.path.join(APP_DIR, "web", "favicon.ico")
-    return FileResponse(favicon_path, media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
+    favicon_path = os.path.join(APP_DIR, "web", "favicon.svg")
+    return FileResponse(favicon_path, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/favicon.ico")
+async def serve_favicon_ico():
+    favicon_path = os.path.join(APP_DIR, "web", "favicon.svg")
+    return FileResponse(favicon_path, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 web_dir = os.path.join(APP_DIR, "web")
 if os.path.isdir(web_dir):
