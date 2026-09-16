@@ -4,12 +4,63 @@ import requests
 import re
 import time
 import os
+import json
+import urllib.request
 
 WORKER_URL = "https://signupomniilink.workers.dev/api/tunnel-update"
 TUNNEL_SECRET = "omnilink-tunnel-2024"
 CLOUDFLARED = r"C:\Modellink\cloudflared.exe"
 API_HOST = "127.0.0.1"
 API_PORT = 8080
+
+def resolve_via_doh(hostname):
+    """Resolve DNS using Cloudflare DNS-over-HTTPS (works even when local DNS fails)."""
+    try:
+        url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
+        req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
+        resp = urllib.request.urlopen(req, timeout=5)
+        data = json.loads(resp.read())
+        for answer in data.get("Answer", []):
+            if answer.get("type") == 1:
+                return answer["data"]
+    except Exception as e:
+        print(f"DoH resolve failed: {e}")
+    return None
+
+def report_url(url):
+    """Report the tunnel URL to the worker. Uses DoH fallback if DNS fails."""
+    for attempt in range(3):
+        try:
+            r = requests.post(WORKER_URL, json={"url": url, "secret": TUNNEL_SECRET}, timeout=10)
+            if r.status_code == 200:
+                print(f"Reported URL to server: {url}")
+                return
+            else:
+                print(f"Report failed (attempt {attempt+1}): {r.status_code}")
+        except requests.exceptions.NameResolutionError:
+            print(f"DNS resolution failed, trying Cloudflare DoH...")
+            ip = resolve_via_doh("signupomniilink.workers.dev")
+            if ip:
+                try:
+                    r = requests.post(
+                        f"https://{ip}/api/tunnel-update",
+                        json={"url": url, "secret": TUNNEL_SECRET},
+                        headers={"Host": "signupomniilink.workers.dev"},
+                        timeout=10,
+                        verify=True
+                    )
+                    if r.status_code == 200:
+                        print(f"Reported URL via DoH: {url}")
+                        return
+                    else:
+                        print(f"DoH report failed: {r.status_code}")
+                except Exception as e2:
+                    print(f"DoH report error: {e2}")
+            break
+        except Exception as e:
+            print(f"Report failed (attempt {attempt+1}): {e}")
+            time.sleep(2)
+    print(f"Could not report URL automatically. Update manually in the dashboard.")
 
 def start_api_server():
     """Start the OmniLink API server."""
@@ -36,17 +87,6 @@ def wait_for_server():
     print("API server did not start in time")
     return False
 
-def report_url(url):
-    """Report the tunnel URL to the worker."""
-    try:
-        r = requests.post(WORKER_URL, json={"url": url, "secret": TUNNEL_SECRET}, timeout=10)
-        if r.status_code == 200:
-            print(f"Reported URL to server: {url}")
-        else:
-            print(f"Failed to report URL: {r.status_code}")
-    except Exception as e:
-        print(f"Failed to report URL: {e}")
-
 def start_tunnel():
     """Start cloudflared and capture the URL."""
     proc = subprocess.Popen(
@@ -65,7 +105,7 @@ def start_tunnel():
             if match:
                 url = match.group(1)
                 print(f"\nTunnel URL: {url}\n")
-                report_url(url)
+                threading.Thread(target=report_url, args=(url,), daemon=True).start()
                 url_reported = True
 
 if __name__ == "__main__":
