@@ -50,7 +50,7 @@ def report_url(url):
 def start_tunnel():
     """Start cloudflared and capture the URL."""
     proc = subprocess.Popen(
-        [CLOUDFLARED, "tunnel", "--url", f"http://{API_HOST}:{API_PORT}"],
+        [CLOUDFLARED, "tunnel", "--protocol", "http2", "--url", f"http://{API_HOST}:{API_PORT}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
