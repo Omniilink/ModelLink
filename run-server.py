@@ -107,17 +107,16 @@ def report_url(url):
             time.sleep(2)
     print("Could not report URL via worker. Trying wrangler d1 direct update...")
     try:
+        cmd = f'npx wrangler d1 execute omnilink-db --remote --command="INSERT OR REPLACE INTO settings (key, value) VALUES (\'backend_url\', \'{url}\')"'
         result = subprocess.run(
-            ["npx", "wrangler", "d1", "execute", "omnilink-db", "--remote",
-             "--command", f"INSERT OR REPLACE INTO settings (key, value) VALUES ('backend_url', '{url}')"],
-            capture_output=True, text=True, timeout=30,
+            cmd, shell=True, capture_output=True, text=True, timeout=30,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         if result.returncode == 0:
             print(f"D1 updated directly via wrangler: {url}")
             return
         else:
-            print(f"Wrangler d1 failed: {result.stderr[:200]}")
+            print(f"Wrangler d1 failed: {result.stderr[:300]}")
     except Exception as e:
         print(f"Wrangler d1 error: {e}")
     print("Could not report URL automatically. Update manually in the dashboard.")
