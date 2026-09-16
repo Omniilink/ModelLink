@@ -1210,9 +1210,20 @@ function renderPromptList(category){
   const container=document.getElementById('prompts-list');if(!container)return;container.innerHTML='';
   const prompts=getPrompts();const filtered=category==='all'?prompts:prompts.filter(p=>p.category===category);
   if(filtered.length===0){container.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)"><p style="font-size:14px;margin-bottom:8px">No prompts yet</p><p style="font-size:12px">Create your first prompt template to get started</p></div>';return}
-  for(const p of prompts){if(category!=='all'&&p.category!==category)continue;
+  for(const p of filtered){
     const card=document.createElement('div');card.className='prompt-card';
-    card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(p.name)+'</span><span class="prompt-category">'+escapeHtml(p.category)+'</span></div><div class="prompt-content">'+escapeHtml(p.content)+'</div><div class="prompt-actions"><button class="use" onclick="usePrompt(\''+escapeHtml(p.content).replace(/'/g,"\\'")+'\')">Use</button><button onclick="editPrompt(\''+p.id+'\')">Edit</button><button class="del" onclick="deletePrompt(\''+p.id+'\')">Delete</button></div>';
+    const header=document.createElement('div');header.className='prompt-header';
+    header.innerHTML='<span class="prompt-name">'+escapeHtml(p.name)+'</span><span class="prompt-category">'+escapeHtml(p.category)+'</span>';
+    const content=document.createElement('div');content.className='prompt-content';content.textContent=p.content;
+    const actions=document.createElement('div');actions.className='prompt-actions';
+    const useBtn=document.createElement('button');useBtn.className='use';useBtn.textContent='Use';
+    useBtn.onclick=()=>usePrompt(p.content);
+    const editBtn=document.createElement('button');editBtn.textContent='Edit';
+    editBtn.onclick=()=>editPrompt(p.id);
+    const delBtn=document.createElement('button');delBtn.className='del';delBtn.textContent='Delete';
+    delBtn.onclick=()=>deletePrompt(p.id);
+    actions.appendChild(useBtn);actions.appendChild(editBtn);actions.appendChild(delBtn);
+    card.appendChild(header);card.appendChild(content);card.appendChild(actions);
     container.appendChild(card)}
 }
 function usePrompt(content){const input=document.getElementById('chat-input');input.value=content+'\n\n';input.focus();autoResize(input);switchView('chat')}
