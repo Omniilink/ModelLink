@@ -608,6 +608,11 @@ function setTheme(t){localStorage.setItem('omnilink_theme',t);document.documentE
 
 function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
+function getUserKeys(){try{return JSON.parse(localStorage.getItem('omnilink_user_keys')||'{}')}catch(e){return{}}}
+function setUserKeys(k){localStorage.setItem('omnilink_user_keys',JSON.stringify(k))}
+function userKeysHeader(){const k=getUserKeys();return Object.keys(k).length>0?{'X-User-Keys':JSON.stringify(k)}:{}}
+async function authFetch(url,opts={}){opts.headers={...opts.headers,...userKeysHeader()};return fetch(url,opts)}
+
 function renderContent(text){
   let c=text.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<think>[\s\S]*?<\/thinking>/gi,'').replace(/<think>[\s\S]*$/gi,'').replace(/<thinking>[\s\S]*$/gi,'');
   let html=escapeHtml(c);
@@ -704,7 +709,7 @@ function toggleModelMenu(){document.getElementById('model-menu').classList.toggl
 function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id))}
 
 async function loadModels(){
-  try{const r=await fetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);renderProviders(data.by_provider)}
+  try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);renderProviders(data.by_provider)}
   catch(e){console.error('Failed to load models:',e)}
 }
 function renderModelMenu(models,backupModel){
@@ -727,7 +732,7 @@ function renderProviders(providers){
   }
 }
 async function loadProviderStatus(){
-  try{const r=await fetch(API+'/api/status');const data=await r.json();const count=Object.keys(data.providers).length;
+  try{const r=await authFetch(API+'/api/status');const data=await r.json();const count=Object.keys(data.providers).length;
     document.getElementById('status-dot').className='status-dot '+(count>0?'online':'offline');
     document.getElementById('status-text').textContent=count>0?count+' provider'+(count>1?'s':''):'No providers'}
   catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}
@@ -743,7 +748,7 @@ async function sendMessage(){
   appendMessage('user',text);chatHistory.push({role:'user',content:text});
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   try{
-    const r=await fetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}updateMessage(assistantEl,errMsg);chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=selectedModel;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -798,7 +803,7 @@ function updateMessage(el,content){el.innerHTML=renderContent(content);document.
 
 <script>
 async function loadSettingsData(){
-  try{const r=await fetch(API+'/api/settings');if(!r.ok)throw new Error('offline');settingsData=await r.json();renderSettings()}
+  try{const r=await authFetch(API+'/api/settings');if(!r.ok)throw new Error('offline');settingsData=await r.json();renderSettings()}
   catch(e){document.getElementById('settings-body').innerHTML='<div style="padding:20px;text-align:center;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not connect to Omniilink backend</p></div>'}
 }
 async function openSettings(){switchView('settings')}
@@ -835,13 +840,16 @@ function renderSettings(){
     pa2.appendChild(sb);pr.appendChild(pa);pr.appendChild(pa2);cs.appendChild(pr);
   }).catch(()=>{});
   body.appendChild(cs);
-  // Provider keys
-  for(const[prov,data]of Object.entries(settingsData)){
-    if(prov==='backup_model'||prov==='ollama_url')continue;
+  // Provider API keys (stored in browser localStorage)
+  const userKeys=getUserKeys();
+  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','xai','cohere','opencode'];
+  for(const prov of provList){
     const section=document.createElement('div');section.className='settings-section';
-    section.innerHTML='<h3>'+(icons[prov]||'')+' '+(names[prov]||prov)+' <span class="prov-badge">'+(data.env_prefix||'')+'</span></h3>';
-    if(data.keys){data.keys.forEach((key,i)=>{const row=document.createElement('div');row.className='key-row';row.innerHTML='<label>Key '+(i+1)+'</label><input type="password" placeholder="'+(key.has_value?key.masked:'Enter '+prov+' key...')+'" data-env-name="'+key.env_name+'" data-provider="'+prov+'"><span class="status-icon">'+(key.has_value?'[OK]':'[-]')+'</span><button class="key-clear" title="Clear '+key.env_name+'" onclick="clearKey(\''+key.env_name+'\',this.closest(\'.key-row\'),this.previousElementSibling)">&times;</button>';section.appendChild(row)})}
-    body.appendChild(section);
+    section.innerHTML='<h3>'+(icons[prov]||'')+' '+(names[prov]||prov)+'</h3>';
+    const row=document.createElement('div');row.className='key-row';
+    const existing=userKeys[prov]||'';
+    row.innerHTML='<label>API Key</label><input type="password" id="key-'+prov+'" placeholder="Enter '+names[prov]+' API key..." value="'+escapeHtml(existing)+'"><span class="status-icon">'+(existing?'[OK]':'[-]')+'</span>';
+    section.appendChild(row);body.appendChild(section);
   }
 }
 async function clearKey(envName,row,statusEl){
@@ -849,12 +857,16 @@ async function clearKey(envName,row,statusEl){
   try{const r=await fetch(API+'/api/settings/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_name:envName})});if(r.ok){const input=row.querySelector('input');if(input){input.value='';input.placeholder='Enter key...'}statusEl.textContent='[-]'}}catch(e){appAlert('Failed to clear key')}
 }
 async function saveSettings(){
-  const updates=[];const backupSelect=document.getElementById('backup-model-input');
-  if(updates.length===0&&!backupSelect){switchView('chat');return}
-  if(backupSelect)updates.push({key_name:'OLLAMA_MODEL',key_value:backupSelect.value,provider:'ollama'});
-  document.querySelectorAll('#settings-body input[type="password"]').forEach(input=>{const val=input.value.trim();if(val)updates.push({key_name:input.dataset.envName,key_value:val,provider:input.dataset.provider})});
-  if(!updates.length){switchView('chat');return}
-  try{const r=await fetch(API+'/api/settings/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({updates})});if(r.ok){switchView('chat');setTimeout(()=>{loadModels();loadProviderStatus()},500)}}catch(e){appAlert('Failed to save: '+e.message)}
+  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','xai','cohere','opencode'];
+  const keys={};
+  for(const prov of provList){
+    const input=document.getElementById('key-'+prov);
+    if(input&&input.value.trim())keys[prov]=input.value.trim();
+  }
+  setUserKeys(keys);
+  showToast('API keys saved to browser storage','success');
+  switchView('chat');
+  setTimeout(()=>{loadModels();loadProviderStatus()},500);
 }
 
 document.querySelectorAll('.nav-item[data-view]').forEach(item=>{item.addEventListener('click',()=>switchView(item.dataset.view))});
@@ -873,13 +885,13 @@ async function loadProjectsSidebar(){
   const container=document.getElementById('coding-filetree');container.innerHTML='';
   const header=document.createElement('div');header.style.cssText='padding:10px 12px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;display:flex;align-items:center;justify-content:space-between';
   header.innerHTML='<span>Projects</span>';const newBtn=document.createElement('button');newBtn.style.cssText='font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font)';newBtn.textContent='+ New';newBtn.onclick=()=>openProjectsModal();header.appendChild(newBtn);container.appendChild(header);
-  try{const r=await fetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
+  try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
     if(!data.projects||data.projects.length===0){const empty=document.createElement('div');empty.style.cssText='padding:20px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.6';empty.innerHTML='No projects yet.<br><span style="color:var(--accent-light);cursor:pointer;text-decoration:underline" onclick="openProjectsModal()">Create one</span> or open any folder above.';container.appendChild(empty);return}
     const list=document.createElement('div');list.style.padding='0 4px';
     for(const p of data.projects){const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
       const isActive=codingFolder&&codingFolder===p.path;if(isActive)item.style.background='var(--accent-dim)';
       item.innerHTML='<span style="font-size:12px">\uD83D\uDCC1</span><div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px"><div style="font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+escapeHtml(p.name)+'</div><button class="del" style="width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:none;align-items:center;justify-content:center;font-size:11px;padding:0;flex-shrink:0" title="Delete project">&times;</button><span style="font-size:10px;color:var(--text-muted)">'+p.file_count+' files</span></div>';
-      const delBtn=item.querySelector('.del');delBtn.onclick=async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?')){try{const r2=await fetch(API+'/api/projects/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p.path})});const res=await r2.json();if(res.error){appAlert('Delete failed: '+res.error);return}}catch(err){appAlert('Delete failed: '+err.message);return}if(codingFolder===p.path){closeCodingFolder();updateProjectBadge('')}loadProjectsSidebar()}};
+      const delBtn=item.querySelector('.del');delBtn.onclick=async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?')){try{const r2=await authFetch(API+'/api/projects/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p.path})});const res=await r2.json();if(res.error){appAlert('Delete failed: '+res.error);return}}catch(err){appAlert('Delete failed: '+err.message);return}if(codingFolder===p.path){closeCodingFolder();updateProjectBadge('')}loadProjectsSidebar()}};
       item.addEventListener('mouseenter',()=>{if(!isActive)item.style.background='var(--bg-hover)';delBtn.style.display='flex'});
       item.addEventListener('mouseleave',()=>{if(!isActive)item.style.background='';delBtn.style.display='none'});
       item.addEventListener('click',()=>openProject(p.name));list.appendChild(item)}
@@ -973,7 +985,7 @@ async function sendCodingMessage(){
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
   codingStream=true;document.getElementById('coding-send-btn').disabled=true;
-  try{let actualModel=selectedModel;const r=await fetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:4000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
+  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:4000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -1056,11 +1068,11 @@ function updateApiUrls(){const base=API_BASE||'http://127.0.0.1:8080';const v1=b
 async function loadApiPage(){
   updateApiUrls();
   const cs=document.getElementById('api-connection-status');
-  try{const r=await fetch(API+'/api/keys');if(!r.ok)throw new Error('offline');const data=await r.json();
+  try{const r=await authFetch(API+'/api/keys');if(!r.ok)throw new Error('offline');const data=await r.json();
     cs.style.display='flex';cs.className='connection-status online';cs.innerHTML='<span class="status-dot online"></span>Connected to Omniilink backend';
     renderProviderCards(data.providers||{});renderApiKeys(data.keys||[])}catch(e){
     cs.style.display='flex';cs.className='connection-status offline';cs.innerHTML='<span class="status-dot offline"></span>Server offline â€” API examples shown below may not work'}
-  try{const r=await fetch(API+'/api/keys/info');const info=await r.json();renderRoutingInfo(info.tiers||{},info.providers||{});renderConfigSnippet(info)}catch(e){}
+  try{const r=await authFetch(API+'/api/keys/info');const info=await r.json();renderRoutingInfo(info.tiers||{},info.providers||{});renderConfigSnippet(info)}catch(e){}
 }
 function renderProviderCards(providers){const grid=document.getElementById('api-providers-grid');if(!grid)return;grid.innerHTML='';for(const[id,p]of Object.entries(providers)){const icon=PROVIDER_ICONS[id]||{letter:id.substring(0,2).toUpperCase(),color:'#71717A'};const card=document.createElement('div');card.className='provider-card';card.innerHTML='<div class="prov-icon" style="background:'+icon.color+'">'+icon.letter+'</div><div class="prov-info"><div class="prov-name">'+(p.name||id)+'</div><div class="prov-status '+(p.configured?'on':'off')+'">'+(p.configured?'Connected':'Not configured')+'</div></div>';grid.appendChild(card)}}
 function renderApiKeys(keys){const list=document.getElementById('api-keys-list');if(!list)return;if(keys.length===0){list.innerHTML='<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No API keys yet</div>';return}list.innerHTML='';for(const k of keys){const masked=k.key.substring(0,14)+'...'+k.key.substring(k.key.length-4);const row=document.createElement('div');row.className='api-key-row';row.innerHTML='<code>'+masked+'</code><button onclick="navigator.clipboard.writeText(\''+k.key+'\').then(()=>this.textContent=\'Copied!\')">Copy</button><button class="danger" onclick="revokeApiKey(\''+k.key+'\')">Revoke</button>';list.appendChild(row)}}
