@@ -848,10 +848,11 @@ function renderSettings(){
     section.innerHTML='<h3>'+(icons[prov]||'')+' '+(names[prov]||prov)+'</h3>';
     const row=document.createElement('div');row.className='key-row';
     const existing=userKeys[prov]||'';
-    row.innerHTML='<label>API Key</label><input type="password" id="key-'+prov+'" placeholder="Enter '+names[prov]+' API key..." value="'+escapeHtml(existing)+'"><span class="status-icon">'+(existing?'[OK]':'[-]')+'</span>';
+    row.innerHTML='<label>API Key</label><input type="password" id="key-'+prov+'" placeholder="Enter '+names[prov]+' API key..." value="'+escapeHtml(existing)+'" oninput="autoSaveKey(\''+prov+'\')"><span class="status-icon">'+(existing?'[OK]':'[-]')+'</span>';
     section.appendChild(row);body.appendChild(section);
   }
 }
+function autoSaveKey(prov){const input=document.getElementById('key-'+prov);if(!input)return;const keys=getUserKeys();if(input.value.trim()){keys[prov]=input.value.trim()}else{delete keys[prov]}setUserKeys(keys);const statusEl=input.parentElement.querySelector('.status-icon');if(statusEl)statusEl.textContent=input.value.trim()?'[OK]':'[-]'}
 async function clearKey(envName,row,statusEl){
   if(!(await appConfirm('Clear '+envName+'?')))return;
   try{const r=await fetch(API+'/api/settings/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_name:envName})});if(r.ok){const input=row.querySelector('input');if(input){input.value='';input.placeholder='Enter key...'}statusEl.textContent='[-]'}}catch(e){appAlert('Failed to clear key')}
