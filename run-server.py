@@ -6,6 +6,9 @@ import time
 import os
 import json
 import urllib.request
+import ssl
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 WORKER_URL = "https://signupomniilink.workers.dev/api/tunnel-update"
 TUNNEL_SECRET = "omnilink-tunnel-2024"
@@ -18,7 +21,10 @@ def resolve_via_doh(hostname):
     try:
         url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
         req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
-        resp = urllib.request.urlopen(req, timeout=5)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        resp = urllib.request.urlopen(req, timeout=5, context=ctx)
         data = json.loads(resp.read())
         for answer in data.get("Answer", []):
             if answer.get("type") == 1:
@@ -48,7 +54,7 @@ def report_url(url):
                             json={"url": url, "secret": TUNNEL_SECRET},
                             headers={"Host": "signupomniilink.workers.dev"},
                             timeout=10,
-                            verify=True
+                            verify=False
                         )
                         if r.status_code == 200:
                             print(f"Reported URL via DoH: {url}")
