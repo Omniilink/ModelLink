@@ -413,6 +413,63 @@ a:hover{text-decoration:underline}
 @media(max-width:768px){.sidebar{position:fixed;top:0;left:0;bottom:0;z-index:200;width:260px;transform:translateX(-100%);transition:transform .25s ease}.sidebar.hidden{width:260px;transform:translateX(-100%)}.sidebar:not(.hidden){transform:translateX(0)}.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:199;display:none}.sidebar-overlay.open{display:block}.hamburger-btn{display:flex !important}.header{padding:0 10px;gap:8px}.header-title{font-size:13px}.header-btn{padding:5px 8px;font-size:11px}.header-btn span{display:none}.chat-area{padding:12px}.message{max-width:95%}.message-avatar{width:26px;height:26px;font-size:10px}.input-area{padding:8px 10px 10px}.input-box textarea{font-size:16px}.model-menu{min-width:220px;max-width:90vw;right:0;left:auto}.modal{width:calc(100vw - 24px) !important;max-width:480px}.coding-filetree{width:180px}.coding-toolbar{overflow-x:auto;gap:4px;padding:0 8px}.coding-toolbar button{padding:4px 8px;font-size:10px}.view-body{padding:12px 16px}.key-row{flex-direction:column;gap:6px}.key-row label{width:auto}.routing-info-grid{grid-template-columns:1fr !important}.coding-output.open{height:120px}.quick-actions{gap:6px}.quick-action-btn{padding:6px 12px;font-size:11px}}
 @media(max-width:480px){.header{padding:0 8px;gap:6px}.header-sep{display:none}.model-btn{padding:4px 8px;font-size:11px}.chat-area{padding:8px;gap:12px}.message{max-width:100%;gap:8px}.message-content{font-size:13px}.coding-filetree{display:none}.coding-toolbar{flex-wrap:nowrap}.coding-toolbar button{padding:3px 6px;font-size:9px}.view-body{padding:10px 12px}.view-footer{padding:8px 12px;flex-wrap:wrap}.modal{width:calc(100vw - 16px) !important}.modal-body{padding:14px 16px}.modal-header{padding:14px 16px}.coding-output.open{height:100px}.coding-input-area{padding:8px 10px}.coding-msg{max-width:100%}.coding-msg-content{font-size:12px;padding:8px 10px}}
 @supports(padding:env(safe-area-inset-bottom)){.input-area{padding-bottom:calc(10px + env(safe-area-inset-bottom))}.coding-input-area{padding-bottom:calc(10px + env(safe-area-inset-bottom))}}
+
+/* Command Palette */
+.cmd-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(8px);z-index:300;display:none;align-items:flex-start;justify-content:center;padding-top:18vh}
+.cmd-overlay.open{display:flex}
+.cmd-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:14px;width:540px;max-height:420px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.5);animation:scaleIn .2s cubic-bezier(.4,0,.2,1) both}
+.cmd-input{width:100%;padding:16px 20px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text-primary);font-size:15px;font-family:var(--font);outline:none}
+.cmd-input::placeholder{color:var(--text-muted)}
+.cmd-results{overflow-y:auto;max-height:340px;padding:6px}
+.cmd-item{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:var(--radius-sm);cursor:pointer;transition:all .1s;font-size:13px;color:var(--text-secondary)}
+.cmd-item:hover,.cmd-item.selected{background:var(--accent-dim);color:var(--text-primary)}
+.cmd-item .cmd-icon{width:28px;height:28px;border-radius:6px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.cmd-item .cmd-shortcut{margin-left:auto;font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-tertiary);padding:2px 6px;border-radius:4px}
+.cmd-section{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:8px 14px 4px;font-weight:600}
+
+/* Message bookmarks */
+.msg-bookmark-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:all .15s}
+.msg-bookmark-btn:hover{color:var(--warning);border-color:var(--warning)}
+.msg-bookmark-btn.active{color:var(--warning);background:rgba(234,179,8,.1);border-color:var(--warning)}
+.message.bookmarked{position:relative}
+.message.bookmarked::after{content:'';position:absolute;left:-4px;top:0;bottom:0;width:3px;border-radius:2px;background:var(--warning)}
+
+/* Response time & tokens */
+.msg-stats{display:inline-flex;align-items:center;gap:8px;margin-top:4px;padding:3px 8px;border-radius:var(--radius-xs);background:var(--bg-tertiary);border:1px solid var(--border);font-size:10px;color:var(--text-muted);font-family:var(--mono)}
+.msg-stats .stat{display:flex;align-items:center;gap:3px}
+.msg-stats .stat svg{width:10px;height:10px;opacity:.6}
+.msg-stats .stat-time{color:var(--success)}
+.msg-stats .stat-tokens{color:var(--accent-light)}
+.msg-stats .stat-cost{color:var(--warning)}
+
+/* Chat search */
+.chat-search-bar{display:none;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary)}
+.chat-search-bar.open{display:flex}
+.chat-search-bar input{flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:6px 10px;color:var(--text-primary);font-size:12px;outline:none;font-family:var(--font)}
+.chat-search-bar input:focus{border-color:var(--accent)}
+.chat-search-bar .search-count{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.chat-search-bar .search-nav{display:flex;gap:2px}
+.chat-search-bar .search-nav button{width:24px;height:24px;border-radius:4px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;transition:all .12s}
+.chat-search-bar .search-nav button:hover{color:var(--text-primary);border-color:var(--border-light)}
+.search-highlight{background:rgba(234,179,8,.25);border-radius:2px;padding:0 1px}
+.search-highlight.current{background:rgba(37,99,235,.4);outline:1px solid var(--accent)}
+
+/* Model comparison */
+.compare-bar{display:none;align-items:center;gap:8px;padding:6px 12px;border-top:1px solid var(--border);background:var(--bg-secondary);font-size:12px;color:var(--text-secondary)}
+.compare-bar.open{display:flex}
+.compare-bar select{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:4px 8px;color:var(--text-primary);font-size:11px;font-family:var(--font);outline:none}
+.compare-bar .compare-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);font-weight:600}
+.compare-response{border-left:2px solid var(--accent);margin-left:12px;padding-left:12px;opacity:.85}
+
+/* Keyboard shortcuts modal */
+.shortcuts-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.shortcut-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-radius:var(--radius-xs);background:var(--bg-tertiary);border:1px solid var(--border);font-size:12px}
+.shortcut-item .keys{display:flex;gap:3px}
+.shortcut-item kbd{padding:2px 6px;border-radius:4px;background:var(--bg-input);border:1px solid var(--border);font-size:10px;font-family:var(--mono);color:var(--text-secondary);line-height:1.4}
+
+/* Empty state enhancements */
+.bookmarks-empty{text-align:center;padding:40px;color:var(--text-muted)}
+.bookmarks-empty svg{width:48px;height:48px;margin-bottom:12px;opacity:.3}
 </style>
 </head>
 
@@ -500,6 +557,16 @@ a:hover{text-decoration:underline}
         <div class="model-menu" id="model-menu"></div>
       </div>
       <div class="header-spacer"></div>
+      <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)" style="font-size:11px;gap:4px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span>Ctrl+K</span>
+      </button>
+      <button class="header-btn" onclick="openChatSearch()" title="Search in Chat (Ctrl+F)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+      <button class="header-btn" onclick="document.getElementById('shortcuts-modal').classList.add('open')" title="Keyboard Shortcuts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="6" y1="16" x2="18" y2="16"/></svg>
+      </button>
       <button class="header-btn" onclick="exportChatMD()" title="Export as Markdown">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span>MD</span>
@@ -514,6 +581,12 @@ a:hover{text-decoration:underline}
       </button>
     </div>
     <div class="content">
+      <div class="chat-search-bar" id="chat-search-bar">
+        <input type="text" id="chat-search-input" placeholder="Search in conversation..." oninput="searchInChat(this.value)" onkeydown="handleSearchKey(event)" />
+        <span class="search-count" id="search-count"></span>
+        <div class="search-nav"><button onclick="searchNav(-1)">&uarr;</button><button onclick="searchNav(1)">&darr;</button></div>
+        <button style="width:24px;height:24px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--text-muted);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center" onclick="closeChatSearch()">&times;</button>
+      </div>
       <div class="chat-area" id="chat-area">
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty-icon">
@@ -540,6 +613,7 @@ a:hover{text-decoration:underline}
           </button>
         </div>
       </div>
+      <div class="compare-bar" id="compare-bar"><span class="compare-label">Compare with:</span><select id="compare-model-select" onchange="setCompareModel(this.value)"></select><button class="btn btn-ghost btn-sm" onclick="toggleCompareMode()" style="margin-left:auto;font-size:10px">&times; Off</button></div>
       <div class="terminal-panel" id="terminal-panel">
         <div class="terminal-header">
           <span>Terminal</span>
@@ -662,6 +736,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
+<div class="cmd-overlay" id="cmd-overlay" onclick="if(event.target===this)closeCmdPalette()"><div class="cmd-box"><input class="cmd-input" id="cmd-input" placeholder="Search commands, models, chats..." oninput="filterCmdPalette(this.value)" onkeydown="handleCmdKey(event)" autocomplete="off" /><div class="cmd-results" id="cmd-results"></div></div></div>
+<div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
 
 <script>
 const API='';
@@ -818,7 +894,9 @@ async function sendMessage(){
   if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();if(!text)return;
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
   appendMessage('user',text);chatHistory.push({role:'user',content:text});
+  if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
+  const startTime=Date.now();
   try{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}updateMessage(assistantEl,errMsg);chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
@@ -826,6 +904,7 @@ async function sendMessage(){
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
+    addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
     chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();
   }catch(e){updateMessage(assistantEl,'Error: '+e.message)}
   isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();
@@ -839,6 +918,11 @@ function appendMessage(role,content,streaming=false,savedModel){
   else if(role==='assistant')contentDiv.innerHTML=renderContent(content);else contentDiv.textContent=content;
   body.appendChild(contentDiv);
   if(role==='user'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';const editBtn=document.createElement('button');editBtn.className='msg-action-btn';editBtn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';editBtn.title='Edit message';editBtn.onclick=()=>startEditMessage(msg,contentDiv,actions);actions.appendChild(editBtn);body.appendChild(actions)}
+  if(role==='assistant'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';
+    const bkBtn=document.createElement('button');bkBtn.className='msg-bookmark-btn';bkBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>';
+    const bookmarks=getBookmarks();if(bookmarks.includes(parseInt(msg.dataset.msgIndex))){bkBtn.classList.add('active');msg.classList.add('bookmarked')}
+    bkBtn.onclick=(e)=>{e.stopPropagation();toggleBookmark(parseInt(msg.dataset.msgIndex));bkBtn.classList.toggle('active')};
+    actions.appendChild(bkBtn);body.appendChild(actions)}
   if(role==='assistant'){const meta=document.createElement('div');meta.className='message-meta';meta.textContent=savedModel||selectedModel;body.appendChild(meta)}
   msg.appendChild(avatar);msg.appendChild(body);area.appendChild(msg);area.scrollTop=area.scrollHeight;return contentDiv;
 }
@@ -1234,6 +1318,238 @@ function saveNewPrompt(){const name=document.getElementById('prompt-name-input')
 function editPrompt(id){const prompts=getPrompts();const p=prompts.find(x=>x.id===id);if(!p)return;const body=document.getElementById('prompts-body');body.innerHTML='<h3 style="margin-bottom:16px;font-size:14px">Edit Prompt</h3><div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Name</label><input type="text" id="prompt-name-input" value="'+escapeHtml(p.name)+'" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)"></div><div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Category</label><select id="prompt-cat-input" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)"><option'+(p.category==='Coding'?' selected':'')+'>Coding</option><option'+(p.category==='Writing'?' selected':'')+'>Writing</option><option'+(p.category==='Analysis'?' selected':'')+'>Analysis</option><option'+(p.category==='Custom'?' selected':'')+'>Custom</option></select></div><div style="margin-bottom:16px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Content</label><textarea id="prompt-content-input" style="width:100%;min-height:150px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);resize:vertical">'+escapeHtml(p.content)+'</textarea></div><div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="updatePrompt(\''+id+'\')">Update</button><button class="btn btn-ghost" onclick="renderPromptsPage()">Cancel</button></div>'}
 function updatePrompt(id){const name=document.getElementById('prompt-name-input').value.trim();const category=document.getElementById('prompt-cat-input').value;const content=document.getElementById('prompt-content-input').value.trim();if(!name||!content){appAlert('Name and content are required');return}const prompts=getPrompts();const idx=prompts.findIndex(x=>x.id===id);if(idx===-1)return;prompts[idx]={...prompts[idx],name,category,content};savePrompts(prompts);renderPromptsPage();showToast('Prompt updated','success')}
 function deletePrompt(id){if(!appConfirm('Delete this prompt?'))return;const prompts=getPrompts().filter(p=>p.id!==id);savePrompts(prompts);renderPromptsPage();showToast('Prompt deleted','success')}
+
+// ========== COMMAND PALETTE ==========
+let cmdIdx=0,cmdItems=[];
+function openCmdPalette(){
+  const overlay=document.getElementById('cmd-overlay');
+  overlay.classList.add('open');
+  const input=document.getElementById('cmd-input');
+  input.value='';input.focus();
+  buildCmdList('');cmdIdx=0;
+}
+function closeCmdPalette(){document.getElementById('cmd-overlay').classList.remove('open')}
+function buildCmdList(query){
+  const results=document.getElementById('cmd-results');results.innerHTML='';cmdItems=[];
+  const q=query.toLowerCase();
+  const actions=[
+    {section:'Actions'},
+    {icon:'+',label:'New Chat',action:()=>{closeCmdPalette();newChat()},keys:'Ctrl+N'},
+    {icon:'\u2699',label:'Settings',action:()=>{closeCmdPalette();switchView('settings')},keys:'Ctrl+,'},
+    {icon:'\u2328',label:'Keyboard Shortcuts',action:()=>{closeCmdPalette();document.getElementById('shortcuts-modal').classList.add('open')}},
+    {icon:'\uD83D\uDCCB',label:'Projects',action:()=>{closeCmdPalette();switchView('projects')}},
+    {icon:'\u266B',label:'Prompts Library',action:()=>{closeCmdPalette();switchView('prompts')}},
+    {icon:'\u2699',label:'API Keys',action:()=>{closeCmdPalette();switchView('api')}},
+    {icon:'\uD83D\uDCD1',label:'Toggle Sidebar',action:()=>{closeCmdPalette();toggleSidebar()},keys:'Ctrl+B'},
+    {icon:'\uD83C\uDF19',label:'Toggle Theme',action:()=>{closeCmdPalette();toggleTheme()},keys:'Ctrl+\\'},
+    {icon:'\uD83D\uDD0D',label:'Search in Chat',action:()=>{closeCmdPalette();openChatSearch()},keys:'Ctrl+F'},
+    {icon:'\u2605',label:'View Bookmarks',action:()=>{closeCmdPalette();viewBookmarks()},keys:'Ctrl+D'},
+    {icon:'\u2194',label:'Compare Models',action:()=>{closeCmdPalette();toggleCompareMode()},keys:'Ctrl+M'},
+  ];
+  if(selectedModel!=='omnilink'){
+    actions.push({icon:'\u26A1',label:'Switch to omnilink (auto-route)',action:()=>{closeCmdPalette();selectModel('omnilink')}});
+  }
+  actions.push({section:'Models'});
+  const modelList=[{id:'omnilink',provider:'auto'}];
+  if(allModels)allModels.filter(m=>m.id!=='omnilink').forEach(m=>modelList.push(m));
+  modelList.forEach(m=>{
+    actions.push({icon:m.provider?m.provider.substring(0,2).toUpperCase():'AI',label:m.id,action:()=>{closeCmdPalette();selectModel(m.id)},sub:m.provider||''});
+  });
+  actions.push({section:'Chats'});
+  const chats=getChats();
+  Object.entries(chats).sort((a,b)=>(b[1].updated||0)-(a[1].updated||0)).slice(0,20).forEach(([id,chat])=>{
+    actions.push({icon:'\uD83D\uDCAC',label:chat.title||'New Chat',action:()=>{closeCmdPalette();loadChat(id)}});
+  });
+  let sectionHtml='';
+  for(const a of actions){
+    if(a.section){
+      if(q&&!a.section.toLowerCase().includes(q))continue;
+      sectionHtml='<div class="cmd-section">'+a.section+'</div>';continue;
+    }
+    const text=(a.label+' '+(a.sub||'')).toLowerCase();
+    if(q&&!text.includes(q))continue;
+    if(sectionHtml){results.innerHTML+=sectionHtml;sectionHtml=''}
+    const el=document.createElement('div');el.className='cmd-item';
+    el.innerHTML='<div class="cmd-icon">'+a.icon+'</div><div><div>'+escapeHtml(a.label)+'</div>'+(a.sub?'<div style="font-size:10px;color:var(--text-muted)">'+escapeHtml(a.sub)+'</div>':'')+'</div>'+(a.keys?'<span class="cmd-shortcut">'+a.keys+'</span>':'');
+    el.onclick=()=>a.action();
+    el.onmouseenter=()=>{cmdIdx=Array.from(results.querySelectorAll('.cmd-item')).indexOf(el);highlightCmd()};
+    results.appendChild(el);cmdItems.push(el);
+  }
+  if(cmdItems.length===0)results.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">No results found</div>';
+  highlightCmd();
+}
+function filterCmdPalette(v){buildCmdList(v);cmdIdx=0}
+function highlightCmd(){cmdItems.forEach((el,i)=>el.classList.toggle('selected',i===cmdIdx))}
+function handleCmdKey(e){
+  if(e.key==='ArrowDown'){e.preventDefault();cmdIdx=Math.min(cmdIdx+1,cmdItems.length-1);highlightCmd();cmdItems[cmdIdx]?.scrollIntoView({block:'nearest'})}
+  else if(e.key==='ArrowUp'){e.preventDefault();cmdIdx=Math.max(cmdIdx-1,0);highlightCmd();cmdItems[cmdIdx]?.scrollIntoView({block:'nearest'})}
+  else if(e.key==='Enter'){e.preventDefault();if(cmdItems[cmdIdx])cmdItems[cmdIdx].click()}
+  else if(e.key==='Escape'){closeCmdPalette()}
+}
+
+// ========== MESSAGE BOOKMARKS ==========
+function getBookmarks(){try{return JSON.parse(localStorage.getItem('omnilink_bookmarks')||'[]')}catch(e){return[]}}
+function saveBookmarks(b){localStorage.setItem('omnilink_bookmarks',JSON.stringify(b))}
+function toggleBookmark(msgIdx){
+  const bookmarks=getBookmarks();
+  const idx=bookmarks.indexOf(msgIdx);
+  if(idx>-1)bookmarks.splice(idx,1);else bookmarks.push(msgIdx);
+  saveBookmarks(bookmarks);
+  const el=document.querySelector('[data-msg-index="'+msgIdx+'"]');
+  if(el)el.classList.toggle('bookmarked',bookmarks.includes(msgIdx));
+  showToast(bookmarks.includes(msgIdx)?'Message bookmarked':'Bookmark removed','success');
+}
+function viewBookmarks(){
+  switchView('chat');
+  const bookmarks=getBookmarks();
+  if(bookmarks.length===0){showToast('No bookmarks yet','info');return}
+  const area=document.getElementById('chat-area');
+  const existing=area.querySelector('.bookmarks-view');if(existing)existing.remove();
+  const view=document.createElement('div');view.className='bookmarks-view';
+  view.style.cssText='padding:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px';
+  view.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-size:13px;font-weight:600">Bookmarks ('+bookmarks.length+')</span><button onclick="this.parentElement.parentElement.remove()" style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:16px">&times;</button></div>';
+  const chats=getChats();const chat=chats[currentChatId];
+  if(!chat||!chat.history){view.innerHTML+='<div style="color:var(--text-muted);font-size:12px">No current chat</div>';area.prepend(view);return}
+  bookmarks.forEach(idx=>{
+    const msg=chat.history[idx];
+    if(!msg)return;
+    const item=document.createElement('div');item.style.cssText='padding:8px;border:1px solid var(--border);border-radius:var(--radius-xs);margin-bottom:6px;cursor:pointer;font-size:12px;color:var(--text-secondary)';
+    item.innerHTML='<span style="color:var(--text-muted);font-size:10px">'+msg.role.toUpperCase()+'</span> '+escapeHtml(msg.content.slice(0,120))+(msg.content.length>120?'...':'');
+    item.onclick=()=>{view.remove()};
+    view.appendChild(item);
+  });
+  area.prepend(view);
+}
+function addBookmarkBtnToMessage(msgEl,msgIdx){
+  const actions=msgEl.querySelector('.message-actions');
+  if(!actions)return;
+  const btn=document.createElement('button');btn.className='msg-bookmark-btn';
+  btn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>';
+  const bookmarks=getBookmarks();
+  if(bookmarks.includes(parseInt(msgEl.dataset.msgIndex))){btn.classList.add('active');msgEl.classList.add('bookmarked')}
+  btn.onclick=(e)=>{e.stopPropagation();toggleBookmark(parseInt(msgEl.dataset.msgIndex));btn.classList.toggle('active')};
+  actions.appendChild(btn);
+}
+
+// ========== RESPONSE TIME & TOKENS ==========
+let messageStartTime=0;
+function estimateTokens(text){return Math.ceil(text.length/4)}
+function addMsgStats(msgEl,startTime,content,role){
+  if(role!=='assistant'||!startTime)return;
+  const elapsed=Date.now()-startTime;
+  const tokens=estimateTokens(content);
+  const meta=msgEl.querySelector('.message-meta');
+  if(!meta)return;
+  const stats=document.createElement('div');stats.className='msg-stats';
+  const secs=(elapsed/1000).toFixed(1);
+  stats.innerHTML='<span class="stat stat-time"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'+secs+'s</span><span class="stat stat-tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>~'+tokens+' tok</span>';
+  meta.appendChild(stats);
+}
+
+// ========== CHAT SEARCH ==========
+let searchResults=[],searchIdx=0;
+function openChatSearch(){
+  const bar=document.getElementById('chat-search-bar');bar.classList.add('open');
+  document.getElementById('chat-search-input').focus();
+}
+function closeChatSearch(){
+  document.getElementById('chat-search-bar').classList.remove('open');
+  document.getElementById('chat-search-input').value='';
+  clearSearchHighlights();
+}
+function searchInChat(query){
+  clearSearchHighlights();searchResults=[];searchIdx=0;
+  if(!query){document.getElementById('search-count').textContent='';return}
+  const area=document.getElementById('chat-area');
+  const walker=document.createTreeWalker(area,NodeFilter.SHOW_TEXT,null);
+  while(walker.nextNode()){
+    const node=walker.currentNode;
+    const idx=node.textContent.toLowerCase().indexOf(query.toLowerCase());
+    if(idx>-1){
+      const range=document.createRange();
+      range.setStart(node,idx);range.setEnd(node,idx+query.length);
+      const mark=document.createElement('mark');mark.className='search-highlight';
+      range.surroundContents(mark);searchResults.push(mark);
+    }
+  }
+  if(searchResults.length>0){searchIdx=0;searchResults[0].classList.add('current');searchResults[0].scrollIntoView({block:'center',behavior:'smooth'})}
+  document.getElementById('search-count').textContent=searchResults.length>0?(searchIdx+1)+'/'+searchResults.length:'No results';
+}
+function searchNav(dir){
+  if(searchResults.length===0)return;
+  searchResults[searchIdx]?.classList.remove('current');
+  searchIdx=(searchIdx+dir+searchResults.length)%searchResults.length;
+  searchResults[searchIdx].classList.add('current');
+  searchResults[searchIdx].scrollIntoView({block:'center',behavior:'smooth'});
+  document.getElementById('search-count').textContent=(searchIdx+1)+'/'+searchResults.length;
+}
+function clearSearchHighlights(){
+  document.querySelectorAll('.search-highlight').forEach(m=>{
+    const parent=m.parentNode;parent.replaceChild(document.createTextNode(m.textContent),m);parent.normalize();
+  });
+  searchResults=[];
+}
+function handleSearchKey(e){
+  if(e.key==='Escape')closeChatSearch();
+  else if(e.key==='Enter')searchNav(e.shiftKey?-1:1);
+}
+
+// ========== MODEL COMPARISON ==========
+let compareMode=false,compareModel=null;
+function toggleCompareMode(){
+  compareMode=!compareMode;
+  const bar=document.getElementById('compare-bar');
+  bar.classList.toggle('open',compareMode);
+  if(compareMode){
+    const sel=document.getElementById('compare-model-select');sel.innerHTML='';
+    const models=[{id:'omniilink'}].concat(allModels||[]);
+    models.filter(m=>m.id!==selectedModel).forEach(m=>{
+      const o=document.createElement('option');o.value=m.id;o.textContent=m.id;sel.appendChild(o);
+    });
+    compareModel=sel.value||'omniilink';
+    showToast('Compare mode ON: '+selectedModel+' vs '+compareModel,'info');
+  } else {
+    document.querySelectorAll('.compare-response').forEach(el=>el.remove());
+    showToast('Compare mode OFF','info');
+  }
+}
+function setCompareModel(m){compareModel=m}
+function sendCompareRequest(userMsg){
+  if(!compareMode||!compareModel)return;
+  const assistantEl=appendMessage('assistant','',true);
+  assistantEl.closest('.message').classList.add('compare-response');
+  const metaEl=assistantEl.closest('.message').querySelector('.message-meta');
+  if(metaEl)metaEl.textContent='vs '+compareModel;
+  const tempHistory=[...chatHistory.slice(0,-1)];
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000})}).then(r=>{
+    if(!r.ok)throw new Error('offline');
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
+    function read(){reader.read().then(({done,value})=>{
+      if(done){assistantEl.closest('.message').querySelector('.message-meta').textContent='vs '+compareModel+' \u2022 done';return}
+      buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;const data=line.slice(6).trim();
+        if(data==='[DONE]')continue;
+        try{const j=JSON.parse(data);const c=j.choices?.[0]?.delta?.content;if(c)assistantEl.innerHTML=renderContent(assistantEl.textContent+c)}catch(e){}
+      }
+      read();
+    })}
+    read();
+  }).catch(e=>{assistantEl.innerHTML=renderContent('Compare error: '+e.message)});
+}
+
+// ========== GLOBAL KEYBOARD SHORTCUTS ==========
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey&&e.key==='k'){e.preventDefault();openCmdPalette()}
+  else if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
+  else if(e.ctrlKey&&e.key==='b'&&!e.target.closest('.coding-view')){e.preventDefault();toggleSidebar()}
+  else if(e.ctrlKey&&e.key===','){e.preventDefault();switchView('settings')}
+  else if(e.ctrlKey&&e.key==='f'&&!e.target.closest('.coding-view')&&currentView==='chat'){e.preventDefault();openChatSearch()}
+  else if(e.ctrlKey&&e.key==='\\'){e.preventDefault();toggleTheme()}
+  else if(e.ctrlKey&&e.key==='d'){e.preventDefault();viewBookmarks()}
+  else if(e.ctrlKey&&e.key==='m'){e.preventDefault();toggleCompareMode()}
+  else if(e.ctrlKey&&e.key==='/'&&currentView==='chat'){e.preventDefault();document.getElementById('shortcuts-modal').classList.add('open')}
+});
 </script>
 </body>
 </html>
