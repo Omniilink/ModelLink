@@ -41,6 +41,50 @@ from modellink.splitter import (
 app = FastAPI(title="Omniilink API", version="2.0.0")
 
 # ==========================================
+# Per-User Data Isolation
+# ==========================================
+def _get_user_id(request: Request) -> str:
+    """Extract user_id from proxy header. 'default' for local/unauthenticated."""
+    return request.headers.get("X-User-Id", "default")
+
+def _user_data_dir(user_id: str) -> str:
+    """Get or create per-user data directory."""
+    d = os.path.join(APP_DIR, "user_data", user_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _user_projects_dir(user_id: str) -> str:
+    """Get per-user projects directory."""
+    d = os.path.join(_user_data_dir(user_id), "projects")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _user_api_keys_file(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "api_keys.json")
+
+def _user_settings_file(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "settings.json")
+
+def _user_coding_settings_file(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "coding_settings.json")
+
+# Per-user coding states: {user_id: {"folder": ..., "settings": {...}}}
+_coding_states = {}
+
+def _get_coding_state(user_id: str) -> dict:
+    if user_id not in _coding_states:
+        _coding_states[user_id] = {
+            "folder": None,
+            "settings": {
+                "auto_edit": False,
+                "auto_command": False,
+                "max_file_size": 100000,
+                "system_prompt": DEFAULT_CODING_PROMPT
+            }
+        }
+    return _coding_states[user_id]
+
+# ==========================================
 # Per-User Key Parsing (from proxy header)
 # ==========================================
 def _parse_user_keys(header_value):
@@ -543,10 +587,12 @@ Rules:
 - You are an expert in Python, JavaScript, TypeScript, HTML, CSS, Java, C, C++, Go, Rust, Ruby, PHP, and all other programming languages.
 """
 
-coding_state = {"folder": None, "settings": {"auto_edit": False, "auto_command": False, "max_file_size": 100000, "system_prompt": DEFAULT_CODING_PROMPT}}
+# Per-user coding states handled by _get_coding_state()
 
 @app.post("/api/coding/open-folder")
-async def coding_open_folder(req: CodingOpenFolder):
+async def coding_open_folder(request: Request, req: CodingOpenFolder):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = req.path.strip()
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {folder}"})
@@ -557,7 +603,9 @@ async def coding_open_folder(req: CodingOpenFolder):
     return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count}
 
 @app.get("/api/coding/files")
-async def coding_list_files():
+async def coding_list_files(request: Request):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     if not folder or not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": "No folder open"})
@@ -565,7 +613,9 @@ async def coding_list_files():
     return {"folder": folder, "tree": tree}
 
 @app.get("/api/coding/file-content")
-async def coding_file_content(path: str):
+async def coding_file_content(request: Request, path: str):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
@@ -586,7 +636,9 @@ async def coding_file_content(path: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/coding/file-write")
-async def coding_file_write(req: CodingFileWrite):
+async def coding_file_write(request: Request, req: CodingFileWrite):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
@@ -608,7 +660,9 @@ async def coding_file_write(req: CodingFileWrite):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/api/coding/file-delete")
-async def coding_file_delete(path: str):
+async def coding_file_delete(request: Request, path: str):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
@@ -626,7 +680,9 @@ async def coding_file_delete(path: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/coding/run-command")
-async def coding_run_command(req: CodingRunCommand):
+async def coding_run_command(request: Request, req: CodingRunCommand):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     cwd = req.cwd or folder or os.getcwd()
     if not os.path.isdir(cwd):
@@ -647,11 +703,15 @@ async def coding_run_command(req: CodingRunCommand):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/api/coding/settings")
-async def coding_get_settings():
+async def coding_get_settings(request: Request):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     return coding_state["settings"]
 
 @app.post("/api/coding/settings")
 async def coding_update_settings(request: Request):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     body = await request.json()
     for k, v in body.items():
         if k in coding_state["settings"]:
@@ -659,7 +719,9 @@ async def coding_update_settings(request: Request):
     return {"status": "ok", "settings": coding_state["settings"]}
 
 @app.get("/api/coding/project-context")
-async def coding_project_context():
+async def coding_project_context(request: Request):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     if not folder or not os.path.isdir(folder):
         return {"context": ""}
@@ -707,19 +769,29 @@ def _load_config():
             return json.load(f)
     return {}
 
-def _load_api_keys():
-    if os.path.exists(API_KEYS_FILE):
-        with open(API_KEYS_FILE, "r") as f:
+def _load_api_keys(user_id=None):
+    if user_id:
+        path = os.path.join(_user_data_dir(user_id), "api_keys.json")
+    else:
+        path = API_KEYS_FILE
+    if os.path.exists(path):
+        with open(path, "r") as f:
             return json.load(f)
     return {"keys": []}
 
-def _save_api_keys(data):
-    with open(API_KEYS_FILE, "w") as f:
+def _save_api_keys(data, user_id=None):
+    if user_id:
+        path = os.path.join(_user_data_dir(user_id), "api_keys.json")
+    else:
+        path = API_KEYS_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 @app.get("/api/keys")
 async def list_api_keys(request: Request):
-    data = _load_api_keys()
+    user_id = _get_user_id(request)
+    data = _load_api_keys(user_id)
     user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
     providers_with_keys = {}
     for prov_id, prov_info in PROVIDER_INFO.items():
@@ -740,8 +812,9 @@ async def list_api_keys(request: Request):
     return {"keys": data["keys"], "providers": providers_with_keys}
 
 @app.post("/api/keys/generate")
-async def generate_api_key():
-    data = _load_api_keys()
+async def generate_api_key(request: Request):
+    user_id = _get_user_id(request)
+    data = _load_api_keys(user_id)
     key = f"ml-{secrets.token_hex(24)}"
     entry = {
         "key": key,
@@ -751,15 +824,16 @@ async def generate_api_key():
         "requests": 0
     }
     data["keys"].append(entry)
-    _save_api_keys(data)
+    _save_api_keys(data, user_id)
     logger.info(f"[APIKEY] Generated: {key[:12]}...")
     return entry
 
 @app.delete("/api/keys/{key}")
-async def revoke_api_key(key: str):
-    data = _load_api_keys()
+async def revoke_api_key(request: Request, key: str):
+    user_id = _get_user_id(request)
+    data = _load_api_keys(user_id)
     data["keys"] = [k for k in data["keys"] if k["key"] != key]
-    _save_api_keys(data)
+    _save_api_keys(data, user_id)
     logger.info(f"[APIKEY] Revoked: {key[:12]}...")
     return {"status": "ok"}
 
@@ -789,46 +863,17 @@ PROJECTS_DIR = os.path.join(APP_DIR, "projects")
 
 def _ensure_projects_dir():
     os.makedirs(PROJECTS_DIR, exist_ok=True)
-    import stat, subprocess
-    for name in os.listdir(PROJECTS_DIR):
-        full = os.path.join(PROJECTS_DIR, name)
-        if not os.path.isdir(full): continue
-        if name.startswith("_del_") or os.path.exists(os.path.join(PROJECTS_DIR, f".pending_delete_{name}")):
-            try:
-                # Clear hidden flag first
-                try:
-                    import ctypes
-                    ctypes.windll.kernel32.SetFileAttributesW(full, 0x80)  # NORMAL
-                except: pass
-                # Mark writable and delete
-                for root, dirs, files in os.walk(full):
-                    for f in files:
-                        try: os.chmod(os.path.join(root, f), stat.S_IWRITE)
-                        except: pass
-                shutil.rmtree(full, ignore_errors=True)
-                if not os.path.isdir(full):
-                    # Successfully deleted — remove marker
-                    try: os.remove(os.path.join(PROJECTS_DIR, f".pending_delete_{name}"))
-                    except: pass
-                    logger.info(f"[STARTUP] Cleaned up: {name}")
-                else:
-                    # Still locked — hide it and keep marker
-                    try:
-                        import ctypes
-                        ctypes.windll.kernel32.SetFileAttributesW(full, 0x02)
-                    except: pass
-            except: pass
 
 @app.get("/api/projects")
-async def list_projects():
-    _ensure_projects_dir()
+async def list_projects(request: Request):
+    user_id = _get_user_id(request)
+    projects_dir = _user_projects_dir(user_id)
     projects = []
     total_size = 0
-    for name in sorted(os.listdir(PROJECTS_DIR)):
+    for name in sorted(os.listdir(projects_dir)):
         if name.startswith("_del_"): continue
-        path = os.path.join(PROJECTS_DIR, name)
+        path = os.path.join(projects_dir, name)
         if not os.path.isdir(path): continue
-        if os.path.exists(os.path.join(PROJECTS_DIR, f".pending_delete_{name}")): continue
         if os.path.isdir(path):
             file_count = 0
             dir_size = 0
@@ -843,7 +888,7 @@ async def list_projects():
             mtime = os.path.getmtime(path)
             total_size += dir_size
             projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime, "size_bytes": dir_size})
-    return {"projects": projects, "dir": PROJECTS_DIR, "storage_used_bytes": total_size, "storage_limit_bytes": 5 * 1024 * 1024 * 1024}
+    return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": 5 * 1024 * 1024 * 1024}
 
 class ProjectCreate(BaseModel):
     name: str
@@ -853,12 +898,13 @@ class ProjectImport(BaseModel):
     source_path: str
 
 @app.post("/api/projects/create")
-async def create_project(req: ProjectCreate):
-    _ensure_projects_dir()
+async def create_project(request: Request, req: ProjectCreate):
+    user_id = _get_user_id(request)
+    projects_dir = _user_projects_dir(user_id)
     name = req.name.strip()
     if not name or '/' in name or '\\' in name:
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
-    path = os.path.join(PROJECTS_DIR, name)
+    path = os.path.join(projects_dir, name)
     if os.path.exists(path):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
     os.makedirs(path, exist_ok=True)
@@ -866,15 +912,16 @@ async def create_project(req: ProjectCreate):
     return {"status": "ok", "name": name, "path": path}
 
 @app.post("/api/projects/import")
-async def import_project(req: ProjectImport):
-    _ensure_projects_dir()
+async def import_project(request: Request, req: ProjectImport):
+    user_id = _get_user_id(request)
+    projects_dir = _user_projects_dir(user_id)
     name = req.name.strip()
     source = req.source_path.strip()
     if not name or '/' in name or '\\' in name:
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if not os.path.isdir(source):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {source}"})
-    dest = os.path.join(PROJECTS_DIR, name)
+    dest = os.path.join(projects_dir, name)
     if os.path.exists(dest):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
@@ -882,10 +929,12 @@ async def import_project(req: ProjectImport):
     return {"status": "ok", "name": name, "path": dest}
 
 @app.post("/api/projects/open")
-async def open_project(req: ProjectCreate):
-    _ensure_projects_dir()
+async def open_project(request: Request, req: ProjectCreate):
+    user_id = _get_user_id(request)
+    projects_dir = _user_projects_dir(user_id)
+    coding_state = _get_coding_state(user_id)
     name = req.name.strip()
-    path = os.path.join(PROJECTS_DIR, name)
+    path = os.path.join(projects_dir, name)
     if not os.path.isdir(path):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     coding_state["folder"] = path
@@ -895,21 +944,25 @@ async def open_project(req: ProjectCreate):
     return {"status": "ok", "name": name, "folder": path, "tree": tree, "file_count": file_count}
 
 @app.delete("/api/projects/{name}")
-async def delete_project(name: str):
-    _ensure_projects_dir()
-    path = os.path.join(PROJECTS_DIR, name)
-    return await _do_delete(path, name)
+async def delete_project(request: Request, name: str):
+    user_id = _get_user_id(request)
+    projects_dir = _user_projects_dir(user_id)
+    path = os.path.join(projects_dir, name)
+    return await _do_delete(request, path, name)
 
 class ProjectDelete(BaseModel):
     path: str
 
 @app.post("/api/projects/delete")
-async def delete_project_by_path(req: ProjectDelete):
+async def delete_project_by_path(request: Request, req: ProjectDelete):
+    user_id = _get_user_id(request)
     path = req.path
     name = os.path.basename(path)
-    return await _do_delete(path, name)
+    return await _do_delete(request, path, name)
 
-async def _do_delete(path, name):
+async def _do_delete(request: Request, path, name):
+    user_id = _get_user_id(request)
+    coding_state = _get_coding_state(user_id)
     if not os.path.isdir(path):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     if coding_state.get("folder") == path:
