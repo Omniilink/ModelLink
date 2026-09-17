@@ -338,22 +338,16 @@ class LanguageRequest(BaseModel):
 @app.post("/api/language")
 async def set_language_setting(request: LanguageRequest):
     set_language(request.language)
-    env_path = os.path.join(APP_DIR, ".env")
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            lines = f.readlines()
-    target = "LANGUAGE="
-    found = False
-    for i, line in enumerate(lines):
-        if line.strip().startswith(target):
-            lines[i] = f"LANGUAGE={request.language}\n"
-            found = True
-            break
-    if not found:
-        lines.append(f"\nLANGUAGE={request.language}\n")
-    with open(env_path, "w") as f:
-        f.writelines(lines)
+    settings_path = os.path.join(APP_DIR, "settings.json")
+    settings = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        except: pass
+    settings["language"] = request.language
+    with open(settings_path, "w") as f:
+        json.dump(settings, f)
     os.environ["LANGUAGE"] = request.language
     logger.info(f"Language set to: {request.language}")
     return {"status": "ok", "language": request.language}

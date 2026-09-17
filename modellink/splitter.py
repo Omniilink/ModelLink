@@ -85,7 +85,19 @@ MODEL_RATE_LIMITS = {
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
-LANGUAGE = os.environ.get("LANGUAGE", "English")
+
+def _load_settings_language():
+    settings_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                s = json.load(f)
+                if "language" in s:
+                    return s["language"]
+        except: pass
+    return os.environ.get("LANGUAGE", "English")
+
+LANGUAGE = _load_settings_language()
 
 
 def set_language(lang):
@@ -102,10 +114,13 @@ PROVIDERS = {
         "api_base": "https://generativelanguage.googleapis.com/v1beta",
         "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"],
         "headers": lambda key: {"Content-Type": "application/json"},
-        "build_body": lambda msgs, model, key: {
-            "contents": [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in msgs],
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000}
-        },
+        "build_body": lambda msgs, model, key: (
+            lambda _sys: {
+                "contents": [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in msgs if m["role"] != "system"],
+                **({"systemInstruction": {"parts": [{"text": _sys}]} } if _sys else {}),
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000}
+            }
+        )(next((m["content"] for m in msgs if m.get("role") == "system"), None)),
         "stream_url": lambda model, key: f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={key}",
         "url": lambda model, key: f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
     },
@@ -451,25 +466,30 @@ def classify_task(messages):
 # Falls through to next tier if first choice fails
 MODEL_TIERS = {
     'simple': [
+        ('gemini', 'gemini-2.5-flash'),
+        ('gemini', 'gemini-2.5-flash-lite'),
+        ('gemini', 'gemini-3-flash'),
         ('groq', 'allam-2-7b'),
         ('groq', 'qwen/qwen3.6-27b'),
-        ('groq', 'openai/gpt-oss-20b'),
         ('xai', 'grok-3-mini'),
-        ('groq', 'qwen/qwen3.8-27b'),
+        ('groq', 'openai/gpt-oss-20b'),
     ],
     'medium': [
+        ('gemini', 'gemini-2.5-flash'),
+        ('gemini', 'gemini-2.5-flash-lite'),
+        ('gemini', 'gemini-3-flash'),
         ('groq', 'qwen/qwen3.8-27b'),
-        ('groq', 'openai/gpt-oss-20b'),
         ('groq', 'openai/gpt-oss-120b'),
         ('xai', 'grok-3-mini'),
         ('xai', 'grok-3'),
     ],
     'complex': [
+        ('gemini', 'gemini-2.5-pro'),
+        ('gemini', 'gemini-2.5-flash'),
         ('groq', 'openai/gpt-oss-120b'),
         ('xai', 'grok-3'),
         ('groq', 'qwen/qwen3.8-27b'),
         ('xai', 'grok-3-mini'),
-        ('groq', 'openai/gpt-oss-20b'),
     ],
 }
 
@@ -533,9 +553,9 @@ class MultiProviderBalancer:
 
         return None
 
-    def _make_response(self, content, model="modellink"):
+    def _make_response(self, content, model=MODEL_NAME):
         return {
-            "id": f"chatcmpl-modellink",
+            "id": f"chatcmpl-{MODEL_NAME}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": model,
@@ -543,9 +563,9 @@ class MultiProviderBalancer:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         }
 
-    def generate(self, messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
+    def generate(self, messages, model=MODEL_NAME, temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
         messages = self._inject_system_prompt(messages)
-        if model == "modellink":
+        if model == MODEL_NAME:
             task = classify_task(messages)
             logger.info(f"[ROUTING] Task classified as '{task}'")
             return self._smart_generate(messages, task, temperature, max_tokens, stream, user_keys=user_keys)
