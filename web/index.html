@@ -758,7 +758,7 @@ function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 function getUserKeys(){try{return JSON.parse(localStorage.getItem('omnilink_user_keys')||'{}')}catch(e){return{}}}
 function setUserKeys(k){localStorage.setItem('omnilink_user_keys',JSON.stringify(k))}
 function userKeysHeader(){const k=getUserKeys();return Object.keys(k).length>0?{'X-User-Keys':JSON.stringify(k)}:{}}
-async function authFetch(url,opts={}){opts.credentials='same-origin';opts.headers={...opts.headers,...userKeysHeader()};return fetch(url,opts)}
+async function authFetch(url,opts={}){opts.credentials='same-origin';opts.headers={...opts.headers,...userKeysHeader()};const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){window.location.href='/';throw new Error('auth_required')}return r}
 
 function renderContent(text){
   let c=text.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<think>[\s\S]*?<\/thinking>/gi,'').replace(/<think>[\s\S]*$/gi,'').replace(/<thinking>[\s\S]*$/gi,'');
@@ -879,11 +879,7 @@ function renderProviders(providers){
     const has=models.length>0;item.innerHTML='<span class="status-dot '+(has?'online':'offline')+'" style="width:5px;height:5px"></span>'+name+'<span style="color:var(--text-muted);font-size:10px;margin-left:auto">'+models.length+'</span>';list.appendChild(item);
   }
 }
-async function loadProviderStatus(){
-  try{const r=await authFetch(API+'/api/status');const data=await r.json();const count=Object.keys(data.providers).length;
-    document.getElementById('status-dot').className='status-dot '+(count>0?'online':'offline');
-    document.getElementById('status-text').textContent=count>0?count+' provider'+(count>1?'s':''):'No providers'}
-  catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}
+async function loadProviderStatus(){try{const r=await fetch(API+'/api/health');const data=await r.json();if(data.status==='ok'){document.getElementById('status-dot').className='status-dot online';document.getElementById('status-text').textContent='Connected'}else{document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}
 }
 
 function handleKey(e){if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();sendMessage()}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
@@ -1228,6 +1224,7 @@ async function loadApiPage(){
   try{const r=await authFetch(API+'/api/keys');if(!r.ok)throw new Error('offline');const data=await r.json();
     cs.style.display='flex';cs.className='connection-status online';cs.innerHTML='<span class="status-dot online"></span>Connected to Omniilink backend';
     renderProviderCards(data.providers||{});renderApiKeys(data.keys||[])}catch(e){
+    if(e.message==='auth_required')return;
     cs.style.display='flex';cs.className='connection-status offline';cs.innerHTML='<span class="status-dot offline"></span>Server offline — API examples shown below may not work'}
   try{const r=await authFetch(API+'/api/keys/info');const info=await r.json();renderRoutingInfo(info.tiers||{},info.providers||{});renderConfigSnippet(info)}catch(e){}
 }
