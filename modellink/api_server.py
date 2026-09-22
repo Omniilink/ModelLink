@@ -1392,8 +1392,16 @@ BLOCK SYNTAX (exact — the parser is strict):
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
-2. Explain briefly, then emit blocks.
-3. After creating code, run it to verify (python/node) and report the output.
+2. For any task with 2+ steps, start with a TODO_LIST block and mark items done as you go:
+TODO_LIST:
+- [ ] Inspect project files
+- [ ] Create index.html
+END_TODO_LIST
+Update it in later replies (repeat the full list with [x] on finished items).
+3. Explain briefly, then emit blocks.
+4. After creating code, run it to verify (python/node) and report the output.
+5. Deliverables (code files) MUST go in FILE_CREATE/FILE_EDIT blocks — never
+bare fenced code alone, or the system cannot save them.
 
 Example:
 I will check the project contents first.
@@ -1513,8 +1521,19 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
                 backup = f.read()
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
+        # Diff stats for the activity feed (opencode-style +N -M)
+        try:
+            import difflib
+            old_lines = backup.splitlines() if backup else []
+            new_lines = req.content.splitlines()
+            dl = list(difflib.unified_diff(old_lines, new_lines, lineterm=""))
+            added = sum(1 for l in dl if l.startswith("+") and not l.startswith("+++"))
+            removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
+        except Exception:
+            added, removed = len(req.content.splitlines()), 0
         logger.info(f"[CODING] Wrote file: {req.path}")
-        return {"status": "ok", "path": req.path, "size": len(req.content), "backed_up": backup is not None}
+        return {"status": "ok", "path": req.path, "size": len(req.content),
+                "backed_up": backup is not None, "added": added, "removed": removed}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

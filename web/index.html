@@ -251,6 +251,23 @@ a:hover{text-decoration:underline}
 .approve-bar .approve{background:linear-gradient(135deg,#16a34a,#22c55e);border:none;box-shadow:0 0 10px rgba(34,197,94,.4)}
 @keyframes toolPulse{0%,100%{box-shadow:0 0 14px rgba(34,211,238,.18)}50%{box-shadow:0 0 26px rgba(34,211,238,.45)}}
 .coding-msg-tool.tool-cmd.running{animation:toolPulse 1.2s ease-in-out infinite}
+/* ===== Todo bar above the coding input (opencode-style task list) ===== */
+.coding-todo-bar{margin:0 0 8px;padding:8px 12px;background:linear-gradient(180deg,rgba(20,26,44,.95),rgba(12,15,26,.95));border:1px solid rgba(56,189,248,.35);border-radius:8px;box-shadow:0 0 14px rgba(37,99,235,.12)}
+.coding-todo-head{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent-light);margin-bottom:6px}
+.coding-todo-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);padding:2px 0;font-family:var(--font)}
+.coding-todo-item .todo-box{width:14px;height:14px;border-radius:3px;border:1px solid var(--border-light);display:inline-flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;color:#fff}
+.coding-todo-item.done .todo-box{background:linear-gradient(135deg,#16a34a,#22c55e);border-color:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.5)}
+.coding-todo-item.done .todo-text{color:var(--text-muted);text-decoration:line-through}
+/* ===== Terminal activity feed rows (opencode-style Edit/Write/Shell) ===== */
+#coding-output-body .term-feed{display:flex;align-items:baseline;gap:8px;padding:1px 0}
+#coding-output-body .term-kind{font-weight:700;font-size:11px;min-width:44px}
+#coding-output-body .term-edit .term-kind{color:#eab308}
+#coding-output-body .term-write .term-kind{color:#22c55e}
+#coding-output-body .term-shell .term-kind{color:#60a5fa}
+#coding-output-body .term-delete .term-kind{color:#f87171}
+#coding-output-body .term-target{color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#coding-output-body .term-add{color:#22c55e}
+#coding-output-body .term-del{color:#f87171}
 .api-tab{padding:5px 14px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;font-family:var(--font);transition:all .12s}
 .api-tab:hover{color:var(--text-secondary);border-color:var(--border-light)}
 .api-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -901,6 +918,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div class="coding-output" id="coding-output"><div class="coding-output-header"><span>Terminal Output</span><button class="header-btn" style="padding:2px 8px;font-size:10px" onclick="clearCodingOutput()">Clear</button></div><div class="coding-output-body" id="coding-output-body"></div></div>
             <div class="coding-input-area">
               <div id="coding-at-files" style="display:none;flex-wrap:wrap;gap:4px;padding:0 0 6px"></div>
+              <div class="coding-todo-bar" id="coding-todo-bar" style="display:none"><div class="coding-todo-head">Todos</div><div id="coding-todo-list"></div></div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
                 <textarea id="coding-input" placeholder="Message (type @ to attach files)..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)"></textarea>
@@ -924,7 +942,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
+let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
 
 function getChats(){try{return JSON.parse(localStorage.getItem('modellink_chats')||'{}')}catch(e){return{}}}
 function saveChats(c){localStorage.setItem('modellink_chats',JSON.stringify(c))}
@@ -1323,13 +1341,13 @@ async function loadProjectsSidebar(){
   }catch(e){const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
 }
 async function openCodingFolderPicker(){
-  if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;codingFolder=handle.name;document.getElementById('coding-folder-input').value=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingHistory=[];codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
+  if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;codingFolder=handle.name;document.getElementById('coding-folder-input').value=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingHistory=[];codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
   else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.multiple=true;inp.addEventListener('change',async()=>{if(inp.files.length>0){const first=inp.files[0];const path=first.webkitRelativePath.split('/')[0];document.getElementById('coding-folder-input').value=path;await openCodingFolderDirect(path)}});inp.click()}
 }
 async function openCodingFolder(){const input=document.getElementById('coding-folder-input');const path=input.value.trim();if(!path){await openCodingFolderPicker();return}await openCodingFolderDirect(path)}
 async function openCodingFolderDirect(path){
   try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
-    fsHandle=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingHistory=[];codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+data.folder+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
+    fsHandle=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingHistory=[];codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+data.folder+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
 }
 async function refreshCodingTree(){if(!codingFolder)return;try{if(fsHandle){const tree=await fsBuildTree(fsHandle);renderFileTree(tree)}else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(r.ok)renderFileTree(data.tree)}}catch(e){}}
 </script>
@@ -1442,7 +1460,10 @@ function copyAllCodeBlocks(){
   navigator.clipboard.writeText(text).then(()=>showToast('Copied '+blocks.length+' code block'+(blocks.length!==1?'s':''),'success')).catch(()=>showToast('Copy failed','error'));
 }
 async function applyAllToolBlocks(){
-  const btns=[...document.querySelectorAll('#coding-chat .approve-bar .approve')];
+  const btns=[...document.querySelectorAll('#coding-chat .approve-bar .approve')].filter(b=>{
+    if(b.textContent==='Save file'){const inp=b.parentElement.querySelector('input');return inp&&inp.value.trim()!==''}
+    return true;
+  });
   if(btns.length===0){showToast('Nothing pending to apply','error');return}
   showToast('Applying '+btns.length+' action'+(btns.length!==1?'s':''),'info');
   for(const b of btns){try{b.click();await new Promise(r=>setTimeout(r,400))}catch(e){}}
@@ -1452,12 +1473,53 @@ function fmtCmdResult(result){
   const t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
   return escapeHtml(t.trim()?t:'(no output — command produced no text)');
 }
+function renderCodingTodos(){
+  const bar=document.getElementById('coding-todo-bar'),list=document.getElementById('coding-todo-list');
+  if(!bar||!list)return;
+  if(!codingTodos||codingTodos.length===0){bar.style.display='none';list.innerHTML='';return}
+  bar.style.display='';list.innerHTML='';
+  for(const t of codingTodos){
+    const item=document.createElement('div');item.className='coding-todo-item'+(t.done?' done':'');
+    const box=document.createElement('span');box.className='todo-box';box.textContent=t.done?'✓':'';
+    const txt=document.createElement('span');txt.className='todo-text';txt.textContent=t.text;
+    item.appendChild(box);item.appendChild(txt);list.appendChild(item);
+  }
+}
+function parseCodingTodos(text){
+  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g)];
+  if(blocks.length===0)return false;
+  const last=blocks[blocks.length-1][1];
+  codingTodos=[];
+  for(const ln of last.split('\n')){
+    const m=ln.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/);
+    if(m)codingTodos.push({done:m[1].toLowerCase()==='x',text:m[2]});
+  }
+  renderCodingTodos();
+  return true;
+}
+function addCodingFeed(kind,target,added,removed){
+  // Opencode-style activity row in the terminal panel: Edit f +1 -0
+  const line=document.createElement('div');
+  line.className='log-line term-feed term-'+kind.toLowerCase();
+  const k=document.createElement('span');k.className='term-kind';k.textContent=kind;
+  const t=document.createElement('span');t.className='term-target';t.textContent=target;
+  line.appendChild(k);line.appendChild(t);
+  if(typeof added==='number'&&typeof removed==='number'){
+    const a=document.createElement('span');a.className='term-add';a.textContent=' +'+added;
+    const r=document.createElement('span');r.className='term-del';r.textContent=' -'+removed;
+    line.appendChild(a);line.appendChild(r);
+  }
+  codingOutputLines.push('['+kind+'] '+target);
+  const body=document.getElementById('coding-output-body');
+  body.appendChild(line);body.scrollTop=body.scrollHeight;
+}
 async function processCodingActions(text,msgEl){
   const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  parseCodingTodos(text);
   if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
-  if(contentEl&&hasToolBlocks){let cleaned=text;cleaned=cleaned.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'');cleaned=cleaned.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'');cleaned=cleaned.replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'');cleaned=cleaned.replace(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm,'');cleaned=cleaned.trim();if(cleaned)contentEl.innerHTML=renderContent(cleaned);else contentEl.innerHTML=''}
+  if(contentEl&&hasToolBlocks){let cleaned=text;cleaned=cleaned.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'');cleaned=cleaned.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'');cleaned=cleaned.replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'');cleaned=cleaned.replace(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm,'');cleaned=cleaned.replace(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g,'');cleaned=cleaned.trim();if(cleaned)contentEl.innerHTML=renderContent(cleaned);else contentEl.innerHTML=''}
   const codingSettings=await fetchCodingSettings();
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Create File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
     if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
@@ -1468,12 +1530,44 @@ async function processCodingActions(text,msgEl){
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
-    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(fsHandle){await fsDeleteFile(path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
+    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
     if(codingSettings.auto_command){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  if(!hasToolBlocks){
+    // Fallback: the model emitted code without FILE_CREATE blocks (bare
+    // fenced code). Offer one-click save per block so nothing is lost.
+    const fenced=[...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
+    const guessName={html:'index.html',htm:'index.html',js:'script.js',ts:'script.ts',jsx:'app.jsx',tsx:'app.tsx',css:'style.css',py:'script.py',json:'data.json',md:'notes.md',sh:'run.sh',sql:'query.sql',java:'Main.java',c:'main.c',cpp:'main.cpp',go:'main.go',rs:'main.rs',rb:'script.rb',php:'index.php'};
+    let shown=0;
+    for(const m of fenced){
+      const lang=(m[1]||'').toLowerCase(),code=m[2].replace(/\n$/,'');
+      if(code.trim().length<20||shown>=5)continue;
+      shown++;
+      const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
+      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code block as file'+(lang?' ('+escapeHtml(lang)+')':'')+'</div><div class="file-write-diff">'+escapeHtml(code.slice(0,1500))+'</div>';
+      const bar=document.createElement('div');bar.className='approve-bar';
+      const nameInput=document.createElement('input');
+      nameInput.placeholder='filename (e.g. index.html)';nameInput.value=guessName[lang]||'';
+      nameInput.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:11px;font-family:var(--mono);outline:none;min-width:0';
+      const sb=document.createElement('button');sb.className='approve';sb.textContent='Save file';
+      sb.onclick=async()=>{
+        const p=nameInput.value.trim();
+        if(!p){showToast('Enter a filename first','error');return}
+        sb.disabled=true;
+        const result=await codingWriteFile(p,code);
+        bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
+        if(result.ok)refreshCodingTree();
+      };
+      const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
+      cb.onclick=()=>{toolDiv.remove()};
+      bar.appendChild(nameInput);bar.appendChild(sb);bar.appendChild(cb);toolDiv.appendChild(bar);
+      msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+    }
+    if(shown>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=shown+' code block'+(shown!==1?'s':'')+' ready to save'}
+  }
   return hasToolBlocks;
 }
 
@@ -1547,8 +1641,10 @@ async function codingAutoContinue(){
       const results=harvestCodingResults();
       if(!results.hasExecuted)break;
       rounds++;
+      const openTodos=(codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
+      const openTodosTxt=openTodos.length?'\nOpen todos:\n- '+openTodos.join('\n- '):'';
       addCodingSystemMsg('Tool results sent back to AI (step '+rounds+' of '+CODING_MAX_ROUNDS+') — press Stop anytime.');
-      codingHistory.push({role:'user',content:'Tool results:\n'+results.text+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+      codingHistory.push({role:'user',content:'Tool results:\n'+results.text+openTodosTxt+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
       codingStream=true;
       let sysPrompt='You are a coding assistant.';
       try{sysPrompt=await buildCodingSystemPrompt()}catch(e){}
@@ -1563,8 +1659,22 @@ async function codingAutoContinue(){
   document.getElementById('coding-input').focus();
 }
 
-async function codingWriteFile(path,content){try{if(fsHandle){await fsWriteFile(path,content);return{ok:true}}const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});const data=await r.json();return r.ok?{ok:true}:{ok:false,error:data.error}}catch(e){return{ok:false,error:e.message}}}
-async function codingRunCmd(command){try{addCodingOutput('$ '+command);document.getElementById('coding-output').classList.add('open');const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){addCodingOutput('[ERR] '+data.error);return{stdout:'',stderr:data.error,exit_code:1}}if(data.stdout)addCodingOutput(data.stdout);if(data.stderr)addCodingOutput('[ERR] '+data.stderr);if(!data.stdout&&!data.stderr)addCodingOutput('(no output)');return{stdout:data.stdout,stderr:data.stderr,exit_code:data.exit_code}}catch(e){addCodingOutput('[ERROR] '+e.message);return{stdout:'',stderr:e.message,exit_code:1}}}
+async function codingWriteFile(path,content){
+  try{
+    if(fsHandle){
+      let existed=false;try{existed=await fsFileExists(path)}catch(e){}
+      await fsWriteFile(path,content);
+      const lines=content.split('\n').length;
+      addCodingFeed(existed?'Edit':'Write',path,lines,0);
+      return{ok:true,added:lines,removed:0};
+    }
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
+    const data=await r.json();
+    if(r.ok){addCodingFeed(data.backed_up?'Edit':'Write',path,data.added||0,data.removed||0);return{ok:true,added:data.added,removed:data.removed}}
+    return{ok:false,error:data.error};
+  }catch(e){return{ok:false,error:e.message}}
+}
+async function codingRunCmd(command){try{const shortCmd=command.length>120?command.slice(0,120)+'…':command;addCodingFeed('Shell',shortCmd);document.getElementById('coding-output').classList.add('open');const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){addCodingOutput('[ERR] '+data.error);return{stdout:'',stderr:data.error,exit_code:1}}if(data.stdout)addCodingOutput(data.stdout);if(data.stderr)addCodingOutput('[ERR] '+data.stderr);if(!data.stdout&&!data.stderr)addCodingOutput('(no output)');return{stdout:data.stdout,stderr:data.stderr,exit_code:data.exit_code}}catch(e){addCodingOutput('[ERROR] '+e.message);return{stdout:'',stderr:e.message,exit_code:1}}}
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_edit:false,auto_command:false}}}
 function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight}
 function toggleCodingOutput(){document.getElementById('coding-output').classList.toggle('open')}
@@ -1671,7 +1781,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;allCodingFiles=[];document.getElementById('coding-folder-input').value=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingHistory=[];codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal()}catch(e){appAlert('Error: '+e.message)}}
+  codingFolder=data.folder;fsHandle=null;allCodingFiles=[];document.getElementById('coding-folder-input').value=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingHistory=[];codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;document.getElementById('coding-chat').innerHTML='';addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal()}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}try{const r=await authFetch(API+'/api/projects/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to create project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
 function browseImportFolder(){if(window.showDirectoryPicker){window.showDirectoryPicker().then(handle=>{document.getElementById('import-project-path').value=handle.name;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=handle.name}).catch(()=>{})}else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.addEventListener('change',()=>{if(inp.files.length>0){const path=inp.files[0].webkitRelativePath.split('/')[0];document.getElementById('import-project-path').value=path;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=path}});inp.click()}}
 async function importProject(){const name=document.getElementById('import-project-name').value.trim();const path=document.getElementById('import-project-path').value.trim();if(!name){appAlert('Enter a project name');return}if(!path){appAlert('Enter or browse for a source folder');return}try{const r=await authFetch(API+'/api/projects/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,source_path:path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to import project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
