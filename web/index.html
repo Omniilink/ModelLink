@@ -1637,7 +1637,10 @@ function renderUsageTimeseries(data){
   ctx.clearRect(0,0,W,H);
   const ts=data.timeseries||[];
   if(ts.length===0){ctx.fillStyle='#6b7280';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('No data yet — send some chats to see your usage',W/2,H/2);return}
-  const maxVal=Math.max(...ts.map(t=>t.requests||t.count||0),1);
+  // Nice y-axis max so tick labels never duplicate (e.g. 0,1,2,2,3)
+  const rawMax=Math.max(...ts.map(t=>t.requests||t.count||0),1);
+  const yStep=Math.max(1,Math.ceil(rawMax/4));
+  const maxVal=yStep*4;
   const pad={top:20,right:20,bottom:30,left:40};
   const gW=W-pad.left-pad.right,gH=H-pad.top-pad.bottom;
   ctx.strokeStyle='rgba(255,255,255,.06)';ctx.lineWidth=1;
@@ -1652,9 +1655,21 @@ function renderUsageTimeseries(data){
   ctx.strokeStyle='#2563eb';ctx.lineWidth=2;ctx.stroke();
   ts.forEach((t,i)=>{const x=pad.left+(i/(ts.length-1||1))*gW;const y=pad.top+gH*(1-(t.requests||t.count||0)/maxVal);ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle='#2563eb';ctx.fill();ctx.strokeStyle='#0f172a';ctx.lineWidth=1.5;ctx.stroke()});
   if(ts.length>0){
-    ctx.fillStyle='#6b7280';ctx.font='10px system-ui';ctx.textAlign='center';
+    ctx.fillStyle='#6b7280';ctx.font='10px system-ui';
     const labelsToShow=Math.min(ts.length,6);
-    for(let i=0;i<labelsToShow;i++){const idx=Math.floor(i*(ts.length-1)/(labelsToShow-1||1));const x=pad.left+(idx/(ts.length-1||1))*gW;const label=ts[idx].bucket||ts[idx].label||'';ctx.fillText(label,x,H-6)}
+    // If every bucket falls on the same day, the date part is noise — show HH:MM only
+    const daySet=new Set(ts.map(t=>String(t.bucket||t.label||'').slice(0,10)));
+    const sameDay=daySet.size===1;
+    for(let i=0;i<labelsToShow;i++){
+      const idx=Math.floor(i*(ts.length-1)/(labelsToShow-1||1));
+      const x=pad.left+(idx/(ts.length-1||1))*gW;
+      let label=ts[idx].bucket||ts[idx].label||'';
+      if(sameDay&&/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(label))label=label.slice(11);
+      // Anchor edge labels inward so they never clip outside the canvas
+      if(idx===0){ctx.textAlign='left';ctx.fillText(label,pad.left,H-6)}
+      else if(idx===ts.length-1){ctx.textAlign='right';ctx.fillText(label,W-4,H-6)}
+      else{ctx.textAlign='center';ctx.fillText(label,x,H-6)}
+    }
   }
   const subtitle=document.getElementById('us-chart-subtitle');
   if(subtitle)subtitle.textContent=' ('+ts.length+' data points)';
@@ -1763,8 +1778,19 @@ function renderUsageTokenBreakdown(data){
   ctx.fillText(total>=1000000?(total/1000000).toFixed(1)+'M':total>=1000?(total/1000).toFixed(1)+'K':total,cx,cy-8);
   ctx.fillStyle='#6b7280';ctx.font='10px system-ui';ctx.fillText('tokens',cx,cy+10);
   const legendY=H-20;
-  ctx.fillStyle='#2563eb';ctx.fillRect(W/2-60,legendY,8,8);ctx.fillStyle='#9a9aa0';ctx.font='10px system-ui';ctx.textAlign='left';ctx.fillText('Prompt '+(promptToks>=1000?(promptToks/1000).toFixed(1)+'K':promptToks),W/2-48,legendY+8);
-  ctx.fillStyle='#3b82f6';ctx.fillRect(W/2+20,legendY,8,8);ctx.fillStyle='#9a9aa0';ctx.fillText('Completion '+(compToks>=1000?(compToks/1000).toFixed(1)+'K':compToks),W/2+32,legendY+8);
+  // Center the legend as a group using measured widths so it never clips
+  const fmtToks=t=>t>=1000?(t/1000).toFixed(1)+'K':t;
+  const pTxt='Prompt '+fmtToks(promptToks),cTxt='Completion '+fmtToks(compToks);
+  ctx.font='10px system-ui';ctx.textBaseline='alphabetic';
+  const boxGap=4,groupGap=16;
+  const wP=ctx.measureText(pTxt).width,wC=ctx.measureText(cTxt).width;
+  let lx=W/2-(8+boxGap+wP+groupGap+8+boxGap+wC)/2;
+  ctx.textAlign='left';
+  ctx.fillStyle='#2563eb';ctx.fillRect(lx,legendY,8,8);
+  ctx.fillStyle='#9a9aa0';ctx.fillText(pTxt,lx+8+boxGap,legendY+8);
+  lx+=8+boxGap+wP+groupGap;
+  ctx.fillStyle='#3b82f6';ctx.fillRect(lx,legendY,8,8);
+  ctx.fillStyle='#9a9aa0';ctx.fillText(cTxt,lx+8+boxGap,legendY+8);
 }
 
 // ========== COMMAND PALETTE ==========
