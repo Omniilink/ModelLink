@@ -161,19 +161,44 @@ def wait_for_api(timeout=30):
     return False
 
 
+def _is_benign_tunnel_noise(line: str) -> bool:
+    """True for cloudflared's routine, harmless log spam.
+
+    Browsers routinely cancel the /api/logs SSE stream (tab reloads,
+    reconnects, navigation). cloudflared logs each cancel as ERR, which
+    looks alarming but is normal. The full log is still in tunnel.log.
+    """
+    return "canceled by remote with error code 0" in line
+
+
 def start_tunnel(cloudflared):
     """Start the Cloudflare named tunnel (blocks)."""
     print(f"Starting Cloudflare tunnel '{TUNNEL_NAME}'...")
     print(f"Your permanent URL: https://{DOMAIN}\n")
-    # Send cloudflared's own logs to a file so the console stays clean:
-    # its routine 'stream canceled by remote' ERR lines for SSE reconnects
-    # are benign noise, but real issues remain inspectable in tunnel.log.
+    # Send cloudflared's full log to tunnel.log AND stream it to the
+    # console minus the benign SSE-cancel noise (--logfile alone still
+    # echoes everything to the console, so filter here instead).
     log_file = os.path.join(SCRIPT_DIR, "tunnel.log")
-    subprocess.run(
+    proc = subprocess.Popen(
         [cloudflared, "--logfile", log_file,
          "tunnel", "--config", CONFIG_PATH, "run", TUNNEL_NAME],
         cwd=SCRIPT_DIR,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
     )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if _is_benign_tunnel_noise(line):
+                continue
+            print(line, end="" if line.endswith("\n") else "\n")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
