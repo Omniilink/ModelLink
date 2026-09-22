@@ -1,17 +1,23 @@
 """
-Omniilink Launcher — Starts API server + Cloudflare Tunnel.
-No more Cloudflare Workers — auth and proxy are built into the backend.
+Omniilink Launcher — Starts API server + Cloudflare Named Tunnel.
+The tunnel URL is permanent and hides your public IP.
 """
 import subprocess
 import threading
 import time
 import os
 import sys
+import shutil
+import urllib.request
+import json
 
 API_HOST = "127.0.0.1"
 API_PORT = 8080
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TUNNEL_NAME = "omniilink"
 CLOUDFLARED = os.path.join(SCRIPT_DIR, "cloudflared.exe")
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "tunnel-config.yml")
+CRED_DIR = os.path.join(os.path.expanduser("~"), ".cloudflared")
 
 
 def ensure_deps():
@@ -28,10 +34,93 @@ def ensure_deps():
             else:
                 subprocess.run([sys.executable, "-m", "pip", "install", "fastapi", "uvicorn[standard]", "pydantic"], check=True)
             print("Packages installed.")
-        except subprocess.CalledProcessError as e:
-            print(f"\nFailed to install packages automatically.")
-            print(f"Please install manually:\n  {sys.executable} -m pip install -r requirements.txt\n")
+        except subprocess.CalledProcessError:
+            print(f"\nFailed to install packages.")
+            print(f"Run manually: {sys.executable} -m pip install -r requirements.txt\n")
             sys.exit(1)
+
+
+def find_cloudflared():
+    """Find the cloudflared executable."""
+    for candidate in [CLOUDFLARED, "cloudflared",
+                      r"C:\Users\model\scoop\shims\cloudflared.exe",
+                      r"C:\Program Files\cloudflared\cloudflared.exe"]:
+        if candidate == "cloudflared":
+            found = shutil.which(candidate)
+            if found:
+                return found
+        elif os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def get_tunnel_credentials():
+    """Find the tunnel credentials file."""
+    if not os.path.isdir(CRED_DIR):
+        return None
+    for f in os.listdir(CRED_DIR):
+        if f.endswith(".json") and not f.startswith("cert"):
+            path = os.path.join(CRED_DIR, f)
+            try:
+                with open(path) as fh:
+                    data = json.load(fh)
+                if "AccountTag" in data or "TunnelID" in data:
+                    return path
+            except (json.JSONDecodeError, IOError):
+                continue
+    return None
+
+
+def setup_tunnel(cloudflared):
+    """Run first-time tunnel setup: login + create."""
+    cred_file = get_tunnel_credentials()
+    if cred_file:
+        return cred_file
+
+    print("\n" + "=" * 50)
+    print("  FIRST-TIME CLOUDFLARE TUNNEL SETUP")
+    print("=" * 50)
+    print("\n1. A browser window will open — log into Cloudflare.")
+    print("2. Select your account and authorize the tunnel.")
+    print("3. Come back here when done.\n")
+
+    input("Press ENTER to open Cloudflare login... ")
+    result = subprocess.run([cloudflared, "tunnel", "login"], cwd=SCRIPT_DIR)
+    if result.returncode != 0:
+        print("Cloudflare login failed. Run manually: cloudflared tunnel login")
+        sys.exit(1)
+
+    print("\nCreating tunnel...")
+    result = subprocess.run(
+        [cloudflared, "tunnel", "create", TUNNEL_NAME],
+        cwd=SCRIPT_DIR, capture_output=True, text=True,
+    )
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    cred_file = get_tunnel_credentials()
+    if not cred_file:
+        print("\nTunnel creation failed — no credentials found.")
+        print("Run manually: cloudflared tunnel create omniilink")
+        sys.exit(1)
+
+    print(f"\nTunnel created! Credentials: {cred_file}")
+    return cred_file
+
+
+def write_config(cred_file):
+    """Write the tunnel config file."""
+    config = (
+        f"tunnel: {TUNNEL_NAME}\n"
+        f"credentials-file: {cred_file}\n"
+        f"\n"
+        f"ingress:\n"
+        f"  - service: http://{API_HOST}:{API_PORT}\n"
+    )
+    with open(CONFIG_PATH, "w") as f:
+        f.write(config)
+    print(f"Config written: {CONFIG_PATH}")
 
 
 def start_api():
@@ -44,42 +133,56 @@ def start_api():
     )
 
 
-def start_tunnel():
-    """Start Cloudflare quick tunnel."""
-    time.sleep(3)
-    print("Starting Cloudflare Tunnel...")
-    proc = subprocess.Popen(
-        [CLOUDFLARED, "tunnel", "--protocol", "http2",
-         "--url", f"http://{API_HOST}:{API_PORT}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+def wait_for_api(timeout=30):
+    """Wait until the API server is ready."""
+    for _ in range(timeout):
+        try:
+            urllib.request.urlopen(f"http://{API_HOST}:{API_PORT}/api/health", timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def start_tunnel(cloudflared):
+    """Start the Cloudflare named tunnel (blocks)."""
+    print(f"Starting Cloudflare tunnel '{TUNNEL_NAME}'...")
+    print("Your permanent URL will be printed below.\n")
+    subprocess.run(
+        [cloudflared, "tunnel", "--config", CONFIG_PATH, "run", TUNNEL_NAME],
+        cwd=SCRIPT_DIR,
     )
-    tunnel_url = None
-    for line in proc.stdout:
-        print(line.rstrip())
-        if "trycloudflare.com" in line:
-            import re
-            match = re.search(r"(https://[a-zA-Z0-9\-]+\.trycloudflare\.com)", line)
-            if match and not tunnel_url:
-                tunnel_url = match.group(1)
-                print(f"\n{'='*50}")
-                print(f"  Tunnel URL: {tunnel_url}")
-                print(f"  Use this URL to access Omniilink")
-                print(f"{'='*50}\n")
-    proc.wait()
 
 
 if __name__ == "__main__":
-    print("="*50)
-    print("  OmniLink Server")
-    print("="*50)
+    print("=" * 50)
+    print("  OmniLink Server (Cloudflare Named Tunnel)")
+    print("=" * 50)
     print()
 
     ensure_deps()
 
+    cloudflared = find_cloudflared()
+    if not cloudflared:
+        print("cloudflared not found!")
+        print("Download from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print(f"Place cloudflared.exe in: {SCRIPT_DIR}")
+        sys.exit(1)
+
+    # First-time setup if needed
+    cred_file = setup_tunnel(cloudflared)
+    write_config(cred_file)
+
+    # Start API server in background
     api_thread = threading.Thread(target=start_api, daemon=True)
     api_thread.start()
 
-    start_tunnel()
+    # Wait for API to be ready
+    print("Waiting for API server...")
+    if wait_for_api():
+        print("API server is ready.\n")
+    else:
+        print("API server took too long to start, starting tunnel anyway...\n")
+
+    # Start tunnel (blocks)
+    start_tunnel(cloudflared)
