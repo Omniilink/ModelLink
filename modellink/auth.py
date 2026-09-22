@@ -78,11 +78,28 @@ def init_db():
             UNIQUE(user_id, provider)
         );
 
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            ts TEXT DEFAULT (datetime('now')),
+            model TEXT DEFAULT '',
+            provider TEXT DEFAULT '',
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            duration_ms INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'chat',
+            status INTEGER DEFAULT 200,
+            api_key_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
         CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
         CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
         CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
         CREATE INDEX IF NOT EXISTS idx_user_api_keys_user ON user_api_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage_events(user_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -350,6 +367,174 @@ def delete_user_provider_key(user_id: int, key_id: int):
         conn.execute("DELETE FROM user_api_keys WHERE user_id = ? AND id = ?",
                      (user_id, key_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ==========================================
+# Usage Events
+# ==========================================
+def record_usage(user_id: int, model: str = "", provider: str = "",
+                 prompt_tokens: int = 0, completion_tokens: int = 0,
+                 duration_ms: int = 0, source: str = "chat",
+                 status: int = 200, api_key_id: Optional[int] = None):
+    """Insert a usage event. Best-effort: never raises."""
+    try:
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO usage_events "
+                "(user_id, model, provider, prompt_tokens, completion_tokens, "
+                " duration_ms, source, status, api_key_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, (model or "")[:80], (provider or "")[:40],
+                 max(0, int(prompt_tokens)), max(0, int(completion_tokens)),
+                 max(0, int(duration_ms)), (source or "chat")[:20],
+                 int(status), api_key_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def get_api_key_id_by_key(key: str) -> Optional[int]:
+    if not key or not key.startswith("ml-"):
+        return None
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM api_keys WHERE key = ?", (key,)).fetchone()
+        return row["id"] if row else None
+    finally:
+        conn.close()
+
+
+def get_usage(user_id: Optional[int] = None, range_hours: int = 24) -> dict:
+    """Aggregate usage events for a user (or all users if user_id is None)."""
+    conn = get_db()
+    try:
+        now = time.time()
+        # SQLite datetime('now') is UTC; our local server may not be UTC —
+        # filter with a computed ISO cutoff in UTC to match DEFAULT timestamps.
+        cutoff_utc = datetime.utcfromtimestamp(now - range_hours * 3600).strftime(
+            "%Y-%m-%d %H:%M:%S")
+
+        where = "WHERE ts >= ?"
+        params: list = [cutoff_utc]
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
+
+        summary = conn.execute(
+            f"SELECT COUNT(*) AS requests, "
+            f"COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
+            f"COALESCE(SUM(completion_tokens),0) AS completion_tokens, "
+            f"COALESCE(AVG(duration_ms),0) AS avg_duration, "
+            f"COALESCE(MAX(duration_ms),0) AS max_duration "
+            f"FROM usage_events {where}",
+            params,
+        ).fetchone()
+
+        # Bucket size: 1h for 24h range, 1d for 7d+, else 6h
+        if range_hours <= 24:
+            bucket_expr = "strftime('%Y-%m-%d %H:00', ts)"
+            bucket_fmt = "%Y-%m-%d %H:00"
+        elif range_hours <= 24 * 7:
+            bucket_expr = "strftime('%Y-%m-%d', ts)"
+            bucket_fmt = "%Y-%m-%d"
+        else:
+            bucket_expr = "strftime('%Y-%m-%d %H:00', ts)"  # coarse enough
+            bucket_fmt = "%Y-%m-%d %H:00"
+            # For 30d use daily
+            bucket_expr = "strftime('%Y-%m-%d', ts)"
+            bucket_fmt = "%Y-%m-%d"
+
+        timeseries = [dict(r) for r in conn.execute(
+            f"SELECT {bucket_expr} AS bucket, COUNT(*) AS requests, "
+            f"COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
+            f"COALESCE(SUM(completion_tokens),0) AS completion_tokens "
+            f"FROM usage_events {where} GROUP BY bucket ORDER BY bucket",
+            params,
+        ).fetchall()]
+
+        by_model = [dict(r) for r in conn.execute(
+            f"SELECT model, COUNT(*) AS requests, "
+            f"COALESCE(SUM(prompt_tokens+completion_tokens),0) AS tokens, "
+            f"COALESCE(AVG(duration_ms),0) AS avg_duration "
+            f"FROM usage_events {where} GROUP BY model ORDER BY requests DESC LIMIT 20",
+            params,
+        ).fetchall()]
+
+        by_provider = [dict(r) for r in conn.execute(
+            f"SELECT provider, COUNT(*) AS requests, "
+            f"COALESCE(SUM(prompt_tokens+completion_tokens),0) AS tokens "
+            f"FROM usage_events {where} GROUP BY provider ORDER BY requests DESC",
+            params,
+        ).fetchall()]
+
+        key_params: list = [cutoff_utc]
+        key_where = "WHERE e.ts >= ?"
+        if user_id is not None:
+            key_where += " AND k.user_id = ?"
+            key_params.append(user_id)
+        by_key = [dict(r) for r in conn.execute(
+            f"SELECT k.id, k.name, k.request_count, k.last_used_at, "
+            f"COUNT(e.id) AS requests_in_range, "
+            f"COALESCE(SUM(e.prompt_tokens+e.completion_tokens),0) AS tokens "
+            f"FROM api_keys k LEFT JOIN usage_events e ON e.api_key_id = k.id "
+            f"{key_where} GROUP BY k.id ORDER BY requests_in_range DESC, k.request_count DESC LIMIT 20",
+            key_params,
+        ).fetchall()]
+
+        recent = [dict(r) for r in conn.execute(
+            f"SELECT ts, model, provider, prompt_tokens, completion_tokens, "
+            f"duration_ms, source, status "
+            f"FROM usage_events {where} ORDER BY id DESC LIMIT 50",
+            params,
+        ).fetchall()]
+
+        # All-time totals (unfiltered by range)
+        at_where = ""
+        at_params: list = []
+        if user_id is not None:
+            at_where = "WHERE user_id = ?"
+            at_params.append(user_id)
+        all_time = conn.execute(
+            f"SELECT COUNT(*) AS requests, "
+            f"COALESCE(SUM(prompt_tokens+completion_tokens),0) AS tokens "
+            f"FROM usage_events {at_where}",
+            at_params,
+        ).fetchone()
+
+        # Active days
+        days = conn.execute(
+            f"SELECT COUNT(DISTINCT date(ts)) AS days FROM usage_events {where}",
+            params,
+        ).fetchone()
+
+        return {
+            "range_hours": range_hours,
+            "bucket_fmt": bucket_fmt,
+            "summary": {
+                "requests": summary["requests"] or 0,
+                "prompt_tokens": summary["prompt_tokens"] or 0,
+                "completion_tokens": summary["completion_tokens"] or 0,
+                "total_tokens": (summary["prompt_tokens"] or 0) + (summary["completion_tokens"] or 0),
+                "avg_duration_ms": round(summary["avg_duration"] or 0, 1),
+                "max_duration_ms": summary["max_duration"] or 0,
+                "active_days": days["days"] or 0,
+            },
+            "all_time": {
+                "requests": all_time["requests"] or 0,
+                "tokens": all_time["tokens"] or 0,
+            },
+            "timeseries": timeseries,
+            "by_model": by_model,
+            "by_provider": by_provider,
+            "by_key": by_key,
+            "recent": recent,
+        }
     finally:
         conn.close()
 
