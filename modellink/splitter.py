@@ -525,7 +525,8 @@ class MultiProviderBalancer:
             try:
                 headers = provider_cfg["headers"](api_key)
                 body = provider_cfg["build_body"](messages, model, api_key)
-                body["stream"] = stream
+                if provider_name != "gemini":
+                    body["stream"] = stream
 
                 url = provider_cfg["stream_url"](model, api_key)
                 resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
