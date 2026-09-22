@@ -38,49 +38,44 @@ else:
 MODEL_NAME = "omniilink"
 
 MODEL_RATE_LIMITS = {
-    "gemini-2.5-flash":            {"rpm": 10,  "tpm": 250000},
-    "gemini-2.5-flash-lite":       {"rpm": 15,  "tpm": 250000},
-    "gemini-2.5-pro":              {"rpm": 5,   "tpm": 250000},
-    "gemini-2.0-flash":            {"rpm": 15,  "tpm": 1000000},
-    "gemini-1.5-flash":            {"rpm": 15,  "tpm": 1000000},
-    "gemini-1.5-pro":              {"rpm": 5,   "tpm": 250000},
-    "gemini-3-flash":              {"rpm": 10,  "tpm": 250000},
-    "gemini-3-flash-preview":      {"rpm": 10,  "tpm": 250000},
-    "gemini-3.1-flash-lite":       {"rpm": 15,  "tpm": 250000},
-    "gemini-3.5-flash":            {"rpm": 10,  "tpm": 250000},
-    "gemini-3.6-flash":            {"rpm": 10,  "tpm": 250000},
-    "gemini-3.7-flash":            {"rpm": 10,  "tpm": 250000},
-    "gemini-3.8-flash":            {"rpm": 10,  "tpm": 250000},
-    "gemma-4-26b-a4b-it":         {"rpm": 30,  "tpm": 15000},
-    "gpt-4o":                      {"rpm": 5,   "tpm": 150000},
-    "gpt-4o-mini":                 {"rpm": 15,  "tpm": 200000},
-    "gpt-4-turbo":                 {"rpm": 5,   "tpm": 100000},
-    "gpt-3.5-turbo":               {"rpm": 15,  "tpm": 200000},
-    "claude-sonnet-4-20250514":    {"rpm": 5,   "tpm": 80000},
-    "claude-3-5-sonnet-20241022":  {"rpm": 5,   "tpm": 80000},
-    "claude-3-5-haiku-20241022":   {"rpm": 10,  "tpm": 100000},
-    "claude-3-haiku-20240307":     {"rpm": 10,  "tpm": 100000},
-    "command-r-plus":              {"rpm": 10,  "tpm": 100000},
-    "command-r":                   {"rpm": 20,  "tpm": 100000},
-    "mistral-large-latest":        {"rpm": 10,  "tpm": 100000},
-    "mistral-small-latest":        {"rpm": 15,  "tpm": 150000},
-    "open-mistral-nemo":           {"rpm": 15,  "tpm": 150000},
-    "llama-3.3-70b-versatile":     {"rpm": 15,  "tpm": 100000},
-    "llama-3.1-8b-instant":        {"rpm": 30,  "tpm": 150000},
-    "openai/gpt-oss-120b":         {"rpm": 10,  "tpm": 100000},
-    "openai/gpt-oss-20b":          {"rpm": 15,  "tpm": 150000},
-    "qwen/qwen3.6-27b":            {"rpm": 15,  "tpm": 100000},
-    "qwen/qwen3.8-27b":            {"rpm": 15,  "tpm": 100000},
-    "allam-2-7b":                  {"rpm": 30,  "tpm": 150000},
-    "deepseek-chat":               {"rpm": 10,  "tpm": 100000},
-    "deepseek-reasoner":           {"rpm": 5,   "tpm": 50000},
-    "grok-3":                      {"rpm": 5,   "tpm": 50000},
-    "grok-3-mini":                 {"rpm": 10,  "tpm": 100000},
+    "gemini-3.6-flash":             {"rpm": 10,  "tpm": 250000},
+    "gemini-3.5-flash":             {"rpm": 10,  "tpm": 250000},
+    "gemini-3.5-flash-lite":        {"rpm": 15,  "tpm": 250000},
+    "gemini-3.1-flash-lite":        {"rpm": 15,  "tpm": 250000},
+    "gemini-3-flash-preview":       {"rpm": 10,  "tpm": 250000},
+    "gemini-3.1-pro-preview":       {"rpm": 5,   "tpm": 250000},
+    "gemini-flash-latest":          {"rpm": 10,  "tpm": 250000},
+    "gemini-flash-lite-latest":     {"rpm": 15,  "tpm": 250000},
+    "gemma-4-26b-a4b-it":          {"rpm": 30,  "tpm": 15000},
+    "gpt-4o":                       {"rpm": 5,   "tpm": 150000},
+    "gpt-4o-mini":                  {"rpm": 15,  "tpm": 200000},
+    "gpt-4-turbo":                  {"rpm": 5,   "tpm": 100000},
+    "gpt-3.5-turbo":                {"rpm": 15,  "tpm": 200000},
+    "claude-sonnet-4-20250514":     {"rpm": 5,   "tpm": 80000},
+    "claude-3-5-sonnet-20241022":   {"rpm": 5,   "tpm": 80000},
+    "claude-3-5-haiku-20241022":    {"rpm": 10,  "tpm": 100000},
+    "claude-3-haiku-20240307":      {"rpm": 10,  "tpm": 100000},
+    "command-r-plus":               {"rpm": 10,  "tpm": 100000},
+    "command-r":                    {"rpm": 20,  "tpm": 100000},
+    "mistral-large-latest":         {"rpm": 10,  "tpm": 100000},
+    "mistral-small-latest":         {"rpm": 15,  "tpm": 150000},
+    "open-mistral-nemo":            {"rpm": 15,  "tpm": 150000},
+    "llama-3.3-70b-versatile":      {"rpm": 15,  "tpm": 100000},
+    "llama-3.1-8b-instant":         {"rpm": 30,  "tpm": 150000},
+    "openai/gpt-oss-120b":          {"rpm": 10,  "tpm": 100000},
+    "openai/gpt-oss-20b":           {"rpm": 15,  "tpm": 150000},
+    "qwen/qwen3.6-27b":             {"rpm": 15,  "tpm": 100000},
+    "qwen/qwen3.8-27b":             {"rpm": 15,  "tpm": 100000},
+    "allam-2-7b":                   {"rpm": 30,  "tpm": 150000},
+    "deepseek-chat":                {"rpm": 10,  "tpm": 100000},
+    "deepseek-reasoner":            {"rpm": 5,   "tpm": 50000},
+    "grok-3":                       {"rpm": 5,   "tpm": 50000},
+    "grok-3-mini":                  {"rpm": 10,  "tpm": 100000},
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": {"rpm": 10, "tpm": 100000},
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": {"rpm": 20, "tpm": 100000},
     "meta-llama/Meta-Llama-3-70B-Instruct-Turbo": {"rpm": 5, "tpm": 50000},
-    "google/gemma-2-27b-it":       {"rpm": 15,  "tpm": 100000},
-    "qwen/qwen-2.5-72b-instruct": {"rpm": 10,  "tpm": 100000},
+    "google/gemma-2-27b-it":        {"rpm": 15,  "tpm": 100000},
+    "qwen/qwen-2.5-72b-instruct":  {"rpm": 10,  "tpm": 100000},
 }
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -112,7 +107,7 @@ PROVIDERS = {
     "gemini": {
         "env_prefix": "GEMINI_API_KEY",
         "api_base": "https://generativelanguage.googleapis.com/v1beta",
-        "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"],
+        "models": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-flash-latest", "gemini-flash-lite-latest"],
         "headers": lambda key: {"Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: (
             lambda _sys: {
@@ -168,7 +163,7 @@ PROVIDERS = {
     "groq": {
         "env_prefix": "GROQ_API_KEY",
         "api_base": "https://api.groq.com/openai/v1",
-        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "allam-2-7b"],
+        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "allam-2-7b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
         "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: {
             "model": model,
@@ -466,30 +461,30 @@ def classify_task(messages):
 # Falls through to next tier if first choice fails
 MODEL_TIERS = {
     'simple': [
-        ('gemini', 'gemini-2.5-flash'),
-        ('gemini', 'gemini-2.5-flash-lite'),
-        ('gemini', 'gemini-3-flash'),
+        ('gemini', 'gemini-3.6-flash'),
+        ('gemini', 'gemini-3.5-flash-lite'),
+        ('gemini', 'gemini-flash-latest'),
+        ('groq', 'openai/gpt-oss-20b'),
         ('groq', 'allam-2-7b'),
         ('groq', 'qwen/qwen3.6-27b'),
-        ('xai', 'grok-3-mini'),
-        ('groq', 'openai/gpt-oss-20b'),
+        ('mistral', 'open-mistral-nemo'),
     ],
     'medium': [
-        ('gemini', 'gemini-2.5-flash'),
-        ('gemini', 'gemini-2.5-flash-lite'),
-        ('gemini', 'gemini-3-flash'),
-        ('groq', 'qwen/qwen3.8-27b'),
+        ('gemini', 'gemini-3.6-flash'),
+        ('gemini', 'gemini-3.5-flash'),
+        ('gemini', 'gemini-flash-latest'),
         ('groq', 'openai/gpt-oss-120b'),
-        ('xai', 'grok-3-mini'),
-        ('xai', 'grok-3'),
+        ('groq', 'qwen/qwen3.8-27b'),
+        ('mistral', 'mistral-small-latest'),
+        ('groq', 'llama-3.3-70b-versatile'),
     ],
     'complex': [
-        ('gemini', 'gemini-2.5-pro'),
-        ('gemini', 'gemini-2.5-flash'),
+        ('gemini', 'gemini-3.1-pro-preview'),
+        ('gemini', 'gemini-3.6-flash'),
         ('groq', 'openai/gpt-oss-120b'),
-        ('xai', 'grok-3'),
         ('groq', 'qwen/qwen3.8-27b'),
-        ('xai', 'grok-3-mini'),
+        ('mistral', 'mistral-large-latest'),
+        ('groq', 'llama-3.3-70b-versatile'),
     ],
 }
 
@@ -607,7 +602,7 @@ class MultiProviderBalancer:
                     result["model"] = used_model
                     return (result, used_model)
 
-        fallback_order = ["groq", "xai", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere", "opencode"]
+        fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
         for provider_name in fallback_order:
             provider_cfg = PROVIDERS.get(provider_name)
             if not provider_cfg:
