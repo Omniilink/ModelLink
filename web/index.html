@@ -219,6 +219,38 @@ a:hover{text-decoration:underline}
 .coding-sticky-bar button:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .coding-sticky-bar button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .coding-sticky-bar button.primary:hover{background:var(--accent-light)}
+
+/* ===== Futuristic coding theme: neon tool blocks, glow accents ===== */
+.coding-view{background:radial-gradient(1200px 500px at 70% -10%,rgba(37,99,235,.08),transparent 60%),var(--bg-primary)}
+.coding-toolbar{position:relative;border-bottom:1px solid var(--border)}
+.coding-toolbar::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(37,99,235,.7),rgba(168,85,247,.7),transparent);pointer-events:none}
+.coding-toolbar button.primary{background:linear-gradient(135deg,#2563eb,#7c3aed);border:none;box-shadow:0 0 12px rgba(37,99,235,.45)}
+.coding-toolbar button.primary:hover{box-shadow:0 0 18px rgba(124,58,237,.6);background:linear-gradient(135deg,#3b82f6,#8b5cf6)}
+.coding-msg.assistant .coding-msg-avatar{background:linear-gradient(135deg,#1e1b4b,#312e81);color:#c4b5fd;border:1px solid rgba(139,92,246,.5);box-shadow:0 0 10px rgba(139,92,246,.35)}
+.coding-msg.user .coding-msg-avatar{background:linear-gradient(135deg,#2563eb,#7c3aed);box-shadow:0 0 10px rgba(37,99,235,.5)}
+.coding-msg.user .coding-msg-content{background:linear-gradient(135deg,rgba(37,99,235,.28),rgba(124,58,237,.22));border-color:rgba(99,102,241,.6);box-shadow:0 0 16px rgba(37,99,235,.18)}
+.coding-msg.assistant .coding-msg-content{background:rgba(17,20,28,.85);border-color:rgba(99,102,241,.25);backdrop-filter:blur(4px)}
+.coding-msg-model{color:var(--accent-light);opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.coding-msg-tool{position:relative;background:linear-gradient(180deg,rgba(20,24,38,.95),rgba(12,14,22,.95));border:1px solid rgba(99,102,241,.3);border-left:3px solid var(--accent);border-radius:8px;box-shadow:0 0 14px rgba(37,99,235,.12);overflow:hidden}
+.coding-msg-tool::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(139,92,246,.6),transparent);pointer-events:none}
+.coding-msg-tool.tool-create{border-left-color:#22c55e;box-shadow:0 0 14px rgba(34,197,94,.14)}
+.coding-msg-tool.tool-edit{border-left-color:#3b82f6;box-shadow:0 0 14px rgba(59,130,246,.16)}
+.coding-msg-tool.tool-delete{border-left-color:#ef4444;box-shadow:0 0 14px rgba(239,68,68,.14)}
+.coding-msg-tool.tool-cmd{border-left-color:#a855f7;box-shadow:0 0 14px rgba(168,85,247,.18)}
+.coding-msg-tool .tool-label{letter-spacing:.4px;text-shadow:0 0 8px rgba(96,165,250,.5)}
+.cmd-result{background:rgba(0,0,0,.45);border:1px solid var(--border)}
+.cmd-result.success{border-color:rgba(34,197,94,.6);box-shadow:inset 0 0 12px rgba(34,197,94,.08)}
+.cmd-result.fail{border-color:rgba(239,68,68,.6);box-shadow:inset 0 0 12px rgba(239,68,68,.1)}
+.file-write-diff{background:rgba(0,0,0,.45);border-color:rgba(99,102,241,.4)}
+.coding-sticky-bar{background:linear-gradient(180deg,rgba(24,28,44,.97),rgba(15,17,26,.97));border-bottom:1px solid rgba(99,102,241,.35);box-shadow:0 4px 18px rgba(37,99,235,.15)}
+.coding-sticky-bar button.primary{background:linear-gradient(135deg,#2563eb,#7c3aed);border:none;box-shadow:0 0 12px rgba(37,99,235,.5)}
+.coding-input-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 1px rgba(37,99,235,.5),0 0 18px rgba(37,99,235,.25)}
+.coding-chat::-webkit-scrollbar,.coding-output-body::-webkit-scrollbar{width:8px}
+.coding-chat::-webkit-scrollbar-thumb,.coding-output-body::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2563eb,#7c3aed);border-radius:4px}
+.coding-chat::-webkit-scrollbar-track,.coding-output-body::-webkit-scrollbar-track{background:transparent}
+.approve-bar .approve{background:linear-gradient(135deg,#16a34a,#22c55e);border:none;box-shadow:0 0 10px rgba(34,197,94,.4)}
+@keyframes toolPulse{0%,100%{box-shadow:0 0 14px rgba(168,85,247,.18)}50%{box-shadow:0 0 26px rgba(168,85,247,.45)}}
+.coding-msg-tool.tool-cmd.running{animation:toolPulse 1.2s ease-in-out infinite}
 .api-tab{padding:5px 14px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;font-family:var(--font);transition:all .12s}
 .api-tab:hover{color:var(--text-secondary);border-color:var(--border-light)}
 .api-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1365,7 +1397,7 @@ function insertAtFile(path){const input=document.getElementById('coding-input');
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 
 async function buildCodingSystemPrompt(){let basePrompt='';try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||''}catch(e){}
-  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. You help with coding tasks.\nYou can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command\nEND_RUN_COMMAND\nAlways explain what you are doing.';
+  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Always explain what you are doing.';
   let sysPrompt=basePrompt+'\n';if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;if(fsHandle)content=await fsReadFile(fname);else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(fname));const data=await r.json();if(r.ok)content=data.content}if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
@@ -1383,10 +1415,36 @@ async function sendCodingMessage(){
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;contentEl.innerHTML=renderContent(fullText);chat.scrollTop=chat.scrollHeight}}catch(e){}}}}
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;assistantEl.querySelector('div').appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});await processCodingActions(fullText,assistantEl);
   }catch(e){contentEl.innerHTML=renderContent('Error: '+e.message)}codingStream=false;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
 }
 
+function sanitizeCommand(cmd){
+  // Mirror of the backend sanitizer: models emit stray wrapping
+  // quotes/backticks (e.g. cmd /c dir"), which cmd.exe misreads.
+  let c=(cmd||'').trim();
+  if(c.startsWith('```'))c=c.replace(/^```\w*\n?/,'').replace(/\n?```$/,'').trim();
+  if(c.length>=2&&((c[0]==='"'&&c[c.length-1]==='"')||(c[0]==="'"&&c[c.length-1]==="'")||(c[0]==='`'&&c[c.length-1]==='`')))c=c.slice(1,-1).trim();
+  for(const q of['"']){if(c.endsWith(q)&&(c.match(/"/g)||[]).length%2===1)c=c.slice(0,-1).trim()}
+  for(const q of["'"]){if(c.endsWith(q)&&(c.match(/'/g)||[]).length%2===1)c=c.slice(0,-1).trim()}
+  // Backend runs shell=True (already cmd.exe): a redundant cmd /c prefix
+  // double-wraps and breaks, so strip it for display parity
+  c=c.replace(/^cmd(\.exe)?\s+\/[ck]\s+/i,'').trim();
+  return c;
+}
+function copyAllCodeBlocks(){
+  const blocks=[...document.querySelectorAll('#coding-chat .file-write-diff')];
+  if(blocks.length===0){showToast('No code blocks to copy','error');return}
+  const text=blocks.map((b,i)=>'--- block '+(i+1)+' ---\n'+b.textContent).join('\n\n');
+  navigator.clipboard.writeText(text).then(()=>showToast('Copied '+blocks.length+' code block'+(blocks.length!==1?'s':''),'success')).catch(()=>showToast('Copy failed','error'));
+}
+async function applyAllToolBlocks(){
+  const btns=[...document.querySelectorAll('#coding-chat .approve-bar .approve')];
+  if(btns.length===0){showToast('Nothing pending to apply','error');return}
+  showToast('Applying '+btns.length+' action'+(btns.length!==1?'s':''),'info');
+  for(const b of btns){try{b.click();await new Promise(r=>setTimeout(r,400))}catch(e){}}
+  refreshCodingTree();
+}
 async function processCodingActions(text,msgEl){
   const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
@@ -1394,20 +1452,20 @@ async function processCodingActions(text,msgEl){
   const contentEl=msgEl.querySelector('.coding-msg-content');
   if(contentEl&&hasToolBlocks){let cleaned=text;cleaned=cleaned.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'');cleaned=cleaned.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'');cleaned=cleaned.replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'');cleaned=cleaned.replace(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm,'');cleaned=cleaned.trim();if(cleaned)contentEl.innerHTML=renderContent(cleaned);else contentEl.innerHTML=''}
   const codingSettings=await fetchCodingSettings();
-  for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool';toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Create File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
+  for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Create File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
     if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
-  for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool';toolDiv.innerHTML='<div class="tool-label">Edit File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
+  for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';toolDiv.innerHTML='<div class="tool-label">Edit File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
     if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
-  for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
+  for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(fsHandle){await fsDeleteFile(path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
-  for(const match of commands){const cmd=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool';toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command){const result=await codingRunCmd(cmd);toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+escapeHtml(result.stdout||'')+(result.stderr?'\n'+result.stderr:'')+'</div>'}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{const result=await codingRunCmd(cmd);bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+escapeHtml(result.stdout||'')+(result.stderr?'\n'+result.stderr:'')+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+  for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
+    if(codingSettings.auto_command){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+escapeHtml(result.stdout||'')+(result.stderr?'\n'+result.stderr:'')+'</div>'}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+escapeHtml(result.stdout||'')+(result.stderr?'\n'+result.stderr:'')+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
 }
 

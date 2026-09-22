@@ -1362,46 +1362,55 @@ def _build_file_tree(root_path, prefix=""):
         entries.append({"name": f, "type": "file", "size": size})
     return entries
 
-DEFAULT_CODING_PROMPT = """You are a coding assistant. You can create, edit, delete files and run commands.
+DEFAULT_CODING_PROMPT = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
 
-IMPORTANT: When you need to create, edit, delete a file, or run a command, you MUST use these exact text blocks in your response. The system will detect these blocks and perform the actions.
+ENVIRONMENT (memorize this):
+- The server runs on WINDOWS. Commands execute in cmd.exe, already a shell.
+- Working directory is the open project folder. All paths are relative to it.
+- NEVER prefix commands with `cmd /c` — it is already implied and breaks parsing.
+- NEVER wrap a command in quotes. Write it bare on one single line.
+- One command per RUN_COMMAND block. Chain with `&&` if needed.
+- Forward slashes work in paths (e.g. `type src/app.js`).
 
-To CREATE a new file, write EXACTLY this format:
-FILE_CREATE:filename.py
-your complete file content here
-END_FILE_CREATE
+COMMAND REFERENCE (use exactly these forms):
+- List files: dir /b
+- List with sizes: dir
+- Show a file: type path\\to\\file
+- Make a folder: mkdir foldername
+- Delete a file: del filename
+- Run Python: python filename.py  (check first: python --version)
+- Run JavaScript: node filename.js  (check first: node --version)
+- Packages: pip install name  /  npm install
+- Git: git status / git add -A / git commit -m "msg"
 
-To EDIT an existing file, write EXACTLY this format:
-FILE_EDIT:filename.py
-your complete file content here
-END_FILE_EDIT
+BLOCK SYNTAX (exact — the parser is strict):
+- Each block starts on its own line. No code fences around blocks. No quotes around the command.
+- FILE_CREATE:path/to/file.ext — full file content between markers, then END_FILE_CREATE.
+- FILE_EDIT:path/to/file.ext — COMPLETE new file content, then END_FILE_EDIT.
+- FILE_DELETE:path/to/file.ext then END_FILE_DELETE on the next line.
+- RUN_COMMAND:your command here then END_RUN_COMMAND on the next line.
 
-To DELETE a file, write EXACTLY this format:
-FILE_DELETE:filename.py
-END_FILE_DELETE
+WORKFLOW:
+1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
+2. Explain briefly, then emit blocks.
+3. After creating code, run it to verify (python/node) and report the output.
 
-To RUN a command, write EXACTLY this format:
-RUN_COMMAND:python filename.py
+Example:
+I will check the project contents first.
+
+RUN_COMMAND:dir /b
 END_RUN_COMMAND
 
-You can use multiple blocks in one response. Always explain what you do.
+Then I will create the page.
 
-Example response when creating a file:
-I will create a new Python file for you.
-
-FILE_CREATE:hello.py
-print("Hello World")
+FILE_CREATE:index.html
+<!DOCTYPE html>
+<html><body><h1>Hello</h1></body></html>
 END_FILE_CREATE
-
-The file has been created. You can run it with:
-RUN_COMMAND:python hello.py
-END_RUN_COMMAND
 
 Rules:
 - For FILE_EDIT, include the COMPLETE file content, not just changes.
-- For FILE_CREATE, the full file content goes between the markers.
 - Always put the file path right after the colon, no spaces before the path.
-- Each block must start on its own line.
 - You are an expert in Python, JavaScript, TypeScript, HTML, CSS, Java, C, C++, Go, Rust, Ruby, PHP, and all other programming languages.
 """
 
@@ -1533,11 +1542,46 @@ async def coding_file_delete(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+def _sanitize_shell_command(command: str) -> str:
+    """Clean an AI- or user-supplied shell command.
+
+    Models often emit stray wrapping quotes/backticks (e.g. `cmd /c dir"`
+    or `"dir"`), which cmd.exe then treats as part of the program name.
+    Strip markdown fences, surrounding quotes/backticks, and any single
+    unbalanced trailing quote so the intent executes.
+    """
+    c = (command or "").strip()
+    # Strip markdown code fences if the whole command is fenced
+    if c.startswith("```"):
+        c = re.sub(r"^```\w*\n?", "", c)
+        c = re.sub(r"\n?```$", "", c).strip()
+    # Strip one layer of surrounding matching quotes/backticks
+    if len(c) >= 2 and c[0] == c[-1] and c[0] in "\"'`":
+        c = c[1:-1].strip()
+    # Drop a lone unbalanced trailing quote: the classic `dir"` bug
+    for q in ("\"", "'"):
+        if c.endswith(q) and c.count(q) % 2 == 1:
+            c = c[:-1].rstrip()
+    # Drop a lone unbalanced leading quote
+    for q in ("\"", "'"):
+        if c.startswith(q) and c.count(q) % 2 == 1:
+            c = c[1:].lstrip()
+    # subprocess runs with shell=True, i.e. already inside cmd.exe. A
+    # redundant `cmd /c` prefix gets double-wrapped (cmd /d /s /c "cmd /c X")
+    # and cmd.exe's /s quote handling mangles it (observed: program `dir"`).
+    # Strip it so bare commands execute.
+    c = re.sub(r"^(cmd(\.exe)?\s+/[ck]\s+)", "", c, flags=re.IGNORECASE).strip()
+    return c.strip()
+
+
 @app.post("/api/coding/run-command")
 async def coding_run_command(request: Request, req: CodingRunCommand):
     _user, err = _require_admin(request)
     if err:
         return err
+    command = _sanitize_shell_command(req.command)
+    if not command:
+        return JSONResponse(status_code=400, content={"error": "Empty command"})
     user_id = _safe_username(_user["username"])
     coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
@@ -1546,13 +1590,13 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         cwd = os.getcwd()
     try:
         proc = subprocess.run(
-            req.command, shell=True, cwd=cwd,
+            command, shell=True, cwd=cwd,
             capture_output=True, text=True, timeout=60
         )
         stdout = proc.stdout
         stderr = proc.stderr
         exit_code = proc.returncode
-        logger.info(f"[CMD] {req.command} (exit {exit_code})")
+        logger.info(f"[CMD] {command} (exit {exit_code})")
         return {"stdout": stdout, "stderr": stderr, "exit_code": exit_code}
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=408, content={"error": "Command timed out (60s)"})
