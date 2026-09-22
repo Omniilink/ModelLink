@@ -125,23 +125,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-        "connect-src 'self'; font-src 'self'; object-src 'none'; "
-        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
-    )
-    if request.headers.get("x-forwarded-proto", "").lower() == "https":
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    return response
+class SecurityHeadersMiddleware:
+    """Raw ASGI middleware — avoids nested BaseHTTPMiddleware + StreamingResponse bug in Starlette 1.6."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                           for k, v in scope.get("headers", [])}
+        is_https = request_headers.get("x-forwarded-proto", "").lower() == "https"
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {k.decode("latin-1").lower() for k, _ in headers}
+                if "x-content-type-options" not in existing:
+                    headers.append((b"x-content-type-options", b"nosniff"))
+                if "x-frame-options" not in existing:
+                    headers.append((b"x-frame-options", b"DENY"))
+                if "referrer-policy" not in existing:
+                    headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
+                if "permissions-policy" not in existing:
+                    headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
+                if "content-security-policy" not in existing:
+                    headers.append((b"content-security-policy",
+                        b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                        b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                        b"connect-src 'self'; font-src 'self'; object-src 'none'; "
+                        b"base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
+                if is_https and "strict-transport-security" not in existing:
+                    headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Access log: broadcast API activity to the terminal (skip static/health noise)
 _SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/favicon.svg", "/favicon.ico"}
