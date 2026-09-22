@@ -45,7 +45,7 @@ from modellink.auth import (
     update_user_name, update_user_password, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
     delete_user_provider_key, get_db, get_user_from_session,
-    revoke_user_sessions
+    revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key
 )
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
@@ -143,6 +143,32 @@ async def security_headers(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
+# Access log: broadcast API activity to the terminal (skip static/health noise)
+_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/favicon.svg", "/favicon.ico"}
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    path = request.url.path
+    if path in _SKIP_LOG_PATHS or path.startswith("/static") or path == "/":
+        return await call_next(request)
+    start = time.time()
+    response = await call_next(request)
+    dur_ms = int((time.time() - start) * 1000)
+    method = request.method
+    status = response.status_code
+    user = getattr(request.state, "user", None)
+    uname = user.get("username", "-") if user else "-"
+    if status >= 500:
+        level = "ERROR"
+    elif status >= 400:
+        level = "WARNING"
+    else:
+        level = "INFO"
+    msg = f"{method} {path} {status} {dur_ms}ms user={uname}"
+    # Emulate logger format so frontend level detection works
+    log_broadcaster.emit(f"{time.strftime('%H:%M:%S')} [{level}] [HTTP] {msg}")
+    return response
+
 # ==========================================
 # Per-User Data Isolation
 # ==========================================
@@ -164,6 +190,7 @@ def _require_auth(request: Request):
     user = get_current_user(request)
     if not user:
         return None, JSONResponse(status_code=401, content={"error": "Authentication required"})
+    request.state.user = user
     return user, None
 
 def _require_admin(request: Request):
@@ -319,11 +346,19 @@ class LogBroadcaster:
     def __init__(self):
         self._queues: List[queue.Queue] = []
         self._lock = asyncio.Lock()
+        self._history: List[str] = []
+        self._history_max = 500
 
     def subscribe(self) -> queue.Queue:
         if len(self._queues) >= 64:
             raise RuntimeError("Too many log subscriptions")
         q = queue.Queue(maxsize=200)
+        # Replay recent history so the terminal isn't empty on connect
+        for msg in self._history:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                break
         self._queues.append(q)
         return q
 
@@ -332,6 +367,9 @@ class LogBroadcaster:
             self._queues.remove(q)
 
     def emit(self, message: str):
+        self._history.append(message)
+        if len(self._history) > self._history_max:
+            del self._history[: len(self._history) - self._history_max]
         dead = []
         for q in self._queues:
             try:
@@ -504,6 +542,7 @@ async def auth_signup(request: Request, req: SignupRequest):
     _record_signup(ip)
     token = create_session(result["id"])
     user = get_user_by_id(result["id"])
+    logger.info(f"[AUTH] Signup user={username} ip={ip}")
     resp = JSONResponse(content={"status": "ok", "user": user})
     set_session_cookie(resp, token, secure=_request_is_https(request))
     return resp
@@ -517,9 +556,11 @@ async def auth_signin(request: Request, req: SigninRequest):
     user = authenticate_user(req.username.strip().lower(), req.password)
     if not user:
         _record_login_failure(throttle_key)
+        logger.warning(f"[AUTH] Failed signin user={req.username.strip().lower()} ip={ip}")
         return JSONResponse(status_code=401, content={"error": "Invalid username or password"})
     _login_failures.pop(throttle_key, None)
     token = create_session(user["id"])
+    logger.info(f"[AUTH] Signin user={user.get('username','-')} ip={ip}")
     resp = JSONResponse(content={"status": "ok", "user": user})
     set_session_cookie(resp, token, secure=_request_is_https(request))
     return resp
@@ -595,6 +636,7 @@ async def save_provider_key(request: Request, req: ProviderKeyRequest):
     if len(req.api_key) > 500 or any(ord(c) < 32 for c in req.api_key):
         return JSONResponse(status_code=400, content={"error": "Invalid API key"})
     save_user_provider_key(user["id"], req.provider.strip(), req.api_key.strip())
+    logger.info(f"[KEYS] Provider key saved user={user.get('username','-')} provider={req.provider.strip()}")
     return {"status": "ok"}
 
 @app.delete("/api/provider-keys/{key_id}")
@@ -603,6 +645,7 @@ async def delete_provider_key(request: Request, key_id: int):
     if not user:
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
     delete_user_provider_key(user["id"], key_id)
+    logger.info(f"[KEYS] Provider key deleted user={user.get('username','-')} key_id={key_id}")
     return {"status": "ok"}
 
 @app.get("/api/status")
@@ -813,6 +856,28 @@ async def set_language_setting(http_request: Request, request: LanguageRequest):
     logger.info(f"Language set to: {request.language}")
     return {"status": "ok", "language": request.language}
 
+def _split_used_model(used_model: str):
+    """'groq/qwen3.6-27b' -> ('groq', 'qwen3.6-27b')."""
+    if used_model and "/" in used_model:
+        provider, _, model = used_model.partition("/")
+        return provider or "unknown", model or used_model
+    return "unknown", used_model or "unknown"
+
+
+@app.get("/api/usage")
+async def api_usage(request: Request, range: str = "24h"):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range, 24)
+    try:
+        data = get_usage(user_id=user["id"], range_hours=hours)
+        data["rate_limits"] = lb.rate_limiter.get_status()
+        data["model_name"] = MODEL_NAME
+        return data
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     user, err = _require_auth(request)
@@ -850,6 +915,40 @@ async def chat_completions(request: Request):
             return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your own provider keys in Settings."})
         user_keys = db_keys
 
+    auth_header = request.headers.get("Authorization", "")
+    api_key_id = None
+    if auth_header.startswith("Bearer ml-"):
+        api_key_id = get_api_key_id_by_key(auth_header[7:])
+
+    prompt_chars = sum(len(m.get("content", "")) for m in messages)
+    est_prompt_tokens = max(1, prompt_chars // 4)
+    start_ts = time.time()
+    logger.info(
+        f"[CHAT] Request from user={user.get('username', '-')} "
+        f"model={req_model} stream={is_stream} "
+        f"messages={len(messages)} prompt_chars={prompt_chars} "
+        f"est_tokens~{est_prompt_tokens} temp={temp} max_tokens={max_tokens}"
+    )
+
+    def _finish_usage(used_model: str, completion_tokens: int = 0, status: int = 200):
+        provider, model_name = _split_used_model(used_model)
+        dur_ms = int((time.time() - start_ts) * 1000)
+        record_usage(
+            user_id=user["id"],
+            model=model_name,
+            provider=provider,
+            prompt_tokens=est_prompt_tokens,
+            completion_tokens=completion_tokens,
+            duration_ms=dur_ms,
+            source="chat",
+            status=status,
+            api_key_id=api_key_id,
+        )
+        logger.info(
+            f"[CHAT] {provider}/{model_name} {dur_ms}ms "
+            f"prompt~{est_prompt_tokens} completion~{completion_tokens} user={user.get('username', '-')}"
+        )
+
     if is_stream:
         stream, used_model = await asyncio.to_thread(
             generate,
@@ -864,10 +963,13 @@ async def chat_completions(request: Request):
         async def event_generator():
             chat_id = f"chatcmpl-{int(time.time())}"
             created_time = int(time.time())
+            out_chars = 0
+            finished = False
             try:
                 if isinstance(stream, dict):
                     text_chunk = stream.get("choices", [{}])[0].get("message", {}).get("content", "")
                     if text_chunk:
+                        out_chars += len(text_chunk)
                         chunk_data = {
                             "id": chat_id, "object": "chat.completion.chunk",
                             "created": created_time, "model": used_model,
@@ -882,6 +984,7 @@ async def chat_completions(request: Request):
                         elif isinstance(chunk, str):
                             text_chunk = chunk
                         if text_chunk:
+                            out_chars += len(text_chunk)
                             chunk_data = {
                                 "id": chat_id,
                                 "object": "chat.completion.chunk",
@@ -897,6 +1000,11 @@ async def chat_completions(request: Request):
                     "choices": [{"index": 0, "delta": {"content": f"\n[Error: {str(e)}]"}, "finish_reason": "stop"}]
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
+                _finish_usage(used_model, completion_tokens=max(1, out_chars // 4), status=500)
+                finished = True
+            finally:
+                if not finished:
+                    _finish_usage(used_model, completion_tokens=max(1, out_chars // 4))
 
             finish_chunk = {
                 "id": chat_id, "object": "chat.completion.chunk",
@@ -908,15 +1016,31 @@ async def chat_completions(request: Request):
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     else:
-        response, used_model = await asyncio.to_thread(
-            generate,
-            messages=messages,
-            model=req_model,
-            temperature=temp,
-            max_tokens=max_tokens,
-            stream=False,
-            user_keys=user_keys,
-        )
+        try:
+            response, used_model = await asyncio.to_thread(
+                generate,
+                messages=messages,
+                model=req_model,
+                temperature=temp,
+                max_tokens=max_tokens,
+                stream=False,
+                user_keys=user_keys,
+            )
+        except Exception as e:
+            _finish_usage("unknown/unknown", status=500)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        usage = (response or {}).get("usage") or {}
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        if completion_tokens <= 0:
+            content = ""
+            try:
+                content = response["choices"][0]["message"].get("content") or ""
+            except Exception:
+                pass
+            completion_tokens = max(1, len(content) // 4)
+        if usage.get("prompt_tokens"):
+            pass  # keep est_prompt_tokens from request side
+        _finish_usage(used_model, completion_tokens=completion_tokens)
         return JSONResponse(content=response)
 
 @app.get("/v1/models")
