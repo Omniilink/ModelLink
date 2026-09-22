@@ -97,7 +97,13 @@ class BodyLimitMiddleware:
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": body, "more_body": False}
-            return {"type": "http.disconnect"}
+            # Body already replayed: delegate upstream and wait for the REAL
+            # client disconnect. Returning a fake http.disconnect here makes
+            # Starlette's StreamingResponse (spec < 2.4 path) believe the
+            # client is gone, so listen_for_disconnect wins the race against
+            # stream_response, the response start is never sent, and
+            # BaseHTTPMiddleware raises RuntimeError("No response returned.").
+            return await receive()
 
         await self.app(scope, replay_receive, send)
 
