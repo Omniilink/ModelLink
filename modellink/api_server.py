@@ -6,6 +6,7 @@ import asyncio
 import queue
 import subprocess
 import shutil
+import threading
 
 # ==========================================
 # PyInstaller path resolution
@@ -344,16 +345,43 @@ _migrate_user_data_dirs()
 # Per-user coding states: {user_key: {"folder": ..., "settings": {...}}}
 _coding_states = {}
 
+def _coding_settings_path(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "coding_settings.json")
+
+def _load_coding_settings(user_id: str, defaults: dict) -> dict:
+    """Best-effort load of persisted per-user coding settings."""
+    try:
+        p = _coding_settings_path(user_id)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for k, v in saved.items():
+                    if k in defaults:
+                        defaults[k] = v
+    except Exception:
+        pass
+    return defaults
+
+def _save_coding_settings(user_id: str, settings: dict):
+    """Best-effort persist of per-user coding settings."""
+    try:
+        with open(_coding_settings_path(user_id), "w", encoding="utf-8") as f:
+            json.dump(settings, f)
+    except Exception:
+        pass
+
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
+        settings = _load_coding_settings(user_id, {
+            "auto_edit": False,
+            "auto_command": False,
+            "max_file_size": 100000,
+            "system_prompt": DEFAULT_CODING_PROMPT
+        })
         _coding_states[user_id] = {
             "folder": None,
-            "settings": {
-                "auto_edit": False,
-                "auto_command": False,
-                "max_file_size": 100000,
-                "system_prompt": DEFAULT_CODING_PROMPT
-            }
+            "settings": settings
         }
     return _coding_states[user_id]
 
@@ -386,11 +414,50 @@ class LogBroadcaster:
         self._lock = asyncio.Lock()
         self._history: List[str] = []
         self._history_max = 500
+        self._file_lock = threading.Lock()
+        self._log_file = os.path.join(APP_DIR, "modellink", "server.log")
+        self._log_file_max_bytes = 2 * 1024 * 1024
+        self._trim_log_file()
+
+    def _trim_log_file(self):
+        """Best-effort: keep the persisted log file bounded (last ~1500 lines)."""
+        try:
+            if not os.path.exists(self._log_file):
+                return
+            if os.path.getsize(self._log_file) <= self._log_file_max_bytes:
+                return
+            with open(self._log_file, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            with open(self._log_file, "w", encoding="utf-8") as f:
+                f.writelines(lines[-1500:])
+        except Exception:
+            pass
+
+    def _append_to_file(self, message: str):
+        try:
+            with self._file_lock:
+                with open(self._log_file, "a", encoding="utf-8") as f:
+                    f.write(message + "\n")
+        except Exception:
+            pass
+
+    def _load_file_tail(self, n: int = 200) -> List[str]:
+        try:
+            if not os.path.exists(self._log_file):
+                return []
+            with open(self._log_file, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return [ln.rstrip("\n") for ln in lines[-n:] if ln.strip()]
+        except Exception:
+            return []
 
     def subscribe(self) -> queue.Queue:
         if len(self._queues) >= 64:
             raise RuntimeError("Too many log subscriptions")
         q = queue.Queue(maxsize=200)
+        # Seed from the persisted log file so the terminal survives restarts
+        if not self._history:
+            self._history = self._load_file_tail(500)[-self._history_max:]
         # Replay recent history so the terminal isn't empty on connect
         for msg in self._history:
             try:
@@ -408,6 +475,7 @@ class LogBroadcaster:
         self._history.append(message)
         if len(self._history) > self._history_max:
             del self._history[: len(self._history) - self._history_max]
+        self._append_to_file(message)
         dead = []
         for q in self._queues:
             try:
@@ -1384,6 +1452,7 @@ async def coding_update_settings(request: Request):
     for k, v in body.items():
         if k in coding_state["settings"]:
             coding_state["settings"][k] = v
+    _save_coding_settings(_safe_username(user["username"]), coding_state["settings"])
     return {"status": "ok", "settings": coding_state["settings"]}
 
 @app.get("/api/coding/project-context")

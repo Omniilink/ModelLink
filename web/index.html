@@ -495,6 +495,13 @@ a:hover{text-decoration:underline}
 .cat-cmd{background:rgba(34,197,94,.15);color:#4ade80}
 .cat-ollama{background:rgba(249,115,22,.15);color:#fb923c}
 .cat-rate{background:rgba(234,179,8,.15);color:#fbbf24}
+.cat-coding{background:rgba(139,92,246,.15);color:#a78bfa}
+.cat-project{background:rgba(6,182,212,.15);color:#22d3ee}
+.cat-apikey{background:rgba(244,114,182,.15);color:#f9a8d4}
+.cat-stream{background:rgba(52,211,153,.15);color:#6ee7b7}
+.cat-cooldown{background:rgba(251,146,60,.15);color:#fdba74}
+.cat-unhandled{background:rgba(239,68,68,.2);color:#fca5a5}
+.cat-compare{background:rgba(163,163,163,.15);color:#d4d4d4}
 .terminal-autoscroll{display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:10px;transition:all .12s}
 .terminal-autoscroll:hover{color:var(--text-primary);border-color:var(--border-light)}
 .terminal-autoscroll.on{background:var(--accent-dim);color:var(--accent-light);border-color:var(--accent)}
@@ -971,13 +978,17 @@ function appendLog(msg){
   const el=document.getElementById('terminal-body');
   const line=document.createElement('div');line.className='log-line';
   let level='info',category='system';
-  const catMatch=msg.match(/\[(\w+)\]/);
-  if(catMatch)category=catMatch[1].toLowerCase();
+  // Backend lines look like "07:33:04 [INFO] [CHAT] ..." — the log LEVEL is
+  // always the first bracket, the meaningful CATEGORY is a later one.
+  // Collect every [TAG] and prefer the first known non-level tag.
+  const catMap={'routing':'routing','http':'http','chat':'chat','error':'error','warning':'warning','auth':'auth','authz':'auth','system':'system','startup':'system','info':'info','keys':'keys','key':'keys','cmd':'cmd','ollama':'ollama','ollamastream':'ollama','rate':'rate','cooldown':'cooldown','stream':'stream','coding':'coding','project':'project','apikey':'apikey','unhandled':'unhandled','migrate':'system','compare':'compare'};
+  const levelTags=new Set(['info','warning','error','debug','critical']);
+  const tags=[...msg.matchAll(/\[([A-Za-z][\w ]*)\]/g)].map(m=>m[1].trim().toLowerCase().replace(/\s+/g,''));
+  category=tags.find(t=>catMap[t]&&!levelTags.has(t))||tags.find(t=>catMap[t])||'system';
   if(msg.includes('[ERROR]')||msg.includes('[FAIL]')||msg.includes('ERROR')){level='error';line.className+=' error'}
   else if(msg.includes('[WARNING]')||msg.includes('COOLDOWN')||msg.includes('LIMIT')||msg.includes('WARN')){level='warning';line.className+=' warning'}
   else if(msg.includes('[OK]')){level='info';line.className+=' success'}
   else{level='info';line.className+=' info'}
-  const catMap={'routing':'routing','http':'http','chat':'chat','error':'error','warning':'warning','auth':'auth','authz':'auth','system':'system','startup':'system','info':'info','keys':'keys','cmd':'cmd','ollama':'ollama','rate':'rate','migrate':'system'};
   const displayCat=catMap[category]||category||'info';
   const now=new Date();const ts=now.toTimeString().slice(0,8);
   line.dataset.level=level;line.dataset.cat=displayCat;line.dataset.ts=now.getTime();
@@ -1077,6 +1088,7 @@ function useQuickAction(prompt){const input=document.getElementById('chat-input'
 
 async function sendMessage(){
   if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();if(!text)return;
+  if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
   appendMessage('user',text);chatHistory.push({role:'user',content:text});
   if(compareMode)sendCompareRequest(text);
@@ -1091,7 +1103,7 @@ async function sendMessage(){
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
     chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();
-  }catch(e){updateMessage(assistantEl,'Error: '+e.message)}
+  }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();
 }
 
@@ -1137,7 +1149,7 @@ function editAndResend(editIdx,newText){
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
-  }).catch(e=>{updateMessage(assistantEl,'Error: '+e.message);isStreaming=false;document.getElementById('send-btn').disabled=false});
+  }).catch(e=>{const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false});
 }
 function updateMessage(el,content){el.innerHTML=renderContent(content);document.getElementById('chat-area').scrollTop=document.getElementById('chat-area').scrollHeight}
 </script>
