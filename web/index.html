@@ -881,7 +881,6 @@ function renderProviders(providers){
   }
 }
 async function loadProviderStatus(){try{const r=await fetch(API+'/api/health');const data=await r.json();if(data.status==='ok'){document.getElementById('status-dot').className='status-dot online';document.getElementById('status-text').textContent='Connected'}else{document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}
-}
 
 function handleKey(e){if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();sendMessage()}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,160)+'px'}
@@ -1086,6 +1085,7 @@ function renderFileTree(tree){
       delBtn.onmouseenter=()=>{delBtn.style.background='var(--error)';delBtn.style.color='#fff'};delBtn.onmouseleave=()=>{delBtn.style.background='transparent';delBtn.style.color='var(--text-muted)'};
       delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete "'+e.name+'"?')))return;try{if(fsHandle)await fsDeleteFile(fp);else await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(fp),{method:'DELETE'});refreshCodingTree();showToast('Deleted '+e.name,'success')}catch(err){showToast('Delete failed: '+err.message,'error')}};
       item.appendChild(delBtn);item.addEventListener('mouseenter',()=>{delBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>viewCodingFile(fp));parent.appendChild(item)}}
+  }
   render(tree,container,0);
   if(codingFolder){const footer=document.createElement('div');footer.style.cssText='padding:6px 10px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted);display:flex;align-items:center;gap:6px';const dot=document.createElement('span');dot.style.cssText='width:6px;height:6px;border-radius:50%;flex-shrink:0;background:'+(fsHandle?'var(--success)':'var(--warning)');footer.appendChild(dot);footer.appendChild(document.createTextNode(fsHandle?'Direct access':'Server mode'));container.appendChild(footer)}
 }
