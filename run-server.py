@@ -10,7 +10,23 @@ import sys
 
 API_HOST = "127.0.0.1"
 API_PORT = 8080
-CLOUDFLARED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloudflared.exe")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CLOUDFLARED = os.path.join(SCRIPT_DIR, "cloudflared.exe")
+
+
+def ensure_deps():
+    """Install required Python packages if missing."""
+    try:
+        import fastapi
+        import uvicorn
+    except ImportError:
+        print("Installing required packages...")
+        req_file = os.path.join(SCRIPT_DIR, "requirements.txt")
+        if os.path.exists(req_file):
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], check=True)
+        else:
+            subprocess.run([sys.executable, "-m", "pip", "install", "fastapi", "uvicorn[standard]", "pydantic"], check=True)
+        print("Packages installed.")
 
 
 def start_api():
@@ -19,7 +35,7 @@ def start_api():
     subprocess.run(
         [sys.executable, "-m", "uvicorn", "modellink.api_server:app",
          "--host", API_HOST, "--port", str(API_PORT)],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=SCRIPT_DIR,
     )
 
 
@@ -55,6 +71,8 @@ if __name__ == "__main__":
     print("  OmniLink Server")
     print("="*50)
     print()
+
+    ensure_deps()
 
     api_thread = threading.Thread(target=start_api, daemon=True)
     api_thread.start()
