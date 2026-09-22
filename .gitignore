@@ -16,3 +16,4 @@ user_data/
 settings.json
 venv/
 tunnel-config.yml
+cloudflared.exe
