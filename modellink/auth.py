@@ -348,7 +348,8 @@ def get_user_provider_keys(user_id: int) -> dict:
         conn.close()
 
 
-def save_user_provider_key(user_id: int, provider: str, api_key: str):
+def save_user_provider_key(user_id: int, provider: str, api_key: str) -> Optional[int]:
+    """Upsert a provider key; returns the row id (or None on failure)."""
     conn = get_db()
     try:
         conn.execute(
@@ -357,6 +358,13 @@ def save_user_provider_key(user_id: int, provider: str, api_key: str):
             (user_id, provider, api_key, api_key)
         )
         conn.commit()
+        row = conn.execute(
+            "SELECT id FROM user_api_keys WHERE user_id = ? AND provider = ?",
+            (user_id, provider)
+        ).fetchone()
+        return row["id"] if row else None
+    except Exception:
+        return None
     finally:
         conn.close()
 
@@ -436,20 +444,24 @@ def get_usage(user_id: Optional[int] = None, range_hours: int = 24) -> dict:
             params,
         ).fetchone()
 
-        # Bucket size: 1min for 1h range, 1h for 24h range, 1d for 7d+
+        # Bucket size: 1min for 1h range, 30min for 24h, 12h for 7d, 1d for 30d
         if range_hours <= 1:
             bucket_expr = "strftime('%Y-%m-%d %H:%M', ts)"
             bucket_fmt = "%Y-%m-%d %H:%M"
         elif range_hours <= 24:
-            bucket_expr = "strftime('%Y-%m-%d %H:00', ts)"
-            bucket_fmt = "%Y-%m-%d %H:00"
+            bucket_expr = (
+                "strftime('%Y-%m-%d %H:', ts) || "
+                "printf('%02d', CAST(CAST(strftime('%M', ts) AS INTEGER) / 30 AS INTEGER) * 30)"
+            )
+            bucket_fmt = "%Y-%m-%d %H:%M"
         elif range_hours <= 24 * 7:
-            bucket_expr = "strftime('%Y-%m-%d', ts)"
-            bucket_fmt = "%Y-%m-%d"
+            bucket_expr = (
+                "strftime('%Y-%m-%d ', ts) || "
+                "CASE WHEN CAST(strftime('%H', ts) AS INTEGER) < 12 THEN '00' ELSE '12' END"
+            )
+            bucket_fmt = "%Y-%m-%d %H"
         else:
-            bucket_expr = "strftime('%Y-%m-%d %H:00', ts)"  # coarse enough
-            bucket_fmt = "%Y-%m-%d %H:00"
-            # For 30d use daily
+            # 30d and beyond: daily buckets
             bucket_expr = "strftime('%Y-%m-%d', ts)"
             bucket_fmt = "%Y-%m-%d"
 

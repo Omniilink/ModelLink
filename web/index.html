@@ -832,7 +832,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Prompts Library</h3><p style="color:var(--text-secondary);margin-bottom:20px">Save and reuse prompt templates. Organize by category: Coding, Writing, Analysis, or Custom.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Keyboard Shortcuts</h3><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li><strong>Ctrl+Enter</strong> &mdash; Send message</li><li><strong>Ctrl+N</strong> &mdash; New chat</li><li><strong>Ctrl+/</strong> &mdash; Open help</li><li><strong>Escape</strong> &mdash; Close menus</li></ul>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Free API Keys</h3><p style="color:var(--text-secondary);margin-bottom:10px">You can get free API keys from:</p><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li><strong>Groq</strong> &mdash; console.groq.com (free, fast inference)</li><li><strong>Gemini</strong> &mdash; aistudio.google.com (free tier)</li><li><strong>OpenRouter</strong> &mdash; openrouter.ai (free models available)</li></ul>
-          <h3 style="margin:20px 0 10px;color:var(--accent)">Account</h3><p style="color:var(--text-secondary);margin-bottom:10px">Create an account at <a href="https://signup.omniilink.workers.dev">signup.omniilink.workers.dev</a> to save your API keys and access Omniilink from any device.</p>
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Account</h3><p style="color:var(--text-secondary);margin-bottom:10px">Create an account right here with the Sign In button to save your API keys and access Omniilink from any device.</p>
         </div>
       </div>
       <div class="view-panel" id="projects-view">
@@ -904,9 +904,6 @@ function setTheme(t){localStorage.setItem('omnilink_theme',t);document.documentE
 
 function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
-function getUserKeys(){return{}}
-function setUserKeys(k){}
-function userKeysHeader(){return{}}
 async function authFetch(url,opts={}){opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
 
 function renderContent(text){
@@ -1067,7 +1064,7 @@ function renderModelMenu(models,backupModel){
   const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omnilink';
   opt.innerHTML='<span>omnilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omnilink');menu.appendChild(opt);
   const grouped={};models.filter(m=>m.id!=='omnilink').forEach(m=>{const p=m.provider||'other';if(!grouped[p])grouped[p]=[];grouped[p].push(m)});
-  const providerOrder=['ollama','opencode','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','xai','cohere'];
+  const providerOrder=['ollama','opencode','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[0]);const bi=providerOrder.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[provider,pm]of sorted){
     const label=document.createElement('div');label.className='model-group-label';label.textContent=provider==='ollama'?'Ollama (local)':provider;menu.appendChild(label);
@@ -1163,16 +1160,8 @@ async function loadSettingsData(){
 async function openSettings(){switchView('settings')}
 function renderSettings(){
   const body=document.getElementById('settings-body');body.innerHTML='';
-  const names={gemini:'Google Gemini',openai:'OpenAI',anthropic:'Anthropic',openrouter:'OpenRouter',groq:'Groq',mistral:'Mistral',together:'Together AI',deepseek:'DeepSeek',xai:'xAI',cohere:'Cohere',opencode:'OpenCode'};
-  const icons={gemini:'G',openai:'O',anthropic:'A',openrouter:'OR',groq:'GR',mistral:'M',together:'T',deepseek:'DS',xai:'X',cohere:'C',opencode:'OC'};
-  // Backup model (admin only — server-side Ollama setting)
-  if(!window.__user||window.__user.is_admin){
-    const bs=document.createElement('div');bs.className='settings-section';bs.innerHTML='<h3>Backup Model (Ollama fallback)</h3>';
-    const br=document.createElement('div');br.className='key-row';const bl=document.createElement('label');bl.textContent='OLLAMA_MODEL';
-    const bs2=document.createElement('select');bs2.id='backup-model-input';const cb=settingsData.backup_model||'gemma4';
-    authFetch(API+'/api/ollama/models').then(r=>r.json()).then(d=>{const m=d.models||[];bs2.innerHTML='';if(!m.includes(cb)){const o=document.createElement('option');o.value=cb;o.textContent=cb+' (current)';bs2.appendChild(o)}m.forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;if(x===cb)o.selected=true;bs2.appendChild(o)});if(m.length===0){const o=document.createElement('option');o.value=cb;o.textContent=cb+' (Ollama not running?)';bs2.appendChild(o)}}).catch(()=>{bs2.innerHTML='<option value="'+cb+'">'+cb+'</option>'});
-    br.appendChild(bl);br.appendChild(bs2);bs.appendChild(br);body.appendChild(bs);
-  }
+  const names={gemini:'Google Gemini',openai:'OpenAI',anthropic:'Anthropic',openrouter:'OpenRouter',groq:'Groq',mistral:'Mistral',together:'Together AI',deepseek:'DeepSeek',cohere:'Cohere',opencode:'OpenCode'};
+  const icons={gemini:'G',openai:'O',anthropic:'A',openrouter:'OR',groq:'GR',mistral:'M',together:'T',deepseek:'DS',cohere:'C',opencode:'OC'};
   // Language
   const ls=document.createElement('div');ls.className='settings-section';ls.innerHTML='<h3>Language</h3>';
   const lr=document.createElement('div');lr.className='key-row';const ll=document.createElement('label');ll.textContent='Response Language';
@@ -1198,7 +1187,7 @@ function renderSettings(){
   body.appendChild(cs);
   // Provider API keys (stored in DB)
   body.appendChild(Object.assign(document.createElement('div'),{className:'settings-section',innerHTML:'<h3>Provider API Keys</h3><p style="font-size:12px;color:var(--text-muted)">API keys are stored securely in the database. Enter a key for each provider you use.</p>'}));
-  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','xai','cohere','opencode'];
+  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','cohere','opencode'];
   for(const prov of provList){
     const section=document.createElement('div');section.className='settings-section';
     section.innerHTML='<h3>'+(icons[prov]||'')+' '+(names[prov]||prov)+'</h3>';
@@ -1252,12 +1241,8 @@ async function deleteProviderKey(prov){
     showToast(prov+' key deleted','success');loadModels();
   }catch(e){if(e.message!=='auth_required')appAlert('Failed to delete key')}
 }
-async function clearKey(envName,row,statusEl){
-  if(!(await appConfirm('Clear '+envName+'?')))return;
-  try{const r=await authFetch(API+'/api/settings/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_name:envName})});if(r.ok){const input=row.querySelector('input');if(input){input.value='';input.placeholder='Enter key...'}statusEl.textContent='[-]'}}catch(e){appAlert('Failed to clear key')}
-}
 async function saveSettings(){
-  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','xai','cohere','opencode'];
+  const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','cohere','opencode'];
   let saved=0,failed=0;
   for(const prov of provList){
     const input=document.getElementById('key-'+prov);
@@ -1474,7 +1459,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='Escape'){document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'))}
 });
 
-const PROVIDER_ICONS={gemini:{letter:'G',color:'#4285F4'},openai:{letter:'O',color:'#10A37F'},anthropic:{letter:'A',color:'#D97706'},openrouter:{letter:'OR',color:'#6366F1'},groq:{letter:'GR',color:'#F55036'},mistral:{letter:'M',color:'#FF7000'},together:{letter:'T',color:'#6366F1'},deepseek:{letter:'DS',color:'#4F46E5'},xai:{letter:'X',color:'#1DA1F2'},cohere:{letter:'C',color:'#39D98A'},opencode:{letter:'OC',color:'#8B5CF6'}};
+const PROVIDER_ICONS={gemini:{letter:'G',color:'#4285F4'},openai:{letter:'O',color:'#10A37F'},anthropic:{letter:'A',color:'#D97706'},openrouter:{letter:'OR',color:'#6366F1'},groq:{letter:'GR',color:'#F55036'},mistral:{letter:'M',color:'#FF7000'},together:{letter:'T',color:'#6366F1'},deepseek:{letter:'DS',color:'#4F46E5'},cohere:{letter:'C',color:'#39D98A'},opencode:{letter:'OC',color:'#8B5CF6'}};
 const TIER_DESCS={simple:'Quick answers, simple questions',medium:'Code help, analysis, writing',complex:'Deep reasoning, architecture, large codebases'};
 
 function showApiTab(tab,btn){document.querySelectorAll('.api-tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');['python','node','curl','config'].forEach(t=>{const el=document.getElementById('api-code-'+t);if(el)el.style.display=t===tab?'block':'none'})}

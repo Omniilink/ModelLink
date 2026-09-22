@@ -17,6 +17,7 @@ settings.json
 venv/
 tunnel-config.yml
 network_usage.json
+tunnel.log
 cloudflare/
 *.bat
 *.sh

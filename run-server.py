@@ -165,8 +165,13 @@ def start_tunnel(cloudflared):
     """Start the Cloudflare named tunnel (blocks)."""
     print(f"Starting Cloudflare tunnel '{TUNNEL_NAME}'...")
     print(f"Your permanent URL: https://{DOMAIN}\n")
+    # Send cloudflared's own logs to a file so the console stays clean:
+    # its routine 'stream canceled by remote' ERR lines for SSE reconnects
+    # are benign noise, but real issues remain inspectable in tunnel.log.
+    log_file = os.path.join(SCRIPT_DIR, "tunnel.log")
     subprocess.run(
-        [cloudflared, "tunnel", "--config", CONFIG_PATH, "run", TUNNEL_NAME],
+        [cloudflared, "--logfile", log_file,
+         "tunnel", "--config", CONFIG_PATH, "run", TUNNEL_NAME],
         cwd=SCRIPT_DIR,
     )
 
