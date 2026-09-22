@@ -22,11 +22,16 @@ def ensure_deps():
     except ImportError:
         print("Installing required packages...")
         req_file = os.path.join(SCRIPT_DIR, "requirements.txt")
-        if os.path.exists(req_file):
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], check=True)
-        else:
-            subprocess.run([sys.executable, "-m", "pip", "install", "fastapi", "uvicorn[standard]", "pydantic"], check=True)
-        print("Packages installed.")
+        try:
+            if os.path.exists(req_file):
+                subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file], check=True)
+            else:
+                subprocess.run([sys.executable, "-m", "pip", "install", "fastapi", "uvicorn[standard]", "pydantic"], check=True)
+            print("Packages installed.")
+        except subprocess.CalledProcessError as e:
+            print(f"\nFailed to install packages automatically.")
+            print(f"Please install manually:\n  {sys.executable} -m pip install -r requirements.txt\n")
+            sys.exit(1)
 
 
 def start_api():
