@@ -44,6 +44,7 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             name TEXT DEFAULT '',
+            is_admin INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -82,6 +83,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
         CREATE INDEX IF NOT EXISTS idx_user_api_keys_user ON user_api_keys(user_id);
     """)
+    # Migration: is_admin column (first user becomes admin)
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "is_admin" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)")
+    env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
+    if env_admin:
+        for u in [x.strip() for x in env_admin.split(",") if x.strip()]:
+            conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
+    conn.commit()
     conn.close()
 
 
@@ -111,6 +122,7 @@ def create_session(user_id: int) -> str:
     expires = (datetime.utcnow() + timedelta(days=30)).isoformat()
     conn = get_db()
     try:
+        conn.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')")
         conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
                      (token, user_id, expires))
         conn.commit()
@@ -125,7 +137,7 @@ def get_user_from_session(token: str) -> Optional[dict]:
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT u.id, u.username, u.name, u.created_at FROM sessions s "
+            "SELECT u.id, u.username, u.name, u.created_at, u.is_admin FROM sessions s "
             "JOIN users u ON s.user_id = u.id "
             "WHERE s.token = ? AND s.expires_at > datetime('now')",
             (token,)
@@ -157,13 +169,16 @@ def create_user(username: str, password: str, name: str = "") -> dict:
         if existing:
             return {"error": "Username already taken"}
         password_hash = hash_password(password)
+        count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        is_admin = 1 if count == 0 else 0
         cur = conn.execute(
-            "INSERT INTO users (username, password_hash, name) VALUES (?, ?, ?)",
-            (username, password_hash, name or username)
+            "INSERT INTO users (username, password_hash, name, is_admin) VALUES (?, ?, ?, ?)",
+            (username, password_hash, name or username, is_admin)
         )
         conn.commit()
         user_id = cur.lastrowid
-        return {"id": user_id, "username": username, "name": name or username}
+        return {"id": user_id, "username": username, "name": name or username,
+                "is_admin": is_admin}
     finally:
         conn.close()
 
@@ -172,7 +187,7 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT id, username, name, password_hash, created_at FROM users WHERE username = ?",
+            "SELECT id, username, name, password_hash, created_at, is_admin FROM users WHERE username = ?",
             (username,)
         ).fetchone()
         if not row:
@@ -180,7 +195,7 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
         if not verify_password(password, row["password_hash"]):
             return None
         return {"id": row["id"], "username": row["username"], "name": row["name"],
-                "created_at": row["created_at"]}
+                "created_at": row["created_at"], "is_admin": bool(row["is_admin"])}
     finally:
         conn.close()
 
@@ -189,10 +204,14 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT id, username, name, created_at FROM users WHERE id = ?",
+            "SELECT id, username, name, created_at, is_admin FROM users WHERE id = ?",
             (user_id,)
         ).fetchone()
-        return dict(row) if row else None
+        if row:
+            d = dict(row)
+            d["is_admin"] = bool(d.get("is_admin"))
+            return d
+        return None
     finally:
         conn.close()
 
@@ -318,7 +337,7 @@ def delete_user_provider_key(user_id: int, key_id: int):
 # Auth Middleware for FastAPI
 # ==========================================
 def _extract_token(request: Request) -> Optional[str]:
-    """Extract session token from cookie, Authorization header, or query param."""
+    """Extract session token from cookie or Authorization header (never from query strings)."""
     token = request.cookies.get("omnilink_token")
     if token:
         return token
@@ -328,7 +347,7 @@ def _extract_token(request: Request) -> Optional[str]:
         if candidate.startswith("ml-"):
             return None
         return candidate
-    return request.query_params.get("token")
+    return None
 
 
 def get_current_user(request: Request) -> Optional[dict]:
@@ -353,13 +372,14 @@ def require_auth(request: Request) -> Optional[JSONResponse]:
     return JSONResponse(status_code=401, content={"error": "Authentication required"})
 
 
-def set_session_cookie(response, token: str):
+def set_session_cookie(response, token: str, secure: bool = False):
     """Set the session cookie on a response."""
     response.set_cookie(
         key="omnilink_token",
         value=token,
         httponly=True,
         samesite="lax",
+        secure=secure,
         max_age=30 * 24 * 3600,
         path="/",
     )

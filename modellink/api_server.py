@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import logging
 import asyncio
 import queue
@@ -50,30 +51,70 @@ app = FastAPI(title="Omniilink API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://omniilink.dpdns.org",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.headers.get("x-forwarded-proto", "").lower() == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
 # ==========================================
 # Per-User Data Isolation
 # ==========================================
-def _get_user_id(request: Request) -> str:
-    """Extract user_id from authenticated session. 'default' for local/unauthenticated."""
-    user = get_current_user(request)
-    if user:
-        return str(user["id"])
-    return "default"
+def _safe_username(username: str) -> str:
+    """Filesystem-safe folder name for a username ([a-z0-9_-] only, 1-32 chars)."""
+    name = re.sub(r"[^a-z0-9_-]", "_", (username or "").lower())[:32].strip("_-")
+    return name or "user"
 
-def get_user_id(request: Request) -> Optional[int]:
-    """Get integer user_id or None."""
+def _is_within(base: str, target: str) -> bool:
+    """True if target (after realpath) is base itself or inside base."""
+    base_real = os.path.normcase(os.path.realpath(base))
+    target_real = os.path.normcase(os.path.realpath(target))
+    if target_real == base_real:
+        return True
+    return target_real.startswith(base_real.rstrip(os.sep) + os.sep)
+
+def _require_auth(request: Request):
+    """Return (user, None) or (None, 401 JSONResponse)."""
     user = get_current_user(request)
-    return user["id"] if user else None
+    if not user:
+        return None, JSONResponse(status_code=401, content={"error": "Authentication required"})
+    return user, None
+
+def _require_admin(request: Request):
+    """Return (user, None) or (None, 401/403 JSONResponse)."""
+    user, err = _require_auth(request)
+    if err:
+        return None, err
+    if not user.get("is_admin"):
+        return None, JSONResponse(status_code=403, content={"error": "Admin access required"})
+    return user, None
+
+def _request_is_https(request: Request) -> bool:
+    if request.headers.get("x-forwarded-proto", "").lower() == "https":
+        return True
+    if '"scheme":"https"' in request.headers.get("cf-visitor", ""):
+        return True
+    return request.url.scheme == "https"
 
 def _user_data_dir(user_id: str) -> str:
-    """Get or create per-user data directory."""
-    d = os.path.join(APP_DIR, "user_data", user_id)
+    """Get or create per-user data directory (user_id must already be sanitized)."""
+    safe = _safe_username(user_id)
+    d = os.path.join(APP_DIR, "user_data", safe)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -83,16 +124,47 @@ def _user_projects_dir(user_id: str) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
-def _user_api_keys_file(user_id: str) -> str:
-    return os.path.join(_user_data_dir(user_id), "api_keys.json")
+def _migrate_user_data_dirs():
+    """Rename legacy numeric user_data/<id> folders to user_data/<username>."""
+    base = os.path.join(APP_DIR, "user_data")
+    if not os.path.isdir(base):
+        return
+    conn = get_db()
+    try:
+        rows = [(r["id"], r["username"]) for r in conn.execute("SELECT id, username FROM users").fetchall()]
+    finally:
+        conn.close()
+    # Phase 1: numeric id folders -> temp names (avoids clashes with numeric usernames)
+    for uid, _uname in rows:
+        old = os.path.join(base, str(uid))
+        tmp = os.path.join(base, f"_tmpuid_{uid}")
+        if uid != "default" and os.path.isdir(old) and not os.path.exists(tmp):
+            try:
+                os.rename(old, tmp)
+            except OSError as e:
+                logger.warning(f"[MIGRATE] Could not rename {old}: {e}")
+    # Phase 2: temp names -> sanitized usernames
+    for uid, uname in rows:
+        tmp = os.path.join(base, f"_tmpuid_{uid}")
+        new = os.path.join(base, _safe_username(uname))
+        if not os.path.isdir(tmp):
+            continue
+        if os.path.exists(new):
+            try:
+                for entry in os.listdir(tmp):
+                    os.rename(os.path.join(tmp, entry), os.path.join(new, entry))
+                os.rmdir(tmp)
+            except OSError:
+                pass
+        else:
+            try:
+                os.rename(tmp, new)
+            except OSError as e:
+                logger.warning(f"[MIGRATE] Could not rename {tmp}: {e}")
 
-def _user_settings_file(user_id: str) -> str:
-    return os.path.join(_user_data_dir(user_id), "settings.json")
+_migrate_user_data_dirs()
 
-def _user_coding_settings_file(user_id: str) -> str:
-    return os.path.join(_user_data_dir(user_id), "coding_settings.json")
-
-# Per-user coding states: {user_id: {"folder": ..., "settings": {...}}}
+# Per-user coding states: {user_key: {"folder": ..., "settings": {...}}}
 _coding_states = {}
 
 def _get_coding_state(user_id: str) -> dict:
@@ -112,7 +184,7 @@ def _get_coding_state(user_id: str) -> dict:
 # Provider Key Resolution
 # ==========================================
 def get_provider_keys(request):
-    """Get provider keys: prefer DB-stored keys (authenticated), fall back to env vars."""
+    """Get provider keys: own DB keys for users; server .env keys for admin only."""
     user = get_current_user(request)
     if user:
         db_keys = get_user_provider_keys(user["id"])
@@ -123,7 +195,10 @@ def get_provider_keys(request):
                     result[provider] = [{"env_key": f"{provider.upper()}_API_KEY", "key": key_value}]
             if result:
                 return result
-    return load_all_keys()
+        if user.get("is_admin"):
+            return load_all_keys()
+        return {}
+    return {}
 
 # ==========================================
 # Log Broadcasting via SSE
@@ -208,7 +283,10 @@ class CodingRunCommand(BaseModel):
 # API Endpoints
 # ==========================================
 @app.get("/api/logs")
-async def stream_logs():
+async def stream_logs(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
     q = log_broadcaster.subscribe()
     async def gen():
         try:
@@ -254,8 +332,8 @@ class ProviderKeyDeleteRequest(BaseModel):
 @app.post("/api/auth/signup")
 async def auth_signup(request: Request, req: SignupRequest):
     username = req.username.strip().lower()
-    if len(username) < 3:
-        return JSONResponse(status_code=400, content={"error": "Username must be at least 3 characters"})
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,31}", username):
+        return JSONResponse(status_code=400, content={"error": "Username must be 3-32 chars: letters, numbers, - and _ only"})
     if len(req.password) < 6:
         return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
     result = create_user(username, req.password, req.name)
@@ -264,17 +342,44 @@ async def auth_signup(request: Request, req: SignupRequest):
     token = create_session(result["id"])
     user = get_user_by_id(result["id"])
     resp = JSONResponse(content={"status": "ok", "user": user})
-    set_session_cookie(resp, token)
+    set_session_cookie(resp, token, secure=_request_is_https(request))
     return resp
+
+# Simple login brute-force throttle: 5 failures per IP+username -> 15 min lockout
+_login_failures = {}
+
+def _login_allowed(key: str) -> bool:
+    now = time.time()
+    entry = _login_failures.get(key)
+    if not entry:
+        return True
+    count, first = entry
+    if now - first > 15 * 60:
+        _login_failures.pop(key, None)
+        return True
+    return count < 5
+
+def _record_login_failure(key: str):
+    now = time.time()
+    count, first = _login_failures.get(key, (0, now))
+    if now - first > 15 * 60:
+        count, first = 0, now
+    _login_failures[key] = (count + 1, first)
 
 @app.post("/api/auth/signin")
 async def auth_signin(request: Request, req: SigninRequest):
+    ip = request.headers.get("cf-connecting-ip", "") or (request.client.host if request.client else "")
+    throttle_key = f"{ip}:{req.username.strip().lower()}"
+    if not _login_allowed(throttle_key):
+        return JSONResponse(status_code=429, content={"error": "Too many failed attempts. Try again in 15 minutes."})
     user = authenticate_user(req.username.strip().lower(), req.password)
     if not user:
+        _record_login_failure(throttle_key)
         return JSONResponse(status_code=401, content={"error": "Invalid username or password"})
+    _login_failures.pop(throttle_key, None)
     token = create_session(user["id"])
     resp = JSONResponse(content={"status": "ok", "user": user})
-    set_session_cookie(resp, token)
+    set_session_cookie(resp, token, secure=_request_is_https(request))
     return resp
 
 @app.post("/api/auth/signout")
@@ -353,6 +458,9 @@ async def delete_provider_key(request: Request, key_id: int):
 
 @app.get("/api/status")
 async def get_status(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
     try:
         provider_keys = get_provider_keys(request)
         active = {}
@@ -371,6 +479,9 @@ async def get_status(request: Request):
 
 @app.get("/api/discover")
 async def discover_models(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
     provider_keys = get_provider_keys(request)
     discovered = {}
     all_models = [{"id": MODEL_NAME, "provider": "omniilink", "source": "default"}]
@@ -392,18 +503,24 @@ async def discover_models(request: Request):
     return {"models": all_models, "by_provider": discovered, "backup_model": get_backup_model()}
 
 @app.get("/api/ollama/models")
-async def ollama_models():
+async def ollama_models(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
     models = scan_ollama_models()
     return {"models": models, "available": len(models) > 0, "base_url": OLLAMA_BASE_URL}
 
 @app.get("/api/settings")
 async def get_settings(request: Request):
-    user = get_current_user(request)
-    db_provider_keys = get_user_provider_keys(user["id"]) if user else {}
+    user, err = _require_auth(request)
+    if err:
+        return err
+    db_provider_keys = get_user_provider_keys(user["id"])
     settings = {
         "backup_model": get_backup_model(),
         "ollama_url": OLLAMA_BASE_URL,
         "language": get_language(),
+        "is_admin": bool(user.get("is_admin")),
     }
     for prov_name, prov_cfg in PROVIDERS.items():
         prefix = prov_cfg["env_prefix"]
@@ -419,7 +536,8 @@ async def get_settings(request: Request):
                 "masked": masked,
                 "has_value": True,
             })
-        else:
+        elif user.get("is_admin"):
+            # Server .env keys are only visible to the admin
             for i in range(1, 6):
                 key_env = f"{prefix}_{i}"
                 value = os.environ.get(key_env, "")
@@ -437,7 +555,10 @@ async def get_settings(request: Request):
     return settings
 
 @app.post("/api/settings")
-async def update_settings(request: SettingsRequest):
+async def update_settings(request: Request, req: SettingsRequest):
+    _user, err = _require_admin(request)
+    if err:
+        return err
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
     found = False
@@ -460,6 +581,9 @@ async def update_settings(request: SettingsRequest):
 
 @app.post("/api/settings/bulk")
 async def update_settings_bulk(request: Request):
+    _user, err = _require_admin(request)
+    if err:
+        return err
     body = await request.json()
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
@@ -488,7 +612,10 @@ async def update_settings_bulk(request: Request):
     return {"status": "ok", "message": f"Updated {len(updates)} keys"}
 
 @app.post("/api/settings/clear")
-async def clear_key(request: ClearKeyRequest):
+async def clear_key(request: Request, req: ClearKeyRequest):
+    _user, err = _require_admin(request)
+    if err:
+        return err
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
     if os.path.exists(env_path):
@@ -506,14 +633,20 @@ async def clear_key(request: ClearKeyRequest):
     return {"status": "ok", "message": f"Cleared {request.key_name}"}
 
 @app.get("/api/language")
-async def get_language_setting():
+async def get_language_setting(http_request: Request):
+    _user, err = _require_auth(http_request)
+    if err:
+        return err
     return {"language": get_language()}
 
 class LanguageRequest(BaseModel):
     language: str
 
 @app.post("/api/language")
-async def set_language_setting(request: LanguageRequest):
+async def set_language_setting(http_request: Request, request: LanguageRequest):
+    _user, err = _require_auth(http_request)
+    if err:
+        return err
     set_language(request.language)
     settings_path = os.path.join(APP_DIR, "settings.json")
     settings = {}
@@ -531,6 +664,9 @@ async def set_language_setting(request: LanguageRequest):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
     body = await request.json()
     messages = body.get("messages", [])
     if not messages:
@@ -541,13 +677,13 @@ async def chat_completions(request: Request):
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
 
-    # Read per-user API keys from DB
+    # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
-    user = get_current_user(request)
-    if user:
+    if not user.get("is_admin"):
         db_keys = get_user_provider_keys(user["id"])
-        if db_keys:
-            user_keys = db_keys
+        if not db_keys:
+            return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your own provider keys in Settings."})
+        user_keys = db_keys
 
     if is_stream:
         stream, used_model = generate(
@@ -618,6 +754,9 @@ async def chat_completions(request: Request):
 
 @app.get("/v1/models")
 async def list_models(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
     provider_keys = get_provider_keys(request)
     models = [{"id": MODEL_NAME}]
     for prov_name, prov_cfg in PROVIDERS.items():
@@ -722,13 +861,27 @@ Rules:
 
 # Per-user coding states handled by _get_coding_state()
 
+def _folder_access_error(user, folder):
+    """Return a JSONResponse error if the user may not access folder, else None."""
+    if not folder:
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    if not user.get("is_admin"):
+        if not _is_within(_user_data_dir(_safe_username(user["username"])), folder):
+            return JSONResponse(status_code=403, content={"error": "Access denied: folder is outside your data directory"})
+    return None
+
 @app.post("/api/coding/open-folder")
 async def coding_open_folder(request: Request, req: CodingOpenFolder):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     coding_state = _get_coding_state(user_id)
     folder = req.path.strip()
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {folder}"})
+    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
+        return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
     coding_state["folder"] = folder
     tree = _build_file_tree(folder)
     file_count = sum(1 for _ in os.walk(folder) for f in _[2] if not any(f.endswith(e) for e in IGNORE_EXTS))
@@ -737,24 +890,31 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
 
 @app.get("/api/coding/files")
 async def coding_list_files(request: Request):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    if not folder or not os.path.isdir(folder):
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": "No folder open"})
     tree = _build_file_tree(folder)
     return {"folder": folder, "tree": tree}
 
 @app.get("/api/coding/file-content")
 async def coding_file_content(request: Request, path: str):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    if not folder:
-        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
     full = os.path.join(folder, path)
-    real = os.path.realpath(full)
-    if not real.startswith(os.path.realpath(folder)):
+    if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
     if not os.path.isfile(full):
         return JSONResponse(status_code=404, content={"error": "File not found"})
@@ -770,14 +930,16 @@ async def coding_file_content(request: Request, path: str):
 
 @app.post("/api/coding/file-write")
 async def coding_file_write(request: Request, req: CodingFileWrite):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    if not folder:
-        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
     full = os.path.join(folder, req.path)
-    real = os.path.realpath(full)
-    if not real.startswith(os.path.realpath(folder)):
+    if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -794,14 +956,16 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
 
 @app.delete("/api/coding/file-delete")
 async def coding_file_delete(request: Request, path: str):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    if not folder:
-        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
     full = os.path.join(folder, path)
-    real = os.path.realpath(full)
-    if not real.startswith(os.path.realpath(folder)):
+    if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
     if not os.path.isfile(full):
         return JSONResponse(status_code=404, content={"error": "File not found"})
@@ -814,7 +978,10 @@ async def coding_file_delete(request: Request, path: str):
 
 @app.post("/api/coding/run-command")
 async def coding_run_command(request: Request, req: CodingRunCommand):
-    user_id = _get_user_id(request)
+    _user, err = _require_admin(request)
+    if err:
+        return err
+    user_id = _safe_username(_user["username"])
     coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
     cwd = req.cwd or folder or os.getcwd()
@@ -837,14 +1004,18 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
 
 @app.get("/api/coding/settings")
 async def coding_get_settings(request: Request):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     return coding_state["settings"]
 
 @app.post("/api/coding/settings")
 async def coding_update_settings(request: Request):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     body = await request.json()
     for k, v in body.items():
         if k in coding_state["settings"]:
@@ -853,10 +1024,14 @@ async def coding_update_settings(request: Request):
 
 @app.get("/api/coding/project-context")
 async def coding_project_context(request: Request):
-    user_id = _get_user_id(request)
-    coding_state = _get_coding_state(user_id)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
     if not folder or not os.path.isdir(folder):
+        return {"context": ""}
+    if not user.get("is_admin") and not _is_within(_user_data_dir(_safe_username(user["username"])), folder):
         return {"context": ""}
     tree = _build_file_tree(folder)
     context_lines = [f"Project: {os.path.basename(folder)}", f"Path: {folder}", "", "File tree:"]
@@ -933,8 +1108,11 @@ async def rev_api_key(request: Request):
     return {"status": "ok"}
 
 @app.get("/api/keys/info")
-async def api_keys_info():
-    base_url = "http://127.0.0.1:8080"
+async def api_keys_info(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    base_url = "https://omniilink.dpdns.org"
     try:
         from modellink.splitter import PROVIDERS, MODEL_TIERS
         all_models = []
@@ -954,14 +1132,23 @@ async def api_keys_info():
 # ==========================================
 # Project Management
 # ==========================================
-PROJECTS_DIR = os.path.join(APP_DIR, "projects")
-
-def _ensure_projects_dir():
-    os.makedirs(PROJECTS_DIR, exist_ok=True)
+def _valid_project_name(name: str) -> bool:
+    if not name or len(name) > 100:
+        return False
+    if any(c in name for c in '/\\:*?"<>|'):
+        return False
+    if name in ('.', '..') or '..' in name:
+        return False
+    if name.startswith('.') or name.startswith('_del_'):
+        return False
+    return True
 
 @app.get("/api/projects")
 async def list_projects(request: Request):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
     projects = []
     total_size = 0
@@ -994,12 +1181,17 @@ class ProjectImport(BaseModel):
 
 @app.post("/api/projects/create")
 async def create_project(request: Request, req: ProjectCreate):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
     name = req.name.strip()
-    if not name or '/' in name or '\\' in name:
+    if not _valid_project_name(name):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     path = os.path.join(projects_dir, name)
+    if not _is_within(projects_dir, path) or os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(projects_dir)):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if os.path.exists(path):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
     os.makedirs(path, exist_ok=True)
@@ -1008,15 +1200,22 @@ async def create_project(request: Request, req: ProjectCreate):
 
 @app.post("/api/projects/import")
 async def import_project(request: Request, req: ProjectImport):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
     name = req.name.strip()
     source = req.source_path.strip()
-    if not name or '/' in name or '\\' in name:
+    if not _valid_project_name(name):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if not os.path.isdir(source):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {source}"})
+    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), source):
+        return JSONResponse(status_code=403, content={"error": "Access denied: you can only import folders from inside your own data directory"})
     dest = os.path.join(projects_dir, name)
+    if not _is_within(projects_dir, dest):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if os.path.exists(dest):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
@@ -1025,12 +1224,17 @@ async def import_project(request: Request, req: ProjectImport):
 
 @app.post("/api/projects/open")
 async def open_project(request: Request, req: ProjectCreate):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
     coding_state = _get_coding_state(user_id)
     name = req.name.strip()
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     path = os.path.join(projects_dir, name)
-    if not os.path.isdir(path):
+    if not _is_within(projects_dir, path) or not os.path.isdir(path):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     coding_state["folder"] = path
     tree = _build_file_tree(path)
@@ -1040,8 +1244,13 @@ async def open_project(request: Request, req: ProjectCreate):
 
 @app.delete("/api/projects/{name}")
 async def delete_project(request: Request, name: str):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     path = os.path.join(projects_dir, name)
     return await _do_delete(request, path, name)
 
@@ -1050,13 +1259,26 @@ class ProjectDelete(BaseModel):
 
 @app.post("/api/projects/delete")
 async def delete_project_by_path(request: Request, req: ProjectDelete):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
     path = req.path
     name = os.path.basename(path)
     return await _do_delete(request, path, name)
 
 async def _do_delete(request: Request, path, name):
-    user_id = _get_user_id(request)
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    projects_dir = _user_projects_dir(user_id)
+    # Hard containment: only ever delete inside this user's own projects directory
+    if not _is_within(projects_dir, path):
+        return JSONResponse(status_code=403, content={"error": "Access denied: path is outside your projects directory"})
+    if os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(projects_dir)):
+        return JSONResponse(status_code=403, content={"error": "Cannot delete the projects root"})
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     coding_state = _get_coding_state(user_id)
     if not os.path.isdir(path):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
@@ -1145,4 +1367,4 @@ async def serve_spa(path: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=port)

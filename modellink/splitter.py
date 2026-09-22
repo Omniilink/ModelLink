@@ -510,8 +510,12 @@ class MultiProviderBalancer:
 
     def _try_provider(self, provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=None):
         keys = []
-        if user_keys and provider_name in user_keys:
-            keys = [{"env_key": f"USER_{provider_name.upper()}", "key": user_keys[provider_name]}]
+        if user_keys is not None:
+            # User-scoped keys: ONLY this user's keys, never the server's keys
+            if provider_name in user_keys:
+                keys = [{"env_key": f"USER_{provider_name.upper()}", "key": user_keys[provider_name]}]
+            else:
+                keys = []
         else:
             keys = self.provider_keys.get(provider_name, [])
         if not keys:
