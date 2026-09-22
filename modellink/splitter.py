@@ -679,18 +679,40 @@ class MultiProviderBalancer:
                                 break
                             try:
                                 chunk = json.loads(data)
-                                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                content = delta.get("content")
-                                if content:
-                                    yield content
+                                # OpenAI-style: choices[].delta.content
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content")
+                                    if content:
+                                        yield content
+                                        continue
+                                # Gemini-style: candidates[].content.parts[].text
+                                candidates = chunk.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    for part in parts:
+                                        text = part.get("text", "")
+                                        if text:
+                                            yield text
                             except json.JSONDecodeError:
                                 continue
                         else:
                             try:
                                 data = json.loads(line)
+                                # OpenAI non-streaming fallback
                                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                                 if content:
                                     yield content
+                                    return
+                                # Gemini non-streaming fallback
+                                candidates = data.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    for part in parts:
+                                        text = part.get("text", "")
+                                        if text:
+                                            yield text
                                     return
                             except json.JSONDecodeError:
                                 continue
