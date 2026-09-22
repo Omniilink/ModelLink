@@ -14,3 +14,5 @@ stdout.txt
 omnilink.db
 user_data/
 settings.json
+venv/
+tunnel-config.yml
