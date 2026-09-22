@@ -11,3 +11,6 @@ modellink/server.log
 backend_stderr.txt
 stderr.txt
 stdout.txt
+omnilink.db
+user_data/
+settings.json

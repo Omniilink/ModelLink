@@ -24,8 +24,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("Omniilink")
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import time
@@ -37,15 +38,38 @@ from modellink.splitter import (
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL,
     get_language, set_language
 )
+from modellink.auth import (
+    init_db, get_current_user, require_auth, create_user, authenticate_user,
+    create_session, destroy_session, set_session_cookie, get_user_by_id,
+    update_user_name, update_user_password, generate_api_key, get_user_api_keys,
+    revoke_api_key, get_user_provider_keys, save_user_provider_key,
+    delete_user_provider_key, get_db, get_user_from_session
+)
 
-app = FastAPI(title="Omniilink API", version="2.0.0")
+app = FastAPI(title="Omniilink API", version="3.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================
 # Per-User Data Isolation
 # ==========================================
 def _get_user_id(request: Request) -> str:
-    """Extract user_id from proxy header. 'default' for local/unauthenticated."""
-    return request.headers.get("X-User-Id", "default")
+    """Extract user_id from authenticated session. 'default' for local/unauthenticated."""
+    user = get_current_user(request)
+    if user:
+        return str(user["id"])
+    return "default"
+
+def get_user_id(request: Request) -> Optional[int]:
+    """Get integer user_id or None."""
+    user = get_current_user(request)
+    return user["id"] if user else None
 
 def _user_data_dir(user_id: str) -> str:
     """Get or create per-user data directory."""
@@ -85,33 +109,20 @@ def _get_coding_state(user_id: str) -> dict:
     return _coding_states[user_id]
 
 # ==========================================
-# Per-User Key Parsing (from proxy header)
+# Provider Key Resolution
 # ==========================================
-def _parse_user_keys(header_value):
-    """Parse X-User-Keys header from useomniilink proxy into provider_keys format.
-    Proxy sends: {"gemini": "key123", "openai": "key456"}
-    Backend expects: {"gemini": [{"env_key": "GEMINI_API_KEY", "key": "key123"}], ...}
-    """
-    if not header_value:
-        return None
-    try:
-        raw = json.loads(header_value)
-        if not isinstance(raw, dict):
-            return None
-        provider_keys = {}
-        for provider, key_value in raw.items():
-            if key_value and isinstance(key_value, str) and len(key_value) > 10:
-                provider_keys[provider] = [{"env_key": f"{provider.upper()}_API_KEY", "key": key_value}]
-        return provider_keys if provider_keys else None
-    except Exception:
-        return None
-
-
 def get_provider_keys(request):
-    """Get provider keys: prefer X-User-Keys header (from proxy), fall back to env vars."""
-    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
-    if user_keys:
-        return user_keys
+    """Get provider keys: prefer DB-stored keys (authenticated), fall back to env vars."""
+    user = get_current_user(request)
+    if user:
+        db_keys = get_user_provider_keys(user["id"])
+        if db_keys:
+            result = {}
+            for provider, key_value in db_keys.items():
+                if key_value and isinstance(key_value, str) and len(key_value) > 10:
+                    result[provider] = [{"env_key": f"{provider.upper()}_API_KEY", "key": key_value}]
+            if result:
+                return result
     return load_all_keys()
 
 # ==========================================
@@ -217,6 +228,129 @@ async def stream_logs():
 async def health_check():
     return {"status": "ok", "version": "3.0.0", "model": MODEL_NAME}
 
+# ==========================================
+# Authentication Endpoints
+# ==========================================
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    name: Optional[str] = ""
+
+class SigninRequest(BaseModel):
+    username: str
+    password: str
+
+class UpdateProfileRequest(BaseModel):
+    name: Optional[str] = None
+    new_password: Optional[str] = None
+
+class ProviderKeyRequest(BaseModel):
+    provider: str
+    api_key: str
+
+class ProviderKeyDeleteRequest(BaseModel):
+    key_id: int
+
+@app.post("/api/auth/signup")
+async def auth_signup(request: Request, req: SignupRequest):
+    username = req.username.strip().lower()
+    if len(username) < 3:
+        return JSONResponse(status_code=400, content={"error": "Username must be at least 3 characters"})
+    if len(req.password) < 6:
+        return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
+    result = create_user(username, req.password, req.name)
+    if "error" in result:
+        return JSONResponse(status_code=409, content={"error": result["error"]})
+    token = create_session(result["id"])
+    user = get_user_by_id(result["id"])
+    resp = JSONResponse(content={"status": "ok", "user": user})
+    set_session_cookie(resp, token)
+    return resp
+
+@app.post("/api/auth/signin")
+async def auth_signin(request: Request, req: SigninRequest):
+    user = authenticate_user(req.username.strip().lower(), req.password)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Invalid username or password"})
+    token = create_session(user["id"])
+    resp = JSONResponse(content={"status": "ok", "user": user})
+    set_session_cookie(resp, token)
+    return resp
+
+@app.post("/api/auth/signout")
+async def auth_signout(request: Request):
+    token = request.cookies.get("omnilink_token")
+    if token:
+        destroy_session(token)
+    resp = JSONResponse(content={"status": "ok"})
+    resp.delete_cookie("omnilink_token", path="/")
+    return resp
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    return {"user": user}
+
+@app.put("/api/auth/profile")
+async def auth_update_profile(request: Request, req: UpdateProfileRequest):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    if req.name is not None:
+        update_user_name(user["id"], req.name.strip())
+    if req.new_password:
+        if len(req.new_password) < 6:
+            return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
+        update_user_password(user["id"], req.new_password)
+    updated = get_user_by_id(user["id"])
+    return {"status": "ok", "user": updated}
+
+# Provider API Key Management (per-user, stored in DB)
+@app.get("/api/provider-keys")
+async def list_provider_keys(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    db_keys = get_user_provider_keys(user["id"])
+    keys_list = []
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, provider, api_key, created_at, updated_at FROM user_api_keys WHERE user_id = ?",
+            (user["id"],)
+        ).fetchall()
+        for r in rows:
+            keys_list.append({
+                "id": r["id"],
+                "provider": r["provider"],
+                "api_key_preview": r["api_key"][:8] + "..." + r["api_key"][-4:] if len(r["api_key"]) > 12 else "***",
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+    finally:
+        conn.close()
+    return {"keys": keys_list}
+
+@app.post("/api/provider-keys")
+async def save_provider_key(request: Request, req: ProviderKeyRequest):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    if not req.provider or not req.api_key:
+        return JSONResponse(status_code=400, content={"error": "Provider and API key required"})
+    save_user_provider_key(user["id"], req.provider.strip(), req.api_key.strip())
+    return {"status": "ok"}
+
+@app.delete("/api/provider-keys/{key_id}")
+async def delete_provider_key(request: Request, key_id: int):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    delete_user_provider_key(user["id"], key_id)
+    return {"status": "ok"}
+
 @app.get("/api/status")
 async def get_status(request: Request):
     try:
@@ -264,8 +398,8 @@ async def ollama_models():
 
 @app.get("/api/settings")
 async def get_settings(request: Request):
-    env_path = os.path.join(APP_DIR, ".env")
-    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
+    user = get_current_user(request)
+    db_provider_keys = get_user_provider_keys(user["id"]) if user else {}
     settings = {
         "backup_model": get_backup_model(),
         "ollama_url": OLLAMA_BASE_URL,
@@ -277,15 +411,14 @@ async def get_settings(request: Request):
             "env_prefix": prefix,
             "keys": [],
         }
-        if user_keys and prov_name in user_keys:
-            for entry in user_keys[prov_name]:
-                key_val = entry["key"]
-                masked = key_val[:4] + "..." + key_val[-4:] if len(key_val) > 4 else "***"
-                settings[prov_name]["keys"].append({
-                    "env_name": entry["env_key"],
-                    "masked": masked,
-                    "has_value": True,
-                })
+        if db_provider_keys and prov_name in db_provider_keys:
+            key_val = db_provider_keys[prov_name]
+            masked = key_val[:4] + "..." + key_val[-4:] if len(key_val) > 4 else "***"
+            settings[prov_name]["keys"].append({
+                "env_name": f"{prefix}_API_KEY",
+                "masked": masked,
+                "has_value": True,
+            })
         else:
             for i in range(1, 6):
                 key_env = f"{prefix}_{i}"
@@ -408,13 +541,13 @@ async def chat_completions(request: Request):
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
 
-    # Read per-user API keys from header
+    # Read per-user API keys from DB
     user_keys = None
-    user_keys_header = request.headers.get("X-User-Keys")
-    if user_keys_header:
-        try:
-            user_keys = json.loads(user_keys_header)
-        except: pass
+    user = get_current_user(request)
+    if user:
+        db_keys = get_user_provider_keys(user["id"])
+        if db_keys:
+            user_keys = db_keys
 
     if is_stream:
         stream, used_model = generate(
@@ -742,12 +875,6 @@ async def coding_project_context(request: Request):
 # ==========================================
 # API Key Management
 # ==========================================
-import json
-import secrets
-import time
-
-API_KEYS_FILE = os.path.join(APP_DIR, "api_keys.json")
-
 PROVIDER_INFO = {
     "gemini": {"name": "Google Gemini", "color": "#4285F4", "env": "GEMINI_API_KEY"},
     "openai": {"name": "OpenAI", "color": "#10A37F", "env": "OPENAI_API_KEY"},
@@ -762,44 +889,18 @@ PROVIDER_INFO = {
     "opencode": {"name": "OpenCode", "color": "#8B5CF6", "env": "OPENCODE_API_KEY"},
 }
 
-def _load_config():
-    config_path = os.path.join(APP_DIR, "config.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            return json.load(f)
-    return {}
-
-def _load_api_keys(user_id=None):
-    if user_id:
-        path = os.path.join(_user_data_dir(user_id), "api_keys.json")
-    else:
-        path = API_KEYS_FILE
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return {"keys": []}
-
-def _save_api_keys(data, user_id=None):
-    if user_id:
-        path = os.path.join(_user_data_dir(user_id), "api_keys.json")
-    else:
-        path = API_KEYS_FILE
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
 @app.get("/api/keys")
 async def list_api_keys(request: Request):
-    user_id = _get_user_id(request)
-    data = _load_api_keys(user_id)
-    user_keys = _parse_user_keys(request.headers.get("X-User-Keys"))
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    data = get_user_api_keys(user["id"])
+    db_provider_keys = get_user_provider_keys(user["id"])
     providers_with_keys = {}
     for prov_id, prov_info in PROVIDER_INFO.items():
-        env_prefix = prov_info["env"].replace("_API_KEY", "")
-        has_key = False
-        if user_keys and prov_id in user_keys:
-            has_key = True
-        else:
+        has_key = prov_id in db_provider_keys and len(db_provider_keys[prov_id]) > 10
+        if not has_key:
+            env_prefix = prov_info["env"].replace("_API_KEY", "")
             for env_key, env_val in os.environ.items():
                 if env_key.startswith(env_prefix) and "_API_KEY" in env_key and env_val and len(env_val) > 10 and not env_val.startswith("your_"):
                     has_key = True
@@ -809,31 +910,25 @@ async def list_api_keys(request: Request):
             "id": prov_id,
             "configured": has_key,
         }
-    return {"keys": data["keys"], "providers": providers_with_keys}
+    return {"keys": data, "providers": providers_with_keys}
 
 @app.post("/api/keys/generate")
-async def generate_api_key(request: Request):
-    user_id = _get_user_id(request)
-    data = _load_api_keys(user_id)
-    key = f"ml-{secrets.token_hex(24)}"
-    entry = {
-        "key": key,
-        "name": f"Key {len(data['keys']) + 1}",
-        "created": time.time(),
-        "last_used": None,
-        "requests": 0
-    }
-    data["keys"].append(entry)
-    _save_api_keys(data, user_id)
-    logger.info(f"[APIKEY] Generated: {key[:12]}...")
+async def gen_api_key(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    entry = generate_api_key(user["id"])
+    logger.info(f"[APIKEY] Generated: {entry['key'][:12]}...")
     return entry
 
-@app.delete("/api/keys/{key}")
-async def revoke_api_key(request: Request, key: str):
-    user_id = _get_user_id(request)
-    data = _load_api_keys(user_id)
-    data["keys"] = [k for k in data["keys"] if k["key"] != key]
-    _save_api_keys(data, user_id)
+@app.post("/api/keys/revoke")
+async def rev_api_key(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    body = await request.json()
+    key = body.get("key", "")
+    revoke_api_key(user["id"], key)
     logger.info(f"[APIKEY] Revoked: {key[:12]}...")
     return {"status": "ok"}
 
@@ -1041,6 +1136,11 @@ async def serve_favicon_ico():
 web_dir = os.path.join(APP_DIR, "web")
 if os.path.isdir(web_dir):
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+@app.get("/{path:path}")
+async def serve_spa(path: str):
+    index_path = os.path.join(APP_DIR, "web", "index.html")
+    return FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 if __name__ == "__main__":
     import uvicorn
