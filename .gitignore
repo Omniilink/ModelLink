@@ -16,3 +16,10 @@ user_data/
 settings.json
 venv/
 tunnel-config.yml
+cloudflare/
+*.bat
+*.sh
+*.ps1
+Procfile
+render.yaml
+runtime.txt

@@ -169,6 +169,15 @@ async def access_log_middleware(request: Request, call_next):
     log_broadcaster.emit(f"{time.strftime('%H:%M:%S')} [{level}] [HTTP] {msg}")
     return response
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"[UNHANDLED] {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return JSONResponse(status_code=404, content={"error": "Not found"})
+
 # ==========================================
 # Per-User Data Isolation
 # ==========================================
@@ -950,15 +959,36 @@ async def chat_completions(request: Request):
         )
 
     if is_stream:
-        stream, used_model = await asyncio.to_thread(
-            generate,
-            messages=messages,
-            model=req_model,
-            temperature=temp,
-            max_tokens=max_tokens,
-            stream=True,
-            user_keys=user_keys,
-        )
+        try:
+            stream, used_model = await asyncio.to_thread(
+                generate,
+                messages=messages,
+                model=req_model,
+                temperature=temp,
+                max_tokens=max_tokens,
+                stream=True,
+                user_keys=user_keys,
+            )
+        except Exception as e:
+            logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
+            _finish_usage("unknown/unknown", completion_tokens=0, status=500)
+            async def error_event_gen():
+                chat_id = f"chatcmpl-{int(time.time())}"
+                created_time = int(time.time())
+                error_chunk = {
+                    "id": chat_id, "object": "chat.completion.chunk",
+                    "created": created_time, "model": req_model,
+                    "choices": [{"index": 0, "delta": {"content": f"Error: {str(e)}"}, "finish_reason": "stop"}]
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+                finish_chunk = {
+                    "id": chat_id, "object": "chat.completion.chunk",
+                    "created": created_time, "model": req_model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }
+                yield f"data: {json.dumps(finish_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(error_event_gen(), media_type="text/event-stream")
 
         async def event_generator():
             chat_id = f"chatcmpl-{int(time.time())}"
@@ -994,6 +1024,7 @@ async def chat_completions(request: Request):
                             }
                             yield f"data: {json.dumps(chunk_data)}\n\n"
             except Exception as e:
+                logger.error(f"[CHAT] stream iteration error: {e}", exc_info=True)
                 error_chunk = {
                     "id": chat_id, "object": "chat.completion.chunk",
                     "created": created_time, "model": used_model,
@@ -1363,7 +1394,6 @@ PROVIDER_INFO = {
     "mistral": {"name": "Mistral", "color": "#FF7000", "env": "MISTRAL_API_KEY"},
     "together": {"name": "Together AI", "color": "#6366F1", "env": "TOGETHER_API_KEY"},
     "deepseek": {"name": "DeepSeek", "color": "#4F46E5", "env": "DEEPSEEK_API_KEY"},
-    "xai": {"name": "xAI", "color": "#1DA1F2", "env": "XAI_API_KEY"},
     "cohere": {"name": "Cohere", "color": "#39D98A", "env": "COHERE_API_KEY"},
     "opencode": {"name": "OpenCode", "color": "#8B5CF6", "env": "OPENCODE_API_KEY"},
 }

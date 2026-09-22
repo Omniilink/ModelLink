@@ -216,20 +216,6 @@ PROVIDERS = {
         "stream_url": lambda model, key: "https://api.deepseek.com/v1/chat/completions",
         "url": lambda model, key: "https://api.deepseek.com/v1/chat/completions",
     },
-    "xai": {
-        "env_prefix": "XAI_API_KEY",
-        "api_base": "https://api.x.ai/v1",
-        "models": ["grok-3", "grok-3-mini"],
-        "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        "build_body": lambda msgs, model, key: {
-            "model": model,
-            "messages": msgs,
-            "temperature": 0.7,
-            "max_tokens": 4000
-        },
-        "stream_url": lambda model, key: "https://api.x.ai/v1/chat/completions",
-        "url": lambda model, key: "https://api.x.ai/v1/chat/completions",
-    },
     "cohere": {
         "env_prefix": "COHERE_API_KEY",
         "api_base": "https://api.cohere.ai/v2",
