@@ -436,8 +436,11 @@ def get_usage(user_id: Optional[int] = None, range_hours: int = 24) -> dict:
             params,
         ).fetchone()
 
-        # Bucket size: 1h for 24h range, 1d for 7d+, else 6h
-        if range_hours <= 24:
+        # Bucket size: 1min for 1h range, 1h for 24h range, 1d for 7d+
+        if range_hours <= 1:
+            bucket_expr = "strftime('%Y-%m-%d %H:%M', ts)"
+            bucket_fmt = "%Y-%m-%d %H:%M"
+        elif range_hours <= 24:
             bucket_expr = "strftime('%Y-%m-%d %H:00', ts)"
             bucket_fmt = "%Y-%m-%d %H:00"
         elif range_hours <= 24 * 7:

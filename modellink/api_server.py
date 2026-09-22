@@ -975,7 +975,7 @@ async def api_usage(request: Request, range: str = "24h"):
     user, err = _require_auth(request)
     if err:
         return err
-    hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range, 24)
+    hours = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range, 24)
     try:
         data = get_usage(user_id=user["id"], range_hours=hours)
         data["rate_limits"] = lb.rate_limiter.get_status()

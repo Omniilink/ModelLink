@@ -717,6 +717,7 @@ a:hover{text-decoration:underline}
         <div class="view-body" id="usage-body">
           <div style="max-width:1000px;margin:0 auto">
             <div class="usage-range" id="usage-range">
+              <button onclick="loadUsage('1h',this)">Last Hour</button>
               <button class="active" onclick="loadUsage('24h',this)">24 Hours</button>
               <button onclick="loadUsage('7d',this)">7 Days</button>
               <button onclick="loadUsage('30d',this)">30 Days</button>
@@ -1577,7 +1578,7 @@ function renderUsageSummary(data){
   const avgResp=data.avg_response_time||0;
   const activeKeys=(data.by_key||[]).length;
   document.getElementById('us-total-req').textContent=totalReqs.toLocaleString();
-  document.getElementById('us-total-req-sub').textContent=(usageCurrentRange==='24h'?'last 24 hours':usageCurrentRange==='7d'?'last 7 days':'last 30 days');
+  document.getElementById('us-total-req-sub').textContent=(usageCurrentRange==='1h'?'last hour':usageCurrentRange==='24h'?'last 24 hours':usageCurrentRange==='7d'?'last 7 days':'last 30 days');
   document.getElementById('us-total-tok').textContent=totalTok>=1000000?(totalTok/1000000).toFixed(1)+'M':totalTok>=1000?(totalTok/1000).toFixed(1)+'K':totalTok.toLocaleString();
   document.getElementById('us-total-tok-sub').textContent='tokens used';
   document.getElementById('us-avg-resp').textContent=avgResp>0?(avgResp/1000).toFixed(1)+'s':'--';
