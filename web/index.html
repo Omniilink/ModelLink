@@ -1204,31 +1204,74 @@ function renderSettings(){
     section.innerHTML='<h3>'+(icons[prov]||'')+' '+(names[prov]||prov)+'</h3>';
     const row=document.createElement('div');row.className='key-row';
     row.innerHTML='<label>API Key</label><input type="password" id="key-'+prov+'" placeholder="Enter '+names[prov]+' API key..." oninput="autoSaveKey(\''+prov+'\')"><span class="status-icon">[-]</span>';
+    const input=row.querySelector('input');
+    input.onfocus=()=>{if(input.value==='********')input.value=''};
+    const delBtn=document.createElement('button');delBtn.className='key-clear';delBtn.id='key-del-'+prov;delBtn.textContent='\u00d7';delBtn.title='Delete saved key';delBtn.style.display='none';
+    delBtn.onclick=()=>deleteProviderKey(prov);row.appendChild(delBtn);
     section.appendChild(row);body.appendChild(section);
   }
   // Load existing provider keys from DB
+  refreshProviderKeyState();
+}
+const keySaveTimers={},keySaveSeq={};
+function autoSaveKey(prov){
+  // Debounced: typing fires oninput per keystroke, so wait for a pause
+  // before saving. Without this, partial keys race each other and a
+  // truncated key can win, looking saved locally but failing everywhere.
+  const input=document.getElementById('key-'+prov);if(!input)return;
+  clearTimeout(keySaveTimers[prov]);
+  keySaveTimers[prov]=setTimeout(()=>doSaveKey(prov),800);
+}
+function doSaveKey(prov){
+  const input=document.getElementById('key-'+prov);if(!input)return;
+  const val=input.value.trim();if(!val||val==='********')return;
+  const statusEl=input.parentElement.querySelector('.status-icon');
+  const seq=(keySaveSeq[prov]||0)+1;keySaveSeq[prov]=seq;statusEl.textContent='[...]';
+  authFetch(API+'/api/provider-keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:prov,api_key:val})})
+  .then(r=>{if(!r.ok)throw new Error('save failed '+r.status);return r.json()})
+  .then(()=>{if(keySaveSeq[prov]!==seq)return;statusEl.textContent='[OK]';showToast(prov+' key saved','success');input.value='********';refreshProviderKeyState()})
+  .catch(()=>{if(keySaveSeq[prov]!==seq)return;statusEl.textContent='[ERR]'});
+}
+function refreshProviderKeyState(){
   authFetch(API+'/api/provider-keys').then(r=>r.json()).then(data=>{
     for(const k of(data.keys||[])){
       const input=document.getElementById('key-'+k.provider);
-      if(input){input.dataset.keyId=k.id;input.value='********';input.parentElement.querySelector('.status-icon').textContent='[OK]'}
+      if(input){input.dataset.keyId=k.id;if(document.activeElement!==input)input.value='********';input.parentElement.querySelector('.status-icon').textContent='[OK]';const del=document.getElementById('key-del-'+k.provider);if(del){del.style.display='';del.style.opacity='1'}}
     }
   }).catch(()=>{});
 }
-function autoSaveKey(prov){const input=document.getElementById('key-'+prov);if(!input)return;const val=input.value.trim();if(!val||val==='********')return;const statusEl=input.parentElement.querySelector('.status-icon');
-  authFetch(API+'/api/provider-keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:prov,api_key:val})}).then(()=>{statusEl.textContent='[OK]';showToast(prov+' key saved','success');input.value='********'}).catch(()=>{statusEl.textContent='[ERR]'})}
+async function deleteProviderKey(prov){
+  const input=document.getElementById('key-'+prov);const keyId=input&&input.dataset.keyId;
+  if(!keyId){if(input){input.value=''}return}
+  if(!(await appConfirm('Delete saved '+prov+' key?')))return;
+  try{
+    const r=await authFetch(API+'/api/provider-keys/'+keyId,{method:'DELETE'});
+    if(!r.ok)throw new Error('delete failed');
+    if(input){input.value='';input.dataset.keyId='';input.placeholder='Enter '+prov+' API key...';input.parentElement.querySelector('.status-icon').textContent='[-]'}
+    const del=document.getElementById('key-del-'+prov);if(del)del.style.display='none';
+    showToast(prov+' key deleted','success');loadModels();
+  }catch(e){if(e.message!=='auth_required')appAlert('Failed to delete key')}
+}
 async function clearKey(envName,row,statusEl){
   if(!(await appConfirm('Clear '+envName+'?')))return;
   try{const r=await authFetch(API+'/api/settings/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_name:envName})});if(r.ok){const input=row.querySelector('input');if(input){input.value='';input.placeholder='Enter key...'}statusEl.textContent='[-]'}}catch(e){appAlert('Failed to clear key')}
 }
 async function saveSettings(){
   const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','xai','cohere','opencode'];
+  let saved=0,failed=0;
   for(const prov of provList){
     const input=document.getElementById('key-'+prov);
     if(input&&input.value.trim()&&input.value.trim()!=='********'){
-      await fetch(API+'/api/provider-keys',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({provider:prov,api_key:input.value.trim()})});
+      try{
+        const r=await authFetch(API+'/api/provider-keys',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({provider:prov,api_key:input.value.trim()})});
+        if(!r.ok)throw new Error('save failed');
+        saved++;input.value='********';
+      }catch(e){if(e.message==='auth_required')return;failed++}
     }
   }
-  showToast('API keys saved','success');
+  if(failed>0)showToast('Saved '+saved+', '+failed+' failed','error');
+  else showToast(saved>0?'API keys saved':'Nothing new to save','success');
+  refreshProviderKeyState();
   switchView('chat');
   setTimeout(()=>{loadModels();loadProviderStatus()},500);
 }
@@ -1546,11 +1589,21 @@ async function loadUsage(range,btn){
     if(!r.ok)throw new Error('offline');
     const raw=await r.json();
     const s=raw.summary||{};
+    let providersConfigured=0,providerKeys=[];
+    try{
+      const rk=await authFetch(API+'/api/keys');
+      if(rk.ok){const kd=await rk.json();providersConfigured=Object.values(kd.providers||{}).filter(p=>p.configured).length}
+    }catch(e){if(e.message==='auth_required')return}
+    try{
+      const rp=await authFetch(API+'/api/provider-keys');
+      if(rp.ok){const pd=await rp.json();providerKeys=pd.keys||[]}
+    }catch(e){if(e.message==='auth_required')return}
     const data={
       total_requests:s.requests||0,total_tokens:s.total_tokens||0,
       prompt_tokens:s.prompt_tokens||0,completion_tokens:s.completion_tokens||0,
       avg_response_time:s.avg_duration_ms||0,max_response_time:s.max_duration_ms||0,
       active_days:s.active_days||0,
+      providers_configured:providersConfigured,provider_keys:providerKeys,
       all_time:raw.all_time||{},
       timeseries:raw.timeseries||[],
       by_model:raw.by_model||[],
@@ -1576,15 +1629,15 @@ function renderUsageSummary(data){
   const totalReqs=data.total_requests||0;
   const totalTok=data.total_tokens||0;
   const avgResp=data.avg_response_time||0;
-  const activeKeys=(data.by_key||[]).length;
+  const provConfigured=data.providers_configured||0;
   document.getElementById('us-total-req').textContent=totalReqs.toLocaleString();
   document.getElementById('us-total-req-sub').textContent=(usageCurrentRange==='1h'?'last hour':usageCurrentRange==='24h'?'last 24 hours':usageCurrentRange==='7d'?'last 7 days':'last 30 days');
   document.getElementById('us-total-tok').textContent=totalTok>=1000000?(totalTok/1000000).toFixed(1)+'M':totalTok>=1000?(totalTok/1000).toFixed(1)+'K':totalTok.toLocaleString();
   document.getElementById('us-total-tok-sub').textContent='tokens used';
   document.getElementById('us-avg-resp').textContent=avgResp>0?(avgResp/1000).toFixed(1)+'s':'--';
   document.getElementById('us-avg-resp-sub').textContent='avg latency';
-  document.getElementById('us-active-keys').textContent=activeKeys;
-  document.getElementById('us-active-keys-sub').textContent='API keys used';
+  document.getElementById('us-active-keys').textContent=provConfigured;
+  document.getElementById('us-active-keys-sub').textContent='providers configured';
 }
 function renderUsageTimeseries(data){
   const canvas=document.getElementById('usage-timeseries-canvas');
@@ -1650,9 +1703,28 @@ function renderUsageProviderBars(data){
 }
 function renderUsageKeyTable(data){
   const tbody=document.querySelector('#us-key-table tbody');if(!tbody)return;tbody.innerHTML='';
+  const byProv={};(data.by_provider||[]).forEach(p=>{byProv[p.provider||p.name]=p});
+  const provKeys=data.provider_keys||[];
+  if(provKeys.length>0){
+    const h=document.createElement('tr');
+    h.innerHTML='<td colspan="4" style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:10px 0 2px">Provider keys</td>';
+    tbody.appendChild(h);
+    provKeys.forEach(k=>{
+      const stat=byProv[k.provider]||{};
+      const tr=document.createElement('tr');
+      const updated=k.updated_at?new Date(k.updated_at+'Z').toLocaleString():'--';
+      tr.innerHTML='<td><code style="font-family:var(--mono);font-size:11px">'+escapeHtml(k.provider)+'</code> <span style="font-size:10px;color:var(--success)">[OK]</span><div style="font-size:10px;color:var(--text-muted);font-family:var(--mono)">'+escapeHtml(k.api_key_preview||'')+'</div></td><td>'+(stat.requests||0)+'</td><td>'+(stat.tokens||0).toLocaleString()+'</td><td style="color:var(--text-muted)">'+updated+'</td>';
+      tbody.appendChild(tr);
+    });
+  }
   const byKey=data.by_key||[];
   const keys=(Array.isArray(byKey)?byKey:[]).sort((a,b)=>(b.requests_in_range||b.requests||0)-(a.requests_in_range||a.requests||0));
-  if(keys.length===0){tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:16px">No API key usage yet</td></tr>';return}
+  if(provKeys.length===0&&keys.length===0){tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:16px">No API key usage yet</td></tr>';return}
+  if(keys.length>0){
+    const h=document.createElement('tr');
+    h.innerHTML='<td colspan="4" style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:10px 0 2px">Personal API keys</td>';
+    tbody.appendChild(h);
+  }
   keys.forEach(k=>{
     const tr=document.createElement('tr');
     const masked=(k.name||k.key||'').length>12?(k.name||k.key).slice(0,6)+'...'+(k.name||k.key).slice(-4):(k.name||k.key||'--');

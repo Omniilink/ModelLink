@@ -209,6 +209,126 @@ async def not_found_handler(request: Request, exc):
     return JSONResponse(status_code=404, content={"error": "Not found"})
 
 # ==========================================
+# Network Usage Tracking (persisted JSON)
+# ==========================================
+NETWORK_USAGE_PATH = os.path.join(APP_DIR, "network_usage.json")
+
+class _NetworkUsage:
+    """Counts HTTP bytes in/out per path. Best-effort, never raises."""
+    def __init__(self, path: str):
+        self.path = path
+        self.data = {
+            "updated_at": "",
+            "total_bytes_in": 0,
+            "total_bytes_out": 0,
+            "total_requests": 0,
+            "by_path": {},
+        }
+        self._last_flush = 0.0
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                if isinstance(saved, dict):
+                    for k in ("total_bytes_in", "total_bytes_out", "total_requests"):
+                        v = saved.get(k, 0)
+                        if isinstance(v, (int, float)):
+                            self.data[k] = int(v)
+                    bp = saved.get("by_path")
+                    if isinstance(bp, dict):
+                        self.data["by_path"] = {
+                            str(p): {
+                                "in": int(v.get("in", 0)),
+                                "out": int(v.get("out", 0)),
+                                "requests": int(v.get("requests", 0)),
+                            }
+                            for p, v in list(bp.items())[:500]
+                            if isinstance(v, dict)
+                        }
+        except Exception:
+            pass
+
+    def record(self, path: str, n_in: int, n_out: int):
+        try:
+            d = self.data
+            d["total_bytes_in"] += max(0, int(n_in))
+            d["total_bytes_out"] += max(0, int(n_out))
+            d["total_requests"] += 1
+            entry = d["by_path"].get(path)
+            if entry is None:
+                if len(d["by_path"]) >= 500:
+                    # Drop the smallest entry to stay bounded
+                    victim = min(d["by_path"].items(),
+                                 key=lambda kv: kv[1].get("requests", 0))[0]
+                    del d["by_path"][victim]
+                entry = d["by_path"][path] = {"in": 0, "out": 0, "requests": 0}
+            entry["in"] += max(0, int(n_in))
+            entry["out"] += max(0, int(n_out))
+            entry["requests"] += 1
+            now = time.time()
+            if now - self._last_flush >= 5:
+                self.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self.data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self._last_flush = time.time()
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2)
+        except Exception:
+            pass
+
+    def snapshot(self) -> dict:
+        return json.loads(json.dumps(self.data))
+
+network_usage = _NetworkUsage(NETWORK_USAGE_PATH)
+
+
+class NetworkUsageMiddleware:
+    """Raw ASGI middleware — counts request/response body bytes per path."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "?") or "?"
+        n_in = 0
+        n_out = 0
+
+        async def recv_wrapper():
+            nonlocal n_in
+            message = await receive()
+            if message["type"] == "http.request":
+                try:
+                    n_in += len(message.get("body", b"") or b"")
+                except Exception:
+                    pass
+            return message
+
+        async def send_wrapper(message):
+            nonlocal n_out
+            if message["type"] == "http.response.body":
+                try:
+                    n_out += len(message.get("body", b"") or b"")
+                except Exception:
+                    pass
+            await send(message)
+
+        try:
+            await self.app(scope, recv_wrapper, send_wrapper)
+        finally:
+            network_usage.record(path, n_in, n_out)
+
+app.add_middleware(NetworkUsageMiddleware)
+
+# ==========================================
 # Per-User Data Isolation
 # ==========================================
 def _safe_username(username: str) -> str:
@@ -983,6 +1103,13 @@ async def api_usage(request: Request, range: str = "24h"):
         return data
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/api/network")
+async def api_network(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return network_usage.snapshot()
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
