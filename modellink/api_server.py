@@ -44,10 +44,74 @@ from modellink.auth import (
     create_session, destroy_session, set_session_cookie, get_user_by_id,
     update_user_name, update_user_password, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
-    delete_user_provider_key, get_db, get_user_from_session
+    delete_user_provider_key, get_db, get_user_from_session,
+    revoke_user_sessions
 )
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
+
+MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
+
+class BodyLimitMiddleware:
+    """Reject request bodies over MAX_BODY_BYTES (works for Content-Length and chunked)."""
+    def __init__(self, app, max_bytes: int = MAX_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        cl = headers.get("content-length", "")
+        if cl.isdigit() and int(cl) > self.max_bytes:
+            await self._send_413(send)
+            return
+
+        # Pre-read the body (if any) so the cap is enforced even when the
+        # endpoint returns early (e.g. 401) without reading the body.
+        has_body = (cl not in ("", "0")) or "chunked" in headers.get("transfer-encoding", "").lower()
+        if not has_body:
+            await self.app(scope, receive, send)
+            return
+
+        body = b""
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+            if len(body) > self.max_bytes:
+                await self._send_413(send)
+                return
+
+        body_sent = False
+
+        async def replay_receive():
+            nonlocal body_sent
+            if not body_sent:
+                body_sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+    async def _send_413(self, send):
+        body = b'{"error":"Request body too large"}'
+        await send({
+            "type": "http.response.start", "status": 413,
+            "headers": [(b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"connection", b"close")],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,6 +132,13 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; font-src 'self'; object-src 'none'; "
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
     if request.headers.get("x-forwarded-proto", "").lower() == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
@@ -110,6 +181,47 @@ def _request_is_https(request: Request) -> bool:
     if '"scheme":"https"' in request.headers.get("cf-visitor", ""):
         return True
     return request.url.scheme == "https"
+
+def _bad_path(path: str) -> bool:
+    """Reject null bytes and absurd lengths in filesystem paths."""
+    if not path or len(path) > 1024:
+        return True
+    if "\x00" in path:
+        return True
+    return False
+
+async def _safe_json(request: Request):
+    """Parse JSON body; returns (data, None) or (None, 400 response)."""
+    try:
+        data = await request.json()
+    except Exception:
+        return None, JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+    return data, None
+
+def _user_quota_bytes() -> int:
+    try:
+        return int(os.environ.get("OMNIILINK_USER_QUOTA", str(5 * 1024 * 1024 * 1024)))
+    except ValueError:
+        return 5 * 1024 * 1024 * 1024
+
+def _dir_size(path: str) -> int:
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+def _check_quota(user, user_id: str, incoming_bytes: int = 0):
+    """Non-admin disk quota check. Returns JSONResponse error or None."""
+    if user.get("is_admin"):
+        return None
+    used = _dir_size(_user_data_dir(user_id))
+    if used + incoming_bytes > _user_quota_bytes():
+        return JSONResponse(status_code=413, content={"error": "Storage quota exceeded"})
+    return None
 
 def _user_data_dir(user_id: str) -> str:
     """Get or create per-user data directory (user_id must already be sanitized)."""
@@ -209,6 +321,8 @@ class LogBroadcaster:
         self._lock = asyncio.Lock()
 
     def subscribe(self) -> queue.Queue:
+        if len(self._queues) >= 64:
+            raise RuntimeError("Too many log subscriptions")
         q = queue.Queue(maxsize=200)
         self._queues.append(q)
         return q
@@ -287,7 +401,10 @@ async def stream_logs(request: Request):
     _user, err = _require_auth(request)
     if err:
         return err
-    q = log_broadcaster.subscribe()
+    try:
+        q = log_broadcaster.subscribe()
+    except RuntimeError as e:
+        return JSONResponse(status_code=429, content={"error": str(e)})
     async def gen():
         try:
             while True:
@@ -329,24 +446,10 @@ class ProviderKeyRequest(BaseModel):
 class ProviderKeyDeleteRequest(BaseModel):
     key_id: int
 
-@app.post("/api/auth/signup")
-async def auth_signup(request: Request, req: SignupRequest):
-    username = req.username.strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,31}", username):
-        return JSONResponse(status_code=400, content={"error": "Username must be 3-32 chars: letters, numbers, - and _ only"})
-    if len(req.password) < 6:
-        return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
-    result = create_user(username, req.password, req.name)
-    if "error" in result:
-        return JSONResponse(status_code=409, content={"error": result["error"]})
-    token = create_session(result["id"])
-    user = get_user_by_id(result["id"])
-    resp = JSONResponse(content={"status": "ok", "user": user})
-    set_session_cookie(resp, token, secure=_request_is_https(request))
-    return resp
-
 # Simple login brute-force throttle: 5 failures per IP+username -> 15 min lockout
 _login_failures = {}
+# Signup throttle: max 5 signups per IP per hour
+_signup_attempts = {}
 
 def _login_allowed(key: str) -> bool:
     now = time.time()
@@ -365,6 +468,45 @@ def _record_login_failure(key: str):
     if now - first > 15 * 60:
         count, first = 0, now
     _login_failures[key] = (count + 1, first)
+
+def _signup_allowed(ip: str) -> bool:
+    now = time.time()
+    entry = _signup_attempts.get(ip)
+    if not entry:
+        return True
+    count, first = entry
+    if now - first > 3600:
+        _signup_attempts.pop(ip, None)
+        return True
+    return count < 5
+
+def _record_signup(ip: str):
+    now = time.time()
+    count, first = _signup_attempts.get(ip, (0, now))
+    if now - first > 3600:
+        count, first = 0, now
+    _signup_attempts[ip] = (count + 1, first)
+
+@app.post("/api/auth/signup")
+async def auth_signup(request: Request, req: SignupRequest):
+    ip = request.headers.get("cf-connecting-ip", "") or (request.client.host if request.client else "")
+    if not _signup_allowed(ip):
+        return JSONResponse(status_code=429, content={"error": "Too many signups. Try again later."})
+    username = req.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,31}", username):
+        return JSONResponse(status_code=400, content={"error": "Username must be 3-32 chars: letters, numbers, - and _ only"})
+    if len(req.password) < 6:
+        return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
+    result = create_user(username, req.password, req.name)
+    if "error" in result:
+        return JSONResponse(status_code=409, content={"error": result["error"]})
+    _user_projects_dir(username)
+    _record_signup(ip)
+    token = create_session(result["id"])
+    user = get_user_by_id(result["id"])
+    resp = JSONResponse(content={"status": "ok", "user": user})
+    set_session_cookie(resp, token, secure=_request_is_https(request))
+    return resp
 
 @app.post("/api/auth/signin")
 async def auth_signin(request: Request, req: SigninRequest):
@@ -404,11 +546,14 @@ async def auth_update_profile(request: Request, req: UpdateProfileRequest):
     if not user:
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
     if req.name is not None:
-        update_user_name(user["id"], req.name.strip())
+        update_user_name(user["id"], req.name.strip()[:100])
     if req.new_password:
         if len(req.new_password) < 6:
             return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
         update_user_password(user["id"], req.new_password)
+        # Password change invalidates every other session
+        current_token = request.cookies.get("omnilink_token")
+        revoke_user_sessions(user["id"], keep_token=current_token)
     updated = get_user_by_id(user["id"])
     return {"status": "ok", "user": updated}
 
@@ -445,6 +590,10 @@ async def save_provider_key(request: Request, req: ProviderKeyRequest):
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
     if not req.provider or not req.api_key:
         return JSONResponse(status_code=400, content={"error": "Provider and API key required"})
+    if not re.fullmatch(r"[a-z0-9]{1,32}", req.provider):
+        return JSONResponse(status_code=400, content={"error": "Invalid provider name"})
+    if len(req.api_key) > 500 or any(ord(c) < 32 for c in req.api_key):
+        return JSONResponse(status_code=400, content={"error": "Invalid API key"})
     save_user_provider_key(user["id"], req.provider.strip(), req.api_key.strip())
     return {"status": "ok"}
 
@@ -584,7 +733,9 @@ async def update_settings_bulk(request: Request):
     _user, err = _require_admin(request)
     if err:
         return err
-    body = await request.json()
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
     if os.path.exists(env_path):
@@ -667,15 +818,29 @@ async def chat_completions(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
-    body = await request.json()
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
     messages = body.get("messages", [])
-    if not messages:
-        return JSONResponse(status_code=400, content={"error": "No messages provided"})
+    if not messages or not isinstance(messages, list) or len(messages) > 200:
+        return JSONResponse(status_code=400, content={"error": "Invalid messages"})
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant") \
+                or not isinstance(m.get("content"), str) or len(m["content"]) > 500000:
+            return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
 
     temp = body.get("temperature", 0.7)
     max_tokens = body.get("max_tokens", 1000)
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
+    if not isinstance(req_model, str) or not re.fullmatch(r"[a-zA-Z0-9._/-]{1,80}", req_model):
+        return JSONResponse(status_code=400, content={"error": "Invalid model name"})
+    try:
+        temp = max(0.0, min(2.0, float(temp)))
+        max_tokens = max(1, min(32000, int(max_tokens)))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
+    is_stream = bool(is_stream)
 
     # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
@@ -686,13 +851,14 @@ async def chat_completions(request: Request):
         user_keys = db_keys
 
     if is_stream:
-        stream, used_model = generate(
+        stream, used_model = await asyncio.to_thread(
+            generate,
             messages=messages,
             model=req_model,
             temperature=temp,
             max_tokens=max_tokens,
             stream=True,
-            user_keys=user_keys
+            user_keys=user_keys,
         )
 
         async def event_generator():
@@ -742,13 +908,14 @@ async def chat_completions(request: Request):
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     else:
-        response, used_model = generate(
+        response, used_model = await asyncio.to_thread(
+            generate,
             messages=messages,
             model=req_model,
             temperature=temp,
             max_tokens=max_tokens,
             stream=False,
-            user_keys=user_keys
+            user_keys=user_keys,
         )
         return JSONResponse(content=response)
 
@@ -878,6 +1045,8 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     user_id = _safe_username(user["username"])
     coding_state = _get_coding_state(user_id)
     folder = req.path.strip()
+    if _bad_path(folder):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {folder}"})
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
@@ -913,6 +1082,8 @@ async def coding_file_content(request: Request, path: str):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
     full = os.path.join(folder, path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -938,6 +1109,11 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    if _bad_path(req.path) or len(req.content) > 5 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "Invalid path or content too large (max 5MB)"})
+    quota_err = _check_quota(user, _safe_username(user["username"]), len(req.content.encode("utf-8", "ignore")))
+    if quota_err:
+        return quota_err
     full = os.path.join(folder, req.path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -964,6 +1140,8 @@ async def coding_file_delete(request: Request, path: str):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
     full = os.path.join(folder, path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -1016,7 +1194,9 @@ async def coding_update_settings(request: Request):
     if err:
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
-    body = await request.json()
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
     for k, v in body.items():
         if k in coding_state["settings"]:
             coding_state["settings"][k] = v
@@ -1092,6 +1272,8 @@ async def gen_api_key(request: Request):
     user = get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    if len(get_user_api_keys(user["id"])) >= 50:
+        return JSONResponse(status_code=400, content={"error": "Key limit reached (50). Revoke unused keys first."})
     entry = generate_api_key(user["id"])
     logger.info(f"[APIKEY] Generated: {entry['key'][:12]}...")
     return entry
@@ -1101,8 +1283,12 @@ async def rev_api_key(request: Request):
     user = get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
-    body = await request.json()
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
     key = body.get("key", "")
+    if not isinstance(key, str) or not key.startswith("ml-"):
+        return JSONResponse(status_code=400, content={"error": "Invalid key"})
     revoke_api_key(user["id"], key)
     logger.info(f"[APIKEY] Revoked: {key[:12]}...")
     return {"status": "ok"}
@@ -1136,6 +1322,8 @@ def _valid_project_name(name: str) -> bool:
     if not name or len(name) > 100:
         return False
     if any(c in name for c in '/\\:*?"<>|'):
+        return False
+    if any(ord(c) < 32 for c in name):
         return False
     if name in ('.', '..') or '..' in name:
         return False
@@ -1194,6 +1382,9 @@ async def create_project(request: Request, req: ProjectCreate):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if os.path.exists(path):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    quota_err = _check_quota(user, user_id, 4096)
+    if quota_err:
+        return quota_err
     os.makedirs(path, exist_ok=True)
     logger.info(f"[PROJECT] Created: {name}")
     return {"status": "ok", "name": name, "path": path}
@@ -1218,6 +1409,9 @@ async def import_project(request: Request, req: ProjectImport):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if os.path.exists(dest):
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    quota_err = _check_quota(user, user_id, _dir_size(source))
+    if quota_err:
+        return quota_err
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
     logger.info(f"[PROJECT] Imported: {name} from {source}")
     return {"status": "ok", "name": name, "path": dest}
@@ -1367,4 +1561,4 @@ async def serve_spa(path: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=port, server_header=False, date_header=False)

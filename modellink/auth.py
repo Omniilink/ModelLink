@@ -6,6 +6,7 @@ import os
 import sys
 import sqlite3
 import hashlib
+import hmac
 import secrets
 import time
 import json
@@ -109,7 +110,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
     try:
         salt, expected_hex = stored_hash.split('$', 1)
         h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
-        return h.hex() == expected_hex
+        return hmac.compare_digest(h.hex().encode(), expected_hex.encode())
     except Exception:
         return False
 
@@ -158,6 +159,20 @@ def destroy_session(token: str):
         conn.close()
 
 
+def revoke_user_sessions(user_id: int, keep_token: Optional[str] = None):
+    """Revoke all sessions for a user (optionally keeping the current one)."""
+    conn = get_db()
+    try:
+        if keep_token:
+            conn.execute("DELETE FROM sessions WHERE user_id = ? AND token != ?",
+                         (user_id, keep_token))
+        else:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ==========================================
 # User Management
 # ==========================================
@@ -171,10 +186,13 @@ def create_user(username: str, password: str, name: str = "") -> dict:
         password_hash = hash_password(password)
         count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         is_admin = 1 if count == 0 else 0
-        cur = conn.execute(
-            "INSERT INTO users (username, password_hash, name, is_admin) VALUES (?, ?, ?, ?)",
-            (username, password_hash, name or username, is_admin)
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, name, is_admin) VALUES (?, ?, ?, ?)",
+                (username, password_hash, name or username, is_admin)
+            )
+        except sqlite3.IntegrityError:
+            return {"error": "Username already taken"}
         conn.commit()
         user_id = cur.lastrowid
         return {"id": user_id, "username": username, "name": name or username,
@@ -275,12 +293,15 @@ def revoke_api_key(user_id: int, key: str):
 
 def validate_api_key(key: str) -> Optional[int]:
     """Validate a permanent API key and return the user_id."""
+    if not key or not (key.startswith("ml-") and len(key) == 51
+                       and all(c in "0123456789abcdef" for c in key[3:])):
+        return None
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT user_id FROM api_keys WHERE key = ?", (key,)
+            "SELECT key, user_id FROM api_keys WHERE key = ?", (key,)
         ).fetchone()
-        if row:
+        if row and hmac.compare_digest(row["key"].encode(), key.encode()):
             conn.execute(
                 "UPDATE api_keys SET last_used_at = datetime('now'), request_count = request_count + 1 WHERE key = ?",
                 (key,)

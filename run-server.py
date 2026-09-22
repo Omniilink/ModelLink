@@ -144,7 +144,8 @@ def start_api():
     print(f"Starting API server on {API_HOST}:{API_PORT}...")
     subprocess.run(
         [sys.executable, "-m", "uvicorn", "modellink.api_server:app",
-         "--host", API_HOST, "--port", str(API_PORT)],
+         "--host", API_HOST, "--port", str(API_PORT),
+         "--no-server-header", "--no-date-header"],
         cwd=SCRIPT_DIR,
     )
 
