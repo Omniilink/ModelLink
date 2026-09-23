@@ -269,6 +269,22 @@ a:hover{text-decoration:underline}
 #coding-output-body .term-target{color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #coding-output-body .term-add{color:#22c55e}
 #coding-output-body .term-del{color:#f87171}
+/* ===== Collapsed file diff rows (opencode-style Edit +A -R) ===== */
+.diff-wrap{margin:4px 0}
+.diff-head{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:2px 0}
+.diff-head:hover .diff-path{color:var(--text-primary)}
+.diff-path{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.diff-chev{color:var(--text-muted);font-size:10px;transition:transform .15s}
+.diff-wrap.open .diff-chev{transform:rotate(180deg)}
+.diff-body{display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;overflow:hidden;max-height:320px;overflow-y:auto;background:rgba(0,0,0,.4)}
+.diff-wrap.open .diff-body{display:block}
+.dg-row{display:grid;grid-template-columns:44px 44px 1fr;font-family:var(--mono);font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.dg-row .dg-n{color:var(--text-muted);text-align:right;padding:0 8px 0 0;user-select:none;opacity:.7}
+.dg-row code{padding-right:12px;color:var(--text-secondary)}
+.dg-row.dg-add{background:rgba(34,197,94,.1)}
+.dg-row.dg-add code{color:#86efac}
+.dg-row.dg-del{background:rgba(239,68,68,.1)}
+.dg-row.dg-del code{color:#fca5a5}
 .api-tab{padding:5px 14px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;font-family:var(--font);transition:all .12s}
 .api-tab:hover{color:var(--text-secondary);border-color:var(--border-light)}
 .api-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1668,6 +1684,71 @@ function fmtCmdResult(result){
   const t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
   return escapeHtml(t.trim()?t:'(no output — command produced no text)');
 }
+function diffLineOps(oldLines,newLines){
+  // LCS diff -> [{t:' '|'-'|'+',text,an,bn}]. Null when too big (caller falls back).
+  const n=oldLines.length,m=newLines.length;
+  if(n*m>4000000||n>20000||m>20000)return null;
+  const dp=Array.from({length:n+1},()=>new Uint32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+    dp[i][j]=oldLines[i]===newLines[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const ops=[];let i=0,j=0,an=1,bn=1;
+  while(i<n&&j<m){
+    if(oldLines[i]===newLines[j]){ops.push({t:' ',text:newLines[j],an:an++,bn:bn++});i++;j++}
+    else if(dp[i+1][j]>=dp[i][j+1]){ops.push({t:'-',text:oldLines[i],an:an++,bn:null});i++}
+    else{ops.push({t:'+',text:newLines[j],an:null,bn:bn++});j++}
+  }
+  while(i<n){ops.push({t:'-',text:oldLines[i],an:an++,bn:null});i++}
+  while(j<m){ops.push({t:'+',text:newLines[j],an:null,bn:bn++});j++}
+  return ops;
+}
+async function fetchOldProjectFile(path){
+  // Best-effort current content for diffing. Null = missing/unreadable.
+  try{
+    if(fsHandle){try{return await fsReadFile(path)}catch(e){return null}}
+    const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));
+    if(!r.ok)return null;
+    const d=await r.json();
+    return (d&&typeof d.content==='string')?d.content:null;
+  }catch(e){return null}
+}
+async function fillFileDiff(toolDiv,path,content,kind){
+  // Replaces raw code dumps with a collapsed opencode-style row:
+  // Edit <path> +A -R, expanding to a line-numbered red/green diff.
+  const old=await fetchOldProjectFile(path);
+  const oldLines=old?old.split('\n'):[];
+  const newLines=String(content||'').split('\n');
+  const ops=diffLineOps(oldLines,newLines);
+  let added=0,removed=0;
+  if(ops)for(const o of ops){if(o.t==='+')added++;else if(o.t==='-')removed++}
+  else{added=newLines.length;removed=oldLines.length}
+  const wrap=document.createElement('div');wrap.className='diff-wrap';
+  const head=document.createElement('div');head.className='tool-label diff-head';
+  const kindEl=document.createElement('span');kindEl.textContent=kind;
+  const pathEl=document.createElement('span');pathEl.className='diff-path';pathEl.textContent=path;
+  const addEl=document.createElement('span');addEl.className='term-add';addEl.textContent=' +'+added;
+  const delEl=document.createElement('span');delEl.className='term-del';delEl.textContent=' -'+removed;
+  const chev=document.createElement('span');chev.className='diff-chev';chev.textContent='▾';
+  head.appendChild(kindEl);
+  head.appendChild(document.createTextNode(' '));head.appendChild(pathEl);
+  head.appendChild(addEl);head.appendChild(delEl);head.appendChild(chev);
+  head.onclick=()=>wrap.classList.toggle('open');
+  wrap.appendChild(head);
+  const body=document.createElement('div');body.className='diff-body';
+  if(!ops){const s=document.createElement('div');s.className='dg-row';s.textContent='Diff too large to display ('+oldLines.length+' → '+newLines.length+' lines).';body.appendChild(s)}
+  else{
+    const rows=ops.slice(0,400);
+    for(const o of rows){
+      const row=document.createElement('div');row.className='dg-row'+(o.t==='+'?' dg-add':o.t==='-'?' dg-del':'');
+      const ga=document.createElement('span');ga.className='dg-n';ga.textContent=o.an==null?'':o.an;
+      const gb=document.createElement('span');gb.className='dg-n';gb.textContent=o.bn==null?'':o.bn;
+      const code=document.createElement('code');code.textContent=(o.t===' '?' ':o.t)+' '+o.text;
+      row.appendChild(ga);row.appendChild(gb);row.appendChild(code);body.appendChild(row);
+    }
+    if(ops.length>400){const s=document.createElement('div');s.className='dg-row';s.textContent='… '+(ops.length-400)+' more lines';body.appendChild(s)}
+  }
+  wrap.appendChild(body);
+  toolDiv.appendChild(wrap);
+}
 function renderCodingTodos(){
   const bar=document.getElementById('coding-todo-bar'),list=document.getElementById('coding-todo-list');
   if(!bar||!list)return;
@@ -1734,11 +1815,11 @@ async function processCodingActions(text,msgEl){
   const contentEl=msgEl.querySelector('.coding-msg-content');
   if(contentEl&&hasToolBlocks){const cleaned=stripToolBlocks(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else contentEl.innerHTML=''}
   const codingSettings=await fetchCodingSettings();
-  for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Create File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
+  for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
-  for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';toolDiv.innerHTML='<div class="tool-label">Edit File: '+escapeHtml(path)+'</div><div class="file-write-diff">'+escapeHtml(content.slice(0,1500))+'</div>';
+  for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
@@ -1944,6 +2025,40 @@ async function streamCodingTurn(messages){
   await processCodingActions(fullText,assistantEl);
   return{fullText,actualModel};
 }
+function offerCreateMissingFiles(missing){
+  // Approval-gated stub creation for verify-missing files. Harvest- and
+  // approval-loop-compatible: the loop waits on these buttons, and the
+  // outcome feeds back like any other tool result.
+  const chat=document.getElementById('coding-chat');
+  const msg=document.createElement('div');msg.className='coding-msg assistant';
+  const av=document.createElement('div');av.className='coding-msg-avatar';av.textContent='O';
+  const body=document.createElement('div');
+  msg.appendChild(av);msg.appendChild(body);
+  const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
+  const label=document.createElement('div');label.className='tool-label';
+  label.textContent='Create missing files ('+missing.length+')';
+  toolDiv.appendChild(label);
+  const list=document.createElement('div');
+  list.style.cssText='font-family:var(--mono);font-size:11px;color:var(--text-secondary);margin:4px 0';
+  list.textContent=missing.join(', ');
+  toolDiv.appendChild(list);
+  const bar=document.createElement('div');bar.className='approve-bar';
+  const ab=document.createElement('button');ab.className='approve';ab.textContent='Create files';
+  ab.onclick=async()=>{
+    ab.disabled=true;
+    let ok=0;const failed=[];
+    for(const p of missing){
+      try{const result=await codingWriteFile(p,'');if(result.ok)ok++;else failed.push(p)}
+      catch(e){failed.push(p)}
+    }
+    refreshCodingTree();
+    bar.innerHTML='<span style="color:'+(failed.length?'var(--warning)':'var(--success)')+';font-size:11px">Created '+ok+' of '+missing.length+(failed.length?' (failed: '+failed.join(', ')+')':'')+'</span>';
+  };
+  const db=document.createElement('button');db.className='deny';db.textContent='Skip';
+  db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
+  bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
+  body.appendChild(toolDiv);chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;
+}
 async function sendCodingImprove(reason,nextAttempt){
   codingHistory.push({role:'user',content:'Not done yet: '+reason+'\nImprove the work now using tool blocks (attempt '+nextAttempt+' of '+(CODING_MAX_SETBACKS+1)+').'});
   persistCodingChat();
@@ -1955,7 +2070,7 @@ async function sendCodingImprove(reason,nextAttempt){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  let rounds=0,setbacks=0,lastReason='';
+  let rounds=0,setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0;
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const giveUp=reason=>{
     postCodingAssistant('I could not finish this task after 3 attempts. Reason: '+reason+'\n\nThe remaining open todos are listed above — adjust the task or ask me to continue from here.');
@@ -1994,7 +2109,14 @@ async function codingAutoContinue(){
         setbacks++;
         lastReason='these files do not exist in the project yet: '+reality.missing.join(', ');
         if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+        // No-progress guard: same missing set twice running = stuck, stop.
+        const mkey=reality.missing.slice().sort().join('|');
+        if(mkey===lastMissingKey)stagnantRounds++;else{lastMissingKey=mkey;stagnantRounds=0}
+        if(stagnantRounds>=2){giveUp('no progress — still missing after repeated attempts: '+lastReason);break}
         addCodingSystemMsg('Verification failed — '+lastReason);
+        // Let the USER break the loop with one click (permission-gated);
+        // offer once per missing-set so skips don't pile up offers.
+        if(mkey!==lastOfferedKey){lastOfferedKey=mkey;offerCreateMissingFiles(reality.missing)}
         const iturn0=await sendCodingImprove('Verification FAILED: '+lastReason+'. Create the missing files now using FILE_CREATE blocks. Do NOT claim completion until the files exist.',setbacks+1);
         if(iturn0.error)break;
         continue;
@@ -2018,6 +2140,8 @@ async function codingAutoContinue(){
           lastReason='you claimed success, but these files are still missing: '+reality2.missing.join(', ');
           if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
           addCodingSystemMsg('Claim rejected — '+lastReason);
+          const mkey2=reality2.missing.slice().sort().join('|');
+          if(mkey2!==lastOfferedKey){lastOfferedKey=mkey2;offerCreateMissingFiles(reality2.missing)}
           const iturnR=await sendCodingImprove(lastReason+'. Create them now with FILE_CREATE blocks.',setbacks+1);
           if(iturnR.error)break;
           continue;
