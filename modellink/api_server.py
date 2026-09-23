@@ -1000,30 +1000,42 @@ async def get_settings(request: Request):
                 })
     return settings
 
+def _valid_env_assignment(key_name: str, key_value: str) -> Optional[str]:
+    """Validate a server-key write. Returns an error string or None if OK."""
+    if not key_name or not re.fullmatch(r"[A-Z0-9_]{1,64}", key_name):
+        return "Invalid key name"
+    if not key_value or len(key_value) > 500 or any(ord(c) < 32 for c in key_value):
+        return "Invalid key value"
+    return None
+
+
 @app.post("/api/settings")
 async def update_settings(request: Request, req: SettingsRequest):
     _user, err = _require_admin(request)
     if err:
         return err
+    bad = _valid_env_assignment(req.key_name, req.key_value)
+    if bad:
+        return JSONResponse(status_code=400, content={"error": bad})
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
     found = False
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             lines = f.readlines()
-    target = f"{request.key_name}="
+    target = f"{req.key_name}="
     for i, line in enumerate(lines):
         if line.strip().startswith(target):
-            lines[i] = f"{request.key_name}={request.key_value}\n"
+            lines[i] = f"{req.key_name}={req.key_value}\n"
             found = True
             break
     if not found:
-        lines.append(f"\n{request.key_name}={request.key_value}\n")
+        lines.append(f"\n{req.key_name}={req.key_value}\n")
     with open(env_path, "w") as f:
         f.writelines(lines)
-    os.environ[request.key_name] = request.key_value
-    logger.info(f"Settings updated: {request.key_name}")
-    return {"status": "ok", "message": f"Updated {request.key_name}"}
+    os.environ[req.key_name] = req.key_value
+    logger.info(f"Settings updated: {req.key_name}")
+    return {"status": "ok", "message": f"Updated {req.key_name}"}
 
 @app.post("/api/settings/bulk")
 async def update_settings_bulk(request: Request):
@@ -1043,6 +1055,8 @@ async def update_settings_bulk(request: Request):
         key_name = update.get("key_name", "")
         key_value = update.get("key_value", "")
         if not key_name:
+            continue
+        if _valid_env_assignment(key_name, key_value):
             continue
         target = f"{key_name}="
         found = False
@@ -1064,21 +1078,23 @@ async def clear_key(request: Request, req: ClearKeyRequest):
     _user, err = _require_admin(request)
     if err:
         return err
+    if not req.key_name or not re.fullmatch(r"[A-Z0-9_]{1,64}", req.key_name):
+        return JSONResponse(status_code=400, content={"error": "Invalid key name"})
     env_path = os.path.join(APP_DIR, ".env")
     lines = []
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             lines = f.readlines()
-    target = f"{request.key_name}="
+    target = f"{req.key_name}="
     for i, line in enumerate(lines):
         if line.strip().startswith(target):
-            lines[i] = f"{request.key_name}=\n"
+            lines[i] = f"{req.key_name}=\n"
             break
     with open(env_path, "w") as f:
         f.writelines(lines)
-    os.environ.pop(request.key_name, None)
-    logger.info(f"Key cleared: {request.key_name}")
-    return {"status": "ok", "message": f"Cleared {request.key_name}"}
+    os.environ.pop(req.key_name, None)
+    logger.info(f"Key cleared: {req.key_name}")
+    return {"status": "ok", "message": f"Cleared {req.key_name}"}
 
 @app.get("/api/language")
 async def get_language_setting(http_request: Request):

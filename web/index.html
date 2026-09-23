@@ -1237,6 +1237,36 @@ function renderSettings(){
     pa2.appendChild(sb);pr.appendChild(pa);pr.appendChild(pa2);cs.appendChild(pr);
   }).catch(()=>{});
   body.appendChild(cs);
+  // Server keys (admin only — shared by everyone, saved to server .env, live immediately)
+  if(settingsData.is_admin){
+    const srv=document.createElement('div');srv.className='settings-section';
+    srv.innerHTML='<h3>Server Keys (shared)</h3><p style="font-size:12px;color:var(--text-muted)">Keys for everyone on this server. Saved straight to the server — no file editing, no restart. Your personal keys below override these for you only.</p>';
+    body.appendChild(srv);
+    for(const prov of Object.keys(settingsData)){
+      const info=settingsData[prov];
+      if(!info||!Array.isArray(info.keys))continue;
+      const section=document.createElement('div');section.className='settings-section';
+      const title=document.createElement('h3');title.textContent=(names[prov]||prov)+' (server)';section.appendChild(title);
+      info.keys.forEach((slot,idx)=>{
+        const row=document.createElement('div');row.className='key-row';
+        const lab=document.createElement('label');lab.textContent=slot.env_name;lab.style.minWidth='170px';
+        row.appendChild(lab);
+        if(slot.has_value){
+          const m=document.createElement('span');m.style.cssText='font-family:var(--mono);font-size:11px;color:var(--success)';m.textContent='●●●● '+slot.masked;
+          const clr=document.createElement('button');clr.className='key-clear';clr.textContent='×';clr.title='Delete server key';clr.style.display='';
+          clr.onclick=()=>clearServerKey(slot.env_name);
+          row.appendChild(m);row.appendChild(clr);
+        }else{
+          const inp=document.createElement('input');inp.type='password';inp.id='srvkey-'+prov+'-'+idx;inp.placeholder='Paste key...';
+          const sv=document.createElement('button');sv.className='btn btn-primary';sv.style.fontSize='11px';sv.textContent='Save';
+          sv.onclick=()=>saveServerKey(prov,slot.env_name,'srvkey-'+prov+'-'+idx);
+          row.appendChild(inp);row.appendChild(sv);
+        }
+        section.appendChild(row);
+      });
+      body.appendChild(section);
+    }
+  }
   // Provider API keys (stored in DB)
   body.appendChild(Object.assign(document.createElement('div'),{className:'settings-section',innerHTML:'<h3>Provider API Keys</h3><p style="font-size:12px;color:var(--text-muted)">API keys are stored securely in the database. Enter a key for each provider you use.</p>'}));
   const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','cohere','opencode'];
@@ -1292,6 +1322,26 @@ async function deleteProviderKey(prov){
     const del=document.getElementById('key-del-'+prov);if(del)del.style.display='none';
     showToast(prov+' key deleted','success');loadModels();
   }catch(e){if(e.message!=='auth_required')appAlert('Failed to delete key')}
+}
+async function saveServerKey(prov,envName,inputId){
+  const input=document.getElementById(inputId);if(!input)return;
+  const val=input.value.trim();if(!val){showToast('Paste a key first','error');return}
+  try{
+    const r=await authFetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:prov,key_name:envName,key_value:val})});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||'save failed');
+    showToast(envName+' saved — live now, no restart','success');
+    loadSettingsData();loadModels();loadProviderStatus();
+  }catch(e){if(e.message!=='auth_required')showToast('Save failed: '+e.message,'error')}
+}
+async function clearServerKey(envName){
+  if(!(await appConfirm('Delete server key '+envName+'? Chat will stop using it.')))return;
+  try{
+    const r=await authFetch(API+'/api/settings/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_name:envName})});
+    if(!r.ok)throw new Error('clear failed');
+    showToast(envName+' deleted','success');
+    loadSettingsData();loadModels();loadProviderStatus();
+  }catch(e){if(e.message!=='auth_required')showToast('Delete failed: '+e.message,'error')}
 }
 async function saveSettings(){
   const provList=['gemini','openai','anthropic','openrouter','groq','mistral','together','deepseek','cohere','opencode'];
