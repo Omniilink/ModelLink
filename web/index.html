@@ -940,6 +940,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button class="primary" id="coding-open-btn" onclick="openCodingFolder()">Open</button>
           <button onclick="refreshCodingTree()">Refresh</button>
           <button onclick="toggleCodingOutput()">Terminal</button>
+          <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
           <button onclick="closeCodingFolder()" title="Close folder" id="coding-close-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font)">&times;</button>
         </div>
@@ -2059,6 +2060,19 @@ async function codingRunCmd(command){try{const shortCmd=command.length>120?comma
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_edit:false,auto_command:false}}}
 function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight}
 function toggleCodingOutput(){document.getElementById('coding-output').classList.toggle('open')}
+async function clearCodingChat(){
+  if(codingAutoLoop)codingStopRequested=true;
+  const chat=document.getElementById('coding-chat');
+  if((!codingHistory||codingHistory.length===0)&&!chat.innerHTML)return;
+  if(!(await appConfirm('Clear this coding chat? This cannot be undone.')))return;
+  codingHistory=[];codingTodos=[];renderCodingTodos();chat.innerHTML='';
+  try{
+    const all=JSON.parse(localStorage.getItem('omnilink_coding_chats')||'{}');
+    delete all[codingChatKey()];
+    localStorage.setItem('omnilink_coding_chats',JSON.stringify(all));
+  }catch(e){}
+  showToast('Coding chat cleared','success');
+}
 function clearCodingOutput(){document.getElementById('coding-output-body').innerHTML='';codingOutputLines=[]}
 
 async function fsEnsurePermission(handle){const opts={mode:'readwrite'};if((await handle.queryPermission(opts))==='granted')return true;if((await handle.requestPermission(opts))==='granted')return true;return false}
