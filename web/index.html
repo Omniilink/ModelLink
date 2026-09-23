@@ -1585,7 +1585,7 @@ function handleCodingKey(e){const dd=document.getElementById('at-dropdown');cons
     if(e.key==='Escape'){closeAtDropdown();return}}
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCodingMessage()}}
 
-async function loadAllCodingFiles(){if(!codingFolder||allCodingFiles.length>0)return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
+async function loadAllCodingFiles(force){if(!codingFolder||(!force&&allCodingFiles.length>0))return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
   allCodingFiles=[];function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else allCodingFiles.push(p)}}flatten(tree,'')}catch(e){}}
 
 function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
@@ -1693,11 +1693,19 @@ function completeAllTodos(){
 function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g)];
   if(blocks.length===0)return false;
   const last=blocks[blocks.length-1][1];
-  codingTodos=[];
+  // MERGE, never replace: models echo stale unchecked lists in summaries,
+  // which must not wipe already-earned checkmarks.
+  const norm=s=>s.toLowerCase().replace(/\s+/g,' ').trim();
+  const doneSet=new Set((codingTodos||[]).filter(t=>t.done).map(t=>norm(t.text)));
+  const fresh=[];
   for(const ln of last.split('\n')){
     const m=ln.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/);
-    if(m)codingTodos.push({done:m[1].toLowerCase()==='x',text:m[2]});
+    if(!m)continue;
+    const key=norm(m[2]);
+    if(fresh.some(f=>norm(f.text)===key))continue;
+    fresh.push({done:m[1].toLowerCase()==='x'||doneSet.has(key),text:m[2]});
   }
+  if(fresh.length>0)codingTodos=fresh;
   renderCodingTodos();
   return true;
 }
@@ -1745,9 +1753,27 @@ async function processCodingActions(text,msgEl){
     // fenced code). Offer one-click save per block so nothing is lost.
     const fenced=[...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
     const guessName={html:'index.html',htm:'index.html',js:'script.js',ts:'script.ts',jsx:'app.jsx',tsx:'app.tsx',css:'style.css',py:'script.py',json:'data.json',md:'notes.md',sh:'run.sh',sql:'query.sql',java:'Main.java',c:'main.c',cpp:'main.cpp',go:'main.go',rs:'main.rs',rb:'script.rb',php:'index.php'};
-    let shown=0;
+    const SHELL_LANGS=['sh','bash','shell','cmd','powershell','ps1','console','terminal','zsh','fish','bat'];
+    let shown=0,shownRun=0;
     for(const m of fenced){
       const lang=(m[1]||'').toLowerCase(),code=m[2].replace(/\n$/,'');
+      // Shell-tagged fences are commands typed as text: make them runnable
+      // (manual approval only — never auto-executed).
+      if(SHELL_LANGS.includes(lang)){
+        const cmd=sanitizeCommand(code);
+        if(!cmd||shownRun>=5)continue;
+        shownRun++;
+        const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;
+        toolDiv.innerHTML='<div class="tool-label">Run command: '+escapeHtml(cmd.length>200?cmd.slice(0,200)+'…':cmd)+'</div>';
+        const bar=document.createElement('div');bar.className='approve-bar';
+        const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';
+        ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};
+        const db=document.createElement('button');db.className='deny';db.textContent='Skip';
+        db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
+        bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
+        msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+        continue;
+      }
       if(code.trim().length<20||shown>=5)continue;
       shown++;
       const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
@@ -1770,7 +1796,7 @@ async function processCodingActions(text,msgEl){
       bar.appendChild(nameInput);bar.appendChild(sb);bar.appendChild(cb);toolDiv.appendChild(bar);
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
     }
-    if(shown>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=shown+' code block'+(shown!==1?'s':'')+' ready to save'}
+    if(shown>0||shownRun>0){stickyBar.classList.add('visible');const parts=[];if(shown>0)parts.push(shown+' code block'+(shown!==1?'s':'')+' ready to save');if(shownRun>0)parts.push(shownRun+' command'+(shownRun!==1?'s':'')+' ready to run');stickyBar.querySelector('span').textContent=parts.join(' + ')}
   }
   return hasToolBlocks;
 }
@@ -1869,6 +1895,35 @@ function harvestCodingResults(){
   }
   return{text,hasExecuted:executed};
 }
+function extractTodoFiles(text){
+  // Filenames a todo claims as deliverables: `backticked` or name.ext tokens
+  const files=new Set();
+  for(const m of text.matchAll(/`([^`\n]{1,80})`/g)){
+    const f=m[1].trim().replace(/^[./\\]+/,'');
+    if(f&&!/[\s]/.test(f))files.add(f);
+  }
+  for(const m of text.matchAll(/(^|[\s"'([])([A-Za-z0-9_][\w\-./]*\.(html?|js|jsx|ts|tsx|css|py|json|md|txt|sh|sql|java|c|cpp|go|rs|rb|php))(?=[\s"'.,;:)\]]|$)/g)){
+    files.add(m[2].replace(/^[./\\]+/,''));
+  }
+  return[...files];
+}
+async function verifyTodosAgainstReality(){
+  // Objective check the model cannot bluff: every file named by OPEN todos
+  // must actually exist in the project (fresh tree). Returns {ok,missing}.
+  const open=(codingTodos||[]).filter(t=>!t.done);
+  const wanted=new Map();
+  for(const t of open)for(const f of extractTodoFiles(t.text))wanted.set(f.toLowerCase(),f);
+  if(wanted.size===0)return{ok:true,missing:[]};
+  await loadAllCodingFiles(true);
+  const have=(allCodingFiles||[]).map(p=>p.toLowerCase());
+  const missing=[];
+  for(const[key,orig]of wanted){
+    const base=key.split('/').pop();
+    const found=have.some(p=>p===key||p.endsWith('/'+key)||(key.indexOf('/')===-1&&p.split('/').pop()===base));
+    if(!found)missing.push(orig);
+  }
+  return{ok:missing.length===0,missing};
+}
 async function streamCodingTurn(messages){
   const chat=document.getElementById('coding-chat');
   const assistantEl=document.createElement('div');
@@ -1887,6 +1942,15 @@ async function streamCodingTurn(messages){
   persistCodingChat();
   await processCodingActions(fullText,assistantEl);
   return{fullText,actualModel};
+}
+async function sendCodingImprove(reason,nextAttempt){
+  codingHistory.push({role:'user',content:'Not done yet: '+reason+'\nImprove the work now using tool blocks (attempt '+nextAttempt+' of '+(CODING_MAX_SETBACKS+1)+').'});
+  persistCodingChat();
+  codingStream=true;
+  const t=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+  codingStream=false;
+  persistCodingChat();
+  return t;
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
@@ -1922,6 +1986,18 @@ async function codingAutoContinue(){
       if(open.length===0)break;
       if(setbacks>=CODING_MAX_SETBACKS){giveUp(lastReason||'no further progress');break}
       addCodingSystemMsg('Verifying completed work against open todos…');
+      // Ground truth FIRST: files the todos name must really exist.
+      // The model cannot bluff past this — your exact reported failure.
+      const reality=await verifyTodosAgainstReality();
+      if(!reality.ok){
+        setbacks++;
+        lastReason='these files do not exist in the project yet: '+reality.missing.join(', ');
+        if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+        addCodingSystemMsg('Verification failed — '+lastReason);
+        const iturn0=await sendCodingImprove('Verification FAILED: '+lastReason+'. Create the missing files now using FILE_CREATE blocks. Do NOT claim completion until the files exist.',setbacks+1);
+        if(iturn0.error)break;
+        continue;
+      }
       codingHistory.push({role:'user',content:'Review your work against these open todos:\n- '+open.join('\n- ')+'\nIf EVERYTHING is done, reply with EXACTLY this line and nothing else on that line: VERDICT:PASS <one-line reason>. If anything is missing or broken, reply with EXACTLY: VERDICT:FAIL <what is missing and why>.'});
       persistCodingChat();
       codingStream=true;
@@ -1934,6 +2010,17 @@ async function codingAutoContinue(){
       if(fresh.hasExecuted){rounds++;continue}
       const vm=(vturn.fullText||'').match(/VERDICT\s*:\s*(PASS|FAIL)\b\s*([^\n]{0,300})/i);
       if(vm&&vm[1].toUpperCase()==='PASS'){
+        // Even a PASS claim is re-checked against the filesystem.
+        const reality2=await verifyTodosAgainstReality();
+        if(!reality2.ok){
+          setbacks++;
+          lastReason='you claimed success, but these files are still missing: '+reality2.missing.join(', ');
+          if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+          addCodingSystemMsg('Claim rejected — '+lastReason);
+          const iturnR=await sendCodingImprove(lastReason+'. Create them now with FILE_CREATE blocks.',setbacks+1);
+          if(iturnR.error)break;
+          continue;
+        }
         completeAllTodos();
         postCodingAssistant('Done — verified: '+((vm[2]||'').trim()||'all todos complete.'));
         break;
@@ -1942,12 +2029,7 @@ async function codingAutoContinue(){
       lastReason=((vm&&vm[2]&&vm[2].trim())||'the model did not confirm what is missing');
       if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
       addCodingSystemMsg('Not verified (attempt '+setbacks+' of '+CODING_MAX_SETBACKS+') — asking the AI to improve.');
-      codingHistory.push({role:'user',content:'Not done yet: '+lastReason+'\nImprove the work now using tool blocks (attempt '+(setbacks+1)+' of '+(CODING_MAX_SETBACKS+1)+').'});
-      persistCodingChat();
-      codingStream=true;
-      const iturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
-      codingStream=false;
-      persistCodingChat();
+      const iturn=await sendCodingImprove(lastReason,setbacks+1);
       if(iturn.error)break;
       // Its tool blocks (if any) are harvested at the top of the loop.
     }

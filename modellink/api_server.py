@@ -1448,6 +1448,9 @@ Update it in later replies (repeat the full list with [x] on finished items).
 4. After creating code, run it to verify (python/node) and report the output.
 5. Deliverables (code files) MUST go in FILE_CREATE/FILE_EDIT blocks — never
 bare fenced code alone, or the system cannot save them.
+6. NEVER describe a task as done/finished/complete while any [ ] item
+remains. The system independently verifies that every file you name
+actually exists — false completion claims are rejected and sent back.
 
 Example:
 I will check the project contents first.
