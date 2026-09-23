@@ -1,9 +1,9 @@
 # Omniilink full-stack deployment (see DOCKER.md for the step-by-step guide).
 #
-#   1. Put your Cloudflare tunnel TOKEN in a file named exactly `.env`
-#      next to this file (never commit it):
-#        CLOUDFLARE_TUNNEL_TOKEN=<paste token here>
-#   2. docker compose up -d --build
+#   No Cloudflare dashboard needed: the tunnel reuses YOUR existing named
+#   tunnel credentials from the normal run-server.py setup
+#   (%USERPROFILE%\.cloudflared, tunnel-config.docker.yml).
+#   Just run:  docker compose up -d --build
 #
 # Data lives on the host (same files the native run uses):
 #   ./user_data, ./omnilink.db, ./network_usage.json, ./tunnel.log
@@ -56,9 +56,17 @@ services:
     image: omniilink-sandbox:latest
 
   tunnel:
+    # Named tunnel using YOUR existing credentials file — no Cloudflare
+    # dashboard token, no card. Needs:
+    #   tunnel-config.docker.yml (in repo) and
+    #   ${USERPROFILE}/.cloudflared/<tunnel-id>.json (on YOUR machine only,
+    #   created by the normal first-time run-server.py setup, never committed).
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --config /etc/cloudflared/config.yml run omniilink
+    volumes:
+      - ./tunnel-config.docker.yml:/etc/cloudflared/config.yml:ro
+      - ${USERPROFILE}/.cloudflared:/etc/cloudflared-creds:ro
     depends_on:
       - api
     networks:

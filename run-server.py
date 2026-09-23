@@ -202,6 +202,13 @@ def start_tunnel(cloudflared):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Omniilink launcher")
+    parser.add_argument("--tunnel-only", action="store_true",
+                        help="Only run the Cloudflare tunnel to 127.0.0.1:8080 "
+                             "(use when the API runs elsewhere, e.g. docker compose).")
+    args = parser.parse_args()
+
     print("=" * 50)
     print("  OmniLink Server (Cloudflare Named Tunnel)")
     print("=" * 50)
@@ -220,6 +227,12 @@ if __name__ == "__main__":
     cred_file = setup_tunnel(cloudflared)
     write_config(cred_file)
     ensure_dns_route(cloudflared)
+
+    if args.tunnel_only:
+        print("Tunnel-only mode: forwarding to 127.0.0.1:8080 (serve the API separately).\n")
+        # Start tunnel (blocks)
+        start_tunnel(cloudflared)
+        sys.exit(0)
 
     # Start API server in background
     api_thread = threading.Thread(target=start_api, daemon=True)

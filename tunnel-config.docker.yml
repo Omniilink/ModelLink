@@ -1,0 +1,11 @@
+# Tunnel config for the docker-compose setup. Uses the SAME named tunnel
+# as the native run (no Cloudflare dashboard / Zero Trust token needed).
+# The credentials JSON stays on YOUR machine, mounted read-only below.
+# Adjust tunnel name / hostname if yours differ (see run-server.py).
+tunnel: omniilink
+credentials-file: /etc/cloudflared-creds/7f35f941-d7fd-41c6-99a7-b4679e4bb77d.json
+
+ingress:
+  - hostname: omniilink.dpdns.org
+    service: http://api:8080
+  - service: http_status:404

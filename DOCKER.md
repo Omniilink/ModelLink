@@ -71,7 +71,7 @@ docker run --rm hello-world
 
 If `hello-world` prints, your engine works.
 
-## Step 3 — Copy the project files over
+## Step 3 — Copy the project files over (no dashboard needed)
 
 On ProDesk, in `C:\Modellink`, make sure you have the latest code:
 
@@ -80,32 +80,21 @@ cd C:\Modellink
 git pull
 ```
 
-You need a `.env` file **in `C:\Modellink`** containing ONLY your tunnel
-token (this file is git-ignored, it never leaves your machine):
+The tunnel reuses the **named tunnel you already have** — the credentials
+file that `run-server.py` created on first run
+(`C:\Users\Server\.cloudflared\<tunnel-id>.json`, mounted read-only).
+No Cloudflare dashboard, no Zero Trust, no card. Your existing DNS route
+(`omniilink.dpdns.org`) keeps working untouched.
+
+Checklist before continuing:
 
 ```powershell
-notepad .env
+dir $env:USERPROFILE\.cloudflared\*.json
 ```
 
-Contents (one line):
-
-```text
-CLOUDFLARE_TUNNEL_TOKEN=paste-your-token-here
-```
-
-### Where the token comes from
-
-The compose setup uses a **token**, not your current credentials file:
-
-1. Go to https://one.dash.cloudflare.com → Zero Trust → Networks →
-   Tunnels → **Create a tunnel** → pick **Cloudflared** → name it
-   e.g. `omniilink-docker` → copy the **token** shown.
-2. Still in that tunnel, go to **Public Hostname** → Add:
-   - Subdomain: `omniilink`, Domain: `dpdns.org`
-     (full: `omniilink.dpdns.org` — your existing address)
-   - Service type: `HTTP`, URL: `api:8080`
-   - Save. (This replaces the old tunnel route; you can delete the old
-     `omniilink` tunnel afterwards, or keep it stopped as a fallback.)
+You should see one `.json` file (not starting with `cert-`). If it's
+missing, run `py run-server.py` once normally and go through the
+one-time login — then come back here.
 
 ## Step 3.5 — Prove Docker works (before touching the app)
 
@@ -245,10 +234,17 @@ native mode apply on top.
   make sure Docker Desktop is running.
 - **WSL errors / "Virtualization"** → enable VT-x/AMD-V in BIOS, then
   `wsl --install` again.
-- **Tunnel 503 / Bad Gateway** → the token tunnel's Public Hostname must
-  point at `http://api:8080` (service name `api`, not localhost).
-- **`invalid token` / tunnel won't connect** → re-copy the token into
-  `.env` (no quotes, no spaces), then `docker compose up -d tunnel`.
+- **Tunnel 503 / Bad Gateway** → `tunnel-config.docker.yml` must point at
+  `http://api:8080` (service name `api`, not localhost).
+- **Tunnel won't connect / 'credentials not found'** → check
+  `%USERPROFILE%\.cloudflared\` contains your `<tunnel-id>.json`
+  (run `py run-server.py` once normally if missing), and that the
+  tunnel name in `tunnel-config.docker.yml` matches it. Then
+  `docker compose up -d tunnel`.
+- **Prefer the old way for the tunnel only** → run the API in compose
+  but keep the native tunnel: `docker compose up -d api` (skip the
+  tunnel service), then in another window
+  `py run-server.py --tunnel-only`.
 - **First AI command is slow** → the sandbox image builds/pulss once;
   later runs start in ~1s.
 - **Drive sharing prompts** → use paths under `C:\Modellink` only; Docker
