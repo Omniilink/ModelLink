@@ -973,6 +973,29 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
 
 <script>
+if(location.search.indexOf('diag')!==-1){
+  window.__lastErr='none';
+  window.addEventListener('error',function(e){window.__lastErr=(e.message||'err')+' @'+(e.lineno||'?')},true);
+  window.addEventListener('load',function(){
+    setTimeout(function(){
+      var h=document.querySelector('.header');
+      var r=h?h.getBoundingClientRect():null;
+      var sb=document.querySelector('.sidebar');
+      var lines=[
+        'w='+window.innerWidth+' h='+window.innerHeight+' dpr='+(window.devicePixelRatio||1),
+        'ua='+navigator.userAgent,
+        'header='+(h?(getComputedStyle(h).display+' '+Math.round(r.width)+'x'+Math.round(r.height)+' @'+Math.round(r.top)+','+Math.round(r.left)):'MISSING'),
+        'hamb='+(function(){var b=document.getElementById('hamburger-btn');return b?getComputedStyle(b).display:'MISSING'})(),
+        'sidebar='+(sb?(getComputedStyle(sb).display+','+getComputedStyle(sb).transform):'MISSING'),
+        'jserr='+window.__lastErr
+      ];
+      var d=document.createElement('div');
+      d.style.cssText='position:fixed;inset:10px;z-index:99999;background:#000;color:#0f0;font:12px monospace;white-space:pre-wrap;padding:12px;overflow:auto;border:2px solid #0f0';
+      d.textContent=lines.join('\n');
+      document.body.appendChild(d);
+    },800);
+  });
+}
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
