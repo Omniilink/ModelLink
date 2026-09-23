@@ -195,6 +195,27 @@ type tunnel.log                   # local copy of recent tunnel output
 
 ## Troubleshooting
 
+- **"Virtualization support not detected" (Docker Desktop shows this
+  instead of starting):** the CPU's virtualization feature is switched
+  off in BIOS. Fix it once and it stays fixed:
+  1. Confirm: open Task Manager → Performance → CPU. If it says
+     "Virtualization: Disabled" (or the line is missing), continue.
+  2. Reboot ProDesk. As it starts, tap **Esc** repeatedly, then press
+     **F10** for BIOS Setup (HP ProDesk keys).
+  3. Go to **Advanced → Device Options** (on some firmware it's under
+     System Options) and tick **Virtualization Technology (VTx)** — and
+     **VT-d / VT for Directed I/O** if listed.
+  4. **File → Save Changes and Exit**, let Windows boot.
+  5. Back in Windows: Task Manager → Performance → CPU should now say
+     "Virtualization: Enabled". Start Docker Desktop — the engine
+     should go green.
+  6. If it still complains: open "Turn Windows features on or off"
+     (`optionalfeatures.exe`) and make sure **Hyper-V** and
+     **Virtual Machine Platform** are ticked, reboot once more.
+  7. Edge case: if ProDesk itself runs as a virtual machine, the *host*
+     must allow nested virtualization instead — there is no BIOS toggle
+     that fixes that from inside the guest.
+
 - **`docker` not recognized** → close and reopen PowerShell after install;
   make sure Docker Desktop is running.
 - **WSL errors / "Virtualization"** → enable VT-x/AMD-V in BIOS, then
