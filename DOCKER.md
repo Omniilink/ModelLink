@@ -255,6 +255,12 @@ native mode apply on top.
   (run `py run-server.py` once normally if missing), and that the
   tunnel name in `tunnel-config.docker.yml` matches it. Then
   `docker compose up -d tunnel`.
+- **`not a directory: Are you trying to mount a directory onto a file`**
+  → a host path (e.g. `network_usage.json`) is a *folder*, because Docker
+  created one when the file was missing at first start. `update.bat` now
+  fixes this automatically (removes the bogus folder, recreates the
+  file). Manual fix: `rmdir network_usage.json` then
+  `type nul > network_usage.json`, then `docker compose up -d`.
 - **Prefer the old way for the tunnel only** → run the API in compose
   but keep the native tunnel: `docker compose up -d api` (skip the
   tunnel service), then in another window
