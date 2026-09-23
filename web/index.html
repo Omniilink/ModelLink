@@ -1018,7 +1018,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
+let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
 
 function getChats(){try{return JSON.parse(localStorage.getItem('modellink_chats')||'{}')}catch(e){return{}}}
 function saveChats(c){localStorage.setItem('modellink_chats',JSON.stringify(c))}
@@ -1631,18 +1631,50 @@ async function sendCodingMessage(){
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
   codingStream=true;document.getElementById('coding-send-btn').disabled=true;
-  let hadBlocks=false;
+  let next={blocks:false,actionable:false};
   try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:4000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;contentEl.innerHTML=renderContent(fullText);chat.scrollTop=chat.scrollHeight}}catch(e){}}}}
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});hadBlocks=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});next=await processCodingActions(fullText,assistantEl);
   }catch(e){contentEl.innerHTML=renderContent('Error: '+e.message)}codingStream=false;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
-  if(hadBlocks)codingAutoContinue().catch(()=>{});
+  if(next.actionable)codingAutoContinue().catch(()=>{});
 }
 
+function isCodeLine(ln){
+  // A prose line vs a code line, for catching model output that dumps
+  // raw code with no fences and no tool blocks (approval-gated anyway).
+  const t=(ln||'').trim();
+  if(t==='}'||t==='{')return true;
+  if(t.length<2)return false;
+  if(/^<\/?[a-zA-Z!]/.test(t))return true;
+  if(/[;{}]$/.test(t))return true;
+  if(/^\s*[.#][\w-]+[\s,{:]/.test(ln))return true;
+  if(/[:=]\s*[^ ]+\s*;/.test(t))return true;
+  if(/^\/\//.test(t)||/^\/\*.*\*\/$/.test(t)||/^\/.+\/$/.test(t))return true;
+  return false;
+}
+function extractBareCodeRuns(text){
+  // Contiguous runs (>=6 lines) of code-like lines from marker-less prose.
+  const lines=text.split('\n');
+  const runs=[];let cur=[];
+  const flush=()=>{if(cur.length>=6)runs.push({code:cur.join('\n').trim()});cur=[]};
+  for(const ln of lines){
+    if(ln.trim()===''){if(cur.length>0)cur.push(ln);continue}
+    if(isCodeLine(ln))cur.push(ln);
+    else flush();
+  }
+  flush();
+  return runs;
+}
+function guessBareFileName(code){
+  if(/<!DOCTYPE html|<html[\s>]/i.test(code))return'index.html';
+  if(!/<\/?[a-z]/i.test(code)&&!/(function|=>|import|const |let |var )/.test(code)&&/\{[^}]*:[^}]*;/.test(code))return'style.css';
+  if(/function\s|=>|import\s|require\s*\(|const\s+\w+\s*=|let\s+\w+\s*=/.test(code))return'script.js';
+  return'';
+}
 function sanitizeCommand(cmd){
   // Mirror of the backend sanitizer: models emit stray wrapping
   // quotes/backticks (e.g. cmd /c dir"), which cmd.exe misreads.
@@ -1780,6 +1812,7 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
   // which must not wipe already-earned checkmarks.
   const norm=s=>s.toLowerCase().replace(/\s+/g,' ').trim();
   const doneSet=new Set((codingTodos||[]).filter(t=>t.done).map(t=>norm(t.text)));
+  const beforeOpen=new Set((codingTodos||[]).filter(t=>!t.done).map(t=>norm(t.text)));
   const fresh=[];
   for(const ln of last.split('\n')){
     const m=ln.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/);
@@ -1789,6 +1822,9 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
     fresh.push({done:m[1].toLowerCase()==='x'||doneSet.has(key),text:m[2]});
   }
   if(fresh.length>0)codingTodos=fresh;
+  // True when THIS message introduced open work the loop should pursue,
+  // even if it carried zero executable blocks.
+  codingTodosNew=fresh.some(f=>!f.done&&!beforeOpen.has(norm(f.text)));
   renderCodingTodos();
   return true;
 }
@@ -1809,6 +1845,8 @@ function addCodingFeed(kind,target,added,removed){
   body.appendChild(line);body.scrollTop=body.scrollHeight;
 }
 async function processCodingActions(text,msgEl){
+  codingTodosNew=false;
+  let shownFallback=0;
   const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   parseCodingTodos(text);
@@ -1837,7 +1875,7 @@ async function processCodingActions(text,msgEl){
     const fenced=[...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
     const guessName={html:'index.html',htm:'index.html',js:'script.js',ts:'script.ts',jsx:'app.jsx',tsx:'app.tsx',css:'style.css',py:'script.py',json:'data.json',md:'notes.md',sh:'run.sh',sql:'query.sql',java:'Main.java',c:'main.c',cpp:'main.cpp',go:'main.go',rs:'main.rs',rb:'script.rb',php:'index.php'};
     const SHELL_LANGS=['sh','bash','shell','cmd','powershell','ps1','console','terminal','zsh','fish','bat'];
-    let shown=0,shownRun=0;
+    let shown=0,shownRun=0,shownBare=0;
     for(const m of fenced){
       const lang=(m[1]||'').toLowerCase(),code=m[2].replace(/\n$/,'');
       // Shell-tagged fences are commands typed as text: make them runnable
@@ -1879,9 +1917,40 @@ async function processCodingActions(text,msgEl){
       bar.appendChild(nameInput);bar.appendChild(sb);bar.appendChild(cb);toolDiv.appendChild(bar);
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
     }
-    if(shown>0||shownRun>0){stickyBar.classList.add('visible');const parts=[];if(shown>0)parts.push(shown+' code block'+(shown!==1?'s':'')+' ready to save');if(shownRun>0)parts.push(shownRun+' command'+(shownRun!==1?'s':'')+' ready to run');stickyBar.querySelector('span').textContent=parts.join(' + ')}
+    // Bare code dumped as prose (no fences, no blocks): same save UI so it
+    // can still land in a file with one approval click.
+    const stripped=text.replace(/```(\w*)\n([\s\S]*?)```/g,'')
+      .replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'')
+      .replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'')
+      .replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'')
+      .replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'')
+      .replace(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g,'');
+    for(const run of extractBareCodeRuns(stripped).slice(0,5)){
+      const code=run.code;shownBare++;
+      const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
+      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code snippet as file</div><div class="file-write-diff">'+escapeHtml(code.slice(0,1500))+'</div>';
+      const bar=document.createElement('div');bar.className='approve-bar';
+      const nameInput=document.createElement('input');
+      nameInput.placeholder='filename (e.g. index.html)';nameInput.value=guessBareFileName(code);
+      nameInput.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:11px;font-family:var(--mono);outline:none;min-width:0';
+      const sb=document.createElement('button');sb.className='approve';sb.textContent='Save file';
+      sb.onclick=async()=>{
+        const p=nameInput.value.trim();
+        if(!p){showToast('Enter a filename first','error');return}
+        sb.disabled=true;
+        const result=await codingWriteFile(p,code);
+        bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
+        if(result.ok)refreshCodingTree();
+      };
+      const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
+      cb.onclick=()=>{toolDiv.remove()};
+      bar.appendChild(nameInput);bar.appendChild(sb);bar.appendChild(cb);toolDiv.appendChild(bar);
+      msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+    }
+    if(shown>0||shownRun>0||shownBare>0){stickyBar.classList.add('visible');const parts=[];if(shown>0)parts.push(shown+' code block'+(shown!==1?'s':'')+' ready to save');if(shownRun>0)parts.push(shownRun+' command'+(shownRun!==1?'s':'')+' ready to run');if(shownBare>0)parts.push(shownBare+' snippet'+(shownBare!==1?'s':'')+' ready to save');stickyBar.querySelector('span').textContent=parts.join(' + ')}
+    shownFallback=shown+shownRun+shownBare;
   }
-  return hasToolBlocks;
+  return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew};
 }
 
 // ---- Agentic coding loop: feed tool results back so multi-step tasks finish ----
