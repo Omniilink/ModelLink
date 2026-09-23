@@ -7,7 +7,8 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{transition:background-color .35s ease,color .35s ease}
+html{transition:background-color .35s ease,color .35s ease;overflow-x:clip}
+body{overflow-x:clip}
 :root{
   --bg-primary:#0a0a0c;--bg-secondary:#111114;--bg-tertiary:#1a1a1e;
   --bg-input:#141417;--bg-hover:#1e1e22;--bg-active:#252529;
@@ -1070,7 +1071,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
-  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();document.getElementById('chat-input').focus();
+  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
 });
