@@ -107,6 +107,20 @@ The compose setup uses a **token**, not your current credentials file:
    - Save. (This replaces the old tunnel route; you can delete the old
      `omniilink` tunnel afterwards, or keep it stopped as a fallback.)
 
+## Step 3.5 — Prove Docker works (before touching the app)
+
+From `C:\Modellink`, run the self-test script (shipped in the repo):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\verify-docker.ps1
+```
+
+It checks the CLI, daemon, Linux-container mode, compose plugin, builds
+the sandbox image, confirms python3+node inside it, proves host files
+are invisible from inside a sandbox, and verifies the 512MB cap. Every
+line prints PASS or FAIL — paste any FAIL block back for diagnosis.
+Only continue when everything passes.
+
 ## Step 4 — Build and start
 
 In PowerShell, from `C:\Modellink`:
