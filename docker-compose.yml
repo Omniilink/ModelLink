@@ -28,16 +28,23 @@ services:
       # so this file must stay on YOUR machine. Never expose 2375 remotely.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # Per-command code execution sandbox (fresh container per command,
-      # project folder only, capped CPU/RAM, dropped capabilities).
+      # Per-command code execution sandbox. Modes:
+      #   ""        -> run commands on the host (old behavior)
+      #   "docker"  -> every command in a FRESH ephemeral container
+      #   "project" -> one PERSISTENT container per project, so installs
+      #                (pip/npm/pyenv/...) survive between commands.
+      #                Only that project folder is ever mounted.
       # Set to "" to fall back to host execution.
-      - OMNIILINK_SANDBOX=docker
+      - OMNIILINK_SANDBOX=project
       - OMNIILINK_SANDBOX_IMAGE=omniilink-sandbox:latest
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge
       - OMNIILINK_SANDBOX_MEM=512m
       - OMNIILINK_SANDBOX_CPUS=1.0
+      # Stop project containers after N idle minutes (keeps their installed
+      # layers; they revive on next use). 0 = keep running forever.
+      - OMNIILINK_PROJ_IDLE_MIN=0
     networks:
       - omniilink-net
 

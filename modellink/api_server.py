@@ -1786,22 +1786,145 @@ def _sanitize_shell_command(command: str) -> str:
 def _sandbox_config() -> Optional[dict]:
     """Docker execution sandbox config, or None when disabled.
 
-    Enabled with OMNIILINK_SANDBOX=docker. Each command then runs in a
-    FRESH, ephemeral Linux container (`--rm`): only the target project
-    folder is mounted (at /work), Linux capabilities are dropped, no new
-    privileges are allowed, and CPU/RAM/pids are capped. Nothing on the
-    host is reachable except that one folder. Read per-request so the
-    toggle needs no restart.
+    OMNIILINK_SANDBOX=""      -> host execution (default, old behavior)
+    OMNIILINK_SANDBOX=docker  -> every command in a FRESH ephemeral container
+    OMNIILINK_SANDBOX=project -> one PERSISTENT container per project, so
+                                 installs (pip/npm/pyenv/...) survive between
+                                 commands. Only that project folder is ever
+                                 mounted. Read per-request so toggles need no
+                                 restart.
     """
-    if os.environ.get("OMNIILINK_SANDBOX", "").strip().lower() != "docker":
+    mode = os.environ.get("OMNIILINK_SANDBOX", "").strip().lower()
+    if mode not in ("docker", "project"):
         return None
+    try:
+        idle_minutes = int(os.environ.get("OMNIILINK_PROJ_IDLE_MIN", "0") or 0)
+    except ValueError:
+        idle_minutes = 0
     return {
+        "mode": mode,
         "image": os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
         "network": os.environ.get("OMNIILINK_SANDBOX_NET", "bridge"),
         "memory": os.environ.get("OMNIILINK_SANDBOX_MEM", "512m"),
         "cpus": os.environ.get("OMNIILINK_SANDBOX_CPUS", "1.0"),
         "timeout": 60,
+        "idle_minutes": max(0, idle_minutes),
     }
+
+
+def _project_container_name(user_id: str, folder: str) -> str:
+    """Deterministic container name for a user's project folder.
+
+    Includes a hash of the FULL folder path so two different folders with
+    the same base name (possible for admins) never share a container.
+    """
+    import hashlib as _hl
+    proj = os.path.basename(os.path.normpath(folder or ""))
+    safe = re.sub(r"[^a-z0-9_-]", "-", (proj or "proj").lower())[:32].strip("-") or "proj"
+    digest = _hl.sha1(os.path.normcase(os.path.abspath(folder or "")).encode()).hexdigest()[:8]
+    return f"omniilink-p-{user_id[:20]}-{safe}-{digest}"[:63]
+
+
+# name -> last-used epoch seconds (drives the idle reaper)
+_proj_containers: dict = {}
+_proj_lock = threading.Lock()
+_reaper_started = False
+
+
+def _docker_available() -> bool:
+    import shutil as _shutil
+    return bool(_shutil.which("docker"))
+
+
+def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
+    """Make sure the persistent project container exists and runs.
+
+    Revives stopped containers (installed layers survive), recreates only
+    when missing. Returns (True, "") or (False, error_tail).
+    """
+    try:
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode == 0 and r.stdout.strip() == "true":
+            with _proj_lock:
+                _proj_containers[name] = time.time()
+            return True, ""
+        if r.returncode == 0:
+            # Exists but stopped: revive (keeps installed packages)
+            r2 = subprocess.run(["docker", "start", name],
+                                capture_output=True, text=True, timeout=60)
+            if r2.returncode == 0:
+                with _proj_lock:
+                    _proj_containers[name] = time.time()
+                return True, ""
+        subprocess.run(["docker", "rm", "-f", name],
+                       capture_output=True, timeout=30)
+        argv = ["docker", "run", "-d", "--name", name,
+                "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                f"--memory={cfg['memory']}", f"--cpus={cfg['cpus']}",
+                "--pids-limit=128",
+                "--network", cfg["network"],
+                "--restart", "unless-stopped",
+                "-v", f"{folder}:/work", "-w", "/work",
+                cfg["image"], "sleep", "infinity"]
+        r3 = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+        if r3.returncode != 0:
+            return False, ((r3.stderr or r3.stdout) or "docker run failed")[-500:]
+        with _proj_lock:
+            _proj_containers[name] = time.time()
+        _maybe_start_reaper(cfg.get("idle_minutes", 0))
+        return True, ""
+    except Exception as e:
+        return False, str(e)[-500:]
+
+
+def _exec_project_container(name: str, command: str, timeout: int):
+    with _proj_lock:
+        _proj_containers[name] = time.time()
+    return subprocess.run(["docker", "exec", "-w", "/work", name,
+                           "sh", "-c", command],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _maybe_start_reaper(idle_minutes: int):
+    """Idle reaper: STOP (not remove, so installed layers survive) project
+    containers unused for idle_minutes. 0 disables. Started once."""
+    global _reaper_started
+    if not idle_minutes or _reaper_started:
+        return
+    _reaper_started = True
+
+    def _loop():
+        while True:
+            try:
+                time.sleep(60)
+                cutoff = time.time() - idle_minutes * 60
+                with _proj_lock:
+                    stale = [n for n, t in _proj_containers.items() if t < cutoff]
+                for n in stale:
+                    try:
+                        subprocess.run(["docker", "stop", "-t", "10", n],
+                                       capture_output=True, timeout=30)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+def _drop_project_container(user_id: str, folder: str):
+    """Best-effort removal of a project's container (project deleted)."""
+    try:
+        if not _docker_available():
+            return
+        name = _project_container_name(user_id, folder or "")
+        subprocess.run(["docker", "rm", "-f", name],
+                       capture_output=True, timeout=30)
+        with _proj_lock:
+            _proj_containers.pop(name, None)
+    except Exception:
+        pass
 
 
 def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
@@ -1865,13 +1988,25 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
             return JSONResponse(status_code=403, content={"error": "Absolute paths and .. are not allowed — use paths inside your project folder"})
     try:
         sb = _sandbox_config()
-        if sb is not None:
-            # Sandboxed: fresh ephemeral container, project folder only.
-            # Fail LOUDLY if docker is missing — silently falling back to
-            # host execution would break the security promise.
+        backend = "host"
+        if sb is not None and sb["mode"] == "project":
+            # Persistent per-project container: installs survive between
+            # commands. Fail LOUDLY if docker is missing.
             import shutil as _shutil
             if not _shutil.which("docker"):
                 return JSONResponse(status_code=503, content={"error": "Execution sandbox unavailable (docker not found). Set OMNIILINK_SANDBOX='' to use host execution."})
+            cname = _project_container_name(user_id, cwd)
+            ok, err = _ensure_project_container(cname, cwd, sb)
+            if not ok:
+                return JSONResponse(status_code=503, content={"error": f"Project container unavailable: {err}"})
+            backend = f"proj:{cname}"
+            proc = _exec_project_container(cname, command, sb["timeout"])
+        elif sb is not None:
+            # Ephemeral per-command container. Fail LOUDLY if missing.
+            import shutil as _shutil
+            if not _shutil.which("docker"):
+                return JSONResponse(status_code=503, content={"error": "Execution sandbox unavailable (docker not found). Set OMNIILINK_SANDBOX='' to use host execution."})
+            backend = "docker"
             proc = subprocess.run(
                 _build_docker_cmd(command, cwd, sb),
                 capture_output=True, text=True, timeout=sb["timeout"]
@@ -1884,7 +2019,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         stdout = proc.stdout
         stderr = proc.stderr
         exit_code = proc.returncode
-        logger.info(f"[CMD] user={uname} {'[docker] ' if sb is not None else ''}{command} (exit {exit_code})")
+        logger.info(f"[CMD] user={uname} [{backend}] {command} (exit {exit_code})")
         return {"stdout": stdout, "stderr": stderr, "exit_code": exit_code}
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=408, content={"error": "Command timed out (60s)"})
@@ -2211,6 +2346,7 @@ async def _do_delete(request: Request, path, name):
         shutil.rmtree(path)
         if not os.path.isdir(path):
             logger.info(f"[PROJECT] Deleted: {name} user={user.get('username','-')}")
+            _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
     # Try 2: rename then delete
@@ -2222,6 +2358,7 @@ async def _do_delete(request: Request, path, name):
         shutil.rmtree(tmp)
         if not os.path.isdir(tmp) and not os.path.isdir(path):
             logger.info(f"[PROJECT] Deleted (renamed): {name} user={user.get('username','-')}")
+            _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
     # Try 3: cmd rmdir (synchronous)
@@ -2233,6 +2370,7 @@ async def _do_delete(request: Request, path, name):
         )
         if not os.path.isdir(path):
             logger.info(f"[PROJECT] Deleted (cmd): {name} user={user.get('username','-')}")
+            _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
     # Folder is locked by a system process. Write a marker file in the

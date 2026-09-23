@@ -172,6 +172,8 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 | Variable | Default | Meaning |
 |---|---|---|
 | `OMNIILINK_SANDBOX` | `docker` | Set to `""` to run commands on the host (old behavior) |
+| `OMNIILINK_SANDBOX` | `project` | `""` host execution · `docker` fresh container per command · `project` one persistent container per project (installs survive) |
+| `OMNIILINK_PROJ_IDLE_MIN` | `0` | stop project containers after N idle minutes (installed layers kept, revived on next use). `0` = keep running |
 | `OMNIILINK_SANDBOX_IMAGE` | `omniilink-sandbox:latest` | Image each command runs in |
 | `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
@@ -192,6 +194,29 @@ docker compose up -d --build      # rebuild after git pull that changes images
 docker system prune -f            # reclaim disk from old images (careful)
 type tunnel.log                   # local copy of recent tunnel output
 ```
+
+## Per-project containers: how installs work
+
+With `OMNIILINK_SANDBOX=project` (the compose default), the first command
+in a project boots a container named like
+`omniilink-p-jaykulria-bodycam-webgl-a1b2c3d4` and every later command
+runs inside it via `docker exec`. Because the container persists,
+anything installed stays installed:
+
+- `pip install pygame` / `npm install three` — works, persists.
+- Another Python version: `pyenv install 3.11 && pyenv global 3.11`
+  (pyenv is preinstalled in the sandbox image; first build takes a
+  while, then it's cached in that project's container).
+- Another Node version: `n 20` (the `n` version manager is preinstalled).
+- See them: `docker ps --filter name=omniilink-p-`
+- A project's container is deleted automatically when the project is
+  deleted; idle ones can auto-stop via `OMNIILINK_PROJ_IDLE_MIN`
+  (stopped containers keep their layers and revive on next use).
+
+Each container still sees ONLY its own project folder at `/work` —
+different projects, different users, and your ProDesk host stay
+unreachable. The non-admin folder lock and command denylist from the
+native mode apply on top.
 
 ## Troubleshooting
 
