@@ -1518,6 +1518,50 @@ async def coding_file_content(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/api/coding/preview")
+async def coding_preview(request: Request, path: str):
+    """Serve a project HTML file for sandboxed iframe preview.
+
+    The page runs in an opaque origin (CSP sandbox + iframe sandbox attr,
+    no allow-same-origin), so scripts inside cannot touch app cookies,
+    localStorage, or the parent page. Only .html/.htm, size-capped.
+    Scan via /api/coding/scan before previewing untrusted content.
+    """
+    from fastapi.responses import Response as _Response
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if os.path.splitext(path)[1].lower() not in (".html", ".htm"):
+        return JSONResponse(status_code=400, content={"error": "Preview supports HTML files only"})
+    full = os.path.join(folder, path)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.getsize(full) > 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "File too large to preview (max 1MB)"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        return _Response(
+            content=content,
+            media_type="text/html",
+            headers={
+                "Content-Security-Policy": "sandbox allow-scripts",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/api/coding/file-write")
 async def coding_file_write(request: Request, req: CodingFileWrite):
     user, err = _require_auth(request)
@@ -1583,6 +1627,121 @@ async def coding_file_delete(request: Request, path: str):
         return {"status": "ok"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+class ScanRequest(BaseModel):
+    path: Optional[str] = ""
+    content: Optional[str] = ""
+    language: Optional[str] = ""
+
+
+# Heuristic danger rules: (language, level, regex, message).
+# This is a tripwire, not a sandbox: obvious malicious patterns are
+# blocked/flagged, but determined obfuscation can evade static checks.
+_SCAN_RULES = [
+    ("py", "danger", r"os\.system\s*\(", "os.system() shell execution"),
+    ("py", "danger", r"os\.popen\s*\(", "os.popen() shell execution"),
+    ("py", "danger", r"pty\.spawn\s*\(", "pty.spawn() interactive shell"),
+    ("py", "danger", r"ctypes\s*\.\s*(CDLL|windll|cdll|oledll)", "ctypes native-code loading"),
+    ("py", "danger", r"__import__\s*\(\s*['\"]os['\"]\s*\)", "obfuscated os import"),
+    ("py", "danger", r"subprocess\.\w+\s*\([^)]*shell\s*=\s*True", "subprocess with shell=True"),
+    ("py", "danger", r"(eval|exec)\s*\(\s*.*(urlopen|requests\.get|urllib\.request|urlretrieve)", "executes remotely-fetched code"),
+    ("py", "danger", r"socket\.(socket|create_connection)\s*\(", "raw socket networking"),
+    ("py", "warn", r"(?<!\w)(eval|exec)\s*\(", "dynamic code execution"),
+    ("py", "warn", r"pickle\.loads?\s*\(", "unsafe pickle deserialization"),
+    ("py", "warn", r"marshal\.loads?\s*\(", "unsafe marshal deserialization"),
+    ("py", "warn", r"(os\.remove|os\.rmdir|os\.removedirs|shutil\.rmtree)\s*\(", "destructive filesystem call"),
+    ("py", "warn", r"base64\.b64decode\s*\(", "obfuscated payload (base64)"),
+    ("js", "danger", r"require\s*\(\s*['\"]child_process['\"]\s*\)", "child_process (shell access)"),
+    ("js", "danger", r"from\s+['\"]child_process['\"]", "child_process import (shell access)"),
+    ("js", "danger", r"process\.env\b", "reads server environment (may hold API keys)"),
+    ("js", "danger", r"fs\.rm\s*\(.*recursive\s*:\s*true", "recursive filesystem delete"),
+    ("js", "danger", r"(eval|exec)\s*\(\s*.*(fetch\s*\(|XMLHttpRequest|https?://)", "executes remotely-fetched code"),
+    ("js", "warn", r"(?<!\w)(eval|exec)\s*\(", "dynamic code execution"),
+    ("js", "warn", r"new\s+Function\s*\(", "dynamic code construction"),
+    ("js", "warn", r"fetch\s*\(\s*['\"]https?://", "outbound network fetch"),
+    ("html", "danger", r"(?<!\w)eval\s*\(", "inline eval()"),
+    ("html", "danger", r"new\s+Function\s*\(", "dynamic code construction"),
+    ("html", "danger", r"document\.cookie", "cookie access (combine with fetch = exfiltration)"),
+    ("html", "warn", r"<form[^>]*action\s*=\s*['\"]https?://", "form posts to external URL"),
+    ("html", "warn", r"href\s*=\s*['\"]javascript:", "javascript: URL"),
+    ("html", "warn", r"<iframe[^>]*srcdoc", "iframe with inline srcdoc content"),
+]
+_SCAN_RULES_COMPILED = [(lang, lvl, re.compile(rx, re.IGNORECASE), msg)
+                        for lang, lvl, rx, msg in _SCAN_RULES]
+_SCAN_EXTS = {
+    ".py": "py", ".pyw": "py",
+    ".js": "js", ".jsx": "js", ".ts": "js", ".tsx": "js", ".mjs": "js", ".cjs": "js",
+    ".html": "html", ".htm": "html",
+    ".php": "js", ".rb": "js", ".sh": "js", ".ps1": "js", ".bat": "js",
+}
+_SCAN_MAX_BYTES = 1024 * 1024
+
+
+def _scan_text(content: str, language: str):
+    findings = []
+    for lang, level, rx, msg in _SCAN_RULES_COMPILED:
+        if lang != language:
+            continue
+        try:
+            for m in rx.finditer(content):
+                line = content.count("\n", 0, m.start()) + 1
+                findings.append({"level": level, "rule": msg, "line": line,
+                                 "detail": m.group(0)[:80]})
+                if len(findings) >= 50:
+                    break
+        except Exception:
+            continue
+        if len(findings) >= 50:
+            break
+    verdict = "clean"
+    if any(f["level"] == "danger" for f in findings):
+        verdict = "danger"
+    elif findings:
+        verdict = "warn"
+    return verdict, findings
+
+
+@app.post("/api/coding/scan")
+async def coding_scan(request: Request, req: ScanRequest):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    content = req.content or ""
+    language = (req.language or "").lower()
+    if req.path:
+        coding_state = _get_coding_state(_safe_username(user["username"]))
+        folder = coding_state.get("folder")
+        access_err = _folder_access_error(user, folder)
+        if access_err:
+            return access_err
+        if _bad_path(req.path):
+            return JSONResponse(status_code=400, content={"error": "Invalid path"})
+        full = os.path.join(folder, req.path)
+        if not _is_within(folder, full):
+            return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+        if not os.path.isfile(full):
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        try:
+            if os.path.getsize(full) > _SCAN_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": "File too large to scan"})
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        if not language:
+            language = _SCAN_EXTS.get(os.path.splitext(req.path)[1].lower(), "")
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "Nothing to scan"})
+    if len(content.encode("utf-8", "ignore")) > _SCAN_MAX_BYTES:
+        return JSONResponse(status_code=400, content={"error": "Content too large to scan"})
+    if not language:
+        language = "js"
+    verdict, findings = _scan_text(content, language)
+    logger.info(f"[SCAN] user={user.get('username','-')} verdict={verdict} findings={len(findings)}")
+    note = "" if language in ("py", "js", "html") else "no rules for this language; only generic patterns checked"
+    return {"verdict": verdict, "findings": findings,
+            "scanned_bytes": len(content.encode("utf-8", "ignore")), "note": note}
+
 
 def _sanitize_shell_command(command: str) -> str:
     """Clean an AI- or user-supplied shell command.
