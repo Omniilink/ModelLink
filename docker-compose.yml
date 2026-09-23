@@ -1,0 +1,61 @@
+# Omniilink full-stack deployment (see DOCKER.md for the step-by-step guide).
+#
+#   1. Put your Cloudflare tunnel TOKEN in a file named exactly `.env`
+#      next to this file (never commit it):
+#        CLOUDFLARE_TUNNEL_TOKEN=<paste token here>
+#   2. docker compose up -d --build
+#
+# Data lives on the host (same files the native run uses):
+#   ./user_data, ./omnilink.db, ./network_usage.json, ./tunnel.log
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omniilink:latest
+    restart: unless-stopped
+    ports:
+      # Local access for testing; the public URL comes via the tunnel.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./user_data:/app/user_data
+      - ./omnilink.db:/app/omnilink.db
+      - ./network_usage.json:/app/network_usage.json
+      - ./tunnel.log:/app/tunnel.log
+      - ./modellink/server.log:/app/modellink/server.log
+      # Docker socket: lets the API spawn per-command SANDBOX containers
+      # (siblings, not children). Anyone with socket access == host root,
+      # so this file must stay on YOUR machine. Never expose 2375 remotely.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Per-command code execution sandbox (fresh container per command,
+      # project folder only, capped CPU/RAM, dropped capabilities).
+      # Set to "" to fall back to host execution.
+      - OMNIILINK_SANDBOX=docker
+      - OMNIILINK_SANDBOX_IMAGE=omniilink-sandbox:latest
+      # Sandbox network: "nat" lets pip/npm install work; use "none" for
+      # maximum isolation (offline code only).
+      - OMNIILINK_SANDBOX_NET=nat
+      - OMNIILINK_SANDBOX_MEM=512m
+      - OMNIILINK_SANDBOX_CPUS=1.0
+    networks:
+      - omniilink-net
+
+  # Builds/pins the sandbox image so it always exists before first use.
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: sandbox.Dockerfile
+    image: omniilink-sandbox:latest
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - api
+    networks:
+      - omniilink-net
+
+networks:
+  omniilink-net: {}

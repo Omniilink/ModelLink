@@ -145,6 +145,10 @@ class SecurityHeadersMiddleware:
         request_headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                            for k, v in scope.get("headers", [])}
         is_https = request_headers.get("x-forwarded-proto", "").lower() == "https"
+        # The HTML preview endpoint is MEANT to be framed (sandboxed iframe
+        # with an opaque origin, so it cannot touch app storage). Framing
+        # guards must not apply to it or the browser refuses to render it.
+        is_preview = scope.get("path", "") == "/api/coding/preview"
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -152,18 +156,22 @@ class SecurityHeadersMiddleware:
                 existing = {k.decode("latin-1").lower() for k, _ in headers}
                 if "x-content-type-options" not in existing:
                     headers.append((b"x-content-type-options", b"nosniff"))
-                if "x-frame-options" not in existing:
+                if not is_preview and "x-frame-options" not in existing:
                     headers.append((b"x-frame-options", b"DENY"))
                 if "referrer-policy" not in existing:
                     headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
                 if "permissions-policy" not in existing:
                     headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
                 if "content-security-policy" not in existing:
-                    headers.append((b"content-security-policy",
-                        b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                        b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                        b"connect-src 'self'; font-src 'self'; object-src 'none'; "
-                        b"base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
+                    if is_preview:
+                        # Tight sandbox instead of the app-wide framing ban
+                        headers.append((b"content-security-policy", b"sandbox allow-scripts"))
+                    else:
+                        headers.append((b"content-security-policy",
+                            b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                            b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                            b"connect-src 'self'; font-src 'self'; object-src 'none'; "
+                            b"base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
                 if is_https and "strict-transport-security" not in existing:
                     headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
                 message["headers"] = headers
@@ -1775,6 +1783,44 @@ def _sanitize_shell_command(command: str) -> str:
     return c.strip()
 
 
+def _sandbox_config() -> Optional[dict]:
+    """Docker execution sandbox config, or None when disabled.
+
+    Enabled with OMNIILINK_SANDBOX=docker. Each command then runs in a
+    FRESH, ephemeral Linux container (`--rm`): only the target project
+    folder is mounted (at /work), Linux capabilities are dropped, no new
+    privileges are allowed, and CPU/RAM/pids are capped. Nothing on the
+    host is reachable except that one folder. Read per-request so the
+    toggle needs no restart.
+    """
+    if os.environ.get("OMNIILINK_SANDBOX", "").strip().lower() != "docker":
+        return None
+    return {
+        "image": os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
+        "network": os.environ.get("OMNIILINK_SANDBOX_NET", "nat"),
+        "memory": os.environ.get("OMNIILINK_SANDBOX_MEM", "512m"),
+        "cpus": os.environ.get("OMNIILINK_SANDBOX_CPUS", "1.0"),
+        "timeout": 60,
+    }
+
+
+def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
+    """Build the `docker run` argv for one sandboxed command (no shell)."""
+    return [
+        "docker", "run", "--rm",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        f"--memory={cfg['memory']}",
+        f"--cpus={cfg['cpus']}",
+        "--pids-limit=128",
+        "--network", cfg["network"],
+        "-v", f"{workdir_host}:/work",
+        "-w", "/work",
+        cfg["image"],
+        "sh", "-c", command,
+    ]
+
+
 # Heuristic escape patterns for the restricted (non-admin) shell.
 # This is defense-in-depth, not a sandbox boundary: the real containment is
 # the forced cwd inside the user's own data dir plus authentication.
@@ -1818,14 +1864,27 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         if _RESTRICTED_CMD_RE.search(command):
             return JSONResponse(status_code=403, content={"error": "Absolute paths and .. are not allowed — use paths inside your project folder"})
     try:
-        proc = subprocess.run(
-            command, shell=True, cwd=cwd,
-            capture_output=True, text=True, timeout=60
-        )
+        sb = _sandbox_config()
+        if sb is not None:
+            # Sandboxed: fresh ephemeral container, project folder only.
+            # Fail LOUDLY if docker is missing — silently falling back to
+            # host execution would break the security promise.
+            import shutil as _shutil
+            if not _shutil.which("docker"):
+                return JSONResponse(status_code=503, content={"error": "Execution sandbox unavailable (docker not found). Set OMNIILINK_SANDBOX='' to use host execution."})
+            proc = subprocess.run(
+                _build_docker_cmd(command, cwd, sb),
+                capture_output=True, text=True, timeout=sb["timeout"]
+            )
+        else:
+            proc = subprocess.run(
+                command, shell=True, cwd=cwd,
+                capture_output=True, text=True, timeout=60
+            )
         stdout = proc.stdout
         stderr = proc.stderr
         exit_code = proc.returncode
-        logger.info(f"[CMD] user={uname} {command} (exit {exit_code})")
+        logger.info(f"[CMD] user={uname} {'[docker] ' if sb is not None else ''}{command} (exit {exit_code})")
         return {"stdout": stdout, "stderr": stderr, "exit_code": exit_code}
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=408, content={"error": "Command timed out (60s)"})
@@ -1838,7 +1897,9 @@ async def coding_get_settings(request: Request):
     if err:
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
-    return coding_state["settings"]
+    settings = dict(coding_state["settings"])
+    settings["sandbox"] = _sandbox_config() is not None
+    return settings
 
 @app.post("/api/coding/settings")
 async def coding_update_settings(request: Request):
