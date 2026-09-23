@@ -73,10 +73,9 @@ if (($lim -join "") -match "536870912") { Ok("512MB memory cap enforced") } else
 
 Write-Output ""
 if ($script:failures -eq 0) {
-    Write-Output "ALL CHECKS PASSED. Next: set OMNIILINK_SANDBOX=docker (already default in"
-    Write-Output "docker-compose.yml), run 'docker compose up -d --build', then run any AI"
-    Write-Output "command from Coding Mode and watch for [docker] in the server logs."
-} else {
+    Write-Output "ALL CHECKS PASSED. Next: 'docker compose up -d --build', then run any AI"
+    Write-Output "command from Coding Mode - each project gets its own persistent container"
+    Write-Output "(check with: docker ps --filter name=omniilink-p-)." else {
     Write-Output "$($script:failures) CHECK(S) FAILED - paste the FAIL lines back for diagnosis."
     exit 1
 }
