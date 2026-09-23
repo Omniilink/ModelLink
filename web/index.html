@@ -1336,11 +1336,13 @@ function applyCodingToolbarPermissions(){
 function initCodingView(){if(codingFolder){document.getElementById('coding-folder-input').value=folderBaseName(codingFolder);document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions()}
 function closeCodingFolder(){codingFolder=null;fsHandle=null;allCodingFiles=[];document.getElementById('coding-folder-input').value='';document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
+let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
+  const gen=++projectsSidebarGen;
   const container=document.getElementById('coding-filetree');container.innerHTML='';
   const header=document.createElement('div');header.style.cssText='padding:10px 12px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;display:flex;align-items:center;justify-content:space-between';
   header.innerHTML='<span>Projects</span>';const newBtn=document.createElement('button');newBtn.style.cssText='font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font)';newBtn.textContent='+ New';newBtn.onclick=()=>openProjectsModal();header.appendChild(newBtn);container.appendChild(header);
-  try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
+  try{const r=await authFetch(API+'/api/projects');if(gen!==projectsSidebarGen)return;if(!r.ok)throw new Error('offline');const data=await r.json();
     if(!data.projects||data.projects.length===0){const empty=document.createElement('div');empty.style.cssText='padding:20px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.6';empty.innerHTML='No projects yet.<br><span style="color:var(--accent-light);cursor:pointer;text-decoration:underline" onclick="openProjectsModal()">Create one</span> or open any folder above.';container.appendChild(empty);return}
     const list=document.createElement('div');list.style.padding='0 4px';
     for(const p of data.projects){const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
@@ -1351,7 +1353,7 @@ async function loadProjectsSidebar(){
       item.addEventListener('mouseleave',()=>{if(!isActive)item.style.background='';delBtn.style.display='none'});
       item.addEventListener('click',()=>openProject(p.name));list.appendChild(item)}
     container.appendChild(list);
-  }catch(e){const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
+  }catch(e){if(gen!==projectsSidebarGen)return;const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
 }
 async function openCodingFolderPicker(){
   if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;codingFolder=handle.name;document.getElementById('coding-folder-input').value=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}

@@ -23,6 +23,11 @@ services:
       - ./network_usage.json:/app/network_usage.json
       - ./tunnel.log:/app/tunnel.log
       - ./modellink/server.log:/app/modellink/server.log
+      # Server provider keys + settings (read-write so in-app key saves
+      # persist back to the host file). Create an empty file if missing
+      # BEFORE first up, or Docker makes a directory here instead:
+      #   New-Item .env -ItemType File
+      - ./.env:/app/.env
       # Docker socket: lets the API spawn per-command SANDBOX containers
       # (siblings, not children). Anyone with socket access == host root,
       # so this file must stay on YOUR machine. Never expose 2375 remotely.

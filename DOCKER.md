@@ -96,6 +96,20 @@ You should see one `.json` file (not starting with `cert-`). If it's
 missing, run `py run-server.py` once normally and go through the
 one-time login — then come back here.
 
+Also make sure a (possibly empty) `.env` file exists in `C:\Modellink`
+— it carries your server provider keys into the container. If you
+don't have one yet, create it (this also stops Docker from making a
+folder named `.env` by mistake):
+
+```powershell
+if (!(Test-Path .env)) { New-Item .env -ItemType File }
+notepad .env
+```
+
+Put your `GEMINI_API_KEY_1=...` / `GROQ_API_KEY_1=...` lines in there
+(same format as the native setup). Without this file the app runs but
+every chat answers "all providers are currently unavailable".
+
 ## Step 3.5 — Prove Docker works (before touching the app)
 
 From `C:\Modellink`, run the self-test script (shipped in the repo):
