@@ -1450,7 +1450,10 @@ Update it in later replies (repeat the full list with [x] on finished items).
 bare fenced code alone, or the system cannot save them.
 6. NEVER describe a task as done/finished/complete while any [ ] item
 remains. The system independently verifies that every file you name
-actually exists — false completion claims are rejected and sent back.
+actually exists AND is non-empty — false completion claims are rejected
+and sent back.
+7. Keep chat text SHORT (2-4 sentences). NEVER paste file contents into
+chat text — code lives in FILE_CREATE/FILE_EDIT blocks only.
 
 Example:
 I will check the project contents first.

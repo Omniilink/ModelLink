@@ -360,6 +360,7 @@ a:hover{text-decoration:underline}
 .code-copy-btn{background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font);transition:all .12s}
 .code-copy-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .code-block{background:transparent;border:none;padding:10px;margin:0;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.5;color:var(--text-secondary)}
+.coding-msg-content pre.code-block{max-height:260px;overflow-y:auto}
 .hl-kw{color:#c084fc}.hl-str{color:#86efac}.hl-cmt{color:#6b7280;font-style:italic}.hl-num{color:#fbbf24}.hl-fn{color:#60a5fa}
 .btn{padding:7px 18px;border-radius:var(--radius-xs);font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);transition:all .12s;font-family:var(--font)}
 .btn-ghost{background:transparent;color:var(--text-secondary)}
@@ -1017,7 +1018,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
+let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
 
 function getChats(){try{return JSON.parse(localStorage.getItem('modellink_chats')||'{}')}catch(e){return{}}}
 function saveChats(c){localStorage.setItem('modellink_chats',JSON.stringify(c))}
@@ -1525,7 +1526,7 @@ async function viewCodingFile(name){
     const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant';
     const preview=content.length>4000?content.slice(0,4000)+'\n... (truncated)':content;
     msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">Opened <strong>'+escapeHtml(name)+'</strong>'+(lang?' <span style="color:var(--text-muted);font-size:11px">('+lang+')</span>':'')+'</div><div class="file-preview">'+escapeHtml(preview)+'</div><div style="margin-top:6px"><button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="addAtFile(\''+escapeHtml(name)+'\')">@ Add to context</button></div></div>';
-    chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;codingHistory.push({role:'assistant',content:'[Viewed file: '+name+']\n```\n'+content+'\n```'});
+    chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;codingHistory.push({role:'assistant',content:'[Viewed file: '+name+']\n```\n'+content.slice(0,1500)+'\n```'});
   }catch(e){appAlert('Error: '+e.message)}
 }
 async function runCodingFile(name,execCmd){const cmd=execCmd+' "'+name+'"';addCodingSystemMsg('Running: '+cmd);const result=await codingRunCmd(cmd);if(result.exit_code===0)addCodingSystemMsg('Exit 0\n'+(result.stdout||'(no output)'));else addCodingSystemMsg('Exit '+result.exit_code+'\n'+(result.stdout||'')+'\n'+(result.stderr||''))}
@@ -1603,7 +1604,7 @@ function handleCodingKey(e){const dd=document.getElementById('at-dropdown');cons
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCodingMessage()}}
 
 async function loadAllCodingFiles(force){if(!codingFolder||(!force&&allCodingFiles.length>0))return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
-  allCodingFiles=[];function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else allCodingFiles.push(p)}}flatten(tree,'')}catch(e){}}
+  allCodingFiles=[];allCodingFileSizes={};function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else{allCodingFiles.push(p);if(typeof e.size==='number')allCodingFileSizes[p]=e.size}}}flatten(tree,'')}catch(e){}}
 
 function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
 async function showAtDropdown(query){await loadAllCodingFiles();const dd=document.getElementById('at-dropdown');dd.innerHTML='';const filtered=allCodingFiles.filter(f=>f.toLowerCase().includes(query)).slice(0,30);
@@ -1614,7 +1615,7 @@ function insertAtFile(path){const input=document.getElementById('coding-input');
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 
 async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';sandboxOn=!!cs.sandbox}catch(e){}
-  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Always explain what you are doing.';
+  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always explain what you are doing.';
   let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
@@ -1991,18 +1992,26 @@ function extractTodoFiles(text){
 }
 async function verifyTodosAgainstReality(){
   // Objective check the model cannot bluff: every file named by OPEN todos
-  // must actually exist in the project (fresh tree). Returns {ok,missing}.
+  // must actually exist in the project AND be non-empty (fresh tree).
+  // Empty stubs do not count — that exact hole let false completions pass.
   const open=(codingTodos||[]).filter(t=>!t.done);
   const wanted=new Map();
   for(const t of open)for(const f of extractTodoFiles(t.text))wanted.set(f.toLowerCase(),f);
   if(wanted.size===0)return{ok:true,missing:[]};
   await loadAllCodingFiles(true);
-  const have=(allCodingFiles||[]).map(p=>p.toLowerCase());
+  const haveOrig=(allCodingFiles||[]);
+  const sizes=(typeof allCodingFileSizes!=='undefined')?allCodingFileSizes:{};
   const missing=[];
   for(const[key,orig]of wanted){
     const base=key.split('/').pop();
-    const found=have.some(p=>p===key||p.endsWith('/'+key)||(key.indexOf('/')===-1&&p.split('/').pop()===base));
-    if(!found)missing.push(orig);
+    let hit=null;
+    for(const p of haveOrig){
+      const pl=p.toLowerCase();
+      if(pl===key||pl.endsWith('/'+key)||(key.indexOf('/')===-1&&pl.split('/').pop()===base)){hit=p;break}
+    }
+    if(!hit){missing.push(orig);continue}
+    if(Object.prototype.hasOwnProperty.call(sizes,hit)&&sizes[hit]===0)
+      missing.push(orig+' (empty — fill it with real content)');
   }
   return{ok:missing.length===0,missing};
 }
