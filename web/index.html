@@ -597,6 +597,38 @@ a:hover{text-decoration:underline}
 .usage-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
 @media(max-width:768px){.usage-summary{grid-template-columns:repeat(2,1fr)}.usage-grid{grid-template-columns:1fr}.usage-bar-label{width:80px;font-size:11px}}
 @media(max-width:480px){.usage-summary{grid-template-columns:1fr}}
+
+/* ===== Responsive hardening: nothing clips, hides, or leaves the screen ===== */
+/* Fluid media everywhere */
+img,svg,video,canvas{max-width:100%}
+pre{max-width:100%}
+/* Command palette + toasts fit the smallest phones */
+.cmd-box{max-width:calc(100vw - 32px)}
+.cmd-box{max-height:calc(100vh - 48px)}
+.toast{max-width:min(320px,calc(100vw - 40px))}
+/* Tables scroll instead of squeezing content off-screen */
+#us-key-table{display:block;overflow-x:auto;max-width:100%}
+.usage-key-table{min-width:560px}
+/* Range buttons wrap instead of overflowing */
+.usage-range{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+/* Chat search bar wraps on narrow screens */
+.chat-search-bar{flex-wrap:wrap}
+.chat-search-bar input{min-width:0;flex:1}
+/* Shortcut grid goes single column on phones */
+.shortcuts-grid{grid-template-columns:1fr 1fr}
+@media(max-width:480px){
+  .header{overflow-x:auto;scrollbar-width:none}
+  .header::-webkit-scrollbar{display:none}
+  .header>*{flex-shrink:0}
+  .header-spacer{min-width:2px}
+  .header-title{max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #model-btn-text{display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+  .shortcuts-grid{grid-template-columns:1fr}
+  .usage-bar-label{width:64px}
+  .terminal-search input{width:100px}
+  .view-header h2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .file-write-diff{font-size:10px}
+}
 </style>
 </head>
 
@@ -1539,7 +1571,7 @@ function insertAtFile(path){const input=document.getElementById('coding-input');
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 
 async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';sandboxOn=!!cs.sandbox}catch(e){}
-  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Always explain what you are doing.';
+  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Always explain what you are doing.';
   let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
@@ -1601,7 +1633,7 @@ function stripToolBlocks(text){
   c=c.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'');
   c=c.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'');
   c=c.replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'');
-  c=c.replace(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
+  c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
   c=c.replace(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g,'');
   return c.trim();
 }
@@ -1660,7 +1692,7 @@ function addCodingFeed(kind,target,added,removed){
   body.appendChild(line);body.scrollTop=body.scrollHeight;
 }
 async function processCodingActions(text,msgEl){
-  const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:(.+?)(?:\nEND_RUN_COMMAND|$)/gm)];
+  const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   parseCodingTodos(text);
   if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');

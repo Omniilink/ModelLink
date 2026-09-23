@@ -1432,7 +1432,7 @@ BLOCK SYNTAX (exact — the parser is strict):
 - FILE_CREATE:path/to/file.ext — full file content between markers, then END_FILE_CREATE.
 - FILE_EDIT:path/to/file.ext — COMPLETE new file content, then END_FILE_EDIT.
 - FILE_DELETE:path/to/file.ext then END_FILE_DELETE on the next line.
-- RUN_COMMAND:your command here then END_RUN_COMMAND on the next line.
+- RUN_COMMAND:your command here (same line, or on the next line), then END_RUN_COMMAND on its own line.
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
