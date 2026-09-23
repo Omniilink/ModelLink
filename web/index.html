@@ -69,7 +69,7 @@ a:hover{text-decoration:underline}
 .theme-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .theme-btn svg{width:14px;height:14px}
 .main{flex:1;display:flex;flex-direction:column;min-width:0}
-.header{height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0}
+.header{height:52px;min-height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0}
 .header-title{font-weight:600;font-size:14px;color:var(--text-primary)}
 .header-sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
 .header-spacer{flex:1}
@@ -1045,6 +1045,8 @@ function deleteChat(id){const chats=getChats();delete chats[id];saveChats(chats)
 
 window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
+  const _hdr=document.querySelector('.header');
+  if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
