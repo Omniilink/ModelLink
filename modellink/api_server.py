@@ -1463,6 +1463,9 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     folder = req.path.strip()
     if _bad_path(folder):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
+        # Containment before existence: no oracle for probing other paths
+        return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {folder}"})
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
@@ -1890,6 +1893,9 @@ async def import_project(request: Request, req: ProjectImport):
     source = req.source_path.strip()
     if not _valid_project_name(name):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), source):
+        # Containment before existence: no oracle for probing other paths
+        return JSONResponse(status_code=403, content={"error": "Access denied: you can only import folders from inside your own data directory"})
     if not os.path.isdir(source):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {source}"})
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), source):
