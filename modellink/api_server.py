@@ -1797,7 +1797,7 @@ def _sandbox_config() -> Optional[dict]:
         return None
     return {
         "image": os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
-        "network": os.environ.get("OMNIILINK_SANDBOX_NET", "nat"),
+        "network": os.environ.get("OMNIILINK_SANDBOX_NET", "bridge"),
         "memory": os.environ.get("OMNIILINK_SANDBOX_MEM", "512m"),
         "cpus": os.environ.get("OMNIILINK_SANDBOX_CPUS", "1.0"),
         "timeout": 60,

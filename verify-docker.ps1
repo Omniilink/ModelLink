@@ -57,7 +57,7 @@ $testDir = Join-Path ([System.IO.Path]::GetTempPath()) ("omnitest_" + [System.Gu
 New-Item -ItemType Directory -Path $testDir | Out-Null
 Set-Content -LiteralPath (Join-Path $testDir "marker.txt") -Value "sandbox-can-see-me" -NoNewline
 $probe = "ls /work; echo ---HOST---; cat 'C:\\Windows\\win.ini' 2>/dev/null && echo HOST-VISIBLE || echo HOST-HIDDEN-OK; echo ---HOME---; ls /root 2>/dev/null || echo NO-ROOT-ACCESS-OK"
-$out = docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --memory=512m --cpus=1.0 --pids-limit=128 --network nat -v "${testDir}:/work" -w /work omniilink-sandbox:latest sh -c "$probe" 2>&1
+$out = docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --memory=512m --cpus=1.0 --pids-limit=128 --network bridge -v "${testDir}:/work" -w /work omniilink-sandbox:latest sh -c "$probe" 2>&1
 $flat = ($out | ForEach-Object { $_.ToString() }) -join "`n"
 Info ($flat -replace "`n", " | ")
 if ($flat -match "marker.txt") { Ok("project files visible at /work") } else { Bad "mounted project files NOT visible" }
@@ -67,7 +67,7 @@ Remove-Item -LiteralPath $testDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Output ""
 Info "Limits check (512m/1cpu/128pids/cap-drop on a live container)..."
-$lim = docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --memory=512m --cpus=1.0 --pids-limit=128 --network nat omniilink-sandbox:latest sh -c "cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes" 2>&1
+$lim = docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --memory=512m --cpus=1.0 --pids-limit=128 --network bridge omniilink-sandbox:latest sh -c "cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes" 2>&1
 Info ($lim -join " ").Trim()
 if (($lim -join "") -match "536870912") { Ok("512MB memory cap enforced") } else { Bad "memory cap not visible (got: $lim)" }
 

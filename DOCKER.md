@@ -173,7 +173,7 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 |---|---|---|
 | `OMNIILINK_SANDBOX` | `docker` | Set to `""` to run commands on the host (old behavior) |
 | `OMNIILINK_SANDBOX_IMAGE` | `omniilink-sandbox:latest` | Image each command runs in |
-| `OMNIILINK_SANDBOX_NET` | `nat` | `nat` = internet works (pip/npm install). `none` = fully offline code only |
+| `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
 | `OMNIILINK_SANDBOX_CPUS` | `1.0` | CPU cap per command |
 
