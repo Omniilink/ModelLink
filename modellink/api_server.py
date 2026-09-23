@@ -528,9 +528,23 @@ def get_provider_keys(request):
 # ==========================================
 # Log Broadcasting via SSE
 # ==========================================
+def _log_visible_to(msg: str, username: Optional[str]) -> bool:
+    """Per-user terminal filter. Admins (username None) see everything.
+    Others see lines tagged with their own `user=<name>` plus untagged
+    system lines — never another user's activity."""
+    if not username:
+        return True
+    i = msg.find("user=")
+    if i == -1:
+        return True
+    rest = msg[i + 5:]
+    return rest == username or rest.startswith(username + " ")
+
+
 class LogBroadcaster:
     def __init__(self):
-        self._queues: List[queue.Queue] = []
+        # Entries are (queue, username-or-None-for-admin) tuples.
+        self._queues: List[tuple] = []
         self._lock = asyncio.Lock()
         self._history: List[str] = []
         self._history_max = 500
@@ -571,7 +585,7 @@ class LogBroadcaster:
         except Exception:
             return []
 
-    def subscribe(self) -> queue.Queue:
+    def subscribe(self, username: Optional[str] = None) -> queue.Queue:
         if len(self._queues) >= 64:
             raise RuntimeError("Too many log subscriptions")
         q = queue.Queue(maxsize=200)
@@ -580,16 +594,17 @@ class LogBroadcaster:
             self._history = self._load_file_tail(500)[-self._history_max:]
         # Replay recent history so the terminal isn't empty on connect
         for msg in self._history:
+            if not _log_visible_to(msg, username):
+                continue
             try:
                 q.put_nowait(msg)
             except queue.Full:
                 break
-        self._queues.append(q)
+        self._queues.append((q, username))
         return q
 
     def unsubscribe(self, q: queue.Queue):
-        if q in self._queues:
-            self._queues.remove(q)
+        self._queues = [(qq, u) for qq, u in self._queues if qq is not q]
 
     def emit(self, message: str):
         self._history.append(message)
@@ -597,13 +612,15 @@ class LogBroadcaster:
             del self._history[: len(self._history) - self._history_max]
         self._append_to_file(message)
         dead = []
-        for q in self._queues:
+        for q, username in self._queues:
+            if not _log_visible_to(message, username):
+                continue
             try:
                 q.put_nowait(message)
             except queue.Full:
                 dead.append(q)
         for q in dead:
-            self._queues.remove(q)
+            self._queues = [(qq, u) for qq, u in self._queues if qq is not q]
 
 log_broadcaster = LogBroadcaster()
 
@@ -662,11 +679,14 @@ class CodingRunCommand(BaseModel):
 # ==========================================
 @app.get("/api/logs")
 async def stream_logs(request: Request):
-    _user, err = _require_auth(request)
+    user, err = _require_auth(request)
     if err:
         return err
+    # Admins see the full firehose; everyone else gets only their own
+    # activity plus untagged system lines.
+    username = None if user.get("is_admin") else user.get("username")
     try:
-        q = log_broadcaster.subscribe()
+        q = log_broadcaster.subscribe(username)
     except RuntimeError as e:
         return JSONResponse(status_code=429, content={"error": str(e)})
     async def gen():
@@ -1450,7 +1470,7 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     coding_state["folder"] = folder
     tree = _build_file_tree(folder)
     file_count = sum(1 for _ in os.walk(folder) for f in _[2] if not any(f.endswith(e) for e in IGNORE_EXTS))
-    logger.info(f"[CODING] Opened folder: {folder} ({file_count} files)")
+    logger.info(f"[CODING] Opened folder: {folder} ({file_count} files) user={user.get('username','-')}")
     return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count}
 
 @app.get("/api/coding/files")
@@ -1531,7 +1551,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
             removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
         except Exception:
             added, removed = len(req.content.splitlines()), 0
-        logger.info(f"[CODING] Wrote file: {req.path}")
+        logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
     except Exception as e:
@@ -1556,7 +1576,7 @@ async def coding_file_delete(request: Request, path: str):
         return JSONResponse(status_code=404, content={"error": "File not found"})
     try:
         os.remove(full)
-        logger.info(f"[CODING] Deleted file: {path}")
+        logger.info(f"[CODING] Deleted file: {path} user={user.get('username','-')}")
         return {"status": "ok"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -1593,20 +1613,48 @@ def _sanitize_shell_command(command: str) -> str:
     return c.strip()
 
 
+# Heuristic escape patterns for the restricted (non-admin) shell.
+# This is defense-in-depth, not a sandbox boundary: the real containment is
+# the forced cwd inside the user's own data dir plus authentication.
+# - drive-letter absolute paths (C:\, D:/) — lookbehind avoids matching http://
+# - UNC paths (\\server\share)
+# - parent (..) segments
+_RESTRICTED_CMD_RE = re.compile(r"(?<![a-zA-Z/])[a-zA-Z]:[\\/]|\\\\\S|\.\.")
+
+
 @app.post("/api/coding/run-command")
 async def coding_run_command(request: Request, req: CodingRunCommand):
-    _user, err = _require_admin(request)
+    user, err = _require_auth(request)
     if err:
         return err
     command = _sanitize_shell_command(req.command)
     if not command:
         return JSONResponse(status_code=400, content={"error": "Empty command"})
-    user_id = _safe_username(_user["username"])
+    uname = user.get("username", "-")
+    user_id = _safe_username(uname)
     coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
-    cwd = req.cwd or folder or os.getcwd()
-    if not os.path.isdir(cwd):
-        cwd = os.getcwd()
+    if user.get("is_admin"):
+        cwd = req.cwd or folder or os.getcwd()
+        if not os.path.isdir(cwd):
+            cwd = os.getcwd()
+    else:
+        # Restricted shell: the command always runs inside the user's own
+        # data dir. Client-supplied cwd is validated, never trusted, and
+        # absolute/parent paths in the command are rejected.
+        base = _user_data_dir(user_id)
+        if req.cwd:
+            cand = req.cwd if os.path.isabs(req.cwd) else os.path.join(folder or base, req.cwd)
+            cand = os.path.normpath(cand)
+            if not _is_within(base, cand) or not os.path.isdir(cand):
+                return JSONResponse(status_code=403, content={"error": "Commands are limited to your own project folder"})
+            cwd = cand
+        elif folder and _is_within(base, folder) and os.path.isdir(folder):
+            cwd = folder
+        else:
+            return JSONResponse(status_code=400, content={"error": "Open one of your projects first — commands run inside it"})
+        if _RESTRICTED_CMD_RE.search(command):
+            return JSONResponse(status_code=403, content={"error": "Absolute paths and .. are not allowed — use paths inside your project folder"})
     try:
         proc = subprocess.run(
             command, shell=True, cwd=cwd,
@@ -1615,7 +1663,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         stdout = proc.stdout
         stderr = proc.stderr
         exit_code = proc.returncode
-        logger.info(f"[CMD] {command} (exit {exit_code})")
+        logger.info(f"[CMD] user={uname} {command} (exit {exit_code})")
         return {"stdout": stdout, "stderr": stderr, "exit_code": exit_code}
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=408, content={"error": "Command timed out (60s)"})
@@ -1828,7 +1876,7 @@ async def create_project(request: Request, req: ProjectCreate):
     if quota_err:
         return quota_err
     os.makedirs(path, exist_ok=True)
-    logger.info(f"[PROJECT] Created: {name}")
+    logger.info(f"[PROJECT] Created: {name} user={user.get('username','-')}")
     return {"status": "ok", "name": name, "path": path}
 
 @app.post("/api/projects/import")
@@ -1855,7 +1903,7 @@ async def import_project(request: Request, req: ProjectImport):
     if quota_err:
         return quota_err
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
-    logger.info(f"[PROJECT] Imported: {name} from {source}")
+    logger.info(f"[PROJECT] Imported: {name} from {source} user={user.get('username','-')}")
     return {"status": "ok", "name": name, "path": dest}
 
 @app.post("/api/projects/open")
@@ -1875,7 +1923,7 @@ async def open_project(request: Request, req: ProjectCreate):
     coding_state["folder"] = path
     tree = _build_file_tree(path)
     file_count = sum(1 for _, _, files in os.walk(path) for f in files if not any(f.endswith(e) for e in IGNORE_EXTS))
-    logger.info(f"[PROJECT] Opened: {name} ({file_count} files)")
+    logger.info(f"[PROJECT] Opened: {name} ({file_count} files) user={user.get('username','-')}")
     return {"status": "ok", "name": name, "folder": path, "tree": tree, "file_count": file_count}
 
 @app.delete("/api/projects/{name}")
@@ -1936,7 +1984,7 @@ async def _do_delete(request: Request, path, name):
         _mark_writable(path)
         shutil.rmtree(path)
         if not os.path.isdir(path):
-            logger.info(f"[PROJECT] Deleted: {name}")
+            logger.info(f"[PROJECT] Deleted: {name} user={user.get('username','-')}")
             return {"status": "ok"}
     except: pass
     # Try 2: rename then delete
@@ -1947,7 +1995,7 @@ async def _do_delete(request: Request, path, name):
         _mark_writable(tmp)
         shutil.rmtree(tmp)
         if not os.path.isdir(tmp) and not os.path.isdir(path):
-            logger.info(f"[PROJECT] Deleted (renamed): {name}")
+            logger.info(f"[PROJECT] Deleted (renamed): {name} user={user.get('username','-')}")
             return {"status": "ok"}
     except: pass
     # Try 3: cmd rmdir (synchronous)
@@ -1958,7 +2006,7 @@ async def _do_delete(request: Request, path, name):
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         if not os.path.isdir(path):
-            logger.info(f"[PROJECT] Deleted (cmd): {name}")
+            logger.info(f"[PROJECT] Deleted (cmd): {name} user={user.get('username','-')}")
             return {"status": "ok"}
     except: pass
     # Folder is locked by a system process. Write a marker file in the
@@ -1972,7 +2020,7 @@ async def _do_delete(request: Request, path, name):
         import ctypes
         FILE_ATTRIBUTE_HIDDEN = 0x02
         ctypes.windll.kernel32.SetFileAttributesW(path, FILE_ATTRIBUTE_HIDDEN)
-        logger.info(f"[PROJECT] Locked by system, hidden: {name}")
+        logger.info(f"[PROJECT] Locked by system, hidden: {name} user={user.get('username','-')}")
     except: pass
     return {"status": "ok", "hidden": True}
 
