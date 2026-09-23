@@ -167,10 +167,12 @@ class SecurityHeadersMiddleware:
                         # Tight sandbox instead of the app-wide framing ban
                         headers.append((b"content-security-policy", b"sandbox allow-scripts"))
                     else:
+                        # static.cloudflareinsights.com: Cloudflare's own RUM
+                        # beacon auto-injected by the proxy; harmless analytics.
                         headers.append((b"content-security-policy",
-                            b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                            b"default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
                             b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                            b"connect-src 'self'; font-src 'self'; object-src 'none'; "
+                            b"connect-src 'self' cloudflareinsights.com; font-src 'self'; object-src 'none'; "
                             b"base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
                 if is_https and "strict-transport-security" not in existing:
                     headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
