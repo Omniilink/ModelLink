@@ -1,4 +1,5 @@
 import requests
+from requests.adapters import HTTPAdapter
 import time
 import json
 import os
@@ -475,6 +476,11 @@ MODEL_TIERS = {
 }
 
 
+# Thread-local pooled HTTP sessions (requests.Session is not thread-safe
+# to share, so each worker thread keeps its own per-provider pool).
+_thread_sessions = threading.local()
+
+
 class MultiProviderBalancer:
     def __init__(self):
         self.rate_limiter = RateLimiter()
@@ -482,6 +488,21 @@ class MultiProviderBalancer:
         self.model_cache = {}
         self.cache_time = 0
         self.CACHE_TTL = 300
+
+    def _session_for(self, provider_name):
+        """Thread-local pooled session per provider: reuses TCP+TLS
+        connections instead of a fresh handshake on every chat message."""
+        stash = getattr(_thread_sessions, "sessions", None)
+        if stash is None:
+            stash = {}
+            _thread_sessions.sessions = stash
+        if provider_name not in stash:
+            sess = requests.Session()
+            adapter = HTTPAdapter(pool_connections=4, pool_maxsize=8)
+            sess.mount("https://", adapter)
+            sess.mount("http://", adapter)
+            stash[provider_name] = sess
+        return stash[provider_name]
 
     def _get_models(self, provider_name, api_key):
         cfg = PROVIDERS.get(provider_name)
@@ -514,7 +535,10 @@ class MultiProviderBalancer:
                     body["stream"] = stream
 
                 url = provider_cfg["stream_url"](model, api_key)
-                resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
+                # Pooled session (no fresh TLS handshake); 10s connect cap
+                # so dead endpoints fail fast, 60s read budget for streams.
+                sess = self._session_for(provider_name)
+                resp = sess.post(url, json=body, headers=headers, stream=True, timeout=(10, 60))
 
                 if resp.status_code == 200:
                     self.rate_limiter.record_request(model)
@@ -523,6 +547,11 @@ class MultiProviderBalancer:
                     retry_after = int(resp.headers.get("Retry-After", 60))
                     self.rate_limiter.set_cooldown(model, retry_after)
                     logger.warning(f"[RATE] {provider_name}/{model} rate limited, cooldown {retry_after}s")
+                elif resp.status_code in (401, 403):
+                    # Dead/revoked key: cool down so every later message
+                    # doesn't waste a full round trip re-proving it.
+                    self.rate_limiter.set_cooldown(model, 300)
+                    logger.warning(f"[ERROR] {provider_name}/{model} auth rejected ({resp.status_code}), cooldown 300s")
                 elif resp.status_code >= 500:
                     self.rate_limiter.set_cooldown(model, 30)
                     logger.warning(f"[ERROR] {provider_name}/{model} server error {resp.status_code}")
