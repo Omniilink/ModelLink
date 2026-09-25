@@ -938,6 +938,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button class="primary" id="coding-open-btn" onclick="openCodingFolder()">Open</button>
           <button onclick="refreshCodingTree()">Refresh</button>
           <button onclick="toggleCodingOutput()">Terminal</button>
+          <button onclick="exportCodingChat()" title="Download full coding log as .txt">Export .txt</button>
           <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
           <button onclick="closeCodingFolder()" title="Close folder" id="coding-close-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font)">&times;</button>
@@ -2293,6 +2294,18 @@ async function codingRunCmd(command){try{const shortCmd=command.length>120?comma
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
 function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight}
 function toggleCodingOutput(){document.getElementById('coding-output').classList.toggle('open')}
+function exportCodingChat(){
+  if(!codingHistory||codingHistory.length===0){showToast('No coding chat to export','error');return}
+  const proj=currentProjectName||folderBaseName(codingFolder)||'lobby';
+  let txt='Omniilink Coding Chat Export\nProject: '+proj+'\nDate: '+new Date().toLocaleString()+'\nMessages: '+codingHistory.length+'\n\n';
+  codingHistory.forEach((m,i)=>{
+    const who=m.role==='user'?'YOU':('OMNIILINK'+(m.model?' ('+m.model+')':''));
+    txt+='===== '+who+' (#'+(i+1)+') =====\n'+(m.content||'')+'\n\n';
+  });
+  if(codingTodos&&codingTodos.length){txt+='===== TODOS =====\n';codingTodos.forEach(t=>{txt+=(t.done?'[x] ':'[ ] ')+t.text+'\n'});txt+='\n'}
+  if(codingOutputLines&&codingOutputLines.length){txt+='===== TERMINAL OUTPUT =====\n'+codingOutputLines.join('\n')+'\n'}
+  const blob=new Blob([txt],{type:'text/plain'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='coding-'+String(proj).replace(/[^a-z0-9]/gi,'_')+'-'+Date.now()+'.txt';a.click();URL.revokeObjectURL(url);showToast('Coding chat exported','success');
+}
 async function clearCodingChat(){
   if(codingAutoLoop)codingStopRequested=true;
   const chat=document.getElementById('coding-chat');
