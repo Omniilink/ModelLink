@@ -504,6 +504,7 @@ def _save_coding_settings(user_id: str, settings: dict):
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
         settings = _load_coding_settings(user_id, {
+            "auto_create": False,
             "auto_edit": False,
             "auto_command": False,
             "max_file_size": 100000,

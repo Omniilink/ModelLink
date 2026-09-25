@@ -1300,7 +1300,7 @@ function renderSettings(){
   // Coding Mode
   const cs=document.createElement('div');cs.className='settings-section';cs.innerHTML='<h3>Coding Mode</h3>';
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cod=>{
-    [{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'}].forEach(t=>{
+    [{key:'auto_create',label:'Auto-Create Files',desc:'Automatically create new files without asking first'},{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'}].forEach(t=>{
       const row=document.createElement('div');row.className='toggle-row';const left=document.createElement('div');left.innerHTML='<div class="toggle-label">'+t.label+'</div><div class="toggle-desc">'+t.desc+'</div>';
       const sw=document.createElement('div');sw.className='toggle-switch'+(cod[t.key]?' on':'');sw.onclick=()=>{sw.classList.toggle('on');authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[t.key]:sw.classList.contains('on')})})};
       row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
@@ -1583,6 +1583,11 @@ async function previewFileScanned(path){
       frame.srcdoc=content;
     }catch(e){appAlert('Cannot read file: '+e.message);return}
   }else{
+    // Preflight first so failures show a real message instead of a black box
+    let r;
+    try{r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path))}
+    catch(e){appAlert('Preview failed: '+e.message);return}
+    if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);return}
     frame.removeAttribute('srcdoc');
     frame.src=API+'/api/coding/preview?path='+encodeURIComponent(path);
   }
@@ -1641,6 +1646,7 @@ async function sendCodingMessage(){
   }catch(e){contentEl.innerHTML=renderContent('Error: '+e.message)}codingStream=false;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable)codingAutoContinue().catch(()=>{});
+  else await maybeOfferPendingFiles().catch(()=>{});
 }
 
 function isCodeLine(ln){
@@ -1669,6 +1675,24 @@ function extractBareCodeRuns(text){
   flush();
   return runs;
 }
+function redactBareCode(text){
+  // Collapse code-like runs so chat shows a note, not a wall of code.
+  const lines=text.split('\n');
+  const out=[];let buf=[];
+  const flush=()=>{
+    const codeLines=buf.filter(l=>l.trim()!==''&&isCodeLine(l)).length;
+    if(codeLines>=6)out.push('[code hidden — see card below ('+buf.length+' lines)]');
+    else out.push(...buf);
+    buf=[];
+  };
+  for(const ln of lines){
+    if(ln.trim()===''){buf.push(ln);continue}
+    if(isCodeLine(ln))buf.push(ln);
+    else{flush();out.push(ln)}
+  }
+  flush();
+  return out.join('\n');
+}
 function guessBareFileName(code){
   if(/<!DOCTYPE html|<html[\s>]/i.test(code))return'index.html';
   if(!/<\/?[a-z]/i.test(code)&&!/(function|=>|import|const |let |var )/.test(code)&&/\{[^}]*:[^}]*;/.test(code))return'style.css';
@@ -1693,6 +1717,24 @@ function copyAllCodeBlocks(){
   if(blocks.length===0){showToast('No code blocks to copy','error');return}
   const text=blocks.map((b,i)=>'--- block '+(i+1)+' ---\n'+b.textContent).join('\n\n');
   navigator.clipboard.writeText(text).then(()=>showToast('Copied '+blocks.length+' code block'+(blocks.length!==1?'s':''),'success')).catch(()=>showToast('Copy failed','error'));
+}
+let pendingFilesOffered='';
+async function maybeOfferPendingFiles(){
+  // After a turn with no loop starting: one consolidated popup asking to
+  // create all pending files (instead of hunting per-file buttons).
+  const divs=[...document.querySelectorAll('#coding-chat .coding-msg-tool')].filter(d=>
+    (d.className.includes('tool-create')||d.className.includes('tool-edit')) &&
+    d.querySelector('.approve-bar .approve'));
+  if(divs.length===0)return;
+  const names=divs.map(d=>{
+    const p=d.querySelector('.diff-path');if(p&&p.textContent.trim())return p.textContent.trim();
+    const inp=d.querySelector('.approve-bar input');if(inp&&(inp.value||'').trim())return inp.value.trim();
+    return 'file';
+  });
+  const key=divs.length+':'+names.join('|');
+  if(key===pendingFilesOffered)return;
+  pendingFilesOffered=key;
+  if(await appConfirm(divs.length+' file'+(divs.length!==1?'s':'')+' ready to create:\n- '+names.join('\n- ')+'\n\nCreate them all now?'))applyAllToolBlocks();
 }
 async function applyAllToolBlocks(){
   const btns=[...document.querySelectorAll('#coding-chat .approve-bar .approve')].filter(b=>{
@@ -1855,7 +1897,7 @@ async function processCodingActions(text,msgEl){
   if(contentEl&&hasToolBlocks){const cleaned=stripToolBlocks(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else contentEl.innerHTML=''}
   const codingSettings=await fetchCodingSettings();
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
-    if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_create){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
@@ -1949,6 +1991,13 @@ async function processCodingActions(text,msgEl){
     }
     if(shown>0||shownRun>0||shownBare>0){stickyBar.classList.add('visible');const parts=[];if(shown>0)parts.push(shown+' code block'+(shown!==1?'s':'')+' ready to save');if(shownRun>0)parts.push(shownRun+' command'+(shownRun!==1?'s':'')+' ready to run');if(shownBare>0)parts.push(shownBare+' snippet'+(shownBare!==1?'s':'')+' ready to save');stickyBar.querySelector('span').textContent=parts.join(' + ')}
     shownFallback=shown+shownRun+shownBare;
+    if(shownFallback>0){
+      // The cards below carry the code: keep chat text clean.
+      const redacted=redactBareCode(text.replace(/```(\w*)\n([\s\S]*?)```/g,
+        (m,lang)=>'\n[code block'+(lang?' ('+lang+')':'')+' — see card below]\n'));
+      const ce=msgEl.querySelector('.coding-msg-content');
+      if(ce&&redacted.trim())ce.innerHTML=renderContent(redacted);
+    }
   }
   return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew};
 }
@@ -2241,6 +2290,7 @@ async function codingAutoContinue(){
   codingAutoLoop=false;setCodingLoopUI(false);
   document.getElementById('coding-send-btn').disabled=false;
   document.getElementById('coding-input').focus();
+  await maybeOfferPendingFiles().catch(()=>{});
 }
 
 async function codingWriteFile(path,content){
@@ -2259,7 +2309,7 @@ async function codingWriteFile(path,content){
   }catch(e){return{ok:false,error:e.message}}
 }
 async function codingRunCmd(command){try{const shortCmd=command.length>120?command.slice(0,120)+'…':command;addCodingFeed('Shell',shortCmd);document.getElementById('coding-output').classList.add('open');const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){addCodingOutput('[ERR] '+data.error);return{stdout:'',stderr:data.error,exit_code:1}}if(data.stdout)addCodingOutput(data.stdout);if(data.stderr)addCodingOutput('[ERR] '+data.stderr);if(!data.stdout&&!data.stderr)addCodingOutput('(no output)');return{stdout:data.stdout,stderr:data.stderr,exit_code:data.exit_code}}catch(e){addCodingOutput('[ERROR] '+e.message);return{stdout:'',stderr:e.message,exit_code:1}}}
-async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_edit:false,auto_command:false}}}
+async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
 function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight}
 function toggleCodingOutput(){document.getElementById('coding-output').classList.toggle('open')}
 async function clearCodingChat(){
