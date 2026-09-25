@@ -681,6 +681,11 @@ class CodingFileWrite(BaseModel):
     path: str
     content: str
 
+class CodingFilePatch(BaseModel):
+    path: str
+    old_text: str
+    new_text: str
+
 class CodingRunCommand(BaseModel):
     command: str
     cwd: Optional[str] = None
@@ -1436,6 +1441,16 @@ BLOCK SYNTAX (exact — the parser is strict):
 - FILE_EDIT:path/to/file.ext — COMPLETE new file content, then END_FILE_EDIT.
 - FILE_DELETE:path/to/file.ext then END_FILE_DELETE on the next line.
 - RUN_COMMAND:your command here (same line, or on the next line), then END_RUN_COMMAND on its own line.
+- FILE_PATCH:path/to/file.ext — SURGICAL fix, preferred for repairs.
+  Copy the exact lines to change under OLD:, new lines under NEW::
+FILE_PATCH:styles.css
+OLD:
+  border-radius: 50
+NEW:
+  border-radius: 50px;
+END_FILE_PATCH
+  Use PATCH for fixes (never rewrite a whole working file to fix a few
+  lines). Use FILE_CREATE only for brand-new files.
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
@@ -1641,6 +1656,68 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/coding/file-patch")
+async def coding_file_patch(request: Request, req: CodingFilePatch):
+    """Surgical search-replace edit: replaces the FIRST occurrence of
+    old_text with new_text. Same auth/containment/quota/size rules as
+    file-write, so fixes land without rewriting whole files."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if (_bad_path(req.path) or len(req.old_text) > 5 * 1024 * 1024
+            or len(req.new_text) > 5 * 1024 * 1024):
+        return JSONResponse(status_code=400, content={"error": "Invalid path or text too large (max 5MB)"})
+    full = os.path.join(folder, req.path)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        if os.path.getsize(full) > 5 * 1024 * 1024:
+            return JSONResponse(status_code=400, content={"error": "File too large (max 5MB)"})
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            current = f.read()
+        old, new = req.old_text, req.new_text
+        idx = current.find(old)
+        if idx == -1:
+            # Forgiving retry: ignore trailing-whitespace differences
+            old_stripped = "\n".join(line.rstrip() for line in old.split("\n"))
+            cur_lines = current.split("\n")
+            found_at = -1
+            want = old_stripped.split("\n")
+            for s in range(len(cur_lines) - len(want) + 1):
+                if all(cur_lines[s + k].rstrip() == want[k] for k in range(len(want))):
+                    found_at = s
+                    break
+            if found_at == -1:
+                return JSONResponse(status_code=404, content={"error": "Old text not found in file — it may have changed; re-read it first"})
+            end_line = found_at + len(want)
+            patched = "\n".join(cur_lines[:found_at] + [new] + cur_lines[end_line:])
+        else:
+            patched = current[:idx] + new + current[idx + len(old):]
+        quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
+        if quota_err:
+            return quota_err
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(patched)
+        try:
+            import difflib
+            dl = list(difflib.unified_diff(current.splitlines(), patched.splitlines(), lineterm=""))
+            added = sum(1 for l in dl if l.startswith("+") and not l.startswith("+++"))
+            removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
+        except Exception:
+            added, removed = 0, 0
+        logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
+        return {"status": "ok", "path": req.path, "size": len(patched),
+                "added": added, "removed": removed}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
