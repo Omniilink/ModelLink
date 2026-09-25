@@ -501,6 +501,37 @@ def _save_coding_settings(user_id: str, settings: dict):
     except Exception:
         pass
 
+def _coding_folder_path(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "coding_folder.txt")
+
+def _load_coding_folder(user_id: str) -> Optional[str]:
+    """Restore the open project folder across server restarts.
+    Returns None unless the stored folder still exists (stale = closed)."""
+    try:
+        p = _coding_folder_path(user_id)
+        if not os.path.exists(p):
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            folder = f.read().strip()
+        if folder and os.path.isdir(folder):
+            return folder
+    except Exception:
+        pass
+    return None
+
+def _save_coding_folder(user_id: str, folder: Optional[str]):
+    """Best-effort persist (or clear, when None) the open project folder."""
+    try:
+        p = _coding_folder_path(user_id)
+        if not folder:
+            if os.path.exists(p):
+                os.remove(p)
+            return
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(folder)
+    except Exception:
+        pass
+
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
         settings = _load_coding_settings(user_id, {
@@ -511,7 +542,7 @@ def _get_coding_state(user_id: str) -> dict:
             "system_prompt": DEFAULT_CODING_PROMPT
         })
         _coding_states[user_id] = {
-            "folder": None,
+            "folder": _load_coding_folder(user_id),
             "settings": settings
         }
     return _coding_states[user_id]
@@ -1526,10 +1557,22 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
         return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
     coding_state["folder"] = folder
+    _save_coding_folder(user_id, folder)
     tree = _build_file_tree(folder)
     file_count = sum(1 for _ in os.walk(folder) for f in _[2] if not any(f.endswith(e) for e in IGNORE_EXTS))
     logger.info(f"[CODING] Opened folder: {folder} ({file_count} files) user={user.get('username','-')}")
     return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count}
+
+@app.post("/api/coding/close-folder")
+async def coding_close_folder(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    coding_state = _get_coding_state(user_id)
+    coding_state["folder"] = None
+    _save_coding_folder(user_id, None)
+    return {"status": "ok"}
 
 @app.get("/api/coding/files")
 async def coding_list_files(request: Request):
@@ -1605,11 +1648,125 @@ async def coding_preview(request: Request, path: str):
     try:
         with open(full, "rb") as f:
             content = f.read()
+        content = _rewrite_preview_assets(content, path)
         return _Response(
             content=content,
             media_type="text/html",
             headers={
                 "Content-Security-Policy": "sandbox allow-scripts",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+_ASSET_MIME_OVERRIDES = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".cjs": "text/javascript",
+    ".css": "text/css",
+    ".svg": "image/svg+xml",
+}
+
+
+def _preview_asset_url(rel_path: str) -> str:
+    from urllib.parse import quote
+    return "/api/coding/preview-asset?path=" + quote(rel_path, safe="/")
+
+
+def _rewrite_preview_assets(content: bytes, page_path: str) -> bytes:
+    """Rewrite relative asset URLs in a previewed HTML page to absolute
+    preview-asset URLs, so linked CSS/JS/images actually load. External,
+    data:, fragment, and javascript: URLs are left untouched."""
+    try:
+        text = content.decode("utf-8")
+    except Exception:
+        return content
+    import posixpath
+    page_dir = posixpath.dirname(page_path.replace("\\", "/"))
+
+    def resolve(ref: str):
+        if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
+            return None
+        # normpath clamps ".." at the project root; the asset endpoint
+        # re-enforces containment, so anything truly outside 403s there.
+        norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
+        return _preview_asset_url(norm) if norm else None
+
+    def repl_tag(m):
+        ref = m.group(3)
+        target = resolve(ref)
+        if target is None:
+            return m.group(0)
+        return m.group(1) + m.group(2) + target + m.group(2)
+
+    text = re.sub(
+        r"(<(?:link|script|img|source|video|audio|track|embed)\b[^>]*?\b(?:href|src)\s*=\s*)([\"'])(.*?)\2",
+        repl_tag, text, flags=re.IGNORECASE | re.DOTALL)
+    return text.encode("utf-8")
+
+
+def _rewrite_css_urls(css_text: str, css_dir: str) -> str:
+    """Rewrite relative url(...) in a served stylesheet to preview-asset
+    URLs so fonts/backgrounds resolve (external/data URLs untouched)."""
+    import posixpath
+
+    def repl(m):
+        q, ref = m.group(1), m.group(2)
+        if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
+            return m.group(0)
+        norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
+        if not norm:
+            return m.group(0)
+        return "url(" + q + _preview_asset_url(norm) + q + ")"
+
+    return re.sub(r"url\(\s*([\"']?)([^)\"']+)\1\s*\)", repl, css_text,
+                  flags=re.IGNORECASE)
+
+
+@app.get("/api/coding/preview-asset")
+async def coding_preview_asset(request: Request, path: str):
+    """Serve a project file referenced by a previewed page (CSS/JS/images).
+    Same auth + containment as preview; correct MIME types (required under
+    nosniff); size-capped."""
+    from fastapi.responses import Response as _Response
+    import mimetypes
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, path)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.getsize(full) > 5 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "File too large (max 5MB)"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        ext = os.path.splitext(path)[1].lower()
+        media_type = _ASSET_MIME_OVERRIDES.get(ext)
+        if media_type is None:
+            media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        if ext == ".css":
+            import posixpath
+            css_dir = posixpath.dirname(path.replace("\\", "/"))
+            try:
+                content = _rewrite_css_urls(content.decode("utf-8"), css_dir).encode("utf-8")
+            except Exception:
+                pass
+        return _Response(
+            content=content,
+            media_type=media_type,
+            headers={
                 "X-Content-Type-Options": "nosniff",
                 "Cache-Control": "no-store",
             },
@@ -2391,6 +2548,7 @@ async def open_project(request: Request, req: ProjectCreate):
     if not _is_within(projects_dir, path) or not os.path.isdir(path):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     coding_state["folder"] = path
+    _save_coding_folder(user_id, path)
     tree = _build_file_tree(path)
     file_count = sum(1 for _, _, files in os.walk(path) for f in files if not any(f.endswith(e) for e in IGNORE_EXTS))
     logger.info(f"[PROJECT] Opened: {name} ({file_count} files) user={user.get('username','-')}")
@@ -2438,6 +2596,7 @@ async def _do_delete(request: Request, path, name):
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     if coding_state.get("folder") == path:
         coding_state["folder"] = None
+        _save_coding_folder(user_id, None)
     import stat, time, subprocess
     def _mark_writable(d):
         for root, dirs, files in os.walk(d):
