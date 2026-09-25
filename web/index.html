@@ -223,6 +223,8 @@ a:hover{text-decoration:underline}
 
 /* Coding: flat surfaces, single accent, structural borders */
 .coding-msg-model{color:var(--text-muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.stream-code-note{margin-top:8px;font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:8px}
+.stream-code-note span{width:14px;height:14px;border-radius:50%;border:2px solid var(--border-light);border-top-color:var(--accent);animation:spin .8s linear infinite;flex-shrink:0}
 .coding-msg-tool{background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 .coding-msg-tool .tool-label{font-weight:600}
 .cmd-result{background:var(--bg-tertiary);border:1px solid var(--border)}
@@ -1610,6 +1612,76 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
   return sysPrompt}
 
+function findBareRunSpans(text){
+  // Same grouping as redactBareCode, but returns char spans so the live
+  // stream renderer can hide exactly what the final view will collapse.
+  const lines=text.split('\n');
+  const offs=[0];
+  for(const ln of lines)offs.push(offs[offs.length-1]+ln.length+1);
+  const spans=[];let start=-1,codeCount=0,buf=[];
+  const flush=()=>{
+    if(codeCount>=6)spans.push([offs[start],offs[start]+buf.join('\n').length]);
+    start=-1;codeCount=0;buf=[];
+  };
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    if(ln.trim()===''){if(start!==-1)buf.push(ln);continue}
+    if(isCodeLine(ln)){if(start===-1)start=i;buf.push(ln);codeCount++}
+    else flush();
+  }
+  flush();
+  return spans;
+}
+function streamHiddenSpans(fullText){
+  // Regions the chat must never render raw mid-stream. Mirrors the final
+  // parsers (same shapes) plus unterminated tails and bare-code runs.
+  const spans=[];
+  const push=(a,b)=>{if(b>a)spans.push([a,b])};
+  let m;
+  const fp=/```\w*\n[\s\S]*?\n```/g;
+  while((m=fp.exec(fullText)))push(m.index,m.index+m[0].length);
+  const bp=/(FILE_CREATE:.+?\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:.+?\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:.+?(?:\nEND_FILE_DELETE|$)|FILE_PATCH:.+?\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
+  while((m=bp.exec(fullText)))push(m.index,m.index+m[0].length);
+  spans.sort((a,b)=>a[0]-b[0]);
+  const merged=[];
+  for(const s of spans){
+    const l=merged[merged.length-1];
+    if(l&&s[0]<=l[1])l[1]=Math.max(l[1],s[1]);
+    else merged.push(s.slice());
+  }
+  for(const s of findBareRunSpans(fullText)){
+    if(!merged.some(o=>s[0]<o[1]&&s[1]>o[0]))merged.push(s);
+  }
+  merged.sort((a,b)=>a[0]-b[0]);
+  // Unterminated tail: a marker that started but never closed. Anchored
+  // to line starts so prose mentions mid-sentence never trigger it.
+  const coveredEnd=merged.length?merged[merged.length-1][1]:0;
+  const tail=fullText.slice(coveredEnd);
+  const um=/^ {0,3}(```\w*|FILE_CREATE:.+|FILE_EDIT:.+|FILE_DELETE:.+|FILE_PATCH:.+|RUN_COMMAND:.*|TODO_LIST:|QUESTION:[^\n]*)/m.exec(tail);
+  if(um)merged.push([coveredEnd+um.index,fullText.length]);
+  merged.sort((a,b)=>a[0]-b[0]);
+  return merged;
+}
+function streamVisibleHTML(fullText){
+  const merged=streamHiddenSpans(fullText);
+  if(!merged.length)return renderContent(fullText);
+  let label='writing code…';
+  const head=fullText.slice(merged[0][0],merged[0][0]+300);
+  const fm=head.match(/^(?:FILE_CREATE|FILE_EDIT):(.+)$/m);
+  const rm=head.match(/^RUN_COMMAND:[ \t]*\n?([^\n]{1,60})/m);
+  if(fm)label='writing '+fm[1].trim().slice(0,60)+'…';
+  else if(rm&&(rm[1]||'').trim())label='running '+rm[1].trim()+'…';
+  else if(/^ {0,3}QUESTION:/m.test(head))label='asking a question…';
+  else if(/^ {0,3}TODO_LIST:/m.test(head))label='planning…';
+  let out='',pos=0;
+  for(const s of merged){out+=fullText.slice(pos,s[0]);pos=s[1]}
+  out+=fullText.slice(pos);
+  return renderContent(out)+'<div class="stream-code-note"><span></span>'+escapeHtml(label)+'</div>';
+}
+function updateStreamingContent(chat,contentEl,fullText){
+  contentEl.innerHTML=streamVisibleHTML(fullText);
+  if(chat.scrollHeight-chat.scrollTop-chat.clientHeight<120)chat.scrollTop=chat.scrollHeight;
+}
 async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
@@ -1624,7 +1696,7 @@ async function sendCodingMessage(){
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;contentEl.innerHTML=renderContent(fullText);if(chat.scrollHeight-chat.scrollTop-chat.clientHeight<120)chat.scrollTop=chat.scrollHeight}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
@@ -2202,7 +2274,7 @@ async function streamCodingTurn(messages){
   if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;return{error:errMsg}}
   const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
   while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-    for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;contentEl.innerHTML=renderContent(fullText);if(chat.scrollHeight-chat.scrollTop-chat.clientHeight<120)chat.scrollTop=chat.scrollHeight}}catch(e){}}}}
+    for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
   const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);
   codingHistory.push({role:'assistant',content:fullText});
   persistCodingChat();
