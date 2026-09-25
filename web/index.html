@@ -1560,20 +1560,28 @@ async function previewFileScanned(path){
   document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
   const frame=document.getElementById('file-preview-frame');
   if(fsHandle){
-    // Browser-local files render via srcdoc: same sandbox, no server roundtrip
+    // Browser-local files render via srcdoc: same sandbox, no server roundtrip.
+    // Refs are inlined as data: URLs so CSS/JS/images load in the opaque frame.
     try{
       const content=await fsReadFile(path);
+      const rewritten=await fsBuildPreviewSrcdoc(path,content);
       frame.removeAttribute('src');
-      frame.srcdoc=content;
+      frame.srcdoc=rewritten;
     }catch(e){appAlert('Cannot read file: '+e.message);return}
   }else{
-    // Preflight first so failures show a real message instead of a black box
-    let r;
-    try{r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path))}
-    catch(e){appAlert('Preview failed: '+e.message);return}
-    if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);return}
-    frame.removeAttribute('srcdoc');
-    frame.src=API+'/api/coding/preview?path='+encodeURIComponent(path);
+    // Preflight first so failures show a real message instead of a black box.
+    // Use the fetched body as srcdoc (no second navigation): the preview
+    // frame is sandboxed without allow-same-origin, so it has an opaque
+    // origin and browsers withhold session cookies from its subrequests —
+    // the server therefore rewrites asset URLs with signed tokens.
+    let html;
+    try{
+      const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path));
+      if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);return}
+      html=await r.text();
+    }catch(e){appAlert('Preview failed: '+e.message);return}
+    frame.removeAttribute('src');
+    frame.srcdoc=html;
   }
   document.getElementById('file-preview-modal').classList.add('open');
 }
@@ -2588,6 +2596,74 @@ async function fsDeleteFile(path){if(!fsHandle)throw new Error('No folder open')
 async function fsBuildTree(handle,prefix){prefix=prefix||'';const entries=[];for await(const[name,entry]of handle.entries()){const path=prefix?prefix+'/'+name:name;if(entry.kind==='directory'){if(name.startsWith('.')||name==='node_modules'||name==='__pycache__'||name==='.git'||name==='.venv'||name==='venv'||name==='dist'||name==='build'||name==='.next'||name==='target'||name==='bin'||name==='obj'||name==='.idea'||name==='.vscode')continue;const children=await fsBuildTree(entry,path);if(children.length>0)entries.push({name,type:'dir',path,children})}else if(entry.kind==='file'){if(name.startsWith('.'))continue;const skipExts=['.pyc','.pyo','.class','.o','.obj','.dll','.exe','.so','.dylib','.pdb','.jpg','.jpeg','.png','.gif','.bmp','.ico','.svg','.webp','.mp3','.mp4','.wav','.avi','.mov','.mkv','.zip','.tar','.gz','.bz2','.7z','.rar','.woff','.woff2','.ttf','.eot'];const ext='.'+name.split('.').pop().toLowerCase();if(skipExts.includes(ext))continue;entries.push({name,type:'file',path})}}
   entries.sort((a,b)=>{if(a.type==='dir'&&b.type!=='dir')return-1;if(a.type!=='dir'&&b.type==='dir')return 1;return a.name.localeCompare(b.name)});return entries}
 async function fsFileExists(path){if(!fsHandle)return false;try{const{parent,name}=await fsResolveParent(fsHandle,path);await parent.getFileHandle(name);return true}catch(e){return false}}
+// Browser-local preview: the iframe is sandboxed (opaque origin), so blob:
+// URLs created by the app page can't be loaded from inside it and there is
+// no server to rewrite refs. Inline every referenced asset as a data: URL
+// instead (opaque-origin safe), including url()/@import inside stylesheets.
+let fsAssetCache={};
+const FS_DATA_MIME={'.css':'text/css','.js':'text/javascript','.mjs':'text/javascript','.cjs':'text/javascript','.json':'application/json','.txt':'text/plain','.xml':'application/xml','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.otf':'font/otf','.eot':'application/vnd.ms-fontobject','.mp3':'audio/mpeg','.wav':'audio/wav','.mp4':'video/mp4','.webm':'video/webm'};
+const FS_TEXT_EXT=['.css','.js','.mjs','.cjs','.json','.txt','.xml','.svg'];
+async function fsReadFileRaw(path){if(!fsHandle)throw new Error('No folder open');const{parent,name}=await fsResolveParent(fsHandle,path);const fh=await parent.getFileHandle(name);return await fh.getFile()}
+function fsIsExternalRef(ref){return !ref||/^(?:[a-z][a-z0-9+.-]*:|\/\/|#|data:)/i.test(ref)}
+function fsRelNorm(baseDir,ref){const abs=(baseDir?baseDir+'/':'')+ref.replace(/^\/+/,'');const out=[];for(const part of abs.split('/')){if(part===''||part==='.')continue;if(part==='..'){out.pop();continue}out.push(part)}return out.join('/')}
+async function fsRewriteCssUrlsLocal(css,cssDir){
+  const refs=[];
+  const grab=(m,q,ref)=>{refs.push(fsIsExternalRef(ref)?null:fsRelNorm(cssDir,ref));return m};
+  css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi,grab);
+  css.replace(/@import\s+(["'])([^"']+)\1/gi,grab);
+  const urls=await Promise.all(refs.map(r=>r?fsPreviewAssetUrl(r):null));
+  let i=0;
+  let out=css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi,(m,q,ref)=>{const u=urls[i++];return u?'url('+q+u+q+')':m});
+  out=out.replace(/@import\s+(["'])([^"']+)\1/gi,(m,q,ref)=>{const u=urls[i++];return u?'@import '+q+u+q:m});
+  return out;
+}
+async function fsPreviewAssetUrl(rel){
+  if(!rel)return null;
+  if(rel in fsAssetCache)return fsAssetCache[rel];
+  try{
+    const file=await fsReadFileRaw(rel);
+    const ext='.'+rel.split('.').pop().toLowerCase();
+    let url=null;
+    if(ext==='.html'||ext==='.htm'){url=null}
+    else if(ext==='.css'){
+      const cssDir=rel.includes('/')?rel.slice(0,rel.lastIndexOf('/')):'';
+      url='data:text/css;charset=utf-8,'+encodeURIComponent(await fsRewriteCssUrlsLocal(await file.text(),cssDir));
+    }else if(FS_TEXT_EXT.includes(ext)){
+      url='data:'+(FS_DATA_MIME[ext]||'text/plain')+';charset=utf-8,'+encodeURIComponent(await file.text());
+    }else{
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      let bin='';const CH=0x8000;
+      for(let i=0;i<bytes.length;i+=CH)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));
+      url='data:'+(FS_DATA_MIME[ext]||file.type||'application/octet-stream')+';base64,'+btoa(bin);
+    }
+    fsAssetCache[rel]=url;return url;
+  }catch(e){fsAssetCache[rel]=null;return null}
+}
+async function fsBuildPreviewSrcdoc(pagePath,html){
+  fsAssetCache={};
+  const dir=pagePath.includes('/')?pagePath.slice(0,pagePath.lastIndexOf('/')):'';
+  const resolve=(ref)=>{if(fsIsExternalRef(ref))return null;return (ref.charAt(0)==='/'?fsRelNorm('',ref):fsRelNorm(dir,ref))||null};
+  let doc;try{doc=new DOMParser().parseFromString(html,'text/html')}catch(e){return html}
+  for(const el of doc.querySelectorAll('link[href],script[src],img[src],source[src],video[src],audio[src],embed[src],iframe[src],input[src],object[data]')){
+    const attr=el.hasAttribute('src')?'src':(el.hasAttribute('data')?'data':'href');
+    const u=await fsPreviewAssetUrl(resolve(el.getAttribute(attr)||''));
+    if(u)el.setAttribute(attr,u);
+  }
+  for(const el of doc.querySelectorAll('[srcset]')){
+    const val=el.getAttribute('srcset')||'';if(!val||/data:/i.test(val))continue;
+    const parts=[];
+    for(const chunk of val.split(',')){
+      const t=chunk.trim();if(!t)continue;
+      const bits=t.split(/\s+/);
+      const u=await fsPreviewAssetUrl(resolve(bits[0]));
+      parts.push((u||bits[0])+(bits.length>1?' '+bits.slice(1).join(' '):''));
+    }
+    if(parts.length)el.setAttribute('srcset',parts.join(', '));
+  }
+  for(const el of doc.querySelectorAll('style')){el.textContent=await fsRewriteCssUrlsLocal(el.textContent,dir)}
+  for(const el of doc.querySelectorAll('[style]')){el.setAttribute('style',await fsRewriteCssUrlsLocal(el.getAttribute('style'),dir))}
+  return '<!DOCTYPE html>'+doc.documentElement.outerHTML;
+}
 </script>
 
 <script>

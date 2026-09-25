@@ -3,7 +3,10 @@ import os
 import re
 import logging
 import asyncio
+import hmac
+import hashlib
 import queue
+import secrets
 import subprocess
 import shutil
 import threading
@@ -1648,7 +1651,7 @@ async def coding_preview(request: Request, path: str):
     try:
         with open(full, "rb") as f:
             content = f.read()
-        content = _rewrite_preview_assets(content, path)
+        content = _rewrite_preview_assets(content, path, user["id"])
         return _Response(
             content=content,
             media_type="text/html",
@@ -1669,16 +1672,127 @@ _ASSET_MIME_OVERRIDES = {
     ".svg": "image/svg+xml",
 }
 
+# ==========================================
+# Preview asset tokens
+# ==========================================
+# The preview page runs in a sandboxed, opaque-origin iframe (CSP sandbox +
+# iframe sandbox attr, deliberately without allow-same-origin). Browsers treat
+# requests from such documents as cross-site/third-party and withhold the
+# SameSite=Lax session cookie, so CSS/JS/img subrequests get 401 and the page
+# renders unstyled. Rather than weaken the sandbox or the cookie policy,
+# rewritten asset URLs carry a short-lived HMAC token bound to one user +
+# one exact path; the asset endpoint accepts either a session or a token.
+_PREVIEW_TOKEN_TTL = 3600
+_preview_secret_cache = None
+_preview_secret_lock = threading.Lock()
 
-def _preview_asset_url(rel_path: str) -> str:
+
+def _preview_secret() -> bytes:
+    """Persistent per-install HMAC key for preview tokens.
+
+    Stored under user_data (a mounted Docker volume) so tokens survive
+    restarts; falls back to a per-process key if the file is unusable."""
+    global _preview_secret_cache
+    if _preview_secret_cache:
+        return _preview_secret_cache
+    with _preview_secret_lock:
+        if _preview_secret_cache:
+            return _preview_secret_cache
+        path = os.path.join(APP_DIR, "user_data", ".preview_secret")
+        data = None
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    existing = f.read().strip()
+                if len(existing) >= 32:
+                    data = existing
+            if data is None:
+                data = secrets.token_bytes(32)
+                with open(path, "wb") as f:
+                    f.write(data)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            data = secrets.token_bytes(32)
+        _preview_secret_cache = data
+        return data
+
+
+def _mint_preview_token(user_id, path: str, ttl: int = _PREVIEW_TOKEN_TTL) -> str:
+    """Mint `exp.user_id.sig` for one asset path (read-only, 1h by default)."""
+    exp = int(time.time()) + int(ttl)
+    sig = hmac.new(
+        _preview_secret(),
+        f"{user_id}:{path}:{exp}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+    return f"{exp}.{user_id}.{sig}"
+
+
+def _user_from_preview_token(token, path):
+    """Validate a preview token for `path`; return the user dict or None.
+
+    Binds user id + exact path + expiry; signature compared in constant time.
+    Tampering with any field (including swapping paths) invalidates it."""
+    if not token or not path or len(token) > 160:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    exp_s, uid_s, sig = parts
+    try:
+        exp = int(exp_s)
+        uid = int(uid_s)
+    except ValueError:
+        return None
+    now = int(time.time())
+    if exp < now or exp > now + 86400:
+        return None
+    expected = hmac.new(
+        _preview_secret(),
+        f"{uid}:{path}:{exp}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+    if not hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
+        return None
+    try:
+        return get_user_by_id(uid)
+    except Exception:
+        return None
+
+
+def _preview_asset_url(rel_path: str, user_id=None) -> str:
     from urllib.parse import quote
-    return "/api/coding/preview-asset?path=" + quote(rel_path, safe="/")
+    url = "/api/coding/preview-asset?path=" + quote(rel_path, safe="/")
+    if user_id is not None:
+        url += "&t=" + _mint_preview_token(user_id, rel_path)
+    return url
 
 
-def _rewrite_preview_assets(content: bytes, page_path: str) -> bytes:
+_QUOTED_ASSET_RE = re.compile(
+    r"(<(?:link|script|img|source|video|audio|track|embed|object|input|iframe)"
+    r"\b[^>]*?\b(?:href|src|poster)\s*=\s*)([\"'])(.*?)\2",
+    re.IGNORECASE | re.DOTALL)
+_UNQUOTED_ASSET_RE = re.compile(
+    r"(<(?:link|script|img|source|video|audio|track|embed|object|input|iframe)"
+    r"\b[^>]*?\b(?:href|src|poster)\s*=\s*)([^\s\"'>/=]+)",
+    re.IGNORECASE)
+_SRCSET_RE = re.compile(
+    r"(<(?:img|source)\b[^>]*?\bsrcset\s*=\s*)([\"'])(.*?)\2",
+    re.IGNORECASE | re.DOTALL)
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)",
+                             re.IGNORECASE | re.DOTALL)
+
+
+def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> bytes:
     """Rewrite relative asset URLs in a previewed HTML page to absolute
-    preview-asset URLs, so linked CSS/JS/images actually load. External,
-    data:, fragment, and javascript: URLs are left untouched."""
+    preview-asset URLs (with a signed token), so linked CSS/JS/images actually
+    load inside the opaque-origin iframe. Covers quoted, unquoted and srcset
+    attributes plus inline <style> url()/@import. External, data:, fragment
+    and javascript: URLs are left untouched."""
     try:
         text = content.decode("utf-8")
     except Exception:
@@ -1687,54 +1801,110 @@ def _rewrite_preview_assets(content: bytes, page_path: str) -> bytes:
     page_dir = posixpath.dirname(page_path.replace("\\", "/"))
 
     def resolve(ref: str):
+        ref = (ref or "").strip()
+        if not ref:
+            return None
         if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
             return None
         # normpath clamps ".." at the project root; the asset endpoint
         # re-enforces containment, so anything truly outside 403s there.
         norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
-        return _preview_asset_url(norm) if norm else None
+        if not norm or norm == ".":
+            return None
+        return _preview_asset_url(norm, user_id)
 
-    def repl_tag(m):
-        ref = m.group(3)
-        target = resolve(ref)
+    def repl_quoted(m):
+        target = resolve(m.group(3))
         if target is None:
             return m.group(0)
         return m.group(1) + m.group(2) + target + m.group(2)
 
-    text = re.sub(
-        r"(<(?:link|script|img|source|video|audio|track|embed)\b[^>]*?\b(?:href|src)\s*=\s*)([\"'])(.*?)\2",
-        repl_tag, text, flags=re.IGNORECASE | re.DOTALL)
+    def repl_unquoted(m):
+        target = resolve(m.group(2))
+        if target is None:
+            return m.group(0)
+        return m.group(1) + target
+
+    def repl_srcset(m):
+        val = m.group(3)
+        if "data:" in val:
+            return m.group(0)
+        out = []
+        for chunk in val.split(","):
+            s = " ".join(chunk.split())
+            if not s:
+                continue
+            bits = s.split(None, 1)
+            url = resolve(bits[0]) or bits[0]
+            out.append(url + ((" " + bits[1]) if len(bits) > 1 else ""))
+        if not out:
+            return m.group(0)
+        return m.group(1) + m.group(2) + ", ".join(out) + m.group(2)
+
+    def repl_style(m):
+        return (m.group(1)
+                + _rewrite_css_urls(m.group(2), page_dir, user_id)
+                + m.group(3))
+
+    text = _QUOTED_ASSET_RE.sub(repl_quoted, text)
+    text = _UNQUOTED_ASSET_RE.sub(repl_unquoted, text)
+    text = _SRCSET_RE.sub(repl_srcset, text)
+    text = _STYLE_BLOCK_RE.sub(repl_style, text)
     return text.encode("utf-8")
 
 
-def _rewrite_css_urls(css_text: str, css_dir: str) -> str:
-    """Rewrite relative url(...) in a served stylesheet to preview-asset
-    URLs so fonts/backgrounds resolve (external/data URLs untouched)."""
+def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None) -> str:
+    """Rewrite relative url(...) and @import "..." in a served stylesheet to
+    preview-asset URLs so fonts/backgrounds resolve (external/data untouched)."""
     import posixpath
 
-    def repl(m):
-        q, ref = m.group(1), m.group(2)
+    def resolve(ref: str):
+        ref = (ref or "").strip()
+        if not ref:
+            return None
         if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
-            return m.group(0)
+            return None
         norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
-        if not norm:
-            return m.group(0)
-        return "url(" + q + _preview_asset_url(norm) + q + ")"
+        if not norm or norm == ".":
+            return None
+        return _preview_asset_url(norm, user_id)
 
-    return re.sub(r"url\(\s*([\"']?)([^)\"']+)\1\s*\)", repl, css_text,
+    def repl_url(m):
+        target = resolve(m.group(2))
+        if target is None:
+            return m.group(0)
+        return "url(" + m.group(1) + target + m.group(1) + ")"
+
+    def repl_import(m):
+        target = resolve(m.group(2))
+        if target is None:
+            return m.group(0)
+        return "@import " + m.group(1) + target + m.group(1)
+
+    text = re.sub(r"url\(\s*([\"']?)([^)\"']+)\1\s*\)", repl_url, css_text,
                   flags=re.IGNORECASE)
+    text = re.sub(r"@import\s+([\"'])([^\"']+)\1", repl_import, text,
+                  flags=re.IGNORECASE)
+    return text
 
 
 @app.get("/api/coding/preview-asset")
 async def coding_preview_asset(request: Request, path: str):
     """Serve a project file referenced by a previewed page (CSS/JS/images).
-    Same auth + containment as preview; correct MIME types (required under
-    nosniff); size-capped."""
+    Auth via session cookie/header OR a signed `t` token: the sandboxed
+    preview iframe has an opaque origin, so browsers withhold SameSite=Lax
+    cookies from its subrequests. Same containment; correct MIME types
+    (required under nosniff); size-capped."""
     from fastapi.responses import Response as _Response
     import mimetypes
     user, err = _require_auth(request)
     if err:
-        return err
+        # Cookie-free path: short-lived token minted during HTML rewriting.
+        user = _user_from_preview_token(
+            request.query_params.get("t"), request.query_params.get("path"))
+        if user is None:
+            return err
+        request.state.user = user
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
@@ -1760,7 +1930,8 @@ async def coding_preview_asset(request: Request, path: str):
             import posixpath
             css_dir = posixpath.dirname(path.replace("\\", "/"))
             try:
-                content = _rewrite_css_urls(content.decode("utf-8"), css_dir).encode("utf-8")
+                content = _rewrite_css_urls(content.decode("utf-8"), css_dir,
+                                            user.get("id")).encode("utf-8")
             except Exception:
                 pass
         return _Response(
