@@ -1472,6 +1472,13 @@ END_FILE_CREATE
 Rules:
 - For FILE_EDIT, include the COMPLETE file content, not just changes.
 - Always put the file path right after the colon, no spaces before the path.
+- When you genuinely need the user to decide something (a name, a color,
+  whether to add a feature), ask with EXACTLY this format (max 3 questions
+  per turn, only blocking decisions — never ask what you can decide):
+QUESTION:What background color should the site use?
+OPTION:A warm cream (#F5EFE6)
+OPTION:Deep charcoal (#141414)
+END_QUESTION
 - You are an expert in Python, JavaScript, TypeScript, HTML, CSS, Java, C, C++, Go, Rust, Ruby, PHP, and all other programming languages.
 """
 

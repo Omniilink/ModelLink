@@ -1602,7 +1602,7 @@ function insertAtFile(path){const input=document.getElementById('coding-input');
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 
 async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';sandboxOn=!!cs.sandbox}catch(e){}
-  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always explain what you are doing.';
+  if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nTo ask the user a blocking question (max 3 per turn):\nQUESTION:What background color?\nOPTION:Warm cream\nOPTION:Deep charcoal\nEND_QUESTION\nUseful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always explain what you are doing.';
   let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
@@ -1611,21 +1611,22 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   return sysPrompt}
 
 async function sendCodingMessage(){
-  if(codingAutoLoop){codingStopRequested=true;return}
-  if(codingStream)return;const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
+  if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
+  const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);codingHistory.push({role:'user',content:cleanText});persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
-  codingStream=true;document.getElementById('coding-send-btn').disabled=true;
+  codingStream=true;
+  let sendCtrl=new AbortController();codingAbort=sendCtrl;
   let next={blocks:false,actionable:false};
-  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:4000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
-    if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;document.getElementById('coding-send-btn').disabled=false;return}
+  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:8000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
+    if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;contentEl.innerHTML=renderContent(fullText);chat.scrollTop=chat.scrollHeight}}catch(e){}}}}
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});next=await processCodingActions(fullText,assistantEl);
-  }catch(e){contentEl.innerHTML=renderContent('Error: '+e.message)}codingStream=false;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
+  }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable)codingAutoContinue().catch(()=>{});
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -1730,11 +1731,12 @@ async function applyAllToolBlocks(){
 }
 function stripToolBlocks(text){
   let c=text;
-  c=c.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'');
-  c=c.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'');
-  c=c.replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'');
+  c=c.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g,'');
+  c=c.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g,'');
+  c=c.replace(/FILE_DELETE:(.+?)(?:\nEND_FILE_DELETE|$)/g,'');
   c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
-  c=c.replace(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g,'');
+  c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,'');
+  c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,'');
   return c.trim();
 }
 function fmtCmdResult(result){
@@ -1829,7 +1831,7 @@ function completeAllTodos(){
     setTimeout(()=>{if(gen!==codingTodoGen)return;bar.style.display='none';bar.style.opacity=''},900);
   },2400);
 }
-function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g)];
+function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g)];
   if(blocks.length===0)return false;
   const last=blocks[blocks.length-1][1];
   // MERGE, never replace: models echo stale unchecked lists in summaries,
@@ -1868,11 +1870,30 @@ function addCodingFeed(kind,target,added,removed){
   const body=document.getElementById('coding-output-body');
   body.appendChild(line);body.scrollTop=body.scrollHeight;
 }
+async function answerCodingQuestion(toolDiv,bar,qtext,opt){
+  if(toolDiv.dataset.answered)return;
+  toolDiv.dataset.answered='1';
+  bar.querySelectorAll('.qopt').forEach(b=>{b.disabled=true;b.dataset.picked=(b.textContent===opt)?'1':'0';if(b.textContent!==opt)b.style.opacity='.45'});
+  bar.insertAdjacentHTML('beforeend','<span style="color:var(--success);font-size:11px">Answered: '+escapeHtml(opt)+'</span>');
+  codingHistory.push({role:'user',content:'Answer to "'+qtext+'": '+opt});
+  persistCodingChat();
+  continueCodingAfterAnswer().catch(()=>{});
+}
+async function continueCodingAfterAnswer(){
+  if(codingAutoLoop||codingStream)return;
+  codingStream=true;
+  try{
+    let sysPrompt='You are a coding assistant.';
+    try{sysPrompt=await buildCodingSystemPrompt()}catch(e){}
+    const turn=await streamCodingTurn([{role:'system',content:sysPrompt},...codingHistory.slice(-20)]);
+    if(!turn.error&&turn.actions&&turn.actions.actionable)codingAutoContinue().catch(()=>{});
+  }finally{codingStream=false;persistCodingChat()}
+}
 async function processCodingActions(text,msgEl){
   codingTodosNew=false;
   let shownFallback=0;
-  const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];
-  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)(?:\nEND_FILE_DELETE|$)/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...text.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
+  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+commands.length+questions.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   parseCodingTodos(text);
   if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
@@ -1892,6 +1913,24 @@ async function processCodingActions(text,msgEl){
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
     if(codingSettings.auto_command){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  for(const qm of questions){
+    const qtext=(qm[1]||'').trim()||'Question';
+    const opts=[...qm[2].matchAll(/OPTION:([^\n]*)/g)].map(o=>o[1].trim()).filter(Boolean).slice(0,6);
+    if(!opts.length)continue;
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-ask';
+    const label=document.createElement('div');label.className='tool-label';label.textContent='Question: '+qtext;
+    toolDiv.appendChild(label);
+    const bar=document.createElement('div');bar.className='approve-bar';bar.style.flexWrap='wrap';
+    opts.forEach(opt=>{
+      const b=document.createElement('button');b.className='qopt';b.textContent=opt;
+      b.style.cssText='padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:11px;cursor:pointer;font-family:var(--font)';
+      b.onclick=()=>answerCodingQuestion(toolDiv,bar,qtext,opt);
+      bar.appendChild(b);
+    });
+    const db=document.createElement('button');db.className='deny';db.textContent='Skip';
+    db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
+    bar.appendChild(db);toolDiv.appendChild(bar);
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   if(!hasToolBlocks){
     // Fallback: the model emitted code without FILE_CREATE blocks (bare
@@ -1986,6 +2025,8 @@ async function processCodingActions(text,msgEl){
 
 // ---- Agentic coding loop: feed tool results back so multi-step tasks finish ----
 let codingAutoLoop=false,codingStopRequested=false;
+let codingAbort=null;
+let codingWrittenPaths=[];
 const CODING_MAX_ROUNDS=6;
 const CODING_MAX_SETBACKS=3;
 let codingTodoGen=0;
@@ -2052,12 +2093,13 @@ function setCodingLoopUI(on){
   }
 }
 function waitForCodingApprovals(){
-  // Resolves once every pending Run/Apply/Delete button is clicked
-  // (or the user hits Stop). Approvals still gate every execution.
+  // Resolves once every pending Run/Apply/Delete button AND every
+  // unanswered question is resolved (or the user hits Stop).
+  // Approvals still gate every execution.
   return new Promise(resolve=>{
     const t=setInterval(()=>{
       if(codingStopRequested){clearInterval(t);resolve();return}
-      if(document.querySelectorAll('#coding-chat .approve-bar .approve').length===0){clearInterval(t);resolve()}
+      if(document.querySelectorAll('#coding-chat .approve-bar .approve').length===0&&document.querySelectorAll('#coding-chat .qopt:not([data-picked])').length===0){clearInterval(t);resolve()}
     },400);
   });
 }
@@ -2123,7 +2165,8 @@ async function streamCodingTurn(messages){
   chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;
   const contentEl=assistantEl.querySelector('.coding-msg-content');
   let actualModel=selectedModel,fullText='';
-  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:4000,messages})});
+  let turnCtrl=new AbortController();codingAbort=turnCtrl;
+  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:8000,messages})});
   if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;return{error:errMsg}}
   const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
   while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -2131,8 +2174,9 @@ async function streamCodingTurn(messages){
   const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);
   codingHistory.push({role:'assistant',content:fullText});
   persistCodingChat();
-  await processCodingActions(fullText,assistantEl);
-  return{fullText,actualModel};
+  const actions=await processCodingActions(fullText,assistantEl);
+  codingAbort=null;
+  return{fullText,actualModel,actions};
 }
 function offerCreateMissingFiles(missing){
   // Approval-gated stub creation for verify-missing files. Harvest- and
@@ -2193,6 +2237,24 @@ async function codingAutoContinue(){
         rounds++;
         if(rounds>CODING_MAX_ROUNDS){
           postCodingAssistant('Stopping after '+CODING_MAX_ROUNDS+' tool rounds with work still remaining. Ask me to continue and I will pick up where I left off.');
+          break;
+        }
+        // Syntax gate: only loop back for REAL breakage in written files.
+        // Clean files with no open todos finish here — no redundant rounds.
+        const validation=await validateWrittenFiles();
+        if(!validation.ok){
+          setbacks++;
+          lastReason='syntax/content problems in written files: '+validation.errors.join('; ');
+          if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+          addCodingSystemMsg('Validation failed — '+lastReason);
+          const iturnV=await sendCodingImprove('Validation FAILED on files you just wrote: '+lastReason+'. Fix ONLY these issues with FILE_EDIT blocks. Do not rewrite working files.',setbacks+1);
+          if(iturnV.error)break;
+          continue;
+        }
+        const open0=openTodoTexts();
+        if(validation.files.length>0&&open0.length===0){
+          completeAllTodos();
+          postCodingAssistant('Done — verified: '+validation.files.join(', ')+' ('+validation.files.length+' file'+(validation.files.length!==1?'s':'')+', syntax OK).');
           break;
         }
         const open=openTodoTexts();
@@ -2269,7 +2331,7 @@ async function codingAutoContinue(){
     }
   }catch(e){/* stopped or failed */}
   if(codingStopRequested)addCodingSystemMsg('Stopped by user.');
-  codingAutoLoop=false;setCodingLoopUI(false);
+  codingAutoLoop=false;codingStream=false;codingAbort=null;setCodingLoopUI(false);
   document.getElementById('coding-send-btn').disabled=false;
   document.getElementById('coding-input').focus();
   await maybeOfferPendingFiles().catch(()=>{});
@@ -2282,13 +2344,80 @@ async function codingWriteFile(path,content){
       await fsWriteFile(path,content);
       const lines=content.split('\n').length;
       addCodingFeed(existed?'Edit':'Write',path,lines,0);
+      codingWrittenPaths.push(path);
       return{ok:true,added:lines,removed:0};
     }
     const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
     const data=await r.json();
-    if(r.ok){addCodingFeed(data.backed_up?'Edit':'Write',path,data.added||0,data.removed||0);return{ok:true,added:data.added,removed:data.removed}}
+    if(r.ok){addCodingFeed(data.backed_up?'Edit':'Write',path,data.added||0,data.removed||0);codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
   }catch(e){return{ok:false,error:e.message}}
+}
+function checkSyntax(ext,code){
+  // Client-side syntax tripwire for just-written files. Conservative by
+  // design: unknown languages and ambiguous cases pass (null). Only
+  // structural breakage fails. Never executes the code.
+  try{
+    if(!code||code.length===0)return'written file is empty';
+    if(ext==='json'){JSON.parse(code);return null}
+    if(ext==='html'||ext==='htm'){
+      const doc=new DOMParser().parseFromString(code,'text/html');
+      if(doc.querySelector('parsererror'))return'HTML parse error';
+      return null;
+    }
+    if(ext==='js'||ext==='mjs'||ext==='cjs'||ext==='jsx'||ext==='ts'||ext==='tsx'
+      ||ext==='css'||ext==='py'||ext==='sh'||ext==='ps1'){
+      // Balanced brackets/parens/braces with string+comment awareness.
+      // Catches the dominant real failure: truncated output.
+      const lineComment=(ext==='py'||ext==='sh')?'#':null;
+      let b=0,p=0,q=0,inS=null,inC=false,inL=false;
+      for(let i=0;i<code.length;i++){const c=code[i];
+        if(inL){if(c==='\n')inL=false;continue}
+        if(inC){if(c==='*'&&code[i+1]==='/'){inC=false;i++}continue}
+        if(inS){
+          if(inS.length===3){if(code.startsWith(inS,i)){i+=2;inS=null}continue}
+          if(c==='\\'){i++;continue}if(c===inS)inS=null;continue}
+        if(lineComment&&c===lineComment){inL=true;continue}
+        if(!lineComment&&c==='/'&&code[i+1]==='/'){inL=true;i++;continue}
+        if(!lineComment&&c==='/'&&code[i+1]==='*'){inC=true;i++;continue}
+        if((c==='"'||c==="'")&&code[i+1]===c&&code[i+2]===c){inS=c+c+c;i+=2;continue}
+        if(c==='"'||c==="'"||c==='`'){inS=c;continue}
+        if(c==='{')b++;else if(c==='}')b--;else if(c==='(')p++;else if(c===')')p--;else if(c==='[')q++;else if(c===']')q--;
+        if(b<0)return'unbalanced }';
+        if(p<0)return'unbalanced )';
+        if(q<0)return'unbalanced ]';
+      }
+      if(inS)return'unterminated string';
+      if(inC)return'unterminated comment';
+      if(b!==0)return'unclosed braces ('+Math.abs(b)+' left open)';
+      if(p!==0)return'unclosed parens ('+Math.abs(p)+' left open)';
+      if(q!==0)return'unclosed brackets ('+Math.abs(q)+' left open)';
+      return null;
+    }
+    return null;
+  }catch(e){return e&&e.message?String(e.message).split('\n')[0].slice(0,160):'syntax error'}
+}
+async function validateWrittenFiles(){
+  // Validate files written since the last check (consumes the list).
+  // Returns {ok, errors, files}. Only REAL structural breakage fails.
+  const paths=[...new Set(codingWrittenPaths)];
+  codingWrittenPaths=[];
+  const errors=[];
+  for(const path of paths){
+    let content=null;
+    try{
+      if(fsHandle){try{content=await fsReadFile(path)}catch(e){content=null}}
+      else{
+        const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));
+        if(r.ok){const d=await r.json();content=d.content}
+      }
+    }catch(e){content=null}
+    if(content==null)continue;
+    const ext=(path.split('.').pop()||'').toLowerCase();
+    const err=checkSyntax(ext,content);
+    if(err)errors.push(path+': '+err);
+  }
+  return{ok:errors.length===0,errors,files:paths};
 }
 async function codingRunCmd(command){try{const shortCmd=command.length>120?command.slice(0,120)+'…':command;addCodingFeed('Shell',shortCmd);document.getElementById('coding-output').classList.add('open');const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){addCodingOutput('[ERR] '+data.error);return{stdout:'',stderr:data.error,exit_code:1}}if(data.stdout)addCodingOutput(data.stdout);if(data.stderr)addCodingOutput('[ERR] '+data.stderr);if(!data.stdout&&!data.stderr)addCodingOutput('(no output)');return{stdout:data.stdout,stderr:data.stderr,exit_code:data.exit_code}}catch(e){addCodingOutput('[ERROR] '+e.message);return{stdout:'',stderr:e.message,exit_code:1}}}
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
