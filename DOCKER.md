@@ -181,23 +181,38 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 | `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
 | `OMNIILINK_SANDBOX_CPUS` | `1.0` | CPU cap per command |
+| `OMNIILINK_AUTOUPDATE` | `1` | `1` = poll origin for new commits and apply them (see below) · `0` = never touch the checkout |
+| `OMNIILINK_AUTOUPDATE_INTERVAL` | `60` | Seconds between polls (min 10) |
 
 After editing, restart just the API: `docker compose up -d api`.
 Installing other runtimes (another Python/Node version) means extending
 `sandbox.Dockerfile` and rebuilding — ask and it can be added.
 
-## Panel self-update (no update.bat needed)
+## Auto-update (no update.bat needed)
 
-Once deployed, the admin panel (`/admin` → Update server) updates the host
-itself: it pulls the repo and rebuilds through a throwaway
-`omniilink-updater` container, with every bind mount verified before anything
-is recreated. The panel refuses to run until the updater image exists, so the
-first update after this change still goes through `update.bat`.
+Once deployed, the server polls GitHub every 60 seconds. When a push shows up
+it pulls with `git pull --ff-only` and rebuilds/recreates the `api` container
+through a throwaway `omniilink-updater` container, with every bind mount
+verified before anything is recreated. The admin panel (`/admin` → Auto
+update) shows the state, both commit ids and the running job, plus a
+"Check now" button for an immediate poll.
+
+It only ever fast-forwards. Uncommitted changes to tracked files, history
+that has diverged, a `remote.origin.url` that is not this repository, or
+missing tooling each stop it — the reason is shown in the panel instead of
+being forced through. A failed attempt is retried after 10 minutes, not
+every poll.
+
+- `OMNIILINK_AUTOUPDATE=0` disables it entirely.
+- `OMNIILINK_AUTOUPDATE_INTERVAL` sets the period in seconds (default 60).
+
+The updater image has to exist before the first self-update, so the first
+update after this change still goes through `update.bat`.
 
 Private repo? The updater has no git credentials of its own. Create a token
 (GitHub Settings → Developer settings → Personal access tokens, classic
-`repo` scope) and set `OMNIILINK_GIT_TOKEN` in the server `.env` — the panel
-picks it up without a restart. The token travels in a single-use file the
+`repo` scope) and set `OMNIILINK_GIT_TOKEN` in the server `.env` — it is
+picked up without a restart. The token travels in a single-use file the
 updater deletes at startup; it never appears in job output, the UI, or logs.
 
 ## Useful commands

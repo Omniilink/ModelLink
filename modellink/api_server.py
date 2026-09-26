@@ -3191,8 +3191,10 @@ def _clip(text: str, limit: int = 64 * 1024) -> str:
     return text[:half] + f"\n… [{len(text) - limit} bytes trimmed] …\n" + text[-half:]
 
 
-def _admin_rate_ok(username: str, limit: int = 60, window: int = 60) -> bool:
-    key = f"{username}:{limit}:{window}"
+def _admin_rate_ok(username: str, limit: int = 60, window: int = 60, scope: str = "") -> bool:
+    # Buckets are keyed by (user, scope, limit, window): endpoints that share
+    # only limit+window would otherwise eat each other's budget.
+    key = f"{username}:{scope}:{limit}:{window}"
     now = time.time()
     with _ADMIN_BUCKET_LOCK:
         hits = [t for t in _ADMIN_BUCKETS.get(key, []) if now - t < window]
@@ -3300,26 +3302,40 @@ def _write_updater_env_file(token: str):
     return cli_path, f"/work/user_data/{name}", name
 
 
-def _build_updater_command(checkout: str, img: str):
+def _expected_repo() -> str:
+    """The only repository this server will ever pull from."""
+    return ((os.environ.get("OMNIILINK_GIT_REPO", "") or "").strip()
+            or "https://github.com/Omniilink/ModelLink.git")
+
+
+def _build_updater_command(checkout: str, img: str, check: bool = False):
     """docker run string for the throwaway updater. The token (if any)
     travels in a single-use env file, never in this string — it lands in
     job records, the UI and the audit log. Returns
-    (command, cli_cleanup_path_or_None)."""
+    (command, cli_cleanup_path_or_None).
+
+    check=True runs `omni-update --check` (no docker socket needed): it only
+    compares HEAD with origin and reports, it never pulls or recreates."""
     token = _git_token()
     cli_env, _helper_env, _name = _write_updater_env_file(token) if token else (None, None, None)
-    parts = ["docker", "run", "--rm", "-i",
-             "-v", "/var/run/docker.sock:/var/run/docker.sock",
-             "-v", f"{checkout}:/work"]
+    parts = ["docker", "run", "--rm", "-i"]
+    if not check:
+        parts += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+    parts += ["-v", f"{checkout}:/work"]
     if cli_env:
         parts += ["--env-file", cli_env]
     parts += ["-e", f"HOST_CHECKOUT={checkout}",
+              "-e", f"OMNIILINK_GIT_REPO={_expected_repo()}",
               img, "python3", "/usr/local/bin/omni-update"]
+    if check:
+        parts.append("--check")
     command = " ".join(shlex.quote(p) for p in parts)
     if cli_env:
-        # Best-effort cleanup if the api survives the update; the updater
+        # Best-effort cleanup if the api survives the run; the updater
         # itself deletes the file at startup, so a mid-update recreate
-        # cannot leak it either.
-        command += f"; rm -f {shlex.quote(cli_env)}"
+        # cannot leak it either. `$?` is preserved so the job/check exit
+        # code still reflects the updater, not the `rm`.
+        command += f"; rc=$?; rm -f {shlex.quote(cli_env)}; exit $rc"
     return command, cli_env
 
 
@@ -3375,6 +3391,292 @@ def _probe_capabilities() -> dict:
     return dict(caps)
 
 
+# ==========================================
+# Auto-update — poll origin, pull --ff-only, restart
+# ==========================================
+# A push to GitHub is picked up within OMNIILINK_AUTOUPDATE_INTERVAL seconds
+# (default 60) and applied without anyone opening the panel. It only ever
+# fast-forwards: dirty tracked files, diverged history, a missing git binary
+# or an origin that is not the expected repository all stop it, and each of
+# those is reported in the panel instead of forcing the tree. Set
+# OMNIILINK_AUTOUPDATE=0 to turn the whole thing off.
+_AUTOUPDATE_AUDIT_STATES = ("updating", "error", "blocked", "diverged", "unavailable")
+_AUTOUPDATE_BACKOFF = 600.0        # after a failed apply, wait before retrying
+_AUTOUPDATE = {
+    "state": "idle", "detail": "", "branch": "", "local": "", "remote": "",
+    "dirty": False, "last_check": 0.0, "next_check": 0.0, "last_apply": 0.0,
+    "backoff_until": 0.0, "job_id": "", "apply_started": 0.0, "_audited": None,
+}
+_AUTOUPDATE_LOCK = threading.Lock()
+_AUTOUPDATE_BUSY = threading.Lock()
+
+
+def _autoupdate_enabled() -> bool:
+    return (os.environ.get("OMNIILINK_AUTOUPDATE", "1").strip().lower()
+            not in ("0", "false", "no", "off", "disabled"))
+
+
+def _autoupdate_interval() -> int:
+    try:
+        v = int(str(os.environ.get("OMNIILINK_AUTOUPDATE_INTERVAL", "60")).strip() or "60")
+    except ValueError:
+        v = 60
+    return max(10, min(v, 86400))
+
+
+def _autoupdate_record(state: str, detail: str = "", **extra) -> None:
+    """Update the shared status and audit meaningful state changes once each
+    (a persistent failure must not write a new audit line every minute)."""
+    audit_line = None
+    with _AUTOUPDATE_LOCK:
+        _AUTOUPDATE.update({"state": state, "detail": detail, **extra})
+        if state in _AUTOUPDATE_AUDIT_STATES:
+            if (state, detail) != _AUTOUPDATE.get("_audited"):
+                _AUTOUPDATE["_audited"] = (state, detail)
+                audit_line = detail or state
+        else:
+            _AUTOUPDATE["_audited"] = None
+    if audit_line is not None:
+        _audit("autoupdate." + state, "system", audit_line)
+
+
+def _autoupdate_job() -> Optional[dict]:
+    with _AUTOUPDATE_LOCK:
+        jid = _AUTOUPDATE.get("job_id") or ""
+    return _safe_job(jid) if jid else None
+
+
+def _autoupdate_auth_env() -> Optional[dict]:
+    """Environment carrying the git token for a native `git pull`, expressed
+    as git config env vars — never on the command line, because that string
+    is stored in the job list, shown in the panel and written to the audit
+    log. Returns None when no token is configured."""
+    token = _git_token()
+    if not token:
+        return None
+    import base64
+    cred = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    env = dict(os.environ)
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
+    env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {cred}"
+    return env
+
+
+def _parse_check_output(out: str, code: int) -> dict:
+    """Turn `omni-update --check` output into a structured result."""
+    res = {"code": 1 if code not in (0, 3, 4) else code, "detail": "", "local": "",
+           "remote": "", "branch": "", "dirty": False}
+    for ln in (out or "").splitlines():
+        ln = ln.strip()
+        if ln.startswith("BRANCH="):
+            res["branch"] = ln[7:].strip()
+        elif ln.startswith("LOCAL="):
+            res["local"] = ln[6:].strip()
+        elif ln.startswith("REMOTE="):
+            res["remote"] = ln[7:].strip()
+        elif ln.startswith("DIRTY="):
+            res["dirty"] = ln[6:].strip() == "1"
+    if res["code"] == 1:
+        tail = [l.strip() for l in (out or "").splitlines() if l.strip()]
+        res["detail"] = "; ".join(tail[-3:])[:400] or f"check failed (exit {code})"
+    return res
+
+
+def _autoupdate_check_native(caps: dict) -> dict:
+    """Run the same `omni-update --check` the container uses, right here in
+    the checkout (one implementation of the origin/dirty/fetch rules)."""
+    script = os.path.join(APP_DIR, "updater", "omni-update")
+    if not os.path.isfile(script):
+        return {"code": 1, "detail": "updater script missing (updater/omni-update)", "dirty": False}
+    env = dict(os.environ)
+    env["OMNI_UPDATE_WORK"] = caps.get("app_dir") or APP_DIR
+    env["OMNIILINK_GIT_REPO"] = _expected_repo()
+    token = _git_token()
+    if token:
+        env["GIT_TOKEN"] = token
+    else:
+        env.pop("GIT_TOKEN", None)
+    try:
+        proc = subprocess.run([sys.executable or "python", script, "--check"],
+                              cwd=APP_DIR, env=env, capture_output=True, text=True,
+                              timeout=90, errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"code": 1, "detail": "The git check timed out after 90s.", "dirty": False}
+    except Exception as exc:
+        return {"code": 1, "detail": str(exc), "dirty": False}
+    return _parse_check_output((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
+
+
+def _autoupdate_check_container(caps: dict) -> dict:
+    """Same check, but inside a throwaway updater container (the api has no
+    git and no checkout — only the host path through the docker socket)."""
+    img = caps.get("updater_image_name") or _updater_image_name()
+    checkout = caps.get("host_checkout")
+    if not checkout:
+        return {"code": 1, "detail": "The host checkout is unknown (OMNIILINK_SANDBOX_HOST_ROOT).",
+                "dirty": False}
+    command, env_file = _build_updater_command(checkout, img, check=True)
+    try:
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True,
+                              timeout=120, errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"code": 1, "detail": "The updater check timed out after 120s.", "dirty": False}
+    except Exception as exc:
+        return {"code": 1, "detail": str(exc), "dirty": False}
+    finally:
+        if env_file:
+            try:
+                os.remove(env_file)
+            except OSError:
+                pass
+    return _parse_check_output((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
+
+
+def _autoupdate_apply(caps: dict, in_container: bool) -> str:
+    """Start the update as a background job; returns its id."""
+    if in_container:
+        command, _cleanup = _build_updater_command(caps["host_checkout"],
+                                                   caps.get("updater_image_name") or _updater_image_name())
+        job_id = _start_admin_job("autoupdate", command, APP_DIR)
+    else:
+        compose = caps.get("docker_cli") and caps.get("docker_daemon") and caps.get("docker_compose")
+        command = "git pull --ff-only" + (" && docker compose up -d --build" if compose else "")
+        job_id = _start_admin_job("autoupdate", command, APP_DIR, env=_autoupdate_auth_env())
+    _audit("autoupdate.start", "system", command)
+    return job_id
+
+
+def _autoupdate_tick(manual: bool = False) -> dict:
+    """One poll: compare HEAD with origin, apply a fast-forward if due."""
+    if not _autoupdate_enabled():
+        _autoupdate_record("disabled", "OMNIILINK_AUTOUPDATE is off.")
+        return _autoupdate_status()
+    if not _AUTOUPDATE_BUSY.acquire(blocking=False):
+        return _autoupdate_status()          # a check is already in flight
+    try:
+        now = time.time()
+        job = _autoupdate_job()
+        if job and job.get("status") == "running":
+            _autoupdate_record("updating", f"Update job {job['id']} is running.",
+                               next_check=now + _autoupdate_interval())
+            return _autoupdate_status()
+        # A failed apply must not retry every minute (an auth failure would
+        # otherwise spin forever): report it once, then back off.
+        if job and job.get("kind") == "autoupdate" and job.get("status") in ("failed", "timeout"):
+            started = _AUTOUPDATE.get("apply_started") or 0.0
+            if started and (job.get("finished") or 0) >= started:
+                tail = "; ".join([l for l in (job.get("lines") or [])[-3:] if l.strip()])[:400]
+                with _AUTOUPDATE_LOCK:
+                    _AUTOUPDATE["apply_started"] = 0.0
+                    _AUTOUPDATE["backoff_until"] = now + _AUTOUPDATE_BACKOFF
+                _autoupdate_record("error", f"Last auto-update failed: {tail or 'see the job log'}")
+                return _autoupdate_status()
+        with _AUTOUPDATE_LOCK:
+            backoff = _AUTOUPDATE.get("backoff_until") or 0.0
+        if now < backoff and not manual:
+            with _AUTOUPDATE_LOCK:
+                _AUTOUPDATE["next_check"] = backoff
+            return _autoupdate_status()
+
+        caps = _probe_capabilities()
+        in_container = bool(caps.get("in_container"))
+        blocked = []
+        if in_container:
+            if not caps.get("docker_cli") or not caps.get("docker_daemon"):
+                blocked.append("the docker daemon is not reachable")
+            if not caps.get("host_checkout"):
+                blocked.append("OMNIILINK_SANDBOX_HOST_ROOT is not set, so the host checkout is unknown")
+            if not caps.get("updater_image"):
+                blocked.append(f"image {caps.get('updater_image_name')} is missing - run update.bat once on the host")
+        elif not caps.get("git"):
+            blocked.append("git is not installed in this environment")
+        if blocked:
+            _autoupdate_record("unavailable", "; ".join(blocked) + ".",
+                               last_check=now, next_check=now + _autoupdate_interval())
+            return _autoupdate_status()
+
+        res = (_autoupdate_check_container if in_container else _autoupdate_check_native)(caps)
+        with _AUTOUPDATE_LOCK:
+            _AUTOUPDATE.update({"branch": res.get("branch", ""), "local": res.get("local", ""),
+                                "remote": res.get("remote", ""), "dirty": bool(res.get("dirty")),
+                                "last_check": now, "next_check": now + _autoupdate_interval()})
+        code = res.get("code")
+        if code == 0:
+            _autoupdate_record("up_to_date", "This checkout already matches origin.")
+        elif code == 3:
+            if res.get("dirty"):
+                _autoupdate_record(
+                    "blocked",
+                    "New commits are waiting, but tracked files here have uncommitted "
+                    "changes. Commit or stash them, then the next check will apply.")
+            else:
+                with _AUTOUPDATE_LOCK:
+                    _AUTOUPDATE["backoff_until"] = 0.0
+                job_id = _autoupdate_apply(caps, in_container)
+                with _AUTOUPDATE_LOCK:
+                    _AUTOUPDATE["job_id"] = job_id
+                    _AUTOUPDATE["apply_started"] = time.time()
+                _autoupdate_record(
+                    "updating",
+                    f"New commits on {res.get('branch') or 'origin'} "
+                    f"({(res.get('remote') or '')[:7]}); pulling and restarting.",
+                    last_apply=time.time())
+        elif code == 4:
+            _autoupdate_record(
+                "diverged",
+                "Local commits are not on origin (or history diverged); auto-update "
+                "will not overwrite them. Push or rebase by hand.")
+        else:
+            _autoupdate_record("error", res.get("detail") or "The update check failed.")
+        return _autoupdate_status()
+    finally:
+        _AUTOUPDATE_BUSY.release()
+
+
+def _autoupdate_status() -> dict:
+    with _AUTOUPDATE_LOCK:
+        st = dict(_AUTOUPDATE)
+    job = _autoupdate_job()
+    enabled = _autoupdate_enabled()
+    return {
+        "enabled": enabled,
+        "interval": _autoupdate_interval(),
+        "state": st["state"] if enabled else "disabled",
+        "detail": st["detail"],
+        "branch": st.get("branch") or "",
+        "local": st.get("local") or "",
+        "remote": st.get("remote") or "",
+        "dirty": bool(st.get("dirty")),
+        "last_check": st.get("last_check") or 0.0,
+        "next_check": st.get("next_check") or 0.0,
+        "last_apply": st.get("last_apply") or 0.0,
+        "repo": _expected_repo(),
+        "job": _public_job(job) if job else None,
+    }
+
+
+async def _autoupdate_loop():
+    interval = _autoupdate_interval()
+    logger.info("auto-update: checking origin every %ss", interval)
+    while True:
+        with _AUTOUPDATE_LOCK:
+            _AUTOUPDATE["next_check"] = time.time() + interval
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(_autoupdate_tick)
+        except Exception as exc:
+            logger.warning("auto-update check failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _autoupdate_startup():
+    if not _autoupdate_enabled():
+        _autoupdate_record("disabled", "OMNIILINK_AUTOUPDATE is off.")
+        return
+    asyncio.create_task(_autoupdate_loop())
+
+
 def _docker_shell_exec(command: str, cwd: Optional[str], timeout: int = 30):
     """Full shell over the host volume via a throwaway container."""
     root = _docker_host_root()
@@ -3411,7 +3713,7 @@ def _native_shell_exec(command: str, cwd: Optional[str], timeout: int = 30):
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
-def _start_admin_job(kind: str, command: str, cwd: str) -> str:
+def _start_admin_job(kind: str, command: str, cwd: str, env: Optional[dict] = None) -> str:
     job_id = secrets.token_hex(5)
     job = {"id": job_id, "kind": kind, "command": command, "status": "running",
            "lines": [], "exit_code": None, "started": time.time(), "finished": None, "_proc": None}
@@ -3424,7 +3726,8 @@ def _start_admin_job(kind: str, command: str, cwd: str) -> str:
     def _runner():
         try:
             proc = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+                                    stderr=subprocess.STDOUT, text=True, errors="replace",
+                                    bufsize=1, env=env)
             job["_proc"] = proc
             for line in proc.stdout:
                 if len(job["lines"]) >= 2000:
@@ -3484,6 +3787,7 @@ async def admin_overview(request: Request):
         "counts": {"users": users, "admins": admins, "sessions": sessions,
                    "requests_24h": reqs_24h, "tokens_24h": tokens_24h, "errors_24h": errors_24h},
         "capabilities": caps,
+        "autoupdate": _autoupdate_status(),
         "jobs": [_public_job(j) for j in running],
         "model": MODEL_NAME,
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -3752,60 +4056,32 @@ async def admin_server_restart(request: Request):
             "output": _clip((proc.stdout or "") + (proc.stderr or ""), 4096)}
 
 
-@app.post("/api/admin/update")
-async def admin_update(request: Request):
+@app.get("/api/admin/autoupdate")
+async def admin_autoupdate_status(request: Request):
     user, err = _require_superadmin(request)
     if err:
         return err
-    if not _admin_rate_ok(user["username"], 3, 600):
-        return JSONResponse(status_code=429, content={"error": "Rate limit: 3 updates per 10 minutes"})
-    caps = await asyncio.to_thread(_probe_capabilities)
-    if not caps.get("in_container"):
-        # Native host run: git + compose must exist right here.
-        missing = []
-        if not caps.get("git"):
-            missing.append("git is not installed in this environment")
-        if not caps.get("docker_cli"):
-            missing.append("the docker CLI is not installed in this environment")
-        if not caps.get("docker_compose"):
-            missing.append("docker compose is not available in this environment")
-        if missing:
-            return JSONResponse(status_code=409, content={
-                "error": "Update unavailable: " + "; ".join(missing) + ".",
-                "hint": "Run update.bat on the host, or use the admin terminal.",
-                "capabilities": caps})
-        if not caps.get("docker_daemon"):
-            return JSONResponse(status_code=409, content={"error": "The docker daemon is not reachable."})
-        command = "git pull --ff-only && docker compose up -d --build"
-        job_id = _start_admin_job("update", command, caps.get("app_dir") or APP_DIR)
-        _audit("update.start", user["username"], command)
-        return {"job_id": job_id, "command": command}
-    # Inside the api container there is no checkout and no compose file, so
-    # git pull + compose run against the HOST checkout through the throwaway
-    # updater image (daemon socket is mounted). The updater aborts before
-    # touching any container on the first failure; when it recreates the api
-    # container this job's thread dies with it, which the panel reports as
-    # "server is restarting".
-    problems = []
-    if not caps.get("docker_socket"):
-        problems.append("the docker socket is not mounted into the api container (see docker-compose.yml)")
-    if not caps.get("host_checkout"):
-        problems.append("OMNIILINK_SANDBOX_HOST_ROOT is not set, so the host checkout is unknown")
-    if not caps.get("docker_daemon"):
-        problems.append("the docker daemon is not reachable")
-    if not caps.get("updater_image"):
-        problems.append(f"image {caps.get('updater_image_name')} is missing — run update.bat once on the host to build it")
-    if problems:
+    if not _admin_rate_ok(user["username"], 60, 60, scope="autoupdate"):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    return _autoupdate_status()
+
+
+@app.post("/api/admin/autoupdate/check")
+async def admin_autoupdate_check(request: Request):
+    """Run one poll now. Applying the result (pull + restart) is the
+    auto-updater's job; there is no manual update button any more."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 10, 60, scope="autoupdate"):
+        return JSONResponse(status_code=429, content={"error": "Rate limit: 10 checks per minute"})
+    if not _autoupdate_enabled():
         return JSONResponse(status_code=409, content={
-            "error": "Update unavailable: " + "; ".join(problems) + ".",
-            "hint": "Run update.bat on the host, or use the admin terminal.",
-            "capabilities": caps})
-    checkout = caps["host_checkout"]
-    img = caps["updater_image_name"]
-    command, _cleanup = _build_updater_command(checkout, img)
-    job_id = _start_admin_job("update", command, APP_DIR)
-    _audit("update.start", user["username"], command)
-    return {"job_id": job_id, "command": command}
+            "error": "Auto-update is off (OMNIILINK_AUTOUPDATE=0).",
+            "hint": "Run update.bat on the host, or use the admin terminal."})
+    _audit("autoupdate.check", user["username"], "manual check")
+    await asyncio.to_thread(_autoupdate_tick, True)
+    return _autoupdate_status()
 
 
 @app.get("/api/admin/jobs/{job_id}")

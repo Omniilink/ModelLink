@@ -134,14 +134,15 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
             </div>
           </div>
         </div>
-        <h2>Update server</h2>
+        <h2>Auto update</h2>
         <div class="panel">
           <div class="tools">
-            <button class="btn primary" id="btn-update">git pull + docker compose up -d --build</button>
-            <button class="btn" id="btn-cancel" style="display:none">Cancel</button>
-            <span class="muted" id="update-state"></span>
+            <button class="btn primary" id="btn-au-check">Check now</button>
+            <span class="chip" id="au-state">…</span>
+            <span class="muted" id="au-detail"></span>
           </div>
-          <pre id="update-out" style="max-height:32vh;display:none"></pre>
+          <div class="kv" id="au-info"></div>
+          <p class="muted" style="margin:10px 0 0;font-size:12px">A push to <span class="mono" id="au-repo-hint">GitHub</span> is pulled and restarted automatically within a minute. Only fast-forwards are applied — local changes, diverged history or a missing updater image are reported here instead.</p>
         </div>
         <div id="ov-jobs"></div>
       </section>
@@ -235,7 +236,7 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
 'use strict';
 var view='overview', caps=null, busy=false;
 var termCwd='', termHist=[], termIdx=-1;
-var timers={logs:null,audit:null,job:null};
+var timers={logs:null,audit:null,au:null};
 
 function $(s){return document.querySelector(s)}
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
@@ -278,7 +279,7 @@ function show(name){
   view=name;$('#title').textContent=TITLES[name]||name;
   Array.prototype.forEach.call(document.querySelectorAll('nav button'),function(b){b.classList.toggle('on',b.dataset.view===name)});
   Array.prototype.forEach.call(document.querySelectorAll('.view'),function(s){s.classList.toggle('on',s.id==='v-'+name)});
-  clearTimer('logs');clearTimer('audit');
+  clearTimer('logs');clearTimer('audit');clearTimer('au');
   if(name==='overview')loadOverview();
   if(name==='users')loadUsers();
   if(name==='usage')loadUsage();
@@ -333,29 +334,7 @@ async function loadOverview(){
     ['Allowlist',caps.admin_users.join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],
     ['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']
   ]);
-  var upd=$('#btn-update');
-  var ready, miss=[];
-  if(!caps.in_container){
-    // Native host run: git and compose must exist right here.
-    ready=caps.git&&caps.docker_cli&&caps.docker_compose&&caps.docker_daemon;
-    if(!caps.git)miss.push('git');
-    if(!caps.docker_cli)miss.push('docker CLI');
-    if(!caps.docker_compose)miss.push('docker compose');
-    if(!caps.docker_daemon)miss.push('docker daemon');
-  }else{
-    // Inside the api container the update runs against the host checkout
-    // through the throwaway updater image (docker socket is mounted).
-    ready=caps.docker_socket&&caps.host_checkout&&caps.docker_daemon&&caps.updater_image;
-    if(!caps.docker_socket)miss.push('docker socket not mounted');
-    if(!caps.host_checkout)miss.push('host checkout unknown (OMNIILINK_SANDBOX_HOST_ROOT)');
-    if(!caps.docker_daemon)miss.push('docker daemon');
-    if(!caps.updater_image)miss.push('updater image missing — run update.bat once on the host');
-  }
-  upd.disabled=!ready;
-  upd.title=ready?'':'Update unavailable — see the reasons below';
-  if(!ready){
-    $('#update-state').textContent='Unavailable here: '+miss.join(', ')+'. Run update.bat on the host, or use the admin terminal.';
-  }else if(!$('#update-state').textContent){$('#update-state').textContent='Ready.'}
+  renderAuto(d.autoupdate||{});
   renderJobs(d.jobs||[]);
 }
 function renderJobs(jobs){
@@ -366,50 +345,42 @@ function renderJobs(jobs){
   });
 }
 
-/* ---------------- update job ---------------- */
-$('#btn-update').onclick=async function(){
-  if(busy)return;busy=true;
-  try{
-    var d=await api('/api/admin/update',{method:'POST',body:'{}'});
-    $('#update-state').textContent='Running '+d.command+' (job '+d.job_id+')…';
-    $('#update-out').style.display='block';$('#update-out').textContent='';
-    $('#btn-cancel').style.display='inline-block';$('#btn-cancel').dataset.job=d.job_id;
-    pollJob(d.job_id,function(job){
-      $('#update-out').textContent=(job.lines||[]).join('\n');
-      $('#update-out').scrollTop=$('#update-out').scrollHeight;
-      if(job.status!=='running'){
-        clearInterval(timers.job);timers.job=null;
-        $('#btn-cancel').style.display='none';
-        $('#update-state').textContent='Job '+job.status+(job.exit_code==null?'':' (exit '+job.exit_code+')');
-        toast('Update '+job.status,job.status==='done'?'ok':'error');
-      }
-    },function(e){
-      // The update recreates the api container, which kills the job thread
-      // with it: a vanished job right after an update means it worked and
-      // the server is coming back up.
-      $('#btn-cancel').style.display='none';
-      if(e&&e.status===404){
-        $('#update-state').textContent='Server is restarting after the update — refresh this page in ~30 seconds.';
-        toast('Server restarting','ok');
-      }else{
-        $('#update-state').textContent='Lost contact with the update job ('+((e&&e.message)||'error')+').';
-        toast('Update status unknown','error');
-      }
-    });
-  }catch(e){toast(e.message,'error')}
-  finally{busy=false}
-};
-$('#btn-cancel').onclick=async function(){
-  var id=this.dataset.job;if(!id)return;
-  try{await api('/api/admin/jobs/'+id+'/cancel',{method:'POST',body:'{}'});toast('Cancel requested')}catch(e){toast(e.message,'error')}
-};
-function pollJob(id,fn,onGone){
-  clearTimer('job');
-  var tick=async function(){
-    try{var j=await api('/api/admin/jobs/'+id);fn(j)}catch(e){clearTimer('job');if(onGone)onGone(e)}
-  };
-  tick();timers.job=setInterval(tick,1200);
+/* ---------------- auto update ---------------- */
+var AU_CHIP={up_to_date:'ok',updating:'warn',checking:'warn',blocked:'bad',
+             diverged:'bad',error:'bad',unavailable:'bad',disabled:'warn',idle:''};
+function auTime(t){return t?new Date(t*1000).toLocaleString():'—'}
+function renderAuto(au){
+  var st=String(au.state||'idle');
+  var chip=$('#au-state');
+  chip.className='chip'+(AU_CHIP[st]?' '+AU_CHIP[st]:'');
+  chip.textContent=st.replace(/_/g,' ');
+  $('#au-detail').textContent=au.detail||'';
+  if(au.repo)$('#au-repo-hint').textContent=au.repo;
+  kv($('#au-info'),[
+    ['Enabled',au.enabled?'yes · every '+(au.interval||60)+'s':'no (OMNIILINK_AUTOUPDATE=0)'],
+    ['Repository',au.repo||'—'],
+    ['Branch',au.branch||'—'],
+    ['Local HEAD',au.local?au.local.slice(0,12):'—'],
+    ['Origin',au.remote?au.remote.slice(0,12):'—'],
+    ['Tracked changes',au.dirty?'present — updates are held back':'none'],
+    ['Last check',auTime(au.last_check)],
+    ['Next check',au.enabled?auTime(au.next_check):'—'],
+    ['Last update',au.last_apply?auTime(au.last_apply):'never'],
+    ['Update job',au.job?(au.job.id+' · '+au.job.status):'none']
+  ]);
+  if(au.state==='updating')arm('au',loadOverview,3000);else clearTimer('au');
 }
+$('#btn-au-check').onclick=async function(){
+  if(busy)return;busy=true;this.disabled=true;
+  try{
+    var au=await api('/api/admin/autoupdate/check',{method:'POST',body:'{}'});
+    renderAuto(au);
+    var bad=(au.state==='error'||au.state==='blocked'||au.state==='diverged'||au.state==='unavailable');
+    toast('Checked: '+String(au.state||'').replace(/_/g,' '),bad?'error':'ok');
+    if(au.state==='updating')loadOverview();
+  }catch(e){toast(e.message,'error')}
+  finally{busy=false;this.disabled=false}
+};
 
 /* ---------------- users ---------------- */
 async function loadUsers(){

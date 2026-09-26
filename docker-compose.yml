@@ -52,10 +52,15 @@ services:
       # promoted to is_admin=1 on every boot. "isaac tribbe" also covers an
       # "isaac_tribbe" account, since signup forbids spaces.
       - OMNIILINK_ADMIN_USERS=isaac tribbe
-      # GitHub token so the panel updater can pull a PRIVATE repo. Empty is
+      # GitHub token so the auto-updater can pull a PRIVATE repo. Empty is
       # fine: the api also re-reads it from the mounted .env, so adding
       # OMNIILINK_GIT_TOKEN there needs no container restart.
       - OMNIILINK_GIT_TOKEN=${OMNIILINK_GIT_TOKEN:-}
+      # Auto-update: poll origin for new commits and, when one appears,
+      # pull --ff-only and recreate this container. Set to 0 to disable
+      # (the panel shows the state either way).
+      - OMNIILINK_AUTOUPDATE=${OMNIILINK_AUTOUPDATE:-1}
+      - OMNIILINK_AUTOUPDATE_INTERVAL=${OMNIILINK_AUTOUPDATE_INTERVAL:-60}
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge
@@ -75,8 +80,9 @@ services:
     image: omniilink-sandbox:latest
 
   # Self-update helper (git + compose + preflight script). Built so the
-  # admin panel can update the host checkout through the docker socket;
-  # the panel refuses to self-update until this image exists.
+  # auto-updater can pull and rebuild the host checkout through the docker
+  # socket; until this image exists the api falls back to reporting
+  # "unavailable" in the admin panel.
   updater-image:
     build:
       context: .

@@ -15,6 +15,11 @@ Flow: verify repo -> git pull --ff-only -> build sandbox image ->
 generate absolute-path override -> preflight bind sources ->
 compose up -d --build api. Any failure aborts before touching containers,
 except a failed `up` itself (reported loudly; recover with update.bat).
+
+`--check` never touches containers: it verifies the checkout, fetches the
+current branch and reports how far HEAD is from origin so the api can decide
+whether an auto-update is due. Exit codes: 0 up to date, 3 behind (safe to
+fast-forward), 4 local commits not on origin / diverged, 1 cannot tell.
 """
 import os
 import posixpath
@@ -22,14 +27,18 @@ import re
 import subprocess
 import sys
 
-import yaml
-
-WORK = "/work"
+# The checkout this script works on: /work inside the throwaway container,
+# or the real checkout when the api runs `--check` natively (where PyYAML
+# may not be installed, so yaml is imported lazily by main()).
+WORK = os.environ.get("OMNI_UPDATE_WORK", "/work").replace("\\", "/").rstrip("/") or "/work"
 HOST = os.environ.get("HOST_CHECKOUT", "").replace("\\", "/").rstrip("/")
 BASE_FILE = "docker-compose.yml"
 OVERRIDE_FILE = "/tmp/omni-abs-volumes.yml"
 UP_SERVICES = ["api"]
 BUILD_SERVICES = ["sandbox-image"]
+# The ONLY repository this script will ever pull from. A checkout whose
+# origin points somewhere else (tampered remote, wrong clone) is refused.
+DEFAULT_REPO = "https://github.com/Omniilink/ModelLink.git"
 
 
 def log(msg):
@@ -102,6 +111,92 @@ def git_pull():
         fail("git pull --ff-only failed (diverged history or no network?)")
 
 
+def _norm_repo(url):
+    """Normalise a git URL so https/ssh/scp forms compare equal."""
+    u = (url or "").strip().rstrip("/")
+    for pfx in ("https://", "http://", "ssh://git@", "git://", "ssh://"):
+        if u.startswith(pfx):
+            u = u[len(pfx):]
+            break
+    if u.startswith("git@"):
+        u = u[4:].replace(":", "/", 1)
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u.lower().rstrip("/")
+
+
+def _git(args, auth=None, capture=True):
+    """Run git in the checkout. Returns the CompletedProcess."""
+    argv = ["git"] + list(auth or []) + list(args)
+    return subprocess.run(argv, cwd=WORK, capture_output=capture, text=True)
+
+
+def _git_out(args, auth=None):
+    return (_git(args, auth).stdout or "")
+
+
+def _verify_git_repo():
+    """Shared preflight: real checkout, trusted origin, expected repo."""
+    if not os.path.isdir(os.path.join(WORK, ".git")):
+        fail("no .git under /work (not a checkout, refusing to pull)")
+    # The repo is owned by the host user while we run as root.
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", WORK],
+                   capture_output=True)
+    want = os.environ.get("OMNIILINK_GIT_REPO", "").strip() or DEFAULT_REPO
+    got = _git_out(["config", "--get", "remote.origin.url"]).strip()
+    if not got:
+        fail("this checkout has no remote.origin.url; refusing to touch it")
+    if _norm_repo(got) != _norm_repo(want):
+        fail(f"origin '{got}' is not the expected repository '{want}'; "
+             "refusing to pull from it")
+
+
+def _tracked_changes():
+    """True when a TRACKED file is modified (untracked .env/user_data never
+    block: those are supposed to live outside the repo)."""
+    out = _git_out(["status", "--porcelain", "--untracked-files=no"])
+    return bool(out.strip())
+
+
+def check_mode():
+    """Report how far HEAD is from origin. Writes KEY=value lines the api
+    parses, then exits 0 (up to date), 3 (behind -> safe to fast-forward),
+    4 (local commits are not on origin) or 1 (cannot tell)."""
+    _verify_git_repo()
+    _drop_token_file()
+    branch = _git_out(["rev-parse", "--abbrev-ref", "HEAD"]).strip()
+    if not branch or branch == "HEAD":
+        fail("detached HEAD; cannot tell which branch to follow")
+    auth = git_auth_args()
+    log("+ " + " ".join(_mask_arg(a) for a in ["git"] + auth + ["fetch", "--quiet",
+                                                               "origin", branch]))
+    p = _git(["fetch", "--quiet", "origin", branch], auth)
+    if p.returncode != 0:
+        out = (p.stdout or "") + (p.stderr or "")
+        sys.stdout.write(out)
+        sys.stdout.flush()
+        if ("could not read Username" in out or "Authentication failed" in out
+                or "401" in out or "403" in out):
+            if os.environ.get("GIT_TOKEN", "").strip():
+                fail("GitHub rejected the token; set a fresh OMNIILINK_GIT_TOKEN "
+                     "in the server .env")
+            fail("GitHub asks for credentials and none were provided; set "
+                 "OMNIILINK_GIT_TOKEN in the server .env")
+        fail("git fetch failed (no network?)")
+    local = _git_out(["rev-parse", "HEAD"]).strip()
+    remote = _git_out(["rev-parse", "FETCH_HEAD"]).strip()
+    if not local or not remote:
+        fail("could not read HEAD/FETCH_HEAD after the fetch")
+    print(f"BRANCH={branch}", flush=True)
+    print(f"LOCAL={local}", flush=True)
+    print(f"REMOTE={remote}", flush=True)
+    print("DIRTY=" + ("1" if _tracked_changes() else "0"), flush=True)
+    if local == remote:
+        sys.exit(0)
+    fast_forwardable = _git(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"]).returncode == 0
+    sys.exit(3 if fast_forwardable else 4)
+
+
 def _split_short(entry):
     """Split a short-syntax volume into (source, target, opts-or-None).
 
@@ -139,17 +234,17 @@ def _rewrite_source(src):
 
 
 def main():
+    import yaml
     if not HOST:
         fail("HOST_CHECKOUT is not set in the updater container")
     base = os.path.join(WORK, BASE_FILE)
     if not os.path.isfile(base):
         fail(f"no {BASE_FILE} under /work (wrong directory mounted?)")
-    if not os.path.isdir(os.path.join(WORK, ".git")):
-        fail("no .git under /work (not a checkout, refusing to pull)")
-    # The repo is owned by the host user while we run as root.
-    subprocess.run(["git", "config", "--global", "--add", "safe.directory", WORK],
-                   capture_output=True)
+    _verify_git_repo()
     _drop_token_file()
+    if _tracked_changes():
+        fail("this checkout has uncommitted changes to tracked files; "
+             "commit or stash them (or run update.bat on the host) first")
     git_pull()
     try:
         with open(base, encoding="utf-8") as fh:
@@ -219,4 +314,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--check" in sys.argv[1:]:
+        check_mode()
+    else:
+        main()
