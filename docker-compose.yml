@@ -56,6 +56,9 @@ services:
       # fine: the api also re-reads it from the mounted .env, so adding
       # OMNIILINK_GIT_TOKEN there needs no container restart.
       - OMNIILINK_GIT_TOKEN=${OMNIILINK_GIT_TOKEN:-}
+      # Comma-separated list of repositories auto-update may pull from.
+      # Empty = the two remotes this project lives under.
+      - OMNIILINK_GIT_REPO=${OMNIILINK_GIT_REPO:-}
       # Auto-update: poll origin for new commits and, when one appears,
       # pull --ff-only and recreate this container. Set to 0 to disable
       # (the panel shows the state either way).

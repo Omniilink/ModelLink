@@ -3303,9 +3303,10 @@ def _write_updater_env_file(token: str):
 
 
 def _expected_repo() -> str:
-    """The only repository this server will ever pull from."""
+    """Comma-separated allowlist of repositories this server may pull from."""
     return ((os.environ.get("OMNIILINK_GIT_REPO", "") or "").strip()
-            or "https://github.com/Omniilink/ModelLink.git")
+            or ("https://github.com/Omniilink/ModelLink.git,"
+                "https://github.com/Tribbninja/ModelLink.git"))
 
 
 def _build_updater_command(checkout: str, img: str, check: bool = False):
@@ -3404,8 +3405,9 @@ _AUTOUPDATE_AUDIT_STATES = ("updating", "error", "blocked", "diverged", "unavail
 _AUTOUPDATE_BACKOFF = 600.0        # after a failed apply, wait before retrying
 _AUTOUPDATE = {
     "state": "idle", "detail": "", "branch": "", "local": "", "remote": "",
-    "dirty": False, "last_check": 0.0, "next_check": 0.0, "last_apply": 0.0,
-    "backoff_until": 0.0, "job_id": "", "apply_started": 0.0, "_audited": None,
+    "origin": "", "dirty": False, "last_check": 0.0, "next_check": 0.0,
+    "last_apply": 0.0, "backoff_until": 0.0, "job_id": "", "apply_started": 0.0,
+    "_audited": None,
 }
 _AUTOUPDATE_LOCK = threading.Lock()
 _AUTOUPDATE_BUSY = threading.Lock()
@@ -3463,14 +3465,25 @@ def _autoupdate_auth_env() -> Optional[dict]:
     return env
 
 
+_URL_CRED_RE = re.compile(r"(://)[^/@]+@")
+
+
+def _redact_url(text: str) -> str:
+    """Never let credentials embedded in a remote URL (https://<token>@host)
+    reach a status field, the panel or the audit log."""
+    return _URL_CRED_RE.sub(r"\1***@", text or "")
+
+
 def _parse_check_output(out: str, code: int) -> dict:
     """Turn `omni-update --check` output into a structured result."""
     res = {"code": 1 if code not in (0, 3, 4) else code, "detail": "", "local": "",
-           "remote": "", "branch": "", "dirty": False}
+           "remote": "", "branch": "", "origin": "", "dirty": False}
     for ln in (out or "").splitlines():
         ln = ln.strip()
         if ln.startswith("BRANCH="):
             res["branch"] = ln[7:].strip()
+        elif ln.startswith("ORIGIN="):
+            res["origin"] = _redact_url(ln[7:].strip())
         elif ln.startswith("LOCAL="):
             res["local"] = ln[6:].strip()
         elif ln.startswith("REMOTE="):
@@ -3479,7 +3492,7 @@ def _parse_check_output(out: str, code: int) -> dict:
             res["dirty"] = ln[6:].strip() == "1"
     if res["code"] == 1:
         tail = [l.strip() for l in (out or "").splitlines() if l.strip()]
-        res["detail"] = "; ".join(tail[-3:])[:400] or f"check failed (exit {code})"
+        res["detail"] = _redact_url("; ".join(tail[-3:])[:400]) or f"check failed (exit {code})"
     return res
 
 
@@ -3599,7 +3612,9 @@ def _autoupdate_tick(manual: bool = False) -> dict:
         res = (_autoupdate_check_container if in_container else _autoupdate_check_native)(caps)
         with _AUTOUPDATE_LOCK:
             _AUTOUPDATE.update({"branch": res.get("branch", ""), "local": res.get("local", ""),
-                                "remote": res.get("remote", ""), "dirty": bool(res.get("dirty")),
+                                "remote": res.get("remote", ""),
+                                "origin": res.get("origin", "") or _AUTOUPDATE.get("origin", ""),
+                                "dirty": bool(res.get("dirty")),
                                 "last_check": now, "next_check": now + _autoupdate_interval()})
         code = res.get("code")
         if code == 0:
@@ -3647,6 +3662,7 @@ def _autoupdate_status() -> dict:
         "branch": st.get("branch") or "",
         "local": st.get("local") or "",
         "remote": st.get("remote") or "",
+        "origin": st.get("origin") or "",
         "dirty": bool(st.get("dirty")),
         "last_check": st.get("last_check") or 0.0,
         "next_check": st.get("next_check") or 0.0,
@@ -3733,7 +3749,7 @@ def _start_admin_job(kind: str, command: str, cwd: str, env: Optional[dict] = No
                 if len(job["lines"]) >= 2000:
                     job["lines"].append("… output truncated (2000 lines) …")
                     break
-                job["lines"].append(line.rstrip("\n"))
+                job["lines"].append(_redact_url(line.rstrip("\n")))
             proc.wait(timeout=900)
             job["exit_code"] = proc.returncode
             job["status"] = "done" if proc.returncode == 0 else "failed"
@@ -3746,7 +3762,7 @@ def _start_admin_job(kind: str, command: str, cwd: str, env: Optional[dict] = No
             job["lines"].append("Job exceeded the 15 minute limit and was killed.")
         except Exception as exc:
             job["status"] = "failed"
-            job["lines"].append(f"error: {exc}")
+            job["lines"].append(_redact_url(f"error: {exc}"))
         finally:
             job["finished"] = time.time()
             job.pop("_proc", None)
@@ -3756,7 +3772,10 @@ def _start_admin_job(kind: str, command: str, cwd: str, env: Optional[dict] = No
 
 
 def _public_job(job: dict) -> dict:
-    return {k: job.get(k) for k in ("id", "kind", "command", "status", "lines", "exit_code", "started", "finished")}
+    out = {k: job.get(k) for k in ("id", "kind", "command", "status", "lines",
+                                   "exit_code", "started", "finished")}
+    out["command"] = _redact_url(out.get("command") or "")
+    return out
 
 
 def _safe_job(job_id: str) -> Optional[dict]:

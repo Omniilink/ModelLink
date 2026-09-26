@@ -205,6 +205,10 @@ every poll.
 
 - `OMNIILINK_AUTOUPDATE=0` disables it entirely.
 - `OMNIILINK_AUTOUPDATE_INTERVAL` sets the period in seconds (default 60).
+- `OMNIILINK_GIT_REPO` is the comma-separated list of remotes auto-update
+  will accept (`https://github.com/Omniilink/ModelLink.git,https://github.com/Tribbninja/ModelLink.git`
+  by default — the account was renamed, both URLs are the same project).
+  Any other `remote.origin.url` is refused before a single byte is fetched.
 
 The updater image has to exist before the first self-update, so the first
 update after this change still goes through `update.bat`.

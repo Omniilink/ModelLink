@@ -36,9 +36,15 @@ BASE_FILE = "docker-compose.yml"
 OVERRIDE_FILE = "/tmp/omni-abs-volumes.yml"
 UP_SERVICES = ["api"]
 BUILD_SERVICES = ["sandbox-image"]
-# The ONLY repository this script will ever pull from. A checkout whose
-# origin points somewhere else (tampered remote, wrong clone) is refused.
-DEFAULT_REPO = "https://github.com/Omniilink/ModelLink.git"
+# The ONLY repositories this script will ever pull from: the project lives
+# under two names (the account was renamed, both URLs still resolve to the
+# same commits). A checkout whose origin points anywhere else (tampered
+# remote, wrong clone) is refused. Override with a comma-separated list in
+# OMNIILINK_GIT_REPO.
+DEFAULT_REPOS = ("https://github.com/Omniilink/ModelLink.git,"
+                 "https://github.com/Tribbninja/ModelLink.git")
+# https://<anything>@host/... -> the credential part of a remote URL.
+_RE_URL_CRED = re.compile(r"(://)[^/@]+@")
 
 
 def log(msg):
@@ -91,12 +97,12 @@ def git_pull():
     args = ["git"] + git_auth_args() + ["pull", "--ff-only"]
     log("+ " + " ".join(_mask_arg(a) for a in args))
     p = subprocess.run(args, cwd=WORK, capture_output=True, text=True)
-    sys.stdout.write(p.stdout or "")
+    sys.stdout.write(_redact(p.stdout or ""))
     sys.stdout.flush()
-    sys.stderr.write(p.stderr or "")
+    sys.stderr.write(_redact(p.stderr or ""))
     sys.stderr.flush()
     if p.returncode != 0:
-        out = (p.stdout or "") + (p.stderr or "")
+        out = _redact((p.stdout or "") + (p.stderr or ""))
         if ("could not read Username" in out or "Authentication failed" in out
                 or "401" in out or "403" in out):
             if os.environ.get("GIT_TOKEN", "").strip():
@@ -112,7 +118,9 @@ def git_pull():
 
 
 def _norm_repo(url):
-    """Normalise a git URL so https/ssh/scp forms compare equal."""
+    """Normalise a git URL so https/ssh/scp forms compare equal. Embedded
+    credentials (https://<token>@host/...) are dropped: the identity is the
+    repository, not how we happen to authenticate to it."""
     u = (url or "").strip().rstrip("/")
     for pfx in ("https://", "http://", "ssh://git@", "git://", "ssh://"):
         if u.startswith(pfx):
@@ -120,6 +128,10 @@ def _norm_repo(url):
             break
     if u.startswith("git@"):
         u = u[4:].replace(":", "/", 1)
+    else:
+        head, sep, tail = u.partition("/")
+        if "@" in head:
+            u = head.rsplit("@", 1)[1] + ((sep + tail) if sep else "")
     if u.endswith(".git"):
         u = u[:-4]
     return u.lower().rstrip("/")
@@ -135,20 +147,36 @@ def _git_out(args, auth=None):
     return (_git(args, auth).stdout or "")
 
 
+def _redact(text):
+    """Hide credentials embedded in a remote URL (https://<token>@host/...)
+    before they reach a log line, the panel or the audit trail. Applied to
+    every blob of git output we echo: git itself prints the full URL."""
+    return _RE_URL_CRED.sub(r"\1***@", text or "")
+
+
+def _allowed_repos():
+    """Comma-separated allowlist, normalised for comparison."""
+    raw = os.environ.get("OMNIILINK_GIT_REPO", "").strip() or DEFAULT_REPOS
+    return [_norm_repo(x) for x in raw.split(",") if x.strip()]
+
+
 def _verify_git_repo():
-    """Shared preflight: real checkout, trusted origin, expected repo."""
+    """Shared preflight: real checkout, trusted origin, expected repo.
+
+    Returns the (redacted) origin URL."""
     if not os.path.isdir(os.path.join(WORK, ".git")):
         fail("no .git under /work (not a checkout, refusing to pull)")
     # The repo is owned by the host user while we run as root.
     subprocess.run(["git", "config", "--global", "--add", "safe.directory", WORK],
                    capture_output=True)
-    want = os.environ.get("OMNIILINK_GIT_REPO", "").strip() or DEFAULT_REPO
     got = _git_out(["config", "--get", "remote.origin.url"]).strip()
     if not got:
         fail("this checkout has no remote.origin.url; refusing to touch it")
-    if _norm_repo(got) != _norm_repo(want):
-        fail(f"origin '{got}' is not the expected repository '{want}'; "
-             "refusing to pull from it")
+    allowed = _allowed_repos()
+    if _norm_repo(got) not in allowed:
+        fail(f"origin '{_redact(got)}' is not one of the expected repositories "
+             f"({', '.join(allowed)}); refusing to pull from it")
+    return _redact(got)
 
 
 def _tracked_changes():
@@ -162,7 +190,7 @@ def check_mode():
     """Report how far HEAD is from origin. Writes KEY=value lines the api
     parses, then exits 0 (up to date), 3 (behind -> safe to fast-forward),
     4 (local commits are not on origin) or 1 (cannot tell)."""
-    _verify_git_repo()
+    origin = _verify_git_repo()
     _drop_token_file()
     branch = _git_out(["rev-parse", "--abbrev-ref", "HEAD"]).strip()
     if not branch or branch == "HEAD":
@@ -172,7 +200,7 @@ def check_mode():
                                                                "origin", branch]))
     p = _git(["fetch", "--quiet", "origin", branch], auth)
     if p.returncode != 0:
-        out = (p.stdout or "") + (p.stderr or "")
+        out = _redact((p.stdout or "") + (p.stderr or ""))
         sys.stdout.write(out)
         sys.stdout.flush()
         if ("could not read Username" in out or "Authentication failed" in out
@@ -188,6 +216,7 @@ def check_mode():
     if not local or not remote:
         fail("could not read HEAD/FETCH_HEAD after the fetch")
     print(f"BRANCH={branch}", flush=True)
+    print(f"ORIGIN={origin}", flush=True)
     print(f"LOCAL={local}", flush=True)
     print(f"REMOTE={remote}", flush=True)
     print("DIRTY=" + ("1" if _tracked_changes() else "0"), flush=True)

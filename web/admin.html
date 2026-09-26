@@ -355,13 +355,14 @@ function renderAuto(au){
   chip.className='chip'+(AU_CHIP[st]?' '+AU_CHIP[st]:'');
   chip.textContent=st.replace(/_/g,' ');
   $('#au-detail').textContent=au.detail||'';
-  if(au.repo)$('#au-repo-hint').textContent=au.repo;
+  $('#au-repo-hint').textContent=au.origin||String(au.repo||'').split(',')[0]||'GitHub';
   kv($('#au-info'),[
     ['Enabled',au.enabled?'yes · every '+(au.interval||60)+'s':'no (OMNIILINK_AUTOUPDATE=0)'],
-    ['Repository',au.repo||'—'],
+    ['Allowed repos',au.repo||'—'],
+    ['Origin URL',au.origin||'—'],
     ['Branch',au.branch||'—'],
     ['Local HEAD',au.local?au.local.slice(0,12):'—'],
-    ['Origin',au.remote?au.remote.slice(0,12):'—'],
+    ['Origin HEAD',au.remote?au.remote.slice(0,12):'—'],
     ['Tracked changes',au.dirty?'present — updates are held back':'none'],
     ['Last check',auTime(au.last_check)],
     ['Next check',au.enabled?auTime(au.next_check):'—'],
