@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("Omniilink")
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, RedirectResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -3031,6 +3031,642 @@ async def _do_delete(request: Request, path, name):
         logger.info(f"[PROJECT] Locked by system, hidden: {name} user={user.get('username','-')}")
     except: pass
     return {"status": "ok", "hidden": True}
+
+# ==========================================
+# Admin panel — allowlisted super-admins only
+# ==========================================
+# Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default isaac_tribbe).
+# Every mutating action is rate limited and appended to user_data/audit.log.
+
+_ADMIN_STARTED_AT = time.time()
+# Lives under user_data (a bind-mounted directory): it survives container
+# rebuilds without needing a new compose mount, and it is never served —
+# static files come from web/ only, and file APIs are confined to each
+# account's own subfolder.
+_AUDIT_FILE = os.path.join(APP_DIR, "user_data", "audit.log")
+_AUDIT_MAX_BYTES = 2 * 1024 * 1024
+_ADMIN_JOBS: dict = {}
+_ADMIN_JOBS_LOCK = threading.Lock()
+_ADMIN_TERMINAL: dict = {}          # username -> current shell cwd
+_ADMIN_BUCKETS: dict = {}
+_ADMIN_BUCKET_LOCK = threading.Lock()
+_ADMIN_CAPS = {"ts": 0.0, "data": None}
+_ADMIN_CAPS_LOCK = threading.Lock()
+_ADMIN_SHELL_SEM = asyncio.Semaphore(2)
+
+
+def _admin_allowlist() -> set:
+    raw = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac_tribbe")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def _require_superadmin(request: Request):
+    """Return (user, None) or (None, 401/403 JSONResponse).
+
+    Admin AND allowlisted: a second admin account can never open the panel.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return None, err
+    if not user.get("is_admin"):
+        return None, JSONResponse(status_code=403, content={"error": "Admin access required"})
+    if (user.get("username") or "").lower() not in _admin_allowlist():
+        return None, JSONResponse(status_code=403, content={"error": "Not authorised for the admin panel"})
+    return user, None
+
+
+def _audit(action: str, username, detail: str = "") -> None:
+    """Append-only audit trail. Never raises, never blocks a request."""
+    try:
+        os.makedirs(os.path.dirname(_AUDIT_FILE), exist_ok=True)
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} user={username or '-'} action={action}"
+        if detail:
+            line += " " + re.sub(r"[\r\n\t]+", " ", str(detail))[:2000]
+        with open(_AUDIT_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        try:
+            if os.path.getsize(_AUDIT_FILE) > _AUDIT_MAX_BYTES:
+                with open(_AUDIT_FILE, "r", encoding="utf-8", errors="replace") as fh:
+                    kept = fh.readlines()[-2000:]
+                with open(_AUDIT_FILE, "w", encoding="utf-8") as fh:
+                    fh.writelines(kept)
+        except Exception:
+            pass
+        log_broadcaster.emit(f"{time.strftime('%H:%M:%S')} [AUDIT] user={username or '-'} {action} {detail}"[:400])
+    except Exception:
+        pass
+
+
+def _tail_file(path: str, lines: int = 300) -> str:
+    try:
+        if not os.path.isfile(path):
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-max(1, min(int(lines), 2000)):])
+    except Exception as exc:
+        return f"(could not read {path}: {exc})"
+
+
+def _clip(text: str, limit: int = 64 * 1024) -> str:
+    if not text or len(text) <= limit:
+        return text or ""
+    half = limit // 2
+    return text[:half] + f"\n… [{len(text) - limit} bytes trimmed] …\n" + text[-half:]
+
+
+def _admin_rate_ok(username: str, limit: int = 60, window: int = 60) -> bool:
+    key = f"{username}:{limit}:{window}"
+    now = time.time()
+    with _ADMIN_BUCKET_LOCK:
+        hits = [t for t in _ADMIN_BUCKETS.get(key, []) if now - t < window]
+        if len(hits) >= limit:
+            _ADMIN_BUCKETS[key] = hits
+            return False
+        hits.append(now)
+        _ADMIN_BUCKETS[key] = hits
+        return True
+
+
+def _tool_version(binary: str, args: list) -> Optional[str]:
+    if not shutil.which(binary):
+        return None
+    try:
+        proc = subprocess.run([binary] + args, capture_output=True, text=True, timeout=8)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    first = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return first[0][:160] if first else None
+
+
+def _docker_daemon_up() -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=8).returncode == 0
+    except Exception:
+        return False
+
+
+def _docker_host_root() -> Optional[str]:
+    """Drive/root to bind into the throwaway shell container."""
+    root = (os.environ.get("OMNIILINK_SANDBOX_HOST_ROOT", "") or "").strip().replace("\\", "/")
+    if not root:
+        return None
+    m = re.match(r"^([a-zA-Z]:/)", root)
+    if m:
+        return m.group(1)
+    return root.rstrip("/") + "/"
+
+
+def _probe_capabilities() -> dict:
+    """Cached environment probe (git / docker / compose / shell mode)."""
+    now = time.time()
+    with _ADMIN_CAPS_LOCK:
+        if _ADMIN_CAPS["data"] and now - _ADMIN_CAPS["ts"] < 300:
+            return dict(_ADMIN_CAPS["data"])
+    in_container = _api_in_container()
+    docker_cli = bool(shutil.which("docker"))
+    daemon = _docker_daemon_up() if docker_cli else False
+    git_ver = _tool_version("git", ["--version"])
+    compose_ver = _tool_version("docker", ["compose", "version"]) or _tool_version("docker-compose", ["version"])
+    if not in_container:
+        shell_mode, shell_reason = "native", "Commands run directly on this machine."
+    elif docker_cli and daemon and _docker_host_root():
+        shell_mode = "docker"
+        shell_reason = "Commands run in a throwaway container with the host volume mounted at /host."
+    elif docker_cli and daemon:
+        shell_mode, shell_reason = "none", "OMNIILINK_SANDBOX_HOST_ROOT is not set, so no host volume can be mounted."
+    elif docker_cli:
+        shell_mode, shell_reason = "none", "The docker CLI is present but the daemon is unreachable."
+    else:
+        shell_mode, shell_reason = "none", "No shell backend: neither native execution nor docker is available here."
+    caps = {
+        "in_container": in_container,
+        "app_dir": APP_DIR,
+        "python": sys.version.split()[0],
+        "platform": sys.platform,
+        "started_at": _ADMIN_STARTED_AT,
+        "uptime_seconds": int(now - _ADMIN_STARTED_AT),
+        "docker_cli": docker_cli,
+        "docker_daemon": daemon,
+        "docker_version": _tool_version("docker", ["--version"]),
+        "docker_compose": compose_ver,
+        "git": bool(git_ver),
+        "git_version": git_ver,
+        "shell_mode": shell_mode,
+        "shell_reason": shell_reason,
+        "host_root": _docker_host_root(),
+        "sandbox_image": os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
+        "admin_users": sorted(_admin_allowlist()),
+    }
+    with _ADMIN_CAPS_LOCK:
+        _ADMIN_CAPS["ts"] = time.time()
+        _ADMIN_CAPS["data"] = caps
+    return dict(caps)
+
+
+def _docker_shell_exec(command: str, cwd: Optional[str], timeout: int = 30):
+    """Full shell over the host volume via a throwaway container."""
+    root = _docker_host_root()
+    if not root:
+        return 127, "", "OMNIILINK_SANDBOX_HOST_ROOT is not configured."
+    workdir = "/host"
+    if cwd:
+        c = str(cwd).replace("\\", "/")
+        if c.lower().startswith(root.lower()):
+            rel = c[len(root):].strip("/")
+            rel = "/".join(p for p in rel.split("/") if p and p != "..")
+            workdir = "/host/" + rel if rel else "/host"
+    argv = ["docker", "run", "--rm", "-i",
+            "-v", f"{root}:/host", "-w", workdir,
+            os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
+            "sh", "-lc", command]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Command timed out ({timeout}s)"
+    except Exception as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _native_shell_exec(command: str, cwd: Optional[str], timeout: int = 30):
+    try:
+        proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout, errors="replace")
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Command timed out ({timeout}s)"
+    except Exception as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _start_admin_job(kind: str, command: str, cwd: str) -> str:
+    job_id = secrets.token_hex(5)
+    job = {"id": job_id, "kind": kind, "command": command, "status": "running",
+           "lines": [], "exit_code": None, "started": time.time(), "finished": None, "_proc": None}
+    with _ADMIN_JOBS_LOCK:
+        for jid in list(_ADMIN_JOBS):
+            if len(_ADMIN_JOBS) > 20 and _ADMIN_JOBS[jid].get("status") != "running":
+                _ADMIN_JOBS.pop(jid, None)
+        _ADMIN_JOBS[job_id] = job
+
+    def _runner():
+        try:
+            proc = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+            job["_proc"] = proc
+            for line in proc.stdout:
+                if len(job["lines"]) >= 2000:
+                    job["lines"].append("… output truncated (2000 lines) …")
+                    break
+                job["lines"].append(line.rstrip("\n"))
+            proc.wait(timeout=900)
+            job["exit_code"] = proc.returncode
+            job["status"] = "done" if proc.returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            try:
+                job["_proc"].kill()
+            except Exception:
+                pass
+            job["status"] = "timeout"
+            job["lines"].append("Job exceeded the 15 minute limit and was killed.")
+        except Exception as exc:
+            job["status"] = "failed"
+            job["lines"].append(f"error: {exc}")
+        finally:
+            job["finished"] = time.time()
+            job.pop("_proc", None)
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return job_id
+
+
+def _public_job(job: dict) -> dict:
+    return {k: job.get(k) for k in ("id", "kind", "command", "status", "lines", "exit_code", "started", "finished")}
+
+
+def _safe_job(job_id: str) -> Optional[dict]:
+    with _ADMIN_JOBS_LOCK:
+        return _ADMIN_JOBS.get(job_id)
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    caps = await asyncio.to_thread(_probe_capabilities)
+    conn = get_db()
+    try:
+        users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        admins = conn.execute("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1").fetchone()["c"]
+        sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions WHERE expires_at > datetime('now')").fetchone()["c"]
+        reqs_24h = conn.execute("SELECT COUNT(*) AS c FROM usage_events WHERE ts >= datetime('now','-24 hours')").fetchone()["c"]
+        tokens_24h = conn.execute("SELECT COALESCE(SUM(prompt_tokens + completion_tokens),0) AS c "
+                                  "FROM usage_events WHERE ts >= datetime('now','-24 hours')").fetchone()["c"]
+        errors_24h = conn.execute("SELECT COUNT(*) AS c FROM usage_events "
+                                  "WHERE ts >= datetime('now','-24 hours') AND status >= 400").fetchone()["c"]
+    finally:
+        conn.close()
+    running = [j for j in list(_ADMIN_JOBS.values()) if j.get("status") == "running"]
+    return {
+        "counts": {"users": users, "admins": admins, "sessions": sessions,
+                   "requests_24h": reqs_24h, "tokens_24h": tokens_24h, "errors_24h": errors_24h},
+        "capabilities": caps,
+        "jobs": [_public_job(j) for j in running],
+        "model": MODEL_NAME,
+        "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 60, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT u.id, u.username, u.name, u.is_admin, u.created_at,"
+            " (SELECT COUNT(*) FROM api_keys k WHERE k.user_id = u.id) AS api_keys,"
+            " (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > datetime('now')) AS sessions,"
+            " (SELECT COUNT(*) FROM usage_events e WHERE e.user_id = u.id) AS requests,"
+            " (SELECT COALESCE(SUM(e.prompt_tokens + e.completion_tokens),0) FROM usage_events e WHERE e.user_id = u.id) AS tokens"
+            " FROM users u ORDER BY u.id"
+        ).fetchall()
+        return {"users": [dict(r) for r in rows], "allowlist": sorted(_admin_allowlist())}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/users/{user_id}/admin")
+async def admin_set_admin(request: Request, user_id: int):
+    actor, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(actor["username"], 20, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    want = 1 if bool((data or {}).get("is_admin")) else 0
+    conn = get_db()
+    try:
+        target = conn.execute("SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        if not want and target["is_admin"]:
+            admins = conn.execute("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1").fetchone()["c"]
+            if admins <= 1:
+                return JSONResponse(status_code=400, content={"error": "Cannot remove the last admin"})
+        conn.execute("UPDATE users SET is_admin = ? WHERE id = ?", (want, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("user.admin_set", actor["username"], f"target={user_id} is_admin={want}")
+    return {"ok": True, "is_admin": bool(want)}
+
+
+@app.post("/api/admin/users/{user_id}/revoke-sessions")
+async def admin_revoke_sessions(request: Request, user_id: int):
+    actor, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(actor["username"], 20, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    revoke_user_sessions(user_id, None)
+    _audit("user.revoke_sessions", actor["username"], f"target={user_id}")
+    return {"ok": True}
+
+
+@app.get("/api/admin/usage")
+async def admin_usage(request: Request, range: str = "24h"):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    hours = {"1h": 1, "24h": 24, "7d": 168, "30d": 720}.get(range, 24)
+    data = get_usage(user_id=None, range_hours=hours)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT u.username, u.is_admin, COUNT(e.id) AS requests,"
+            " COALESCE(SUM(e.prompt_tokens),0) AS prompt_tokens,"
+            " COALESCE(SUM(e.completion_tokens),0) AS completion_tokens,"
+            " COALESCE(SUM(e.duration_ms),0) AS duration_ms"
+            " FROM users u LEFT JOIN usage_events e ON e.user_id = u.id AND e.ts >= datetime('now', ?)"
+            " GROUP BY u.id ORDER BY requests DESC LIMIT 100",
+            (f"-{hours} hours",)
+        ).fetchall()
+        data["by_user"] = [dict(r) for r in rows]
+    finally:
+        conn.close()
+    data["range"] = range
+    return data
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(request: Request, lines: int = 300):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 120, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    return {"path": "modellink/server.log", "lines": _tail_file(os.path.join(APP_DIR, "modellink", "server.log"), lines)}
+
+
+@app.get("/api/admin/audit")
+async def admin_audit(request: Request, lines: int = 300):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 120, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    return {"path": "user_data/audit.log", "lines": _tail_file(_AUDIT_FILE, lines)}
+
+
+@app.get("/api/admin/terminal/cwd")
+async def admin_terminal_cwd(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    caps = await asyncio.to_thread(_probe_capabilities)
+    return {"cwd": _ADMIN_TERMINAL.get(user["username"]) or os.getcwd(),
+            "mode": caps["shell_mode"]}
+
+
+@app.get("/api/admin/terminal/history")
+async def admin_terminal_history(request: Request, lines: int = 100):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    tail = _tail_file(_AUDIT_FILE, max(1, min(int(lines), 500)))
+    cmds = [ln for ln in tail.splitlines() if "action=terminal" in ln]
+    return {"history": cmds[-100:]}
+
+
+@app.post("/api/admin/terminal/execute")
+async def admin_terminal_execute(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 60, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit: 60 commands per minute"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    command = str((data or {}).get("command") or "").strip()
+    if not command:
+        return JSONResponse(status_code=400, content={"error": "Empty command"})
+    if len(command) > 8000 or "\x00" in command:
+        return JSONResponse(status_code=400, content={"error": "Command too long or contains a null byte"})
+    caps = await asyncio.to_thread(_probe_capabilities)
+    mode = caps.get("shell_mode")
+    if mode == "none":
+        return JSONResponse(status_code=503, content={"error": "No shell backend: " + caps.get("shell_reason", "")})
+    uname = user["username"]
+    requested = (data or {}).get("cwd")
+    cwd = str(requested) if requested else _ADMIN_TERMINAL.get(uname)
+    if cwd and not os.path.isdir(cwd):
+        cwd = None
+
+    # Persistent `cd` for the native backend (each command is its own shell).
+    cd_match = re.fullmatch(r"\s*cd\s*(.*?)\s*", command) if mode == "native" else None
+    if cd_match and ";" not in command and "&&" not in command:
+        target = cd_match.group(1).strip().strip('"').strip("'")
+        base = cwd or os.getcwd()
+        cand = os.path.realpath(target if (target and os.path.isabs(target)) else os.path.join(base, target or "."))
+        if os.path.isdir(cand):
+            _ADMIN_TERMINAL[uname] = cand
+            _audit("terminal", uname, command)
+            return {"stdout": "", "stderr": "", "exit_code": 0, "cwd": cand, "mode": mode}
+        _audit("terminal", uname, command + " -> failed (no such directory)")
+        return {"stdout": "", "stderr": f"cd: no such directory: {target}", "exit_code": 1,
+                "cwd": base, "mode": mode}
+
+    _audit("terminal", uname, command)
+    timeout = 30 if mode == "native" else 45
+    async with _ADMIN_SHELL_SEM:
+        if mode == "native":
+            code, out, errout = await asyncio.to_thread(_native_shell_exec, command, cwd, timeout)
+            if cwd:
+                _ADMIN_TERMINAL[uname] = cwd
+        else:
+            code, out, errout = await asyncio.to_thread(_docker_shell_exec, command, cwd, timeout)
+    return {"stdout": _clip(out), "stderr": _clip(errout), "exit_code": code,
+            "cwd": _ADMIN_TERMINAL.get(uname) or cwd or os.getcwd(), "mode": mode,
+            "timeout": code == 124}
+
+
+@app.get("/api/admin/docker/status")
+async def admin_docker_status(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 30, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    caps = await asyncio.to_thread(_probe_capabilities)
+    if not caps.get("docker_cli"):
+        return {"available": False, "reason": "The docker CLI is not installed in this environment.",
+                "containers": [], "capabilities": caps}
+    if not caps.get("docker_daemon"):
+        return {"available": False, "reason": "The docker daemon is not reachable from this environment.",
+                "containers": [], "capabilities": caps}
+    try:
+        proc = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}"],
+                              capture_output=True, text=True, timeout=15, errors="replace")
+        containers = []
+        for ln in (proc.stdout or "").splitlines():
+            parts = ln.split("\t")
+            if parts and parts[0]:
+                containers.append({"name": parts[0], "image": parts[1] if len(parts) > 1 else "",
+                                   "status": parts[2] if len(parts) > 2 else "",
+                                   "state": parts[3] if len(parts) > 3 else ""})
+        return {"available": True, "containers": containers, "capabilities": caps}
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "containers": [], "capabilities": caps}
+
+
+@app.post("/api/admin/docker/restart")
+async def admin_docker_restart(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 10, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    name = str((data or {}).get("name") or "").strip()
+    if not name or len(name) > 128 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.\-]*", name):
+        return JSONResponse(status_code=400, content={"error": "Invalid container name"})
+    caps = await asyncio.to_thread(_probe_capabilities)
+    if not caps.get("docker_cli") or not caps.get("docker_daemon"):
+        return JSONResponse(status_code=503, content={"error": "Docker is unavailable here."})
+    listing = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}"],
+                             capture_output=True, text=True, timeout=15, errors="replace")
+    known = {ln.strip() for ln in (listing.stdout or "").splitlines() if ln.strip()}
+    if name not in known:
+        return JSONResponse(status_code=404, content={"error": "No such container"})
+    _audit("docker.restart", user["username"], name)
+    proc = subprocess.run(["docker", "restart", "-t", "15", name],
+                          capture_output=True, text=True, timeout=60, errors="replace")
+    return {"ok": proc.returncode == 0, "name": name,
+            "output": _clip((proc.stdout or "") + (proc.stderr or ""), 4096)}
+
+
+@app.post("/api/admin/server/restart")
+async def admin_server_restart(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 5, 300):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    caps = await asyncio.to_thread(_probe_capabilities)
+    if not (caps.get("in_container") and caps.get("docker_cli") and caps.get("docker_daemon")):
+        return JSONResponse(status_code=409, content={
+            "error": "Restart is only available when running in Docker. Locally, restart run-server.py manually."})
+    try:
+        with open("/etc/hostname", "r") as fh:
+            cid = fh.read().strip()[:12]
+    except Exception:
+        cid = ""
+    if not re.fullmatch(r"[0-9a-f]{6,12}", cid):
+        return JSONResponse(status_code=409, content={"error": "Could not determine this container's id."})
+    _audit("server.restart", user["username"], cid)
+    proc = subprocess.run(["docker", "restart", "-t", "15", cid],
+                          capture_output=True, text=True, timeout=60, errors="replace")
+    return {"ok": proc.returncode == 0, "container": cid,
+            "output": _clip((proc.stdout or "") + (proc.stderr or ""), 4096)}
+
+
+@app.post("/api/admin/update")
+async def admin_update(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(user["username"], 3, 600):
+        return JSONResponse(status_code=429, content={"error": "Rate limit: 3 updates per 10 minutes"})
+    caps = await asyncio.to_thread(_probe_capabilities)
+    missing = []
+    if not caps.get("git"):
+        missing.append("git is not installed in this environment")
+    if not caps.get("docker_cli"):
+        missing.append("the docker CLI is not installed in this environment")
+    if not caps.get("docker_compose"):
+        missing.append("docker compose is not available in this environment (the image ships only the docker CLI)")
+    if missing:
+        return JSONResponse(status_code=409, content={
+            "error": "Update unavailable: " + "; ".join(missing) + ".",
+            "hint": "Run update.bat on the host, or use the admin terminal.",
+            "capabilities": caps})
+    if not caps.get("docker_daemon"):
+        return JSONResponse(status_code=409, content={"error": "The docker daemon is not reachable."})
+    command = "git pull --ff-only && docker compose up -d --build"
+    job_id = _start_admin_job("update", command, caps.get("app_dir") or APP_DIR)
+    _audit("update.start", user["username"], command)
+    return {"job_id": job_id, "command": command}
+
+
+@app.get("/api/admin/jobs/{job_id}")
+async def admin_job_status(request: Request, job_id: str):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    job = _safe_job(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Unknown job"})
+    return _public_job(job)
+
+
+@app.post("/api/admin/jobs/{job_id}/cancel")
+async def admin_job_cancel(request: Request, job_id: str):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    job = _safe_job(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Unknown job"})
+    proc = job.get("_proc")
+    if proc and job.get("status") == "running":
+        try:
+            proc.kill()
+            job["status"] = "cancelled"
+            job["lines"].append("Cancelled by administrator.")
+        except Exception as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+    _audit("job.cancel", user["username"], job_id)
+    return _public_job(job)
+
+
+def _admin_page(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        if getattr(err, "status_code", None) == 401:
+            return RedirectResponse("/", status_code=302)
+        return HTMLResponse("<!doctype html><meta charset='utf-8'><title>403</title>"
+                            "<body style='font-family:system-ui;background:#0b0d10;color:#e6e9ef;padding:40px'>"
+                            "<h1>403 Forbidden</h1><p>You are not authorised to open the admin panel.</p>"
+                            "<p><a href='/' style='color:#7aa2f7'>Back to Omniilink</a></p>", status_code=403)
+    return FileResponse(os.path.join(APP_DIR, "web", "admin.html"),
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
+
+# Registered BEFORE the /static mount below, so /static/admin.html can never
+# be served by the public static handler.
+@app.get("/static/admin.html")
+async def serve_admin_static(request: Request):
+    return _admin_page(request)
+
+
+@app.get("/admin")
+async def serve_admin(request: Request):
+    return _admin_page(request)
+
 
 @app.get("/")
 async def serve_index():

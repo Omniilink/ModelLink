@@ -107,9 +107,13 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
-    if env_admin:
-        for u in [x.strip() for x in env_admin.split(",") if x.strip()]:
-            conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
+    # Admin panel allowlist (default: isaac_tribbe, matching api_server):
+    # promoted on every boot so an existing account can always reach /admin
+    # even if is_admin was ever flipped off in the database.
+    env_admin_list = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac_tribbe").strip().lower()
+    admin_names = {x.strip() for x in (env_admin + "," + env_admin_list).split(",") if x.strip()}
+    for u in admin_names:
+        conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
     conn.commit()
     conn.close()
 
@@ -256,6 +260,15 @@ def update_user_name(user_id: int, name: str):
     try:
         conn.execute("UPDATE users SET name = ? WHERE id = ?", (name, user_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def all_usernames() -> list:
+    """Every registered username (used to block folder-name collisions)."""
+    conn = get_db()
+    try:
+        return [r["username"] for r in conn.execute("SELECT username FROM users").fetchall()]
     finally:
         conn.close()
 

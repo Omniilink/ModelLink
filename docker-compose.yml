@@ -48,6 +48,9 @@ services:
       # sandboxes mount the REAL project files instead of an empty dir.
       # Matches update.bat's C:\\Modellink - change it if you move the app.
       - OMNIILINK_SANDBOX_HOST_ROOT=C:/Modellink
+      # Only these usernames can open /admin (comma separated). They are also
+      # promoted to is_admin=1 on every boot.
+      - OMNIILINK_ADMIN_USERS=isaac_tribbe
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge
