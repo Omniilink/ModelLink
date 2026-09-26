@@ -52,6 +52,10 @@ services:
       # promoted to is_admin=1 on every boot. "isaac tribbe" also covers an
       # "isaac_tribbe" account, since signup forbids spaces.
       - OMNIILINK_ADMIN_USERS=isaac tribbe
+      # GitHub token so the panel updater can pull a PRIVATE repo. Empty is
+      # fine: the api also re-reads it from the mounted .env, so adding
+      # OMNIILINK_GIT_TOKEN there needs no container restart.
+      - OMNIILINK_GIT_TOKEN=${OMNIILINK_GIT_TOKEN:-}
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge

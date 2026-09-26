@@ -326,7 +326,8 @@ async function loadOverview(){
     ['Host volume',caps.host_root||'—'],['Docker CLI',caps.docker_version||'not installed'],
     ['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed'],
     ['updater image',(caps.updater_image_name||'')+' ('+(caps.updater_image?'present':'missing')+')'],
-    ['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—']
+    ['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—'],
+    ['git token',caps.git_token?'configured':'not set (private repos will fail)']
   ]);
   kv($('#ov-access'),[
     ['Allowlist',caps.admin_users.join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],

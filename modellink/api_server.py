@@ -3269,6 +3269,60 @@ def _host_checkout() -> Optional[str]:
     return None
 
 
+def _git_token() -> str:
+    """GitHub token for pulling a private repo. Explicit env wins;
+    otherwise the mounted host .env is re-read, so adding the token to
+    .env takes effect without restarting the container."""
+    tok = (os.environ.get("OMNIILINK_GIT_TOKEN", "") or "").strip()
+    if tok:
+        return tok
+    try:
+        from dotenv import dotenv_values
+        vals = dotenv_values(os.path.join(APP_DIR, ".env"))
+        return ((vals or {}).get("OMNIILINK_GIT_TOKEN", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _write_updater_env_file(token: str):
+    """Single-use env file carrying the git token (0600). Returns
+    (cli_path, helper_path, name), or (None, None, None) when unusable."""
+    if not token or "\n" in token or "\r" in token:
+        return None, None, None
+    name = ".update-env-" + secrets.token_hex(5)
+    cli_path = os.path.join(APP_DIR, "user_data", name)
+    try:
+        fd = os.open(cli_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"GIT_TOKEN={token}\nGIT_TOKEN_FILE=/work/user_data/{name}\n")
+    except Exception:
+        return None, None, None
+    return cli_path, f"/work/user_data/{name}", name
+
+
+def _build_updater_command(checkout: str, img: str):
+    """docker run string for the throwaway updater. The token (if any)
+    travels in a single-use env file, never in this string — it lands in
+    job records, the UI and the audit log. Returns
+    (command, cli_cleanup_path_or_None)."""
+    token = _git_token()
+    cli_env, _helper_env, _name = _write_updater_env_file(token) if token else (None, None, None)
+    parts = ["docker", "run", "--rm", "-i",
+             "-v", "/var/run/docker.sock:/var/run/docker.sock",
+             "-v", f"{checkout}:/work"]
+    if cli_env:
+        parts += ["--env-file", cli_env]
+    parts += ["-e", f"HOST_CHECKOUT={checkout}",
+              img, "python3", "/usr/local/bin/omni-update"]
+    command = " ".join(shlex.quote(p) for p in parts)
+    if cli_env:
+        # Best-effort cleanup if the api survives the update; the updater
+        # itself deletes the file at startup, so a mid-update recreate
+        # cannot leak it either.
+        command += f"; rm -f {shlex.quote(cli_env)}"
+    return command, cli_env
+
+
 def _probe_capabilities() -> dict:
     """Cached environment probe (git / docker / compose / shell mode)."""
     now = time.time()
@@ -3308,6 +3362,7 @@ def _probe_capabilities() -> dict:
         "updater_image_name": _updater_image_name(),
         "docker_socket": _docker_socket_present(),
         "host_checkout": _host_checkout(),
+        "git_token": bool(_git_token()),
         "shell_mode": shell_mode,
         "shell_reason": shell_reason,
         "host_root": _docker_host_root(),
@@ -3747,11 +3802,7 @@ async def admin_update(request: Request):
             "capabilities": caps})
     checkout = caps["host_checkout"]
     img = caps["updater_image_name"]
-    command = ("docker run --rm -i "
-               "-v /var/run/docker.sock:/var/run/docker.sock "
-               f"-v {shlex.quote(checkout)}:/work "
-               f"-e {shlex.quote('HOST_CHECKOUT=' + checkout)} "
-               f"{shlex.quote(img)} python3 /usr/local/bin/omni-update")
+    command, _cleanup = _build_updater_command(checkout, img)
     job_id = _start_admin_job("update", command, APP_DIR)
     _audit("update.start", user["username"], command)
     return {"job_id": job_id, "command": command}

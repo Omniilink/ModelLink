@@ -46,6 +46,62 @@ def fail(msg):
     sys.exit(1)
 
 
+def _drop_token_file():
+    """The API passes GIT_TOKEN via a single-use file; remove it first so
+    the secret lives as briefly as possible (the daemon already consumed it
+    when this container was created)."""
+    tok_file = os.environ.get("GIT_TOKEN_FILE", "").strip()
+    if tok_file and os.path.isfile(tok_file):
+        try:
+            os.remove(tok_file)
+            log("single-use token file removed")
+        except OSError:
+            pass
+
+
+def git_auth_args():
+    """Extra git args carrying the token, or [] for anonymous access.
+
+    Uses an Authorization header so the secret never lands in the repo
+    config, the shell history, or the job log."""
+    import base64
+    token = os.environ.get("GIT_TOKEN", "").strip()
+    if not token:
+        return []
+    cred = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return ["-c", f"http.extraHeader=AUTHORIZATION: basic {cred}"]
+
+
+def _mask_arg(a):
+    """Redact the Authorization header for the log (the token must never
+    appear in job output)."""
+    return "***" if "AUTHORIZATION" in a else a
+
+
+def git_pull():
+    args = ["git"] + git_auth_args() + ["pull", "--ff-only"]
+    log("+ " + " ".join(_mask_arg(a) for a in args))
+    p = subprocess.run(args, cwd=WORK, capture_output=True, text=True)
+    sys.stdout.write(p.stdout or "")
+    sys.stdout.flush()
+    sys.stderr.write(p.stderr or "")
+    sys.stderr.flush()
+    if p.returncode != 0:
+        out = (p.stdout or "") + (p.stderr or "")
+        if ("could not read Username" in out or "Authentication failed" in out
+                or "401" in out or "403" in out):
+            if os.environ.get("GIT_TOKEN", "").strip():
+                fail("GitHub rejected the token. Create a fresh one "
+                     "(GitHub Settings -> Developer settings -> Personal access "
+                     "tokens, classic `repo` scope) and set OMNIILINK_GIT_TOKEN "
+                     "in the server .env, then retry.")
+            fail("GitHub asks for credentials and none were provided. "
+                 "Create a token (GitHub Settings -> Developer settings -> "
+                 "Personal access tokens, classic `repo` scope) and set "
+                 "OMNIILINK_GIT_TOKEN in the server .env, then retry.")
+        fail("git pull --ff-only failed (diverged history or no network?)")
+
+
 def _split_short(entry):
     """Split a short-syntax volume into (source, target, opts-or-None).
 
@@ -93,8 +149,8 @@ def main():
     # The repo is owned by the host user while we run as root.
     subprocess.run(["git", "config", "--global", "--add", "safe.directory", WORK],
                    capture_output=True)
-    if run(["git", "pull", "--ff-only"]) != 0:
-        fail("git pull --ff-only failed (diverged history or no network?)")
+    _drop_token_file()
+    git_pull()
     try:
         with open(base, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)

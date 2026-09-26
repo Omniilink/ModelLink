@@ -186,6 +186,20 @@ After editing, restart just the API: `docker compose up -d api`.
 Installing other runtimes (another Python/Node version) means extending
 `sandbox.Dockerfile` and rebuilding — ask and it can be added.
 
+## Panel self-update (no update.bat needed)
+
+Once deployed, the admin panel (`/admin` → Update server) updates the host
+itself: it pulls the repo and rebuilds through a throwaway
+`omniilink-updater` container, with every bind mount verified before anything
+is recreated. The panel refuses to run until the updater image exists, so the
+first update after this change still goes through `update.bat`.
+
+Private repo? The updater has no git credentials of its own. Create a token
+(GitHub Settings → Developer settings → Personal access tokens, classic
+`repo` scope) and set `OMNIILINK_GIT_TOKEN` in the server `.env` — the panel
+picks it up without a restart. The token travels in a single-use file the
+updater deletes at startup; it never appears in job output, the UI, or logs.
+
 ## Useful commands
 
 ```powershell
