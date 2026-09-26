@@ -70,6 +70,15 @@ services:
       dockerfile: sandbox.Dockerfile
     image: omniilink-sandbox:latest
 
+  # Self-update helper (git + compose + preflight script). Built so the
+  # admin panel can update the host checkout through the docker socket;
+  # the panel refuses to self-update until this image exists.
+  updater-image:
+    build:
+      context: .
+      dockerfile: updater.Dockerfile
+    image: omniilink-updater:latest
+
   tunnel:
     # Named tunnel using YOUR existing credentials file — no Cloudflare
     # dashboard token, no card. Needs:

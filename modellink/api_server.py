@@ -7,6 +7,7 @@ import hmac
 import hashlib
 import queue
 import secrets
+import shlex
 import subprocess
 import shutil
 import tempfile
@@ -3236,6 +3237,38 @@ def _docker_host_root() -> Optional[str]:
     return root.rstrip("/") + "/"
 
 
+def _updater_image_name() -> str:
+    return ((os.environ.get("OMNIILINK_UPDATER_IMAGE", "") or "").strip()
+            or "omniilink-updater:latest")
+
+
+def _updater_image_present() -> bool:
+    """The throwaway image the panel update runs in (built by compose)."""
+    if not shutil.which("docker"):
+        return False
+    try:
+        return subprocess.run(["docker", "image", "inspect", _updater_image_name()],
+                              capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def _docker_socket_present() -> bool:
+    try:
+        return os.path.exists("/var/run/docker.sock")
+    except Exception:
+        return False
+
+
+def _host_checkout() -> Optional[str]:
+    """Host-side path of the checkout (C:/Modellink on prod)."""
+    for key in ("OMNIILINK_HOST_CHECKOUT", "OMNIILINK_SANDBOX_HOST_ROOT"):
+        v = (os.environ.get(key, "") or "").strip().replace("\\", "/").rstrip("/")
+        if v:
+            return v
+    return None
+
+
 def _probe_capabilities() -> dict:
     """Cached environment probe (git / docker / compose / shell mode)."""
     now = time.time()
@@ -3271,6 +3304,10 @@ def _probe_capabilities() -> dict:
         "docker_compose": compose_ver,
         "git": bool(git_ver),
         "git_version": git_ver,
+        "updater_image": _updater_image_present() if docker_cli else False,
+        "updater_image_name": _updater_image_name(),
+        "docker_socket": _docker_socket_present(),
+        "host_checkout": _host_checkout(),
         "shell_mode": shell_mode,
         "shell_reason": shell_reason,
         "host_root": _docker_host_root(),
@@ -3668,22 +3705,54 @@ async def admin_update(request: Request):
     if not _admin_rate_ok(user["username"], 3, 600):
         return JSONResponse(status_code=429, content={"error": "Rate limit: 3 updates per 10 minutes"})
     caps = await asyncio.to_thread(_probe_capabilities)
-    missing = []
-    if not caps.get("git"):
-        missing.append("git is not installed in this environment")
-    if not caps.get("docker_cli"):
-        missing.append("the docker CLI is not installed in this environment")
-    if not caps.get("docker_compose"):
-        missing.append("docker compose is not available in this environment (the image ships only the docker CLI)")
-    if missing:
+    if not caps.get("in_container"):
+        # Native host run: git + compose must exist right here.
+        missing = []
+        if not caps.get("git"):
+            missing.append("git is not installed in this environment")
+        if not caps.get("docker_cli"):
+            missing.append("the docker CLI is not installed in this environment")
+        if not caps.get("docker_compose"):
+            missing.append("docker compose is not available in this environment")
+        if missing:
+            return JSONResponse(status_code=409, content={
+                "error": "Update unavailable: " + "; ".join(missing) + ".",
+                "hint": "Run update.bat on the host, or use the admin terminal.",
+                "capabilities": caps})
+        if not caps.get("docker_daemon"):
+            return JSONResponse(status_code=409, content={"error": "The docker daemon is not reachable."})
+        command = "git pull --ff-only && docker compose up -d --build"
+        job_id = _start_admin_job("update", command, caps.get("app_dir") or APP_DIR)
+        _audit("update.start", user["username"], command)
+        return {"job_id": job_id, "command": command}
+    # Inside the api container there is no checkout and no compose file, so
+    # git pull + compose run against the HOST checkout through the throwaway
+    # updater image (daemon socket is mounted). The updater aborts before
+    # touching any container on the first failure; when it recreates the api
+    # container this job's thread dies with it, which the panel reports as
+    # "server is restarting".
+    problems = []
+    if not caps.get("docker_socket"):
+        problems.append("the docker socket is not mounted into the api container (see docker-compose.yml)")
+    if not caps.get("host_checkout"):
+        problems.append("OMNIILINK_SANDBOX_HOST_ROOT is not set, so the host checkout is unknown")
+    if not caps.get("docker_daemon"):
+        problems.append("the docker daemon is not reachable")
+    if not caps.get("updater_image"):
+        problems.append(f"image {caps.get('updater_image_name')} is missing — run update.bat once on the host to build it")
+    if problems:
         return JSONResponse(status_code=409, content={
-            "error": "Update unavailable: " + "; ".join(missing) + ".",
+            "error": "Update unavailable: " + "; ".join(problems) + ".",
             "hint": "Run update.bat on the host, or use the admin terminal.",
             "capabilities": caps})
-    if not caps.get("docker_daemon"):
-        return JSONResponse(status_code=409, content={"error": "The docker daemon is not reachable."})
-    command = "git pull --ff-only && docker compose up -d --build"
-    job_id = _start_admin_job("update", command, caps.get("app_dir") or APP_DIR)
+    checkout = caps["host_checkout"]
+    img = caps["updater_image_name"]
+    command = ("docker run --rm -i "
+               "-v /var/run/docker.sock:/var/run/docker.sock "
+               f"-v {shlex.quote(checkout)}:/work "
+               f"-e {shlex.quote('HOST_CHECKOUT=' + checkout)} "
+               f"{shlex.quote(img)} python3 /usr/local/bin/omni-update")
+    job_id = _start_admin_job("update", command, APP_DIR)
     _audit("update.start", user["username"], command)
     return {"job_id": job_id, "command": command}
 

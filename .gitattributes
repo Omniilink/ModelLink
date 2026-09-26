@@ -1,0 +1,5 @@
+# Executed inside Linux containers: these must keep LF endings even on
+# Windows checkouts, or shebangs break.
+updater/omni-update text eol=lf
+*.Dockerfile text eol=lf
+*.sh text eol=lf

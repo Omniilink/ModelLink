@@ -301,6 +301,7 @@ function chips(c){
     {t:(c.docker_daemon?'docker ✓':'docker ✗'),cls:c.docker_daemon?'ok':'bad'},
     {t:c.docker_compose?'compose ✓':'compose ✗',cls:c.docker_compose?'ok':'warn'},
     {t:c.git?'git ✓':'git ✗',cls:c.git?'ok':'warn'},
+    {t:(c.updater_image?'updater ✓':'updater ✗'),cls:c.updater_image?'ok':'warn'},
     {t:(c.in_container?'container':'native'),cls:''},
     {t:'python '+c.python,cls:''}
   ];
@@ -323,23 +324,36 @@ async function loadOverview(){
     ['App directory',caps.app_dir],['Platform',caps.platform],['Python',caps.python],
     ['Execution mode',caps.shell_mode],['Shell reason',caps.shell_reason],
     ['Host volume',caps.host_root||'—'],['Docker CLI',caps.docker_version||'not installed'],
-    ['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed']
+    ['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed'],
+    ['updater image',(caps.updater_image_name||'')+' ('+(caps.updater_image?'present':'missing')+')'],
+    ['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—']
   ]);
   kv($('#ov-access'),[
     ['Allowlist',caps.admin_users.join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],
     ['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']
   ]);
   var upd=$('#btn-update');
-  var ready=caps.git&&caps.docker_cli&&caps.docker_compose&&caps.docker_daemon;
-  upd.disabled=!ready;
-  upd.title=ready?'':'Update unavailable — see the reasons below';
-  if(!ready){
-    var miss=[];
+  var ready, miss=[];
+  if(!caps.in_container){
+    // Native host run: git and compose must exist right here.
+    ready=caps.git&&caps.docker_cli&&caps.docker_compose&&caps.docker_daemon;
     if(!caps.git)miss.push('git');
     if(!caps.docker_cli)miss.push('docker CLI');
     if(!caps.docker_compose)miss.push('docker compose');
     if(!caps.docker_daemon)miss.push('docker daemon');
-    $('#update-state').textContent='Unavailable here: '+miss.join(', ')+' missing. Run update.bat on the host, or use the admin terminal.';
+  }else{
+    // Inside the api container the update runs against the host checkout
+    // through the throwaway updater image (docker socket is mounted).
+    ready=caps.docker_socket&&caps.host_checkout&&caps.docker_daemon&&caps.updater_image;
+    if(!caps.docker_socket)miss.push('docker socket not mounted');
+    if(!caps.host_checkout)miss.push('host checkout unknown (OMNIILINK_SANDBOX_HOST_ROOT)');
+    if(!caps.docker_daemon)miss.push('docker daemon');
+    if(!caps.updater_image)miss.push('updater image missing — run update.bat once on the host');
+  }
+  upd.disabled=!ready;
+  upd.title=ready?'':'Update unavailable — see the reasons below';
+  if(!ready){
+    $('#update-state').textContent='Unavailable here: '+miss.join(', ')+'. Run update.bat on the host, or use the admin terminal.';
   }else if(!$('#update-state').textContent){$('#update-state').textContent='Ready.'}
   renderJobs(d.jobs||[]);
 }
@@ -368,6 +382,18 @@ $('#btn-update').onclick=async function(){
         $('#update-state').textContent='Job '+job.status+(job.exit_code==null?'':' (exit '+job.exit_code+')');
         toast('Update '+job.status,job.status==='done'?'ok':'error');
       }
+    },function(e){
+      // The update recreates the api container, which kills the job thread
+      // with it: a vanished job right after an update means it worked and
+      // the server is coming back up.
+      $('#btn-cancel').style.display='none';
+      if(e&&e.status===404){
+        $('#update-state').textContent='Server is restarting after the update — refresh this page in ~30 seconds.';
+        toast('Server restarting','ok');
+      }else{
+        $('#update-state').textContent='Lost contact with the update job ('+((e&&e.message)||'error')+').';
+        toast('Update status unknown','error');
+      }
     });
   }catch(e){toast(e.message,'error')}
   finally{busy=false}
@@ -376,10 +402,10 @@ $('#btn-cancel').onclick=async function(){
   var id=this.dataset.job;if(!id)return;
   try{await api('/api/admin/jobs/'+id+'/cancel',{method:'POST',body:'{}'});toast('Cancel requested')}catch(e){toast(e.message,'error')}
 };
-function pollJob(id,fn){
+function pollJob(id,fn,onGone){
   clearTimer('job');
   var tick=async function(){
-    try{var j=await api('/api/admin/jobs/'+id);fn(j)}catch(e){clearTimer('job')}
+    try{var j=await api('/api/admin/jobs/'+id);fn(j)}catch(e){clearTimer('job');if(onGone)onGone(e)}
   };
   tick();timers.job=setInterval(tick,1200);
 }

@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Host-side self update, executed inside the throwaway updater container.
+
+/work is the host checkout bind-mounted from the daemon (drive-letter
+source, the same mechanic as the execution sandbox). HOST_CHECKOUT is the
+host-side path of that same directory (e.g. C:/Modellink).
+
+Why the override file: a compose CLI running inside a container resolves
+relative bind mounts (./user_data) against the container filesystem
+(/work/...), but the daemon needs host paths (C:/...). A wrong path would
+make the daemon silently mount a fresh empty directory over real data, so
+every rewritten source is verified to exist BEFORE compose ever runs.
+
+Flow: verify repo -> git pull --ff-only -> build sandbox image ->
+generate absolute-path override -> preflight bind sources ->
+compose up -d --build api. Any failure aborts before touching containers,
+except a failed `up` itself (reported loudly; recover with update.bat).
+"""
+import os
+import posixpath
+import re
+import subprocess
+import sys
+
+import yaml
+
+WORK = "/work"
+HOST = os.environ.get("HOST_CHECKOUT", "").replace("\\", "/").rstrip("/")
+BASE_FILE = "docker-compose.yml"
+OVERRIDE_FILE = "/tmp/omni-abs-volumes.yml"
+UP_SERVICES = ["api"]
+BUILD_SERVICES = ["sandbox-image"]
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def run(cmd):
+    log("+ " + " ".join(cmd))
+    return subprocess.run(cmd, cwd=WORK).returncode
+
+
+def fail(msg):
+    log("ABORT: " + msg)
+    sys.exit(1)
+
+
+def _split_short(entry):
+    """Split a short-syntax volume into (source, target, opts-or-None).
+
+    Returns (None, entry, None) for named volumes and anything unparseable
+    (both are passed through untouched).
+    """
+    if not isinstance(entry, str):
+        return None, entry, None
+    m = re.match(r"^(?:([a-zA-Z]:/[^:]*)|([^:]+)):([^:]+)(?::(.*))?$", entry)
+    if not m:
+        return None, entry, None
+    src = m.group(1) if m.group(1) is not None else m.group(2)
+    if m.group(1) is None and "/" not in src and not src.startswith("."):
+        return None, entry, None  # named volume, e.g. db-data:/var/lib/x
+    return src, m.group(3), m.group(4)
+
+
+def _rewrite_source(src):
+    """Map a volume source to its host-absolute form.
+
+    Returns (new_source, work_path_or_None). work_path is the same file as
+    seen from inside this container, for the preflight existence check.
+    Unresolvable forms return (src, None) and are passed through untouched.
+    """
+    s = src.replace("\\", "/")
+    if s.startswith("./") or s.startswith("../") or s == "." or s == "..":
+        rel = posixpath.normpath(s)
+        host_path = posixpath.normpath(HOST + "/" + rel)
+        work_path = posixpath.normpath(os.path.join(WORK, rel))
+        return host_path, work_path
+    if s.startswith("~"):
+        fail(f"volume source '{src}' uses ~ (unresolvable here); "
+             "run update.bat on the host instead")
+    return src, None
+
+
+def main():
+    if not HOST:
+        fail("HOST_CHECKOUT is not set in the updater container")
+    base = os.path.join(WORK, BASE_FILE)
+    if not os.path.isfile(base):
+        fail(f"no {BASE_FILE} under /work (wrong directory mounted?)")
+    if not os.path.isdir(os.path.join(WORK, ".git")):
+        fail("no .git under /work (not a checkout, refusing to pull)")
+    # The repo is owned by the host user while we run as root.
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", WORK],
+                   capture_output=True)
+    if run(["git", "pull", "--ff-only"]) != 0:
+        fail("git pull --ff-only failed (diverged history or no network?)")
+    try:
+        with open(base, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except Exception as exc:
+        fail(f"cannot parse {BASE_FILE}: {exc}")
+    services = (doc or {}).get("services") or {}
+    for t in UP_SERVICES + BUILD_SERVICES:
+        if t not in services:
+            log(f"NOTE: service '{t}' not found in {BASE_FILE}, skipping it")
+    # --- sandbox image first: a failed build must never touch the api ---
+    for t in BUILD_SERVICES:
+        if t in services:
+            if run(["docker", "compose", "-f", BASE_FILE, "build", t]) != 0:
+                fail(f"building service '{t}' failed, api left untouched")
+    # --- absolute-path override for the services `up` will recreate ---
+    override = {"services": {}}
+    rewritten = []  # (host_path, work_path) pairs to preflight
+    for t in UP_SERVICES:
+        if t not in services:
+            continue
+        fixed = []
+        for v in ((services[t] or {}).get("volumes") or []):
+            if isinstance(v, dict):
+                src = v.get("source", "")
+                if v.get("type", "bind") != "bind" or not src or "${" in src:
+                    fixed.append(v)
+                    continue
+                new_src, work_path = _rewrite_source(src)
+                if work_path:
+                    rewritten.append((new_src, work_path))
+                fixed.append({**v, "source": new_src})
+                continue
+            src, target, opts = _split_short(v)
+            if src is None or "${" in v:
+                fixed.append(v)
+                continue
+            new_src, work_path = _rewrite_source(src)
+            if work_path:
+                rewritten.append((new_src, work_path))
+            short = f"{new_src}:{target}" + (f":{opts}" if opts else "")
+            fixed.append(short)
+        override["services"][t] = {"volumes": fixed}
+    if not override["services"]:
+        fail("nothing to update (no known services in docker-compose.yml)")
+    with open(OVERRIDE_FILE, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(override, fh)
+    log("volume override written to " + OVERRIDE_FILE + ":")
+    for t, svc in override["services"].items():
+        for v in svc["volumes"]:
+            log(f"  {t}: {v}")
+    # --- preflight: every path WE introduce must already exist ---
+    for host_path, work_path in rewritten:
+        if not os.path.exists(work_path):
+            fail(f"host path '{host_path}' does not exist; the daemon would "
+                 "mount an empty directory over real data. "
+                 "Run update.bat on the host once to repair it.")
+    log(f"preflight ok ({len(rewritten)} bind sources verified)")
+    # --- the actual update, scoped to the api service only ---
+    if run(["docker", "compose", "-f", BASE_FILE, "-f", OVERRIDE_FILE,
+            "up", "-d", "--build"] + [t for t in UP_SERVICES if t in services]) != 0:
+        fail("docker compose up failed; the api may be down. "
+             "Run update.bat on the host to recover.")
+    run(["docker", "compose", "-f", BASE_FILE, "-f", OVERRIDE_FILE,
+         "ps"] + [t for t in UP_SERVICES if t in services])
+    log("UPDATE DONE. The api container was recreated; refresh this page.")
+
+
+if __name__ == "__main__":
+    main()
