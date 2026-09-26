@@ -1619,6 +1619,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;if(fsHandle)content=await fsReadFile(fname);else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(fname));const data=await r.json();if(r.ok)content=data.content}if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
+  sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- You get exactly N rounds — there is no other cap. Count honestly: inspect, create or patch each file, run it, fix it.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n- Never stop early because of a counter: finish when the work is verified.\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -1695,6 +1696,7 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);codingHistory.push({role:'user',content:cleanText});persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
@@ -1706,7 +1708,7 @@ async function sendCodingMessage(){
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});next=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable)codingAutoContinue().catch(()=>{});
@@ -2140,8 +2142,30 @@ async function processCodingActions(text,msgEl){
 let codingAutoLoop=false,codingStopRequested=false;
 let codingAbort=null;
 let codingWrittenPaths=[];
-const CODING_MAX_ROUNDS=6;
+// STEP BUDGET: the model counts what its own plan needs and declares it with
+// `PLAN-STEPS: N` (one step = one tool round). The loop runs exactly that many
+// steps; when they run out with work still open it asks the model to RECOUNT
+// instead of stopping. The constants below are runaway guards, not a work
+// limit — real tasks are sized by the model, not by a fixed number.
+const CODING_DEFAULT_PLAN=6;   // budget until the model declares its plan
+const CODING_MIN_PLAN=6;
+const CODING_MAX_PLAN=60;      // no single plan may exceed this
+const CODING_MAX_REPLANS=3;    // how often the plan may be recounted
 const CODING_MAX_SETBACKS=3;
+let codingPlanSteps=CODING_DEFAULT_PLAN,codingRounds=0,codingReplans=0;
+function scanPlanSteps(text){
+  // Pick up a PLAN-STEPS: N declaration from any assistant turn. The budget
+  // only grows inside a run (never drops below steps already taken), so a
+  // stray smaller number can never wedge the loop.
+  if(!text)return codingPlanSteps;
+  const m=String(text).match(/PLAN-STEPS\s*:\s*(\d{1,3})/i);
+  if(!m)return codingPlanSteps;
+  let n=parseInt(m[1],10);
+  if(!isFinite(n)||n<1)return codingPlanSteps;
+  n=Math.max(CODING_MIN_PLAN,Math.min(CODING_MAX_PLAN,n));
+  codingPlanSteps=Math.max(codingPlanSteps,n,codingRounds);
+  return codingPlanSteps;
+}
 let codingTodoGen=0;
 function codingChatKey(){return(fsHandle?'local:':'srv:')+(codingFolder||'lobby')}
 function persistCodingChat(){
@@ -2287,6 +2311,7 @@ async function streamCodingTurn(messages){
   const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);
   codingHistory.push({role:'assistant',content:fullText});
   persistCodingChat();
+  scanPlanSteps(fullText);
   const actions=await processCodingActions(fullText,assistantEl);
   codingAbort=null;
   return{fullText,actualModel,actions};
@@ -2336,7 +2361,8 @@ async function sendCodingImprove(reason,nextAttempt){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  let rounds=0,setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0;
+  codingRounds=0;codingReplans=0;
+  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,planJustExtended=false;
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const giveUp=reason=>{
     postCodingAssistant('I could not finish this task after 3 attempts. Reason: '+reason+'\n\nThe remaining open todos are listed above — adjust the task or ask me to continue from here.');
@@ -2347,11 +2373,12 @@ async function codingAutoContinue(){
       if(codingStopRequested)break;
       const results=harvestCodingResults();
       if(results.hasExecuted){
-        rounds++;
-        if(rounds>CODING_MAX_ROUNDS){
-          postCodingAssistant('Stopping after '+CODING_MAX_ROUNDS+' tool rounds with work still remaining. Ask me to continue and I will pick up where I left off.');
-          break;
-        }
+        codingRounds++;
+        planJustExtended=false;
+        // No-progress guard: identical tool results three rounds running.
+        const sig=results.text||'';
+        if(sig&&sig===lastSig)repeatRounds++;else{lastSig=sig;repeatRounds=0}
+        if(repeatRounds>=2){postCodingAssistant('Stopping: the same tool results came back three rounds in a row with no progress. Say "continue" and I will try a different approach.');break}
         // Syntax gate: only loop back for REAL breakage in written files.
         // Clean files with no open todos finish here — no redundant rounds.
         const validation=await validateWrittenFiles();
@@ -2371,7 +2398,27 @@ async function codingAutoContinue(){
           break;
         }
         const open=openTodoTexts();
-        addCodingSystemMsg('Tool results sent back to AI (step '+rounds+' of '+CODING_MAX_ROUNDS+') — press Stop anytime.');
+        if(codingRounds>codingPlanSteps){
+          // The declared plan ran out while work remains: make the model
+          // RECOUNT what it needs instead of hitting a fixed cap.
+          const beforePlan=codingPlanSteps;
+          const remainTxt=open.length?('this work is still open:\n- '+open.join('\n- ')):'no todos are open, but the task is not verified yet (nothing written or validated)';
+          if(codingReplans<CODING_MAX_REPLANS){
+            codingReplans++;
+            addCodingSystemMsg('Reached the '+beforePlan+'-step plan with work remaining — asking the AI to recount the steps it needs…');
+            codingHistory.push({role:'user',content:'You have used all '+beforePlan+' planned steps and '+remainTxt+'\nCount how many MORE tool rounds it will take to finish, then reply FIRST with a single line: PLAN-STEPS: <TOTAL steps for this whole task> (total, not remaining), followed by the tool blocks for the next step. If the work is genuinely finished, reply with a short summary and no tool blocks.'});
+            persistCodingChat();
+            codingStream=true;
+            const pturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+            codingStream=false;
+            persistCodingChat();
+            if(pturn.error)break;
+            if(codingPlanSteps>beforePlan){planJustExtended=true;addCodingSystemMsg('Plan extended to '+codingPlanSteps+' steps.');continue}
+          }
+          postCodingAssistant('Stopping after '+codingPlanSteps+' planned steps with work still remaining. Say "continue" and I will recount the remaining steps and pick up where I left off.');
+          break;
+        }
+        addCodingSystemMsg('Tool results sent back to AI (step '+codingRounds+' of '+codingPlanSteps+') — press Stop anytime.');
         codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
@@ -2384,6 +2431,18 @@ async function codingAutoContinue(){
       // No new tool executions: verify against open todos, or finish.
       const open=openTodoTexts();
       if(open.length===0)break;
+      if(planJustExtended){
+        // A just-extended plan is not a verdict: keep working, don't burn a setback.
+        planJustExtended=false;
+        codingHistory.push({role:'user',content:'Plan extended to '+codingPlanSteps+' steps. Continue with the next step now — emit your tool blocks, or a short summary if the work is already complete.'});
+        persistCodingChat();
+        codingStream=true;
+        const t2=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+        codingStream=false;
+        persistCodingChat();
+        if(t2.error)break;
+        continue;
+      }
       if(setbacks>=CODING_MAX_SETBACKS){giveUp(lastReason||'no further progress');break}
       addCodingSystemMsg('Verifying completed work against open todos…');
       // Ground truth FIRST: files the todos name must really exist.
@@ -2414,7 +2473,7 @@ async function codingAutoContinue(){
       if(vturn.error)break;
       // The verify reply may itself contain fresh fixes that just ran.
       const fresh=harvestCodingResults();
-      if(fresh.hasExecuted){rounds++;continue}
+      if(fresh.hasExecuted){codingRounds++;continue}
       const vm=(vturn.fullText||'').match(/VERDICT\s*:\s*(PASS|FAIL)\b\s*([^\n]{0,300})/i);
       if(vm&&vm[1].toUpperCase()==='PASS'){
         // Even a PASS claim is re-checked against the filesystem.

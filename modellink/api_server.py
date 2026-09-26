@@ -1503,7 +1503,17 @@ remains. The system independently verifies that every file you name
 actually exists AND is non-empty — false completion claims are rejected
 and sent back.
 7. Keep chat text SHORT (2-4 sentences). NEVER paste file contents into
-chat text — code lives in FILE_CREATE/FILE_EDIT blocks only.
+   chat text — code lives in FILE_CREATE/FILE_EDIT blocks only.
+
+STEP PLANNING (how this run is budgeted):
+- At the START of a task, before any tool block, write ONE line declaring how
+  many tool rounds YOU judge the task needs: PLAN-STEPS: N
+  (one round = one reply that runs tool blocks). Count honestly: inspect,
+  create or patch each file, run it, fix it.
+- You get exactly N rounds — there is no other cap. Never stop early because
+  of a counter; finish when the work is verified.
+- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a
+  higher number and the harness grants it (you may recount up to 3 times).
 
 Example:
 I will check the project contents first.
