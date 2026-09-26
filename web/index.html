@@ -1626,7 +1626,10 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;if(fsHandle)content=await fsReadFile(fname);else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(fname));const data=await r.json();if(r.ok)content=data.content}if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
-  sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block naming every file you will create, so progress can be verified file by file.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
+  // The server prompt already carries this block (api_server.py
+  // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
+  // for identical output. Only add it when it is genuinely missing.
+  if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block naming every file you will create, so progress can be verified file by file.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -1706,6 +1709,60 @@ function streamVisibleHTML(fullText){
 function updateStreamingContent(chat,contentEl,fullText){
   contentEl.innerHTML=streamVisibleHTML(fullText);
   if(chat.scrollHeight-chat.scrollTop-chat.clientHeight<120)chat.scrollTop=chat.scrollHeight;
+}
+// ---- Token optimisation: shrink what we resend -----------------------------
+// Every turn resends codingHistory verbatim, including the FULL body of files
+// the model wrote several rounds ago. Keeping only the newest block per path
+// (plus the last few messages untouched) cuts a typical turn from 20-60 KB to
+// a few KB without changing any decision: the model always still sees the
+// latest state of every file it has touched.
+// (Self-contained on purpose — these helpers are also loaded by the headless
+// test harnesses, which eval individual functions by name.)
+function markFileBlockPaths(text,seen){
+  const re=/FILE_(?:CREATE|EDIT|PATCH):[ \t]*\r?\n?([^\n]+)/g;let m;
+  while((m=re.exec(text))){const p=m[1].trim();if(p)seen[p]=1}
+}
+function compactFileBlocks(text,seen){
+  const specs=[['FILE_CREATE:','END_FILE_CREATE'],['FILE_EDIT:','END_FILE_EDIT'],['FILE_PATCH:','END_FILE_PATCH']];
+  let out=text;
+  for(const[marker,end]of specs){
+    const re=new RegExp(marker+'([ \\t]*\\r?\\n?[^\\n]+?)\\n([\\s\\S]*?)'+end,'g');
+    out=out.replace(re,(whole,pathLine,body)=>{
+      const p=pathLine.replace(/^[ \t]*\r?\n/,'').trim();
+      if(!p||body.length<400)return whole;
+      if(seen[p])return marker+pathLine+'\n['+p+' was already written earlier in this task ('+body.length+' chars) — omitted to save tokens. RUN_COMMAND:type '+p+' to re-read it if you need the exact current content.]\n'+end;
+      seen[p]=1; // first (newest) copy seen stays verbatim
+      return whole;
+    });
+  }
+  return out;
+}
+function compactToolResult(text){
+  // Old "Tool results:" echoes: keep the head (what ran) and the tail
+  // (open todos + instruction), drop the bulk of stale stdout.
+  if(text.indexOf('Tool results:')!==0||text.length<=900)return text;
+  return text.slice(0,500)+'\n…[earlier tool output trimmed to save tokens]…\n'+text.slice(-320);
+}
+function compactCodingMessages(messages){
+  if(!Array.isArray(messages)||messages.length<=7)return messages; // 6 kept verbatim
+  const seen=Object.create(null);
+  const out=messages.slice();
+  const cut=out.length-6;
+  for(let i=out.length-1;i>=cut;i--){ // newest first: record what is still shown
+    const m=out[i];if(m&&typeof m.content==='string')markFileBlockPaths(m.content,seen);
+  }
+  for(let i=cut-1;i>=0;i--){          // then walk older messages newest-first
+    const m=out[i];
+    if(!m||typeof m.content!=='string')continue;
+    if(m.role==='assistant'){
+      if(m.content.indexOf('FILE_CREATE:')<0&&m.content.indexOf('FILE_EDIT:')<0&&m.content.indexOf('FILE_PATCH:')<0)continue;
+      out[i]={role:m.role,content:compactFileBlocks(m.content,seen)};
+    }else if(m.role==='user'&&i<out.length-3){
+      const trimmed=compactToolResult(m.content);
+      if(trimmed!==m.content)out[i]={role:m.role,content:trimmed};
+    }
+  }
+  return out;
 }
 async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
@@ -2340,6 +2397,9 @@ async function verifyTodosAgainstReality(){
   return{ok:missing.length===0,missing};
 }
 async function streamCodingTurn(messages){
+  // Compact everything after the system message: callers assemble the window,
+  // this is the single choke point where stale file bodies get elided.
+  if(Array.isArray(messages)&&messages.length>1)messages=[messages[0],...compactCodingMessages(messages.slice(1))];
   const chat=document.getElementById('coding-chat');
   const assistantEl=document.createElement('div');
   assistantEl.className='coding-msg assistant';
@@ -2404,11 +2464,53 @@ async function sendCodingImprove(reason,nextAttempt){
   persistCodingChat();
   return t;
 }
+function todoListEverDeclared(history){
+  const h=history||(typeof codingHistory!=='undefined'?codingHistory:null);
+  if(!Array.isArray(h))return false;
+  return h.some(m=>m&&m.role==='assistant'&&typeof m.content==='string'&&m.content.indexOf('TODO_LIST:')>-1);
+}
+async function detectMissingAssets(writtenPaths){
+  // A page that references ./styles.css when that file does not exist ships
+  // broken. Detect it from the HTML the model just wrote, before the run
+  // ends, and send one corrective turn instead of shipping a naked page.
+  const missing=[];
+  try{
+    const htmlPaths=(writtenPaths||[]).filter(p=>/\.(html?|htm)$/i.test(p)).slice(0,8);
+    if(!htmlPaths.length)return missing;
+    await loadAllCodingFiles(true);
+    const have=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
+    if(!have.length)return missing;          // unknown project -> say nothing
+    const lower=have.map(p=>p.toLowerCase());
+    const byName={};have.forEach(p=>{byName[p.split('/').pop().toLowerCase()]=1});
+    for(const hp of htmlPaths){
+      let text='';
+      try{
+        if(typeof fsHandle!=='undefined'&&fsHandle)text=(await fsReadFile(hp))||'';
+        else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(hp));if(r.ok)text=(await r.json()).content||''}
+      }catch(e){text=''}
+      if(!text)continue;
+      const re=/(?:href|src|poster)\s*=\s*["']([^"']+)["']/gi;let m;
+      while((m=re.exec(text))){
+        let u=(m[1]||'').trim();
+        if(!u||/^(https?:|data:|mailto:|javascript:|tel:|#|\/\/)/i.test(u))continue;
+        u=u.split('#')[0].split('?')[0];
+        if(!u)continue;
+        const clean=u.replace(/^\.\//,'').toLowerCase();
+        const base=clean.split('/').pop();
+        if(!/\.(css|js|mjs|cjs|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|mp4|webm|mp3|pdf)$/i.test(base))continue;
+        if(lower.indexOf(clean)>-1||lower.some(p=>p.length>clean.length&&p.endsWith('/'+clean))||byName[base])continue;
+        if(missing.indexOf(base)===-1)missing.push(base);
+        if(missing.length>=6)return missing;
+      }
+    }
+  }catch(e){}
+  return missing;
+}
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
   codingRounds=0;codingReplans=0;
   let codingTruncRetries=0;
-  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,planJustExtended=false;
+  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,planJustExtended=false,lastAssetKey='',planAuditDone=false;
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const lastAssistantTruncated=()=>{
     const last=codingHistory.length?codingHistory[codingHistory.length-1]:null;
@@ -2446,6 +2548,26 @@ async function codingAutoContinue(){
           continue;
         }
         const open0=openTodoTexts();
+        // Broken asset references: fix before we ever talk about finishing.
+        if(validation.files.length>0){
+          const miss=await detectMissingAssets(validation.files);
+          if(miss.length){
+            const akey=miss.slice().sort().join('|');
+            if(akey!==lastAssetKey){
+              lastAssetKey=akey;
+              addCodingSystemMsg('Broken references found: '+miss.join(', '));
+              codingHistory.push({role:'user',content:'Your HTML references files that do not exist in the project: '+miss.join(', ')+' — the page would render with no styling or scripts. Create each missing file now with FILE_CREATE blocks containing real, working content, then reply with a TODO_LIST covering any work that is still outstanding.'});
+              persistCodingChat();
+              codingStream=true;
+              const aturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+              codingStream=false;
+              persistCodingChat();
+              if(aturn.error)break;
+              continue;
+            }
+          }
+        }
+
         // Finish only when a todo list actually described the work: without
         // one, "no open todos" is vacuously true and the loop would stop
         // after the FIRST file, leaving the rest of the site unwritten.
@@ -2509,11 +2631,34 @@ async function codingAutoContinue(){
       const open=openTodoTexts();
       if(open.length===0){
         const vfin=await validateWrittenFiles();
+        // Completion audit: finishing a task that NEVER produced a TODO_LIST
+        // is exactly how a "website" ends up as a lone index.html. Make the
+        // model enumerate what the task required and create what is missing.
+        if(!planAuditDone&&vfin.files.length>0&&todosAtStart===0&&!todoListEverDeclared()){
+          planAuditDone=true;
+          addCodingSystemMsg('Checking that nothing required was left out…');
+          codingHistory.push({role:'user',content:'Before this counts as finished: list EVERY file this task requires (a website needs its CSS and JS assets too), then compare against what exists. If ANY required file is missing, create it now with FILE_CREATE blocks containing real working content and emit a TODO_LIST naming the remaining work. Only if everything already exists reply with: VERDICT:PASS <one-line summary>.'});
+          persistCodingChat();
+          codingStream=true;
+          const aut=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+          codingStream=false;
+          persistCodingChat();
+          if(aut.error)break;
+          const wroteFiles=(codingWrittenPaths||[]).length>0;
+          const claimedPass=/VERDICT\s*:\s*PASS/i.test(aut.fullText||'');
+          if(wroteFiles||!claimedPass)continue;
+        }
         if(vfin.files.length&&vfin.ok){
           completeAllTodos();
           postCodingAssistant('Done — verified: '+vfin.files.join(', ')+' ('+vfin.files.length+' file'+(vfin.files.length!==1?'s':'')+', syntax OK).');
         }else if(vfin.files.length){
           postCodingAssistant('Finished writing files, but validation reported problems:\n'+vfin.errors.join('\n')+'\n\nSay "continue" and I will fix them.');
+        }else if(todoListEverDeclared()){
+          // No file written in the final round (the todos were simply closed):
+          // reality was already checked above, so still confirm completion
+          // instead of ending the run silently.
+          completeAllTodos();
+          postCodingAssistant('Done — verified: every listed file exists and passes syntax checks.');
         }
         break;
       }
