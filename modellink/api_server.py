@@ -32,7 +32,7 @@ sys.path.insert(0, APP_DIR)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("Omniilink")
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, RedirectResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
@@ -63,8 +63,11 @@ from modellink.auth import (
 )
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
-
 MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
+# The one endpoint allowed past the cap: coding file uploads (the endpoint
+# itself enforces a hard 50 MB while streaming to disk).
+BODY_LIMIT_EXEMPT_PREFIXES = ("/api/coding/file-upload",)
+
 
 class BodyLimitMiddleware:
     """Reject request bodies over MAX_BODY_BYTES (works for Content-Length and chunked)."""
@@ -74,6 +77,9 @@ class BodyLimitMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path", "").startswith(BODY_LIMIT_EXEMPT_PREFIXES):
             await self.app(scope, receive, send)
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
@@ -2280,6 +2286,66 @@ async def coding_preview_asset(request: Request, path: str):
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/coding/file-upload")
+async def coding_file_upload(request: Request, path: str = ""):
+    """Upload a file into the open project (opencode-style drag-and-drop).
+    The file travels as a raw octet-stream body and is streamed to disk with
+    a hard 50 MB cap; same containment rules as writes."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    rel = (path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel:
+        cd = request.headers.get("content-disposition", "")
+        m = re.search(r'filename="?([^";]+)"?', cd)
+        rel = (m.group(1) if m else "").strip().replace("\\", "/").lstrip("/")
+    if _bad_path(rel) or not rel:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    try:
+        os.makedirs(os.path.dirname(full) or folder, exist_ok=True)
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "Cannot create target folder"})
+    tmp = full + ".upload-" + secrets.token_hex(4)
+    size = 0
+    try:
+        with open(tmp, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > 50 * 1024 * 1024:
+                    out.close()
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                    return JSONResponse(status_code=413,
+                                        content={"error": "File too large (max 50MB)"})
+                out.write(chunk)
+        os.replace(tmp, full)
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    quota_err = _check_quota(user, _safe_username(user["username"]), size)
+    if quota_err:
+        try:
+            os.remove(full)
+        except OSError:
+            pass
+        return quota_err
+    logger.info(f"[CODING] Uploaded file: {rel} ({size} bytes) user={user.get('username','-')}")
+    return {"status": "ok", "path": rel, "size": size}
+
 
 @app.post("/api/coding/file-write")
 async def coding_file_write(request: Request, req: CodingFileWrite):
