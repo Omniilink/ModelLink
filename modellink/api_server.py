@@ -45,7 +45,7 @@ from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
     load_all_keys, MODEL_RATE_LIMITS,
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL,
-    get_language, set_language
+    get_language, set_language, normalize_level, EFFORT_LEVELS
 )
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
@@ -53,7 +53,8 @@ from modellink.auth import (
     update_user_name, update_user_password, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
     delete_user_provider_key, get_db, get_user_from_session,
-    revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key
+    revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key,
+    all_usernames
 )
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
@@ -386,10 +387,12 @@ def _request_is_https(request: Request) -> bool:
     return request.url.scheme == "https"
 
 def _bad_path(path: str) -> bool:
-    """Reject null bytes and absurd lengths in filesystem paths."""
+    """Reject null bytes, absurd lengths and `..` traversal in filesystem paths."""
     if not path or len(path) > 1024:
         return True
     if "\x00" in path:
+        return True
+    if any(seg == ".." for seg in path.replace("\\", "/").split("/")):
         return True
     return False
 
@@ -539,6 +542,42 @@ def _save_coding_folder(user_id: str, folder: Optional[str]):
     except Exception:
         pass
 
+def _user_prefs_path(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "prefs.json")
+
+def _load_user_prefs(user_id: str) -> dict:
+    """Best-effort load of per-user preferences (language, ...)."""
+    try:
+        p = _user_prefs_path(user_id)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    return {}
+
+def _save_user_pref(user_id: str, key: str, value):
+    """Best-effort persist of a single per-user preference."""
+    try:
+        prefs = _load_user_prefs(user_id)
+        prefs[key] = value
+        with open(_user_prefs_path(user_id), "w", encoding="utf-8") as f:
+            json.dump(prefs, f)
+    except Exception:
+        pass
+
+# The language value is interpolated into the system prompt, so it is
+# validated against a strict alphabet instead of being trusted.
+_LANGUAGE_RE = re.compile(r"[A-Za-z]{3,20}")
+
+def _user_language(user_id: str) -> str:
+    lang = _load_user_prefs(user_id).get("language")
+    if isinstance(lang, str) and _LANGUAGE_RE.fullmatch(lang.strip()):
+        return lang.strip()
+    return get_language()
+
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
         settings = _load_coding_settings(user_id, {
@@ -579,13 +618,13 @@ def get_provider_keys(request):
 # ==========================================
 def _log_visible_to(msg: str, username: Optional[str]) -> bool:
     """Per-user terminal filter. Admins (username None) see everything.
-    Others see lines tagged with their own `user=<name>` plus untagged
-    system lines — never another user's activity."""
+    Others only see lines tagged with their own `user=<name>` — untagged
+    system/server lines stay admin-only so internals never leak out."""
     if not username:
         return True
     i = msg.find("user=")
     if i == -1:
-        return True
+        return False
     rest = msg[i + 5:]
     return rest == username or rest.startswith(username + " ")
 
@@ -736,8 +775,7 @@ async def stream_logs(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
-    # Admins see the full firehose; everyone else gets only their own
-    # activity plus untagged system lines.
+    # Admins see the full firehose; everyone else only their own tagged lines.
     username = None if user.get("is_admin") else user.get("username")
     try:
         q = log_broadcaster.subscribe(username)
@@ -835,6 +873,18 @@ async def auth_signup(request: Request, req: SignupRequest):
         return JSONResponse(status_code=400, content={"error": "Username must be 3-32 chars: letters, numbers, - and _ only"})
     if len(req.password) < 6:
         return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
+    # Reserved: allowlisted admin handles can never be registered by anyone
+    # else. A brand-new database is exempt so the deployer can still claim
+    # their own handle on first run.
+    names = all_usernames()
+    if names and (username in _admin_allowlist() or
+                  _safe_username(username) in {_safe_username(n) for n in _admin_allowlist()}):
+        return JSONResponse(status_code=409, content={"error": "That username is reserved"})
+    # Two accounts must never share one filesystem folder: "bob" and "bob_"
+    # both sanitize to "bob", which would merge their private data.
+    safe = _safe_username(username)
+    if any(_safe_username(n) == safe for n in names):
+        return JSONResponse(status_code=409, content={"error": "Username already taken"})
     result = create_user(username, req.password, req.name)
     if "error" in result:
         return JSONResponse(status_code=409, content={"error": result["error"]})
@@ -1011,7 +1061,7 @@ async def get_settings(request: Request):
     settings = {
         "backup_model": get_backup_model(),
         "ollama_url": OLLAMA_BASE_URL,
-        "language": get_language(),
+        "language": _user_language(_safe_username(user["username"])),
         "is_admin": bool(user.get("is_admin")),
     }
     for prov_name, prov_cfg in PROVIDERS.items():
@@ -1144,33 +1194,27 @@ async def clear_key(request: Request, req: ClearKeyRequest):
 
 @app.get("/api/language")
 async def get_language_setting(http_request: Request):
-    _user, err = _require_auth(http_request)
+    user, err = _require_auth(http_request)
     if err:
         return err
-    return {"language": get_language()}
+    return {"language": _user_language(_safe_username(user["username"]))}
 
 class LanguageRequest(BaseModel):
     language: str
 
 @app.post("/api/language")
 async def set_language_setting(http_request: Request, request: LanguageRequest):
-    _user, err = _require_auth(http_request)
+    """Language is stored per account: one user's choice can no longer rewrite
+    the process-wide setting (and the system prompt) for everybody else."""
+    user, err = _require_auth(http_request)
     if err:
         return err
-    set_language(request.language)
-    settings_path = os.path.join(APP_DIR, "settings.json")
-    settings = {}
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-        except: pass
-    settings["language"] = request.language
-    with open(settings_path, "w") as f:
-        json.dump(settings, f)
-    os.environ["LANGUAGE"] = request.language
-    logger.info(f"Language set to: {request.language}")
-    return {"status": "ok", "language": request.language}
+    lang = (request.language or "").strip()
+    if not _LANGUAGE_RE.fullmatch(lang):
+        return JSONResponse(status_code=400, content={"error": "Invalid language"})
+    _save_user_pref(_safe_username(user["username"]), "language", lang)
+    logger.info(f"Language set to: {lang} user={user['username']}")
+    return {"status": "ok", "language": lang}
 
 def _split_used_model(used_model: str):
     """'groq/qwen3.6-27b' -> ('groq', 'qwen3.6-27b')."""
@@ -1196,9 +1240,11 @@ async def api_usage(request: Request, range: str = "24h"):
 
 @app.get("/api/network")
 async def api_network(request: Request):
-    user, err = _require_auth(request)
+    # Traffic totals describe every account on the box — admin only.
+    user, err = _require_admin(request)
     if err:
         return err
+    _audit("network.view", user, {"ip": request.client.host if request.client else ""})
     return network_usage.snapshot()
 
 @app.post("/v1/chat/completions")
@@ -1230,6 +1276,13 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
     is_stream = bool(is_stream)
 
+    # Optional generation controls from the UI menus: invalid values are
+    # coerced to "auto" (provider default) instead of rejecting the request.
+    effort = normalize_level(body.get("effort"), "auto")
+    thinking = normalize_level(body.get("thinking"), "auto")
+    req_opts = {"temperature": temp, "max_tokens": max_tokens, "effort": effort, "thinking": thinking,
+                "language": _user_language(_safe_username(user["username"]))}
+
     # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
     if not user.get("is_admin"):
@@ -1250,7 +1303,8 @@ async def chat_completions(request: Request):
         f"[CHAT] Request from user={user.get('username', '-')} "
         f"model={req_model} stream={is_stream} "
         f"messages={len(messages)} prompt_chars={prompt_chars} "
-        f"est_tokens~{est_prompt_tokens} temp={temp} max_tokens={max_tokens}"
+        f"est_tokens~{est_prompt_tokens} temp={temp} max_tokens={max_tokens} "
+        f"effort={effort} thinking={thinking}"
     )
 
     def _finish_usage(used_model: str, completion_tokens: int = 0, status: int = 200):
@@ -1282,6 +1336,7 @@ async def chat_completions(request: Request):
                 max_tokens=max_tokens,
                 stream=True,
                 user_keys=user_keys,
+                opts=req_opts,
             )
         except Exception as e:
             logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
@@ -1370,6 +1425,7 @@ async def chat_completions(request: Request):
                 max_tokens=max_tokens,
                 stream=False,
                 user_keys=user_keys,
+                opts=req_opts,
             )
         except Exception as e:
             _finish_usage("unknown/unknown", status=500)
@@ -2577,10 +2633,17 @@ def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
 # Heuristic escape patterns for the restricted (non-admin) shell.
 # This is defense-in-depth, not a sandbox boundary: the real containment is
 # the forced cwd inside the user's own data dir plus authentication.
-# - drive-letter absolute paths (C:\, D:/) — lookbehind avoids matching http://
+# - drive-letter absolute paths (C:\, D:/) - lookbehind avoids matching http://
 # - UNC paths (\\server\share)
 # - parent (..) segments
-_RESTRICTED_CMD_RE = re.compile(r"(?<![a-zA-Z/])[a-zA-Z]:[\\/]|\\\\\S|\.\.")
+# - %VAR% expansion (leaks environment variables / escapes the folder)
+# - script hosts and LOLBins that can reach outside the sandbox
+_RESTRICTED_CMD_RE = re.compile(
+    r"(?<![a-zA-Z/])[a-zA-Z]:[\\/]|\\\\\S|\.\."
+    r"|%[^%]"
+    r"|(?<![a-z0-9_])(powershell|pwsh|wscript|cscript|mshta|rundll32|bitsadmin|certutil)(?![a-z0-9_])"
+    r"|(?<![a-z0-9_])reg\s+(?:add|delete|query|import|export|copy)",
+    re.IGNORECASE)
 
 
 @app.post("/api/coding/run-command")
@@ -2615,7 +2678,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         else:
             return JSONResponse(status_code=400, content={"error": "Open one of your projects first — commands run inside it"})
         if _RESTRICTED_CMD_RE.search(command):
-            return JSONResponse(status_code=403, content={"error": "Absolute paths and .. are not allowed — use paths inside your project folder"})
+            return JSONResponse(status_code=403, content={"error": "Absolute paths, .., %VAR% expansion and script hosts (powershell, wscript, mshta, ...) are not allowed — use paths inside your project folder"})
     try:
         sb = _sandbox_config()
         backend = "host"
@@ -2744,7 +2807,9 @@ async def list_api_keys(request: Request):
     providers_with_keys = {}
     for prov_id, prov_info in PROVIDER_INFO.items():
         has_key = prov_id in db_provider_keys and len(db_provider_keys[prov_id]) > 10
-        if not has_key:
+        if not has_key and user.get("is_admin"):
+            # Server .env keys only ever reveal themselves to an admin: a
+            # plain account must not be able to probe which keys the host has.
             env_prefix = prov_info["env"].replace("_API_KEY", "")
             for env_key, env_val in os.environ.items():
                 if env_key.startswith(env_prefix) and "_API_KEY" in env_key and env_val and len(env_val) > 10 and not env_val.startswith("your_"):

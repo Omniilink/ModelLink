@@ -1026,8 +1026,18 @@ const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
 let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
 
-function getChats(){try{return JSON.parse(localStorage.getItem('modellink_chats')||'{}')}catch(e){return{}}}
-function saveChats(c){localStorage.setItem('modellink_chats',JSON.stringify(c))}
+// Chat stores are namespaced per signed-in account so two people sharing a
+// browser never read or overwrite each other's conversations. Before the
+// namespace exists the legacy key is adopted once by the first account in.
+function storeKey(base){
+  const u=(window.__user&&window.__user.username)?String(window.__user.username).toLowerCase():null;
+  if(!u)return base;
+  const key=base+'@'+u;
+  try{const legacy=localStorage.getItem(base);if(legacy!==null&&localStorage.getItem(key)===null){localStorage.setItem(key,legacy);localStorage.removeItem(base)}}catch(e){}
+  return key;
+}
+function getChats(){try{return JSON.parse(localStorage.getItem(storeKey('modellink_chats'))||'{}')}catch(e){return{}}}
+function saveChats(c){localStorage.setItem(storeKey('modellink_chats'),JSON.stringify(c))}
 function getChatTitle(h){const f=h.find(m=>m.role==='user');return f?f.content.slice(0,40)+(f.content.length>40?'...':''):'New Chat'}
 function getPrompts(){try{return JSON.parse(localStorage.getItem('omnilink_prompts')||'[]')}catch(e){return[]}}
 function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p))}
@@ -2310,7 +2320,7 @@ function codingChatKey(){return(fsHandle?'local:':'srv:')+(codingFolder||'lobby'
 function persistCodingChat(){
   try{
     if(!codingHistory||codingHistory.length===0)return;
-    const all=JSON.parse(localStorage.getItem('omnilink_coding_chats')||'{}');
+    const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     // Truncate huge messages (e.g. viewed files) so one big file can't
     // blow the localStorage quota and silently kill all persistence.
     const history=codingHistory.slice(-60).map(m=>{
@@ -2321,7 +2331,7 @@ function persistCodingChat(){
     all[codingChatKey()]={updated:Date.now(),history};
     const keys=Object.keys(all).sort((a,b)=>(all[a].updated||0)-(all[b].updated||0));
     while(keys.length>20)delete all[keys.shift()];
-    localStorage.setItem('omnilink_coding_chats',JSON.stringify(all));
+    localStorage.setItem(storeKey('omnilink_coding_chats'),JSON.stringify(all));
   }catch(e){}
 }
 function appendCodingHistoryMsg(m){
@@ -2340,7 +2350,7 @@ function appendCodingHistoryMsg(m){
 function restoreCodingChat(){
   const chat=document.getElementById('coding-chat');chat.innerHTML='';
   let saved=null;
-  try{const all=JSON.parse(localStorage.getItem('omnilink_coding_chats')||'{}');saved=all[codingChatKey()]}catch(e){}
+  try{const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');saved=all[codingChatKey()]}catch(e){}
   if(saved&&saved.history&&saved.history.length){
     codingHistory=[...saved.history];
     for(const m of saved.history)appendCodingHistoryMsg(m);
@@ -3056,9 +3066,9 @@ async function clearCodingChat(){
   if(!(await appConfirm('Clear this coding chat? This cannot be undone.')))return;
   codingHistory=[];codingTodos=[];renderCodingTodos();chat.innerHTML='';
   try{
-    const all=JSON.parse(localStorage.getItem('omnilink_coding_chats')||'{}');
+    const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     delete all[codingChatKey()];
-    localStorage.setItem('omnilink_coding_chats',JSON.stringify(all));
+    localStorage.setItem(storeKey('omnilink_coding_chats'),JSON.stringify(all));
   }catch(e){}
   showToast('Coding chat cleared','success');
 }
@@ -3156,7 +3166,7 @@ function showAuthSignup(){document.getElementById('auth-form-signin').style.disp
 function showAuthSignin(){document.getElementById('auth-form-signup').style.display='none';document.getElementById('auth-form-signin').style.display='';document.getElementById('auth-modal-title').textContent='Sign In';document.getElementById('auth-username').focus()}
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
-async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}return data.user}else{window.__user=null;try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});showAuthModal()}
+async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}return data.user}else{window.__user=null;try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
 
@@ -3242,9 +3252,9 @@ function forgetCodingChatForFolder(folderPath){
   // A deleted project's chat log must die with it, or recreating a
   // same-named project resurrects stale logs (same storage key).
   try{
-    const all=JSON.parse(localStorage.getItem('omnilink_coding_chats')||'{}');
+    const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     const k='srv:'+(folderPath||'');
-    if(all[k]){delete all[k];localStorage.setItem('omnilink_coding_chats',JSON.stringify(all))}
+    if(all[k]){delete all[k];localStorage.setItem(storeKey('omnilink_coding_chats'),JSON.stringify(all))}
   }catch(e){}
 }
 async function deleteProject(name,path){try{const r=await authFetch(API+'/api/projects/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const res=await r.json();if(res.error){appAlert('Delete failed: '+res.error);return false}forgetCodingChatForFolder(path);if(name===currentProjectName){updateProjectBadge('');closeCodingFolder()}loadProjectList();loadProjectsSidebar();return true}catch(e){appAlert('Delete failed: '+e.message);return false}}
