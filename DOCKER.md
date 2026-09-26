@@ -181,43 +181,23 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 | `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
 | `OMNIILINK_SANDBOX_CPUS` | `1.0` | CPU cap per command |
-| `OMNIILINK_AUTOUPDATE` | `1` | `1` = poll origin for new commits and apply them (see below) · `0` = never touch the checkout |
-| `OMNIILINK_AUTOUPDATE_INTERVAL` | `60` | Seconds between polls (min 10) |
 
 After editing, restart just the API: `docker compose up -d api`.
 Installing other runtimes (another Python/Node version) means extending
 `sandbox.Dockerfile` and rebuilding — ask and it can be added.
 
-## Auto-update (no update.bat needed)
+## Updating
 
-Once deployed, the server polls GitHub every 60 seconds. When a push shows up
-it pulls with `git pull --ff-only` and rebuilds/recreates the `api` container
-through a throwaway `omniilink-updater` container, with every bind mount
-verified before anything is recreated. The admin panel (`/admin` → Auto
-update) shows the state, both commit ids and the running job, plus a
-"Check now" button for an immediate poll.
+Run `update.bat` on the host: it does `git pull`, verifies the mounted
+files, then `docker compose up -d --build`. There is no update button and
+nothing in the app touches the checkout — the panel never pulls, restarts
+or rebuilds anything.
 
-It only ever fast-forwards. Uncommitted changes to tracked files, history
-that has diverged, a `remote.origin.url` that is not this repository, or
-missing tooling each stop it — the reason is shown in the panel instead of
-being forced through. A failed attempt is retried after 10 minutes, not
-every poll.
-
-- `OMNIILINK_AUTOUPDATE=0` disables it entirely.
-- `OMNIILINK_AUTOUPDATE_INTERVAL` sets the period in seconds (default 60).
-- `OMNIILINK_GIT_REPO` is the comma-separated list of remotes auto-update
-  will accept (`https://github.com/Omniilink/ModelLink.git,https://github.com/Tribbninja/ModelLink.git`
-  by default — the account was renamed, both URLs are the same project).
-  Any other `remote.origin.url` is refused before a single byte is fetched.
-
-The updater image has to exist before the first self-update, so the first
-update after this change still goes through `update.bat`.
-
-Private repo? The updater has no git credentials of its own. Create a token
+Private repo? `git pull` needs credentials of its own. Create a token
 (GitHub Settings → Developer settings → Personal access tokens, classic
-`repo` scope) and set `OMNIILINK_GIT_TOKEN` in the server `.env` — it is
-picked up without a restart. The token travels in a single-use file the
-updater deletes at startup; it never appears in job output, the UI, or logs.
+`repo` scope) and authenticate with it once on the host; it is stored by
+git for later pulls. `OMNIILINK_GIT_TOKEN` exists only for the optional
+`updater/omni-update` script, which nothing runs automatically.
 
 ## Useful commands
 

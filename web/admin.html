@@ -134,16 +134,6 @@ select:focus,input[type=text]:focus{border-color:var(--accent)}
             </div>
           </div>
         </div>
-        <h2>Auto update</h2>
-        <div class="panel">
-          <div class="tools">
-            <button class="btn primary" id="btn-au-check">Check now</button>
-            <span class="chip" id="au-state">…</span>
-            <span class="muted" id="au-detail"></span>
-          </div>
-          <div class="kv" id="au-info"></div>
-          <p class="muted" style="margin:10px 0 0;font-size:12px">A push to <span class="mono" id="au-repo-hint">GitHub</span> is pulled and restarted automatically within a minute. Only fast-forwards are applied — local changes, diverged history or a missing updater image are reported here instead.</p>
-        </div>
         <div id="ov-jobs"></div>
       </section>
 
@@ -279,7 +269,7 @@ function show(name){
   view=name;$('#title').textContent=TITLES[name]||name;
   Array.prototype.forEach.call(document.querySelectorAll('nav button'),function(b){b.classList.toggle('on',b.dataset.view===name)});
   Array.prototype.forEach.call(document.querySelectorAll('.view'),function(s){s.classList.toggle('on',s.id==='v-'+name)});
-  clearTimer('logs');clearTimer('audit');clearTimer('au');
+  clearTimer('logs');clearTimer('audit');
   if(name==='overview')loadOverview();
   if(name==='users')loadUsers();
   if(name==='usage')loadUsage();
@@ -334,7 +324,6 @@ async function loadOverview(){
     ['Allowlist',caps.admin_users.join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],
     ['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']
   ]);
-  renderAuto(d.autoupdate||{});
   renderJobs(d.jobs||[]);
 }
 function renderJobs(jobs){
@@ -344,44 +333,6 @@ function renderJobs(jobs){
     var pre=el('pre',null,(j.lines||[]).join('\n'));pre.style.maxHeight='30vh';p.appendChild(pre);box.appendChild(p);
   });
 }
-
-/* ---------------- auto update ---------------- */
-var AU_CHIP={up_to_date:'ok',updating:'warn',checking:'warn',blocked:'bad',
-             diverged:'bad',error:'bad',unavailable:'bad',disabled:'warn',idle:''};
-function auTime(t){return t?new Date(t*1000).toLocaleString():'—'}
-function renderAuto(au){
-  var st=String(au.state||'idle');
-  var chip=$('#au-state');
-  chip.className='chip'+(AU_CHIP[st]?' '+AU_CHIP[st]:'');
-  chip.textContent=st.replace(/_/g,' ');
-  $('#au-detail').textContent=au.detail||'';
-  $('#au-repo-hint').textContent=au.origin||String(au.repo||'').split(',')[0]||'GitHub';
-  kv($('#au-info'),[
-    ['Enabled',au.enabled?'yes · every '+(au.interval||60)+'s':'no (OMNIILINK_AUTOUPDATE=0)'],
-    ['Allowed repos',au.repo||'—'],
-    ['Origin URL',au.origin||'—'],
-    ['Branch',au.branch||'—'],
-    ['Local HEAD',au.local?au.local.slice(0,12):'—'],
-    ['Origin HEAD',au.remote?au.remote.slice(0,12):'—'],
-    ['Tracked changes',au.dirty?'present — updates are held back':'none'],
-    ['Last check',auTime(au.last_check)],
-    ['Next check',au.enabled?auTime(au.next_check):'—'],
-    ['Last update',au.last_apply?auTime(au.last_apply):'never'],
-    ['Update job',au.job?(au.job.id+' · '+au.job.status):'none']
-  ]);
-  if(au.state==='updating')arm('au',loadOverview,3000);else clearTimer('au');
-}
-$('#btn-au-check').onclick=async function(){
-  if(busy)return;busy=true;this.disabled=true;
-  try{
-    var au=await api('/api/admin/autoupdate/check',{method:'POST',body:'{}'});
-    renderAuto(au);
-    var bad=(au.state==='error'||au.state==='blocked'||au.state==='diverged'||au.state==='unavailable');
-    toast('Checked: '+String(au.state||'').replace(/_/g,' '),bad?'error':'ok');
-    if(au.state==='updating')loadOverview();
-  }catch(e){toast(e.message,'error')}
-  finally{busy=false;this.disabled=false}
-};
 
 /* ---------------- users ---------------- */
 async function loadUsers(){
