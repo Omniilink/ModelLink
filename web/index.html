@@ -186,6 +186,8 @@ a:hover{text-decoration:underline}
 .coding-msg-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
 .coding-msg-model{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px}
 .coding-msg.user .coding-msg-content{background:var(--accent-dim);border-color:var(--accent);color:#fff}
+.coding-msg.sys .coding-msg-avatar{display:none}
+.coding-msg.sys .coding-msg-content{background:none;border:none;padding:1px 0 1px 36px;font-size:11.5px;line-height:1.55;color:var(--text-muted)}
 .coding-msg-tool{margin-top:8px;padding:8px 12px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);font-family:var(--mono);font-size:11px;color:var(--text-muted)}
 .coding-msg-tool .tool-label{color:var(--accent-light);font-weight:600;margin-bottom:4px}
 .coding-input-area{padding:10px 16px;border-top:1px solid var(--border);background:var(--bg-secondary)}
@@ -1591,7 +1593,7 @@ function closeFilePreview(){const f=document.getElementById('file-preview-frame'
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
 function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
-function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
+function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
 
 function handleCodingKey(e){const dd=document.getElementById('at-dropdown');const isOpen=dd&&dd.classList.contains('open');
   if(isOpen){const items=dd.querySelectorAll('.at-dropdown-item');const sel=dd.querySelector('.at-dropdown-item.selected');let idx=Array.from(items).indexOf(sel);
@@ -1650,8 +1652,13 @@ function streamHiddenSpans(fullText){
   let m;
   const fp=/```\w*\n[\s\S]*?\n```/g;
   while((m=fp.exec(fullText)))push(m.index,m.index+m[0].length);
-  const bp=/(FILE_CREATE:.+?\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:.+?\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:.+?(?:\nEND_FILE_DELETE|$)|FILE_PATCH:.+?\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
+  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
   while((m=bp.exec(fullText)))push(m.index,m.index+m[0].length);
+  // Protocol lines: the parser reads them, the user never should.
+  const pp1=/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*[ \t]*\r?\n?/gmi;
+  const pp2=/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi;
+  while((m=pp1.exec(fullText)))push(m.index,m.index+m[0].length);
+  while((m=pp2.exec(fullText)))push(m.index,m.index+m[0].length);
   spans.sort((a,b)=>a[0]-b[0]);
   const merged=[];
   for(const s of spans){
@@ -1667,7 +1674,7 @@ function streamHiddenSpans(fullText){
   // to line starts so prose mentions mid-sentence never trigger it.
   const coveredEnd=merged.length?merged[merged.length-1][1]:0;
   const tail=fullText.slice(coveredEnd);
-  const um=/^ {0,3}(```\w*|FILE_CREATE:.+|FILE_EDIT:.+|FILE_DELETE:.+|FILE_PATCH:.+|RUN_COMMAND:.*|TODO_LIST:|QUESTION:[^\n]*)/m.exec(tail);
+  const um=/^ {0,3}(```\w*|FILE_CREATE:[^\n]*|FILE_EDIT:[^\n]*|FILE_DELETE:[^\n]*|FILE_PATCH:[^\n]*|RUN_COMMAND:.*|TODO_LIST:|QUESTION:[^\n]*)/m.exec(tail);
   if(um)merged.push([coveredEnd+um.index,fullText.length]);
   merged.sort((a,b)=>a[0]-b[0]);
   return merged;
@@ -1677,7 +1684,7 @@ function streamVisibleHTML(fullText){
   if(!merged.length)return renderContent(fullText);
   let label='writing code…';
   const head=fullText.slice(merged[0][0],merged[0][0]+300);
-  const fm=head.match(/^(?:FILE_CREATE|FILE_EDIT):(.+)$/m);
+  const fm=head.match(/^(?:FILE_CREATE|FILE_EDIT):[ \t]*(?:\r?\n[ \t]*)?([^\n]+)$/m);
   const rm=head.match(/^RUN_COMMAND:[ \t]*\n?([^\n]{1,60})/m);
   if(fm)label='writing '+fm[1].trim().slice(0,60)+'…';
   else if(rm&&(rm[1]||'').trim())label='running '+rm[1].trim()+'…';
@@ -1686,7 +1693,10 @@ function streamVisibleHTML(fullText){
   let out='',pos=0;
   for(const s of merged){out+=fullText.slice(pos,s[0]);pos=s[1]}
   out+=fullText.slice(pos);
-  return renderContent(out)+'<div class="stream-code-note"><span></span>'+escapeHtml(label)+'</div>';
+  // Everything visible so far may be protocol only (plan/verdict lines) —
+  // never render an empty bubble.
+  const body=out.trim()?renderContent(out):'<span style="color:var(--text-muted);font-size:11.5px">…</span>';
+  return body+'<div class="stream-code-note"><span></span>'+escapeHtml(label)+'</div>';
 }
 function updateStreamingContent(chat,contentEl,fullText){
   contentEl.innerHTML=streamVisibleHTML(fullText);
@@ -1814,14 +1824,28 @@ async function applyAllToolBlocks(){
 }
 function stripToolBlocks(text){
   let c=text;
-  c=c.replace(/FILE_CREATE:(.+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g,'');
-  c=c.replace(/FILE_EDIT:(.+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g,'');
-  c=c.replace(/FILE_DELETE:(.+?)(?:\nEND_FILE_DELETE|$)/g,'');
-  c=c.replace(/FILE_PATCH:(.+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,'');
+  // Path capture tolerates the model putting it on the line AFTER the marker
+  // (`FILE_EDIT:` newline `index.html`) — otherwise the block leaks into chat.
+  c=c.replace(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g,'');
+  c=c.replace(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g,'');
+  c=c.replace(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g,'');
+  c=c.replace(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,'');
   c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
   c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,'');
   c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,'');
   return c.trim();
+}
+function stripProtocolLines(text){
+  // Protocol lines are for the parser, never for the user: plan declarations,
+  // verdict tokens, and stray markers from blocks the parser never consumed.
+  let c=String(text||'');
+  c=c.replace(/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*\r?\n?/gmi,'');
+  c=c.replace(/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi,'');
+  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_TODO_LIST)[^\n]*\r?\n?/gmi,'');
+  return c;
+}
+function cleanCodingProse(text){
+  return stripProtocolLines(stripToolBlocks(text)).replace(/\n{3,}/g,'\n\n').trim();
 }
 function fmtCmdResult(result){
   const t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
@@ -1976,12 +2000,12 @@ async function continueCodingAfterAnswer(){
 async function processCodingActions(text,msgEl){
   codingTodosNew=false;
   let shownFallback=0;
-  const fileCreates=[...text.matchAll(/FILE_CREATE:(.+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:(.+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:(.+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...text.matchAll(/FILE_PATCH:(.+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...text.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
+  const fileCreates=[...text.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...text.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...text.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   parseCodingTodos(text);
   if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length+filePatches.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
-  if(contentEl&&hasToolBlocks){const cleaned=stripToolBlocks(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(fileCreates.length+fileEdits.length+filePatches.length)parts.push((fileCreates.length+fileEdits.length+filePatches.length)+' file action'+(fileCreates.length+fileEdits.length+filePatches.length!==1?'s':''));if(commands.length)parts.push(commands.length+' command'+(commands.length!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
+  if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(fileCreates.length+fileEdits.length+filePatches.length)parts.push((fileCreates.length+fileEdits.length+filePatches.length)+' file action'+(fileCreates.length+fileEdits.length+filePatches.length!==1?'s':''));if(commands.length)parts.push(commands.length+' command'+(commands.length!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   const codingSettings=await fetchCodingSettings();
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     if(codingSettings.auto_create){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
@@ -2097,12 +2121,7 @@ async function processCodingActions(text,msgEl){
     }
     // Bare code dumped as prose (no fences, no blocks): same save UI so it
     // can still land in a file with one approval click.
-    const stripped=text.replace(/```(\w*)\n([\s\S]*?)```/g,'')
-      .replace(/FILE_CREATE:(.+?)\n([\s\S]*?)END_FILE_CREATE/g,'')
-      .replace(/FILE_EDIT:(.+?)\n([\s\S]*?)END_FILE_EDIT/g,'')
-      .replace(/FILE_DELETE:(.+?)\nEND_FILE_DELETE/g,'')
-      .replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'')
-      .replace(/TODO_LIST:\n([\s\S]*?)END_TODO_LIST/g,'');
+    const stripped=stripProtocolLines(stripToolBlocks(text.replace(/```(\w*)\n([\s\S]*?)```/g,'')));
     for(const run of extractBareCodeRuns(stripped).slice(0,5)){
       const code=run.code;shownBare++;
       const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
@@ -2129,7 +2148,7 @@ async function processCodingActions(text,msgEl){
     shownFallback=shown+shownRun+shownBare;
     if(shownFallback>0){
       // The cards below carry the code: keep chat text clean.
-      const redacted=redactBareCode(text.replace(/```(\w*)\n([\s\S]*?)```/g,
+      const redacted=redactBareCode(cleanCodingProse(text).replace(/```(\w*)\n([\s\S]*?)```/g,
         (m,lang)=>'\n[code block'+(lang?' ('+lang+')':'')+' — see card below]\n'));
       const ce=msgEl.querySelector('.coding-msg-content');
       if(ce&&redacted.trim())ce.innerHTML=renderContent(redacted);
@@ -2195,7 +2214,7 @@ function appendCodingHistoryMsg(m){
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
-  el.querySelector('.coding-msg-content').innerHTML=renderContent(stripToolBlocks(m.content||''));
+  el.querySelector('.coding-msg-content').innerHTML=renderContent(cleanCodingProse(m.content||''));
   chat.appendChild(el);
 }
 function restoreCodingChat(){
