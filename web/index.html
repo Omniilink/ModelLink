@@ -164,6 +164,9 @@ a:hover{text-decoration:underline}
 .coding-toolbar button:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .coding-toolbar button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .coding-toolbar button.primary:hover{background:var(--accent-light)}
+.coding-toolbar select{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);font-size:11px;padding:4px 6px;cursor:pointer;transition:all .12s;font-family:var(--font);outline:none;flex-shrink:0}
+.coding-toolbar select:hover{background:var(--bg-hover);color:var(--text-primary)}
+.coding-toolbar select:focus{border-color:var(--accent)}
 #coding-project-badge button:hover{opacity:1 !important}
 #coding-project-badge button[title="Delete project"]:hover{background:var(--error) !important;color:#fff !important}
 #coding-project-badge button[title="Switch project"]:hover{background:var(--accent) !important;color:#fff !important}
@@ -942,7 +945,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button class="primary" id="coding-open-btn" onclick="openCodingFolder()">Open</button>
           <button onclick="refreshCodingTree()">Refresh</button>
           <button onclick="toggleCodingOutput()">Terminal</button>
-          <button onclick="exportCodingChat()" title="Download full coding log as .txt">Export .txt</button>
+          <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
+          <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
           <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
           <button onclick="closeCodingFolder()" title="Close folder" id="coding-close-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font)">&times;</button>
@@ -1075,7 +1079,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
-  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
+  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
+  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
 });
@@ -2639,17 +2644,161 @@ async function codingRunCmd(command){try{const shortCmd=command.length>120?comma
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
 function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight}
 function toggleCodingOutput(){document.getElementById('coding-output').classList.toggle('open')}
-function exportCodingChat(){
-  if(!codingHistory||codingHistory.length===0){showToast('No coding chat to export','error');return}
-  const proj=currentProjectName||folderBaseName(codingFolder)||'lobby';
-  let txt='Omniilink Coding Chat Export\nProject: '+proj+'\nDate: '+new Date().toLocaleString()+'\nMessages: '+codingHistory.length+'\n\n';
-  codingHistory.forEach((m,i)=>{
-    const who=m.role==='user'?'YOU':('OMNIILINK'+(m.model?' ('+m.model+')':''));
-    txt+='===== '+who+' (#'+(i+1)+') =====\n'+(m.content||'')+'\n\n';
-  });
-  if(codingTodos&&codingTodos.length){txt+='===== TODOS =====\n';codingTodos.forEach(t=>{txt+=(t.done?'[x] ':'[ ] ')+t.text+'\n'});txt+='\n'}
-  if(codingOutputLines&&codingOutputLines.length){txt+='===== TERMINAL OUTPUT =====\n'+codingOutputLines.join('\n')+'\n'}
-  const blob=new Blob([txt],{type:'text/plain'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='coding-'+String(proj).replace(/[^a-z0-9]/gi,'_')+'-'+Date.now()+'.txt';a.click();URL.revokeObjectURL(url);showToast('Coding chat exported','success');
+function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
+function downloadBlob(blob,name){
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),6000);
+}
+async function downloadProject(){
+  const fmt=archiveFormat();
+  try{
+    if(fsHandle){await downloadProjectLocal(fmt);return}
+    if(!codingFolder){showToast('Open a project folder first','error');return}
+    // Top-level navigation carries the SameSite=Lax session cookie.
+    const a=document.createElement('a');
+    a.href=API+'/api/coding/download-project?format='+encodeURIComponent(fmt);
+    a.download='';
+    document.body.appendChild(a);a.click();a.remove();
+    showToast('Preparing project archive…','info');
+  }catch(e){showToast('Download failed: '+(e&&e.message||e),'error')}
+}
+// ---- browser-local project archive (File System Access mode) ----
+const ARCHIVE_SKIP_DIRS=new Set(['.git','node_modules','__pycache__','.venv','venv','.next','.turbo','.cache','.pytest_cache','.mypy_cache','bower_components','.eggs','.gradle']);
+const ARCHIVE_SKIP_FILES=new Set(['.DS_Store','Thumbs.db','desktop.ini']);
+const ARCHIVE_SKIP_EXT=new Set(['.pyc','.pyo','.class']);
+const ARCHIVE_MAX_BYTES=512*1024*1024;
+async function fsCollectArchive(dir,prefix,out,total){
+  for await(const[name,entry]of dir.entries()){
+    const path=prefix?prefix+'/'+name:name;
+    if(entry.kind==='directory'){
+      if(ARCHIVE_SKIP_DIRS.has(name))continue;
+      await fsCollectArchive(entry,path,out,total);
+    }else{
+      if(ARCHIVE_SKIP_FILES.has(name))continue;
+      const ext='.'+String(name).split('.').pop().toLowerCase();
+      if(ARCHIVE_SKIP_EXT.has(ext))continue;
+      let size=0;try{size=(await entry.getFile()).size}catch(e){}
+      out.push({path,handle:entry});
+      out.total=(out.total||0)+size;
+      if(out.total>ARCHIVE_MAX_BYTES)throw new Error('Project is too large to archive (over 512 MB)');
+    }
+  }
+  return out;
+}
+const CRC_TABLE=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[n]=c>>>0}return t})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_TABLE[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+async function pipeCompress(u8,type){
+  if(typeof CompressionStream==='undefined')return null;
+  try{
+    const s=new Blob([u8]).stream().pipeThrough(new CompressionStream(type));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }catch(e){return null}
+}
+function dosTime(ms){
+  const d=new Date(ms||Date.now());
+  return{time:((d.getHours()<<11)|(d.getMinutes()<<5)|(Math.floor(d.getSeconds()/2)))&0xFFFF,
+         date:(((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate())&0xFFFF};
+}
+async function fsMakeZip(entries){
+  const enc=new TextEncoder();const parts=[];const central=[];let offset=0;let done=0;
+  for(const e of entries){
+    const file=await e.handle.getFile();
+    const u8=new Uint8Array(await file.arrayBuffer());
+    let data=u8,method=0;
+    if(u8.length>64){
+      const z=await pipeCompress(u8,'deflate-raw');
+      if(z&&z.length<u8.length*0.98){data=z;method=8}
+    }
+    const nameB=enc.encode(e.path);
+    const crc=crc32(u8);
+    const t=dosTime(file.lastModified);
+    const lh=new Uint8Array(30+nameB.length);
+    const dv=new DataView(lh.buffer);
+    dv.setUint32(0,0x04034b50,true);dv.setUint16(4,20,true);dv.setUint16(6,0x0800,true);
+    dv.setUint16(8,method,true);dv.setUint16(10,t.time,true);dv.setUint16(12,t.date,true);
+    dv.setUint32(14,crc,true);dv.setUint32(18,data.length,true);dv.setUint32(22,u8.length,true);
+    dv.setUint16(26,nameB.length,true);dv.setUint16(28,0,true);
+    lh.set(nameB,30);
+    parts.push(lh,data);
+    central.push({nameB,crc,csize:data.length,usize:u8.length,method,time:t.time,date:t.date,offset});
+    offset+=lh.length+data.length;
+    if(++done%100===0)showToast('Archiving… '+done+'/'+entries.length,'info');
+  }
+  const cdParts=[];let cdSize=0;
+  for(const c of central){
+    const rec=new Uint8Array(46+c.nameB.length);
+    const dv=new DataView(rec.buffer);
+    dv.setUint32(0,0x02014b50,true);dv.setUint16(4,20,true);dv.setUint16(6,20,true);
+    dv.setUint16(8,0x0800,true);dv.setUint16(10,c.method,true);
+    dv.setUint16(12,c.time,true);dv.setUint16(14,c.date,true);
+    dv.setUint32(16,c.crc,true);dv.setUint32(20,c.csize,true);dv.setUint32(24,c.usize,true);
+    dv.setUint16(28,c.nameB.length,true);dv.setUint16(30,0,true);dv.setUint16(32,0,true);
+    dv.setUint16(34,0,true);dv.setUint16(36,0,true);dv.setUint32(38,0,true);
+    dv.setUint32(42,c.offset,true);
+    rec.set(c.nameB,46);
+    cdParts.push(rec);cdSize+=rec.length;
+  }
+  const eocd=new Uint8Array(22);
+  const dv=new DataView(eocd.buffer);
+  dv.setUint32(0,0x06054b50,true);dv.setUint16(4,0,true);dv.setUint16(6,0,true);
+  dv.setUint16(8,central.length,true);dv.setUint16(10,central.length,true);
+  dv.setUint32(12,cdSize,true);dv.setUint32(16,offset,true);dv.setUint16(20,0,true);
+  return new Blob([...parts,...cdParts,eocd],{type:'application/zip'});
+}
+function tarHeader(name,size,mtimeSec){
+  const enc=new TextEncoder();const h=new Uint8Array(512);
+  let nm=name,pfx='';
+  if(enc.encode(name).length>100){
+    const i=name.lastIndexOf('/',100);
+    if(i>0&&enc.encode(name.slice(i+1)).length<=100&&enc.encode(name.slice(0,i)).length<=155){pfx=name.slice(0,i);nm=name.slice(i+1)}
+    else return null;
+  }
+  h.set(enc.encode(nm),0);
+  const oct=(off,len,val,tail)=>h.set(enc.encode(Number(val).toString(8).padStart(len-1,'0')+tail),off);
+  oct(108,8,0o644,'\0');oct(116,8,0,'\0');oct(124,12,size,'\0');oct(136,12,mtimeSec|0,'\0');
+  h[156]=0x30;
+  h.set(enc.encode('ustar\0'),257);h.set(enc.encode('00'),263);
+  if(pfx)h.set(enc.encode(pfx),345);
+  for(let i=148;i<156;i++)h[i]=0x20;
+  let sum=0;for(let i=0;i<512;i++)sum+=h[i];
+  h.set(enc.encode(Number(sum).toString(8).padStart(6,'0')+'\0 '),148);
+  return h;
+}
+async function fsMakeTar(entries){
+  const parts=[];let skipped=0;let total=0;let done=0;
+  for(const e of entries){
+    const file=await e.handle.getFile();
+    const u8=new Uint8Array(await file.arrayBuffer());
+    const head=tarHeader(e.path,u8.length,Math.floor(file.lastModified/1000)||Math.floor(Date.now()/1000));
+    if(!head){skipped++;continue}
+    parts.push(head,u8);
+    const pad=(512-(u8.length%512))%512;
+    if(pad)parts.push(new Uint8Array(pad));
+    total+=512+u8.length+pad;
+    if(++done%100===0)showToast('Archiving… '+done+'/'+entries.length,'info');
+  }
+  parts.push(new Uint8Array(1024));
+  return{blob:new Blob(parts,{type:'application/x-tar'}),skipped};
+}
+async function downloadProjectLocal(fmt){
+  if(!(await fsEnsurePermission(fsHandle))){showToast('Folder access not granted','error');return}
+  showToast('Collecting project files…','info');
+  const entries=[];entries.total=0;
+  await fsCollectArchive(fsHandle,'',entries);
+  if(entries.length===0){showToast('Project folder is empty','error');return}
+  const proj=(currentProjectName||fsHandle.name||folderBaseName(codingFolder)||'project');
+  const safe=String(proj).replace(/[^a-z0-9._-]/gi,'_')||'project';
+  if(fmt==='targz'){
+    const tar=await fsMakeTar(entries);
+    if(tar.skipped)showToast(tar.skipped+' file(s) with long names skipped','error');
+    const gz=await pipeCompress(new Uint8Array(await tar.blob.arrayBuffer()),'gzip');
+    downloadBlob(gz?new Blob([gz],{type:'application/gzip'}):tar.blob,
+      safe+'-'+Date.now()+(gz?'.tar.gz':'.tar'));
+  }else{
+    downloadBlob(await fsMakeZip(entries),safe+'-'+Date.now()+'.zip');
+  }
+  showToast('Project downloaded ('+entries.length+' files)','success');
 }
 async function clearCodingChat(){
   if(codingAutoLoop)codingStopRequested=true;

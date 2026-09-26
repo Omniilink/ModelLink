@@ -9,6 +9,9 @@ import queue
 import secrets
 import subprocess
 import shutil
+import tempfile
+import tarfile
+import zipfile
 import threading
 
 # ==========================================
@@ -30,6 +33,7 @@ logger = logging.getLogger("Omniilink")
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -1628,6 +1632,112 @@ async def coding_file_content(request: Request, path: str):
         return {"path": path, "content": content, "size": len(content)}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ---------------------------------------------------------------------------
+# Project archive download (the whole open project, compressed)
+# ---------------------------------------------------------------------------
+_ARCHIVE_SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
+    ".next", ".turbo", ".cache", ".pytest_cache", ".mypy_cache",
+    ".eggs", ".gradle", "bower_components",
+}
+_ARCHIVE_SKIP_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
+_ARCHIVE_SKIP_EXT = {".pyc", ".pyo", ".class"}
+_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
+_ARCHIVE_MAX_FILES = 200000
+
+
+def _collect_project_files(folder):
+    """Walk folder for archiving: [(abs, rel)] with no symlinks and no junk.
+
+    Returns (files, total_bytes, error_message). error_message is None on
+    success. Runs in a worker thread (blocking walk + stat)."""
+    files, total = [], 0
+    for root, dirs, names in os.walk(folder, followlinks=False):
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in _ARCHIVE_SKIP_DIRS
+            and not os.path.islink(os.path.join(root, d))
+        )
+        for name in sorted(names):
+            if name in _ARCHIVE_SKIP_FILES:
+                continue
+            if os.path.splitext(name)[1].lower() in _ARCHIVE_SKIP_EXT:
+                continue
+            full = os.path.join(root, name)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            files.append((full, os.path.relpath(full, folder).replace(os.sep, "/")))
+            total += size
+            if total > _ARCHIVE_MAX_BYTES:
+                return None, 0, "Project is too large to archive (over 512 MB)"
+            if len(files) > _ARCHIVE_MAX_FILES:
+                return None, 0, "Too many files in project (over 200,000)"
+    return files, total, None
+
+
+def _write_project_archive(kind, files, path):
+    """Fill the temp file at path with a .zip or .tar.gz of files."""
+    if kind == "zip":
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for full, rel in files:
+                zf.write(full, rel)
+    else:
+        with tarfile.open(path, "w:gz") as tf:
+            for full, rel in files:
+                tf.add(full, arcname=rel, recursive=False)
+
+
+def _remove_quiet(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@app.get("/api/coding/download-project")
+async def coding_download_project(request: Request, format: str = "zip"):
+    """Compress the whole open project folder and hand it to the browser."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    fmt = (format or "zip").strip().lower()
+    if fmt in ("zip",):
+        kind, suffix, media = "zip", ".zip", "application/zip"
+    elif fmt in ("targz", "tar.gz", "tgz"):
+        kind, suffix, media = "targz", ".tar.gz", "application/gzip"
+    else:
+        return JSONResponse(status_code=400,
+                            content={"error": "Unsupported format (use zip or targz)"})
+    files, _total, err_msg = await asyncio.to_thread(_collect_project_files, folder)
+    if err_msg:
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Project folder is empty"})
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.close()
+    try:
+        await asyncio.to_thread(_write_project_archive, kind, files, tmp.name)
+    except Exception as e:
+        _remove_quiet(tmp.name)
+        logger.warning(f"[ARCHIVE] Failed for {folder}: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Archive failed: {e}"})
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_",
+                  os.path.basename(os.path.normpath(folder))) or "project"
+    filename = f"{base}-{time.strftime('%Y%m%d-%H%M%S')}{suffix}"
+    return FileResponse(tmp.name, media_type=media, filename=filename,
+                        background=BackgroundTask(_remove_quiet, tmp.name))
 
 @app.get("/api/coding/preview")
 async def coding_preview(request: Request, path: str):
