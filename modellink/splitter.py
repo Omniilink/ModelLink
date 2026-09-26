@@ -246,6 +246,101 @@ PROVIDERS = {
 }
 
 
+# ==========================================
+# Caller-supplied generation options
+# (temperature / max_tokens / effort / thinking)
+# ==========================================
+EFFORT_LEVELS = ("minimum", "low", "medium", "high", "xhigh", "auto")
+# Reasoning budget in tokens, per level, for budget-based providers
+# (Gemini thinkingConfig, Anthropic thinking).
+THINKING_BUDGET = {"minimum": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
+# OpenAI-style reasoning_effort only accepts these literal strings.
+OPENAI_EFFORT = {"minimum": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
+# Providers whose reasoning knob is a token budget rather than an effort string.
+BUDGET_PROVIDERS = {"gemini", "anthropic"}
+
+
+def normalize_level(value, default="auto"):
+    """Map any caller value onto a known level (invalid/missing -> default)."""
+    if not isinstance(value, str):
+        return default
+    v = value.strip().lower()
+    return v if v in EFFORT_LEVELS else default
+
+
+def resolve_level(effort, thinking):
+    """Single effective level.
+
+    `thinking` is the finer-grained knob: when the user picks anything other
+    than auto it wins; otherwise the `effort` level is used. `auto` for both
+    means "do not touch the provider default" (byte-identical payloads).
+    """
+    th = normalize_level(thinking)
+    if th != "auto":
+        return th
+    return normalize_level(effort)
+
+
+def apply_request_opts(provider_name, body, opts):
+    """Merge caller-supplied generation options into a provider payload.
+
+    Returns (body, changed). `changed` is True only when the payload differs
+    from the stock one, so the caller can retry once with a plain body if the
+    provider rejects an optional knob (e.g. an unsupported reasoning_effort).
+    Stock values (temperature 0.7 / max_tokens 4000) are NEVER injected into
+    a provider that did not carry them: with default options every payload is
+    byte-identical to what the code sent before.
+    """
+    if not opts or not isinstance(body, dict):
+        return body, False
+    before = json.dumps(body, sort_keys=True, default=str)
+    is_gemini = provider_name == "gemini"
+    gc = body.get("generationConfig") if is_gemini else None
+
+    temp = opts.get("temperature")
+    if isinstance(temp, (int, float)) and not isinstance(temp, bool):
+        t = max(0.0, min(2.0, float(temp)))
+        # Keep stock 0.7 payloads untouched; only write when the caller asked
+        # for something else, or the provider already carries the knob.
+        if isinstance(gc, dict):
+            if t != 0.7 or "temperature" in gc:
+                gc["temperature"] = t
+        elif t != 0.7 or "temperature" in body:
+            body["temperature"] = t
+
+    mt = opts.get("max_tokens")
+    if isinstance(mt, int) and not isinstance(mt, bool) and mt > 0:
+        mt = min(int(mt), 32000)
+        if isinstance(gc, dict):
+            if mt != 4000 or "maxOutputTokens" in gc:
+                gc["maxOutputTokens"] = mt
+        elif mt != 4000 or "max_tokens" in body:
+            body["max_tokens"] = mt
+
+    level = resolve_level(opts.get("effort"), opts.get("thinking"))
+    if level != "auto":
+        budget = THINKING_BUDGET.get(level, 0)
+        if provider_name == "gemini":
+            if isinstance(gc, dict):
+                cfg = gc.get("thinkingConfig")
+                if not isinstance(cfg, dict):
+                    cfg = {}
+                    gc["thinkingConfig"] = cfg
+                cfg["thinkingBudget"] = int(budget)
+        elif provider_name == "anthropic":
+            if budget > 0:
+                body["thinking"] = {"type": "enabled", "budget_tokens": int(budget)}
+                # Anthropic hard-requires max_tokens > thinking budget.
+                body["max_tokens"] = max(int(body.get("max_tokens") or 4000), int(budget) + 1024)
+            # "minimum" leaves thinking off, which is Anthropic's default.
+        else:
+            effort_str = OPENAI_EFFORT.get(level)
+            if effort_str:
+                body["reasoning_effort"] = effort_str
+    return body, json.dumps(body, sort_keys=True, default=str) != before
+
+
+
 class RateLimiter:
     def __init__(self):
         self._request_times: dict = {}
@@ -327,9 +422,9 @@ def get_backup_model():
     return OLLAMA_MODEL
 
 
-def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
+def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None, opts=None):
     global lb
-    return lb.generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys)
+    return lb.generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
 
 
 # ==========================================
@@ -510,7 +605,7 @@ class MultiProviderBalancer:
             return []
         return cfg.get("models", [])
 
-    def _try_provider(self, provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=None):
+    def _try_provider(self, provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=None, opts=None):
         keys = []
         if user_keys is not None:
             # User-scoped keys: ONLY this user's keys, never the server's keys
@@ -531,6 +626,7 @@ class MultiProviderBalancer:
             try:
                 headers = provider_cfg["headers"](api_key)
                 body = provider_cfg["build_body"](messages, model, api_key)
+                body, opts_applied = apply_request_opts(provider_name, body, opts)
                 if provider_name != "gemini":
                     body["stream"] = stream
 
@@ -539,6 +635,20 @@ class MultiProviderBalancer:
                 # so dead endpoints fail fast, 60s read budget for streams.
                 sess = self._session_for(provider_name)
                 resp = sess.post(url, json=body, headers=headers, stream=True, timeout=(10, 60))
+
+                if resp.status_code in (400, 422) and opts_applied:
+                    # The provider rejected an optional generation knob
+                    # (unsupported reasoning_effort, budget, etc). Retry the
+                    # SAME request once with stock parameters rather than
+                    # failing the turn.
+                    logger.warning(
+                        f"[PARAMS] {provider_name}/{model} rejected generation options "
+                        f"({resp.status_code}), retrying with defaults: {resp.text[:160]}"
+                    )
+                    body = provider_cfg["build_body"](messages, model, api_key)
+                    if provider_name != "gemini":
+                        body["stream"] = stream
+                    resp = sess.post(url, json=body, headers=headers, stream=True, timeout=(10, 60))
 
                 if resp.status_code == 200:
                     self.rate_limiter.record_request(model)
@@ -578,17 +688,21 @@ class MultiProviderBalancer:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         }
 
-    def generate(self, messages, model=MODEL_NAME, temperature=0.7, max_tokens=4000, stream=True, user_keys=None):
-        messages = self._inject_system_prompt(messages)
+    def generate(self, messages, model=MODEL_NAME, temperature=0.7, max_tokens=4000, stream=True, user_keys=None, opts=None):
+        messages = self._inject_system_prompt(messages, opts)
         if model == MODEL_NAME:
             task = classify_task(messages)
             logger.info(f"[ROUTING] Task classified as '{task}'")
-            return self._smart_generate(messages, task, temperature, max_tokens, stream, user_keys=user_keys)
+            return self._smart_generate(messages, task, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
         else:
-            return self._direct_generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys)
+            return self._direct_generate(messages, model, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
 
-    def _inject_system_prompt(self, messages):
-        lang = LANGUAGE
+    def _inject_system_prompt(self, messages, opts=None):
+        # Per-request language wins over the process-wide default so one
+        # account's language setting never leaks into another account's replies.
+        lang = ((opts or {}).get("language") or LANGUAGE)
+        if not isinstance(lang, str) or not lang.strip():
+            lang = LANGUAGE
         system_msg = (
             f"You are a helpful AI assistant. "
             f"Always respond in {lang} regardless of the language the user writes in. "
@@ -600,13 +714,13 @@ class MultiProviderBalancer:
             messages = [{"role": "system", "content": system_msg}] + list(messages)
         return messages
 
-    def _smart_generate(self, messages, task, temperature, max_tokens, stream, user_keys=None):
+    def _smart_generate(self, messages, task, temperature, max_tokens, stream, user_keys=None, opts=None):
         tier = MODEL_TIERS.get(task, MODEL_TIERS['medium'])
         for provider_name, model_name in tier:
             provider_cfg = PROVIDERS.get(provider_name)
             if not provider_cfg:
                 continue
-            resp = self._try_provider(provider_name, provider_cfg, messages, model_name, temperature, max_tokens, stream, user_keys=user_keys)
+            resp = self._try_provider(provider_name, provider_cfg, messages, model_name, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
             if resp is not None:
                 logger.info(f"[ROUTING] Using {provider_name}/{model_name}")
                 used_model = f"{provider_name}/{model_name}"
@@ -623,7 +737,7 @@ class MultiProviderBalancer:
             if not provider_cfg:
                 continue
             for pm in provider_cfg["models"]:
-                resp = self._try_provider(provider_name, provider_cfg, messages, pm, temperature, max_tokens, stream, user_keys=user_keys)
+                resp = self._try_provider(provider_name, provider_cfg, messages, pm, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
                 if resp is not None:
                     logger.info(f"[ROUTING] Fallback to {provider_name}/{pm}")
                     used_model = f"{provider_name}/{pm}"
@@ -634,13 +748,13 @@ class MultiProviderBalancer:
                         result["model"] = used_model
                         return (result, used_model)
 
-        return self._ollama_fallback(messages, temperature, max_tokens, stream)
+        return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
-    def _direct_generate(self, messages, model, temperature, max_tokens, stream, user_keys=None):
+    def _direct_generate(self, messages, model, temperature, max_tokens, stream, user_keys=None, opts=None):
         for provider_name, provider_cfg in PROVIDERS.items():
             models = provider_cfg.get("models", [])
             if model in models:
-                resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=user_keys)
+                resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
                 if resp is not None:
                     used_model = f"{provider_name}/{model}"
                     if stream:
@@ -650,19 +764,30 @@ class MultiProviderBalancer:
                         result["model"] = used_model
                         return (result, used_model)
 
-        return self._ollama_fallback(messages, temperature, max_tokens, stream)
+        return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
-    def _ollama_fallback(self, messages, temperature, max_tokens, stream):
+    def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None):
         ollama_models = scan_ollama_models()
         if ollama_models:
             target_model = OLLAMA_MODEL if OLLAMA_MODEL in ollama_models else ollama_models[0]
             try:
+                if opts:
+                    o_temp = opts.get("temperature", temperature)
+                    o_mt = opts.get("max_tokens", max_tokens)
+                    if isinstance(o_temp, (int, float)) and not isinstance(o_temp, bool):
+                        temperature = max(0.0, min(2.0, float(o_temp)))
+                    if isinstance(o_mt, int) and not isinstance(o_mt, bool) and o_mt > 0:
+                        max_tokens = min(int(o_mt), 32000)
                 body = {
                     "model": target_model,
                     "messages": messages,
                     "stream": stream,
                     "options": {"temperature": temperature, "num_predict": max_tokens}
                 }
+                # Ollama's reasoning knob is a boolean `think` flag.
+                level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
+                if level != "auto":
+                    body["think"] = level != "minimum"
                 resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=body, stream=stream, timeout=120)
                 if resp.status_code == 200:
                     used_model = f"ollama/{target_model}"
@@ -701,6 +826,13 @@ class MultiProviderBalancer:
                                     content = delta.get("content")
                                     if content:
                                         yield content
+                                        continue
+                                    # Anthropic-style text deltas
+                                    if delta.get("type") == "text_delta" and delta.get("text"):
+                                        yield delta["text"]
+                                        continue
+                                    if delta.get("text") and not delta.get("thinking"):
+                                        yield delta["text"]
                                         continue
                                 # Gemini-style: candidates[].content.parts[].text
                                 candidates = chunk.get("candidates", [])
