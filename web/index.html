@@ -1626,7 +1626,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;if(fsHandle)content=await fsReadFile(fname);else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(fname));const data=await r.json();if(r.ok)content=data.content}if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
-  sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- You get exactly N rounds — there is no other cap. Count honestly: inspect, create or patch each file, run it, fix it.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n- Never stop early because of a counter: finish when the work is verified.\n';
+  sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block naming every file you will create, so progress can be verified file by file.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -1718,7 +1718,7 @@ async function sendCodingMessage(){
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
   let next={blocks:false,actionable:false};
-  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:8000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
+  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -1726,7 +1726,7 @@ async function sendCodingMessage(){
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
-  if(next.actionable)codingAutoContinue().catch(()=>{});
+  if(next.actionable)codingAutoContinue().catch(reportCodingLoopCrash);
   else await maybeOfferPendingFiles().catch(()=>{});
 }
 
@@ -1999,15 +1999,34 @@ async function continueCodingAfterAnswer(){
     let sysPrompt='You are a coding assistant.';
     try{sysPrompt=await buildCodingSystemPrompt()}catch(e){}
     const turn=await streamCodingTurn([{role:'system',content:sysPrompt},...codingHistory.slice(-20)]);
-    if(!turn.error&&turn.actions&&turn.actions.actionable)codingAutoContinue().catch(()=>{});
+    if(!turn.error&&turn.actions&&turn.actions.actionable)codingAutoContinue().catch(reportCodingLoopCrash);
   }finally{codingStream=false;persistCodingChat()}
+}
+// Index of a file block the model opened but never closed (reply cut off at
+// the token limit), or -1. Such a block must NOT be executed: saving its
+// partial content is what produces broken/unworking files. Short tails are
+// ignored — a tiny forgotten END marker is far more likely than an early cut.
+function codingTruncatedAt(text){
+  const t=String(text||'');
+  const marks=[['FILE_CREATE:','END_FILE_CREATE'],['FILE_EDIT:','END_FILE_EDIT'],['FILE_PATCH:','END_FILE_PATCH']];
+  let best=-1;
+  for(const[m,e]of marks){
+    const i=t.lastIndexOf(m);
+    if(i<0)continue;
+    if(t.indexOf(e,i)>=0)continue;
+    if(t.length-i<=120)continue;
+    if(best<0||i<best)best=i;
+  }
+  return best;
 }
 async function processCodingActions(text,msgEl){
   codingTodosNew=false;
   let shownFallback=0;
-  const fileCreates=[...text.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...text.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...text.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...text.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...text.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...text.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
+  const truncFrom=codingTruncatedAt(text);
+  const parseText=truncFrom>=0?text.slice(0,truncFrom):text;
+  const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
-  parseCodingTodos(text);
+  parseCodingTodos(parseText);
   if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length+filePatches.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
   if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(fileCreates.length+fileEdits.length+filePatches.length)parts.push((fileCreates.length+fileEdits.length+filePatches.length)+' file action'+(fileCreates.length+fileEdits.length+filePatches.length!==1?'s':''));if(commands.length)parts.push(commands.length+' command'+(commands.length!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
@@ -2079,7 +2098,7 @@ async function processCodingActions(text,msgEl){
   if(!hasToolBlocks){
     // Fallback: the model emitted code without FILE_CREATE blocks (bare
     // fenced code). Offer one-click save per block so nothing is lost.
-    const fenced=[...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
+    const fenced=[...parseText.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
     const guessName={html:'index.html',htm:'index.html',js:'script.js',ts:'script.ts',jsx:'app.jsx',tsx:'app.tsx',css:'style.css',py:'script.py',json:'data.json',md:'notes.md',sh:'run.sh',sql:'query.sql',java:'Main.java',c:'main.c',cpp:'main.cpp',go:'main.go',rs:'main.rs',rb:'script.rb',php:'index.php'};
     const SHELL_LANGS=['sh','bash','shell','cmd','powershell','ps1','console','terminal','zsh','fish','bat'];
     let shown=0,shownRun=0,shownBare=0;
@@ -2153,13 +2172,13 @@ async function processCodingActions(text,msgEl){
     shownFallback=shown+shownRun+shownBare;
     if(shownFallback>0){
       // The cards below carry the code: keep chat text clean.
-      const redacted=redactBareCode(cleanCodingProse(text).replace(/```(\w*)\n([\s\S]*?)```/g,
+      const redacted=redactBareCode(cleanCodingProse(parseText).replace(/```(\w*)\n([\s\S]*?)```/g,
         (m,lang)=>'\n[code block'+(lang?' ('+lang+')':'')+' — see card below]\n'));
       const ce=msgEl.querySelector('.coding-msg-content');
       if(ce&&redacted.trim())ce.innerHTML=renderContent(redacted);
     }
   }
-  return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew};
+  return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew||truncFrom>=0,truncated:truncFrom>=0};
 }
 
 // ---- Agentic coding loop: feed tool results back so multi-step tasks finish ----
@@ -2175,6 +2194,7 @@ const CODING_DEFAULT_PLAN=6;   // budget until the model declares its plan
 const CODING_MIN_PLAN=6;
 const CODING_MAX_PLAN=60;      // no single plan may exceed this
 const CODING_MAX_REPLANS=3;    // how often the plan may be recounted
+const CODING_HARD_MAX_ROUNDS=40; // absolute backstop when no todos exist
 const CODING_MAX_SETBACKS=3;
 let codingPlanSteps=CODING_DEFAULT_PLAN,codingRounds=0,codingReplans=0;
 function scanPlanSteps(text){
@@ -2240,6 +2260,7 @@ function postCodingAssistant(text){
   chat.appendChild(el);chat.scrollTop=chat.scrollHeight;
   codingHistory.push({role:'assistant',content:text});persistCodingChat();
 }
+function reportCodingLoopCrash(e){try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
 async function getCodingSysPrompt(){try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}}
 function setCodingLoopUI(on){
   const btn=document.getElementById('coding-send-btn');
@@ -2327,7 +2348,7 @@ async function streamCodingTurn(messages){
   const contentEl=assistantEl.querySelector('.coding-msg-content');
   let actualModel=selectedModel,fullText='';
   let turnCtrl=new AbortController();codingAbort=turnCtrl;
-  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:8000,messages})});
+  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,messages})});
   if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;return{error:errMsg}}
   const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
   while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -2386,8 +2407,17 @@ async function sendCodingImprove(reason,nextAttempt){
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
   codingRounds=0;codingReplans=0;
+  let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,planJustExtended=false;
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
+  const lastAssistantTruncated=()=>{
+    const last=codingHistory.length?codingHistory[codingHistory.length-1]:null;
+    return !!(last&&last.role==='assistant'&&codingTruncatedAt(last.content)>=0);
+  };
+  // Open work that existed when THIS loop started. A later "no todos are
+  // open" is only a real completion if we actually had some to close —
+  // otherwise a model that never emits TODO_LIST would finish after one file.
+  const todosAtStart=openTodoTexts().length;
   const giveUp=reason=>{
     postCodingAssistant('I could not finish this task after 3 attempts. Reason: '+reason+'\n\nThe remaining open todos are listed above — adjust the task or ask me to continue from here.');
   };
@@ -2416,13 +2446,22 @@ async function codingAutoContinue(){
           continue;
         }
         const open0=openTodoTexts();
-        if(validation.files.length>0&&open0.length===0){
+        // Finish only when a todo list actually described the work: without
+        // one, "no open todos" is vacuously true and the loop would stop
+        // after the FIRST file, leaving the rest of the site unwritten.
+        if(validation.files.length>0&&open0.length===0&&todosAtStart>0){
           completeAllTodos();
           postCodingAssistant('Done — verified: '+validation.files.join(', ')+' ('+validation.files.length+' file'+(validation.files.length!==1?'s':'')+', syntax OK).');
           break;
         }
         const open=openTodoTexts();
-        if(codingRounds>codingPlanSteps){
+        // Hard backstop: without open todos there is nothing for the plan
+        // recount to gate on, so keep the loop bounded by rounds instead.
+        if(codingRounds>=CODING_HARD_MAX_ROUNDS){
+          postCodingAssistant('Stopping after '+codingRounds+' tool rounds. Say "continue" and I will pick up where I left off, or tell me which parts still need work.');
+          break;
+        }
+        if(codingRounds>codingPlanSteps&&open.length>0){
           // The declared plan ran out while work remains: make the model
           // RECOUNT what it needs instead of hitting a fixed cap.
           const beforePlan=codingPlanSteps;
@@ -2443,7 +2482,8 @@ async function codingAutoContinue(){
           break;
         }
         addCodingSystemMsg('Tool results sent back to AI (step '+codingRounds+' of '+codingPlanSteps+') — press Stop anytime.');
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        const truncNote=lastAssistantTruncated()?'\nNOTE: your previous reply was cut off while writing a file, so that partial block was discarded and NOT saved. Re-send the file in smaller blocks (or finish it with FILE_PATCH), and always close blocks with END_FILE_CREATE / END_FILE_PATCH.':'';
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+truncNote+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -2452,9 +2492,31 @@ async function codingAutoContinue(){
         if(turn.error)break;
         continue;
       }
-      // No new tool executions: verify against open todos, or finish.
+      // No new tool executions: recover a cut-off reply first, then verify
+      // against open todos, or finish.
+      if(codingTruncRetries<3&&lastAssistantTruncated()){
+        codingTruncRetries++;
+        addCodingSystemMsg('The AI’s reply was cut off while writing a file — the partial block was discarded, not saved. Asking it to re-send in smaller blocks…');
+        codingHistory.push({role:'user',content:'Your previous reply was cut off while writing a file (output limit), so that partial file was NOT saved. Re-send it now in smaller pieces: at most ~150 lines per FILE_CREATE block, or start with a minimal working version and finish it with FILE_PATCH blocks. Always end every block with END_FILE_CREATE / END_FILE_PATCH. If several files are still missing, emit a TODO_LIST naming them first.'});
+        persistCodingChat();
+        codingStream=true;
+        const tT=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+        codingStream=false;
+        persistCodingChat();
+        if(tT.error)break;
+        continue;
+      }
       const open=openTodoTexts();
-      if(open.length===0)break;
+      if(open.length===0){
+        const vfin=await validateWrittenFiles();
+        if(vfin.files.length&&vfin.ok){
+          completeAllTodos();
+          postCodingAssistant('Done — verified: '+vfin.files.join(', ')+' ('+vfin.files.length+' file'+(vfin.files.length!==1?'s':'')+', syntax OK).');
+        }else if(vfin.files.length){
+          postCodingAssistant('Finished writing files, but validation reported problems:\n'+vfin.errors.join('\n')+'\n\nSay "continue" and I will fix them.');
+        }
+        break;
+      }
       if(planJustExtended){
         // A just-extended plan is not a verdict: keep working, don't burn a setback.
         planJustExtended=false;
@@ -2525,7 +2587,11 @@ async function codingAutoContinue(){
       if(iturn.error)break;
       // Its tool blocks (if any) are harvested at the top of the loop.
     }
-  }catch(e){/* stopped or failed */}
+  }catch(e){
+    // Never die silently: a thrown error used to vanish here and the loop
+    // just stopped with no clue why.
+    try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop stopped on an internal error: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to resume from where it left off.')}catch(e2){}
+  }
   if(codingStopRequested)addCodingSystemMsg('Stopped by user.');
   codingAutoLoop=false;codingStream=false;codingAbort=null;setCodingLoopUI(false);
   document.getElementById('coding-send-btn').disabled=false;

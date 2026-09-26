@@ -1512,8 +1512,13 @@ and sent back.
 STEP PLANNING (how this run is budgeted):
 - At the START of a task, before any tool block, write ONE line declaring how
   many tool rounds YOU judge the task needs: PLAN-STEPS: N
-  (one round = one reply that runs tool blocks). Count honestly: inspect,
-  create or patch each file, run it, fix it.
+  (one round = one reply that runs tool blocks).
+- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST.
+  For any task with 2+ steps you still start with a TODO_LIST block naming
+  every file you will create, so progress can be verified file by file.
+- Count GENEROUSLY: inspection + one round per file + a verification round +
+  a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of
+  1-2 steps for a multi-file task is wrong; under-declaring costs a round.
 - You get exactly N rounds — there is no other cap. Never stop early because
   of a counter; finish when the work is verified.
 - If mid-run you realize you need more, write a new line PLAN-STEPS: M with a
