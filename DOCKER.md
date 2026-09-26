@@ -174,8 +174,8 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OMNIILINK_SANDBOX` | `docker` | Set to `""` to run commands on the host (old behavior) |
-| `OMNIILINK_SANDBOX` | `project` | `""` host execution · `docker` fresh container per command · `project` one persistent container per project (installs survive) |
+| `OMNIILINK_SANDBOX` | `project` | `""` host execution · `docker` fresh container per command · `project` one persistent container per project (installs survive). Inside the API container, `""` is **refused** (503) — commands never run where the docker socket, the database and everyone's files live |
+| `OMNIILINK_SANDBOX_HOST_ROOT` | `C:/Modellink` | Host folder that backs the API container's `/app`. Bind-mount sources are resolved by the Docker daemon **on the host**, so without this a containerized API would mount an empty directory instead of your real project files (commands look like they work, writes vanish). Native runs leave it unset → no remapping |
 | `OMNIILINK_PROJ_IDLE_MIN` | `0` | stop project containers after N idle minutes (installed layers kept, revived on next use). `0` = keep running |
 | `OMNIILINK_SANDBOX_IMAGE` | `omniilink-sandbox:latest` | Image each command runs in |
 | `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |

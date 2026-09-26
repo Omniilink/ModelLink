@@ -1631,7 +1631,13 @@ async def coding_preview(request: Request, path: str):
     from fastapi.responses import Response as _Response
     user, err = _require_auth(request)
     if err:
-        return err
+        # Same cookie-free path as assets: browsers may withhold Lax cookies
+        # from sandboxed-frame navigations, so the frontend appends `t`.
+        user = _user_from_preview_token(
+            request.query_params.get("t"), request.query_params.get("path"))
+        if user is None:
+            return err
+        request.state.user = user
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
@@ -1656,6 +1662,9 @@ async def coding_preview(request: Request, path: str):
             content=content,
             media_type="text/html",
             headers={
+                # Navigation token: lets the iframe load this document even
+                # when the browser withholds cookies from the sandboxed frame.
+                "X-Preview-Token": _mint_preview_token(user["id"], path),
                 "Content-Security-Policy": "sandbox allow-scripts",
                 "X-Content-Type-Options": "nosniff",
                 "Cache-Control": "no-store",
@@ -1806,6 +1815,11 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> byt
             return None
         if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
             return None
+        # Cache-busting queries/fragments are meaningless to a filesystem
+        # lookup (img.jpg?v=2 would 404); responses are no-store anyway.
+        ref = ref.split("#", 1)[0].split("?", 1)[0].strip()
+        if not ref:
+            return None
         # normpath clamps ".." at the project root; the asset endpoint
         # re-enforces containment, so anything truly outside 403s there.
         norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
@@ -1863,6 +1877,9 @@ def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None) -> str:
         if not ref:
             return None
         if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
+            return None
+        ref = ref.split("#", 1)[0].split("?", 1)[0].strip()
+        if not ref:
             return None
         norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
         if not norm or norm == ".":
@@ -2220,6 +2237,57 @@ def _sanitize_shell_command(command: str) -> str:
     return c.strip()
 
 
+def _api_in_container() -> bool:
+    """True when THIS api process is itself running inside a container."""
+    if os.environ.get("OMNIILINK_IN_CONTAINER", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    try:
+        return os.path.exists("/.dockerenv")
+    except Exception:
+        return False
+
+
+def _sandbox_host_path(path: str) -> str:
+    """Map a path the API process sees to the path the Docker DAEMON sees.
+
+    Bind sources are resolved on the daemon's filesystem, not the caller's.
+    Native runs: OMNIILINK_SANDBOX_HOST_ROOT is unset -> identity (unchanged
+    behavior). Containerized API (compose mounts ./user_data at /app/...):
+    set OMNIILINK_SANDBOX_HOST_ROOT to the host folder backing APP_DIR, so
+    /app/user_data/x becomes <root>/user_data/x on the host. Without it the
+    daemon would mount an empty, freshly-created directory instead of the
+    real project (commands appear to work, writes vanish)."""
+    root = (os.environ.get("OMNIILINK_SANDBOX_HOST_ROOT", "") or "").strip()
+    if not root:
+        return path
+    try:
+        if not _is_within(APP_DIR, path):
+            return path
+        rel = os.path.relpath(path, APP_DIR)
+        if rel in (os.curdir, "."):
+            return root
+        return os.path.normpath(os.path.join(root, rel))
+    except Exception:
+        return path
+
+
+_host_root_warned = False
+
+
+def _warn_missing_host_root():
+    """Loud one-time warning when containerized without a host-root mapping."""
+    global _host_root_warned
+    if _host_root_warned:
+        return
+    if _api_in_container() and not os.environ.get("OMNIILINK_SANDBOX_HOST_ROOT", "").strip():
+        _host_root_warned = True
+        logger.warning(
+            "[SANDBOX] OMNIILINK_SANDBOX_HOST_ROOT is not set while the API runs "
+            "in a container: sandbox bind mounts resolve against the Docker "
+            "daemon's root, not /app. Set it to the host folder that backs /app "
+            "(compose default: C:/Modellink).")
+
+
 def _sandbox_config() -> Optional[dict]:
     """Docker execution sandbox config, or None when disabled.
 
@@ -2302,7 +2370,7 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
                 "--pids-limit=128",
                 "--network", cfg["network"],
                 "--restart", "unless-stopped",
-                "-v", f"{folder}:/work", "-w", "/work",
+                "-v", f"{_sandbox_host_path(folder)}:/work", "-w", "/work",
                 cfg["image"], "sleep", "infinity"]
         r3 = subprocess.run(argv, capture_output=True, text=True, timeout=180)
         if r3.returncode != 0:
@@ -2374,7 +2442,7 @@ def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
         f"--cpus={cfg['cpus']}",
         "--pids-limit=128",
         "--network", cfg["network"],
-        "-v", f"{workdir_host}:/work",
+        "-v", f"{_sandbox_host_path(workdir_host)}:/work",
         "-w", "/work",
         cfg["image"],
         "sh", "-c", command,
@@ -2426,6 +2494,18 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
     try:
         sb = _sandbox_config()
         backend = "host"
+        if sb is None:
+            if _api_in_container():
+                # Never fall back to running inside the API container: it
+                # holds the docker socket, the database and every user's
+                # files - that is exactly what must stay unreachable.
+                return JSONResponse(status_code=503, content={"error": "Execution sandbox is disabled inside the API container. Set OMNIILINK_SANDBOX=project (the docker-compose default)."})
+        else:
+            _warn_missing_host_root()
+            # A sandbox only ever mounts paths inside the app tree, so no
+            # command (admin or not) can bind-mount the rest of the host.
+            if not _is_within(APP_DIR, cwd):
+                cwd = folder if (folder and _is_within(APP_DIR, folder)) else _user_data_dir(user_id)
         if sb is not None and sb["mode"] == "project":
             # Persistent per-project container: installs survive between
             # commands. Fail LOUDLY if docker is missing.

@@ -42,6 +42,12 @@ services:
       # Set to "" to fall back to host execution.
       - OMNIILINK_SANDBOX=project
       - OMNIILINK_SANDBOX_IMAGE=omniilink-sandbox:latest
+      # The API runs IN a container, but docker run -v sources are resolved
+      # on the Docker daemon's filesystem (the Windows host), not ours. This
+      # maps the API container's /app to the host folder that backs it, so
+      # sandboxes mount the REAL project files instead of an empty dir.
+      # Matches update.bat's C:\\Modellink - change it if you move the app.
+      - OMNIILINK_SANDBOX_HOST_ROOT=C:/Modellink
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge

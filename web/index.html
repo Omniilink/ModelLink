@@ -1569,19 +1569,20 @@ async function previewFileScanned(path){
       frame.srcdoc=rewritten;
     }catch(e){appAlert('Cannot read file: '+e.message);return}
   }else{
-    // Preflight first so failures show a real message instead of a black box.
-    // Use the fetched body as srcdoc (no second navigation): the preview
-    // frame is sandboxed without allow-same-origin, so it has an opaque
-    // origin and browsers withhold session cookies from its subrequests —
-    // the server therefore rewrites asset URLs with signed tokens.
-    let html;
+    // Preflight so failures show a real message instead of a black box, and
+    // to grab the signed navigation token. The document is then loaded via
+    // frame.src (NOT srcdoc): srcdoc documents inherit the app's CSP
+    // (img-src 'self'), which would block the previewed page's external
+    // CDN images/scripts. The response CSP is just "sandbox allow-scripts",
+    // so outside resources load while the frame stays opaque-origin.
+    let token='';
     try{
       const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path));
       if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);return}
-      html=await r.text();
+      token=r.headers.get('X-Preview-Token')||'';
     }catch(e){appAlert('Preview failed: '+e.message);return}
-    frame.removeAttribute('src');
-    frame.srcdoc=html;
+    frame.removeAttribute('srcdoc');
+    frame.src=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'');
   }
   document.getElementById('file-preview-modal').classList.add('open');
 }
@@ -2605,10 +2606,11 @@ const FS_DATA_MIME={'.css':'text/css','.js':'text/javascript','.mjs':'text/javas
 const FS_TEXT_EXT=['.css','.js','.mjs','.cjs','.json','.txt','.xml','.svg'];
 async function fsReadFileRaw(path){if(!fsHandle)throw new Error('No folder open');const{parent,name}=await fsResolveParent(fsHandle,path);const fh=await parent.getFileHandle(name);return await fh.getFile()}
 function fsIsExternalRef(ref){return !ref||/^(?:[a-z][a-z0-9+.-]*:|\/\/|#|data:)/i.test(ref)}
+function fsStripRef(ref){return ref.split('#',1)[0].split('?',1)[0].trim()}
 function fsRelNorm(baseDir,ref){const abs=(baseDir?baseDir+'/':'')+ref.replace(/^\/+/,'');const out=[];for(const part of abs.split('/')){if(part===''||part==='.')continue;if(part==='..'){out.pop();continue}out.push(part)}return out.join('/')}
 async function fsRewriteCssUrlsLocal(css,cssDir){
   const refs=[];
-  const grab=(m,q,ref)=>{refs.push(fsIsExternalRef(ref)?null:fsRelNorm(cssDir,ref));return m};
+  const grab=(m,q,ref)=>{refs.push(fsIsExternalRef(ref)?null:fsRelNorm(cssDir,fsStripRef(ref)));return m};
   css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi,grab);
   css.replace(/@import\s+(["'])([^"']+)\1/gi,grab);
   const urls=await Promise.all(refs.map(r=>r?fsPreviewAssetUrl(r):null));
@@ -2642,7 +2644,7 @@ async function fsPreviewAssetUrl(rel){
 async function fsBuildPreviewSrcdoc(pagePath,html){
   fsAssetCache={};
   const dir=pagePath.includes('/')?pagePath.slice(0,pagePath.lastIndexOf('/')):'';
-  const resolve=(ref)=>{if(fsIsExternalRef(ref))return null;return (ref.charAt(0)==='/'?fsRelNorm('',ref):fsRelNorm(dir,ref))||null};
+  const resolve=(ref)=>{if(fsIsExternalRef(ref))return null;const r=fsStripRef(ref);if(!r)return null;return (r.charAt(0)==='/'?fsRelNorm('',r):fsRelNorm(dir,r))||null};
   let doc;try{doc=new DOMParser().parseFromString(html,'text/html')}catch(e){return html}
   for(const el of doc.querySelectorAll('link[href],script[src],img[src],source[src],video[src],audio[src],embed[src],iframe[src],input[src],object[data]')){
     const attr=el.hasAttribute('src')?'src':(el.hasAttribute('data')?'data':'href');
