@@ -82,6 +82,12 @@ a:hover{text-decoration:underline}
 .model-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:5px 12px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;transition:all .12s;font-family:var(--font)}
 .model-btn:hover{border-color:var(--border-light);color:var(--text-primary)}
 .model-btn svg{width:12px;height:12px;opacity:.5}
+/* Reasoning effort / thinking budget pickers (header bar) */
+.level-group{display:flex;gap:4px;align-items:center;flex-shrink:0}
+.level-sel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:5px 6px;border-radius:var(--radius-xs);font-size:11px;font-family:var(--font);cursor:pointer;outline:none;transition:all .12s;max-width:104px}
+.level-sel:hover{border-color:var(--border-light);color:var(--text-primary)}
+.level-sel:focus{border-color:var(--accent)}
+@media(max-width:640px){.level-group{display:none}}
 .model-menu{position:absolute;top:calc(100% + 4px);left:0;min-width:280px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:50;display:none;max-height:320px;overflow-y:auto;padding:4px}
 .model-menu.open{display:block}
 .model-option{padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;transition:all .1s}
@@ -725,6 +731,14 @@ pre{max-width:100%}
         </button>
         <div class="model-menu" id="model-menu"></div>
       </div>
+      <div class="level-group" title="Reasoning effort and thinking budget">
+        <select class="level-sel" id="header-effort" aria-label="Reasoning effort" onchange="setLevelCtl('effort',this.value)">
+          <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option>
+        </select>
+        <select class="level-sel" id="header-thinking" aria-label="Thinking budget" onchange="setLevelCtl('thinking',this.value)">
+          <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option>
+        </select>
+      </div>
       <div class="header-spacer"></div>
       <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)" style="font-size:11px;gap:4px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -946,6 +960,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="refreshCodingTree()">Refresh</button>
           <button onclick="toggleCodingOutput()">Terminal</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
+          <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
+          <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
           <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
@@ -1080,7 +1096,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
-  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
+  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
 });
@@ -1174,6 +1190,28 @@ function toggleTerminal(){switchView(currentView==='terminal'?'chat':'terminal')
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
 function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id))}
 
+// ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
+const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh'];
+function getLevel(kind){
+  try{const v=localStorage.getItem('omnilink_'+kind);if(v&&LEVEL_VALUES.indexOf(v)>-1)return v}catch(e){}
+  return 'auto';
+}
+function setLevelCtl(kind,value){
+  if(LEVEL_VALUES.indexOf(value)<0)value='auto';
+  try{localStorage.setItem('omnilink_'+kind,value)}catch(e){}
+  syncLevelControls();
+}
+function syncLevelControls(){
+  ['effort','thinking'].forEach(kind=>{
+    const v=getLevel(kind);
+    ['header','coding'].forEach(prefix=>{
+      const el=document.getElementById(prefix+'-'+kind);
+      if(el&&el.value!==v)el.value=v;
+    });
+  });
+}
+function requestLevels(){return{effort:getLevel('effort'),thinking:getLevel('thinking')}}
+
 async function loadModels(){
   try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);renderProviders(data.by_provider)}
   catch(e){console.error('Failed to load models:',e)}
@@ -1212,7 +1250,7 @@ async function sendMessage(){
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   const startTime=Date.now();
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}updateMessage(assistantEl,errMsg);chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=selectedModel;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -1258,7 +1296,7 @@ function editAndResend(editIdx,newText){
   const area=document.getElementById('chat-area');const msgs=area.querySelectorAll('.message');
   msgs.forEach(m=>{const mi=parseInt(m.dataset.msgIndex);if(mi>=editIdx)m.remove()});
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000})})
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})})
   .then(r=>r.body.getReader()).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='';
     function read(){reader.read().then(({done,value})=>{
@@ -1775,7 +1813,7 @@ async function sendCodingMessage(){
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
   let next={blocks:false,actionable:false};
-  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,messages:[{role:'system',content:sysPrompt},...codingHistory.slice(-20)]})});
+  try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -2408,7 +2446,7 @@ async function streamCodingTurn(messages){
   const contentEl=assistantEl.querySelector('.coding-msg-content');
   let actualModel=selectedModel,fullText='';
   let turnCtrl=new AbortController();codingAbort=turnCtrl;
-  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,messages})});
+  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages})});
   if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;return{error:errMsg}}
   const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
   while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -3682,7 +3720,7 @@ function sendCompareRequest(userMsg){
   const metaEl=assistantEl.closest('.message').querySelector('.message-meta');
   if(metaEl)metaEl.textContent='vs '+compareModel;
   const tempHistory=[...chatHistory.slice(0,-1)];
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000})}).then(r=>{
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})}).then(r=>{
     if(!r.ok)throw new Error('offline');
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
     function read(){reader.read().then(({done,value})=>{
