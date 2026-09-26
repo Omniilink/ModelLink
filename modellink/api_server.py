@@ -41,6 +41,10 @@ from pydantic import BaseModel
 from typing import Optional, List
 import time
 import json
+import socket
+import ipaddress
+import urllib.request
+import urllib.parse
 
 from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
@@ -543,6 +547,128 @@ def _save_coding_folder(user_id: str, folder: Optional[str]):
     except Exception:
         pass
 
+
+# ---- File version history: every coding write/patch snapshots the previous
+# content first, so a bad edit can be undone from the file's history. ----
+_CODING_VERSION_CAP = 25                     # versions kept per file
+_CODING_VERSION_DIR_CAP = 20 * 1024 * 1024   # 20MB total per user
+
+
+def _coding_versions_dir(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "coding_versions")
+
+
+def _coding_version_dir(user_id: str, path: str) -> str:
+    """One directory per tracked file. The key is a hash of the project-relative
+    path so separators and odd characters can never escape the user dir."""
+    import hashlib
+    key = hashlib.sha1((path or "").encode("utf-8", "replace")).hexdigest()[:24]
+    return os.path.join(_coding_versions_dir(user_id), key)
+
+
+def _coding_list_versions(user_id: str, path: str) -> list:
+    out = []
+    try:
+        d = _coding_version_dir(user_id, path)
+        for name in os.listdir(d):
+            full = os.path.join(d, name)
+            if not name.endswith(".json") or not os.path.isfile(full):
+                continue
+            try:
+                with open(full, "r", encoding="utf-8") as f:
+                    rec = json.load(f)
+                if isinstance(rec, dict) and "content" in rec and "ts" in rec:
+                    out.append({"ts": rec.get("ts"), "size": rec.get("size", 0)})
+            except Exception:
+                continue
+    except Exception:
+        pass
+    out.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return out
+
+
+def _coding_get_version(user_id: str, path: str, ts: float) -> Optional[str]:
+    try:
+        prefix = f"{float(ts):.6f}_"
+        for name in os.listdir(_coding_version_dir(user_id, path)):
+            if not name.startswith(prefix):
+                continue
+            full = os.path.join(_coding_version_dir(user_id, path), name)
+            with open(full, "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            if isinstance(rec, dict) and "content" in rec:
+                return rec["content"]
+    except Exception:
+        pass
+    return None
+
+
+def _coding_prune_versions(user_id: str, path: str) -> None:
+    """Keep the newest N per file, then the newest overall under the size cap."""
+    d = _coding_version_dir(user_id, path)
+    files = []
+    try:
+        for name in os.listdir(d):
+            full = os.path.join(d, name)
+            if name.endswith(".json") and os.path.isfile(full):
+                try:
+                    with open(full, "r", encoding="utf-8") as f:
+                        ts = json.load(f).get("ts", 0)
+                except Exception:
+                    ts = 0
+                files.append((ts, full))
+    except Exception:
+        return
+    files.sort(key=lambda x: x[0], reverse=True)
+    for _ts, full in files[_CODING_VERSION_CAP:]:
+        try:
+            os.remove(full)
+        except OSError:
+            pass
+    root = _coding_versions_dir(user_id)
+    all_files = []
+    total = 0
+    try:
+        for dirpath, _dirs, names in os.walk(root):
+            for name in names:
+                full = os.path.join(dirpath, name)
+                try:
+                    sz = os.path.getsize(full)
+                except OSError:
+                    continue
+                total += sz
+                all_files.append((os.path.getmtime(full), full))
+    except Exception:
+        return
+    all_files.sort(key=lambda x: x[0])
+    for _mt, full in all_files:
+        if total <= _CODING_VERSION_DIR_CAP:
+            break
+        try:
+            sz = os.path.getsize(full)
+            os.remove(full)
+            total -= sz
+        except OSError:
+            continue
+
+
+def _coding_save_version(user_id: str, path: str, content: str) -> None:
+    """Snapshot content BEFORE an edit. No-ops are skipped; oldest versions are
+    pruned once the per-file or total cap is hit."""
+    if not content:
+        return
+    try:
+        d = _coding_version_dir(user_id, path)
+        os.makedirs(d, exist_ok=True)
+        ts = time.time()
+        rec = {"ts": ts, "size": len(content.encode("utf-8", "ignore")), "content": content}
+        with open(os.path.join(d, f"{ts:.6f}_{secrets.token_hex(4)}.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(rec, f)
+        _coding_prune_versions(user_id, path)
+    except Exception:
+        pass
+
 def _user_prefs_path(user_id: str) -> str:
     return os.path.join(_user_data_dir(user_id), "prefs.json")
 
@@ -585,6 +711,7 @@ def _get_coding_state(user_id: str) -> dict:
             "auto_create": False,
             "auto_edit": False,
             "auto_command": False,
+            "plan_mode": False,
             "max_file_size": 100000,
             "system_prompt": DEFAULT_CODING_PROMPT
         })
@@ -767,6 +894,14 @@ class CodingFilePatch(BaseModel):
 class CodingRunCommand(BaseModel):
     command: str
     cwd: Optional[str] = None
+
+class CodingFileRestore(BaseModel):
+    path: str
+    ts: float
+
+class CodingGitCommit(BaseModel):
+    message: str
+    add: str = "all"
 
 # ==========================================
 # API Endpoints
@@ -1528,6 +1663,7 @@ COMMAND REFERENCE (use exactly these forms):
 - Run JavaScript: node filename.js  (check first: node --version)
 - Packages: pip install name  /  npm install
 - Git: git status / git add -A / git commit -m "msg"
+- Fetch a web page: WEB_FETCH:https://example.com (below)
 
 BLOCK SYNTAX (exact — the parser is strict):
 - Each block starts on its own line. No code fences around blocks. No quotes around the command.
@@ -1545,6 +1681,8 @@ NEW:
 END_FILE_PATCH
   Use PATCH for fixes (never rewrite a whole working file to fix a few
   lines). Use FILE_CREATE only for brand-new files.
+- WEB_FETCH:https://example.com — fetch a web page as text, then
+  END_WEB_FETCH on the next line. Use it to read docs or look something up.
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
@@ -2167,6 +2305,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         if os.path.isfile(full):
             with open(full, "r", encoding="utf-8", errors="replace") as f:
                 backup = f.read()
+            _coding_save_version(_safe_username(user["username"]), req.path, backup)
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
         # Diff stats for the activity feed (opencode-style +N -M)
@@ -2232,6 +2371,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
         if quota_err:
             return quota_err
+        _coding_save_version(_safe_username(user["username"]), req.path, current)
         with open(full, "w", encoding="utf-8") as f:
             f.write(patched)
         try:
@@ -2244,6 +2384,80 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(patched),
                 "added": added, "removed": removed}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def _coding_version_checks(user, folder, path):
+    """Shared guard for the version endpoints: auth, open folder, path safety."""
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, path)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    return None
+
+
+@app.get("/api/coding/file-versions")
+async def coding_file_versions(request: Request, path: str):
+    """List saved versions of a project file (newest first)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    guard = _coding_version_checks(user, coding_state.get("folder"), path)
+    if guard:
+        return guard
+    return {"path": path,
+            "versions": _coding_list_versions(_safe_username(user["username"]), path)}
+
+
+@app.get("/api/coding/file-version-content")
+async def coding_file_version_content(request: Request, path: str, ts: float):
+    """Fetch the content of one saved version."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    guard = _coding_version_checks(user, coding_state.get("folder"), path)
+    if guard:
+        return guard
+    content = _coding_get_version(_safe_username(user["username"]), path, ts)
+    if content is None:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    return {"path": path, "ts": ts, "content": content}
+
+
+@app.post("/api/coding/file-restore")
+async def coding_file_restore(request: Request, req: CodingFileRestore):
+    """Restore a file to a saved version. The current content is snapshotted
+    first, so restoring is itself undoable."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    guard = _coding_version_checks(user, folder, req.path)
+    if guard:
+        return guard
+    full = os.path.join(folder, req.path)
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    content = _coding_get_version(_safe_username(user["username"]), req.path, req.ts)
+    if content is None:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            current = f.read()
+        if current != content:
+            _coding_save_version(_safe_username(user["username"]), req.path, current)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[CODING] Restored file: {req.path} user={user.get('username','-')}")
+        return {"status": "ok", "path": req.path, "size": len(content)}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -2780,6 +2994,259 @@ async def coding_project_context(request: Request):
                 context_lines.append(f"{prefix}{e['name']} ({size} bytes)")
     _render_tree(tree)
     return {"context": "\n".join(context_lines), "folder": folder}
+
+
+@app.get("/api/coding/search")
+async def coding_search(request: Request, q: str, ext: str = "", max: int = 100):
+    """Project-wide text search over the open folder (grep). Skips ignored
+    dirs, dotfiles, binaries and files over 1MB; caps results and per-file hits."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    query = (q or "").strip()
+    if not query or len(query) > 200:
+        return JSONResponse(status_code=400, content={"error": "Query must be 1-200 characters"})
+    try:
+        limit = max(1, min(int(max), 200))
+    except Exception:
+        limit = 100
+    exts = {e.strip().lower().lstrip(".") for e in ext.split(",") if e.strip()} if ext else set()
+    needle = query.lower()
+    results = []
+    per_file_cap = 20
+    try:
+        for dirpath, dirnames, filenames in os.walk(folder):
+            dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+            for name in filenames:
+                if len(results) >= limit:
+                    break
+                if name.startswith("."):
+                    continue
+                file_ext = os.path.splitext(name)[1].lower().lstrip(".")
+                if exts and file_ext not in exts:
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    if os.path.getsize(full) > 1024 * 1024:
+                        continue
+                    with open(full, "rb") as f:
+                        if b"\x00" in f.read(8192):
+                            continue
+                    with open(full, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read(200 * 1024)
+                except Exception:
+                    continue
+                rel = os.path.relpath(full, folder).replace("\\", "/")
+                hits = 0
+                for i, line in enumerate(text.splitlines(), 1):
+                    if needle in line.lower():
+                        results.append({"path": rel, "line": i, "text": line.strip()[:160]})
+                        hits += 1
+                        if hits >= per_file_cap or len(results) >= limit:
+                            break
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"query": q, "count": len(results), "results": results}
+
+
+def _coding_git(cwd: str, args: list, timeout: int = 30) -> tuple:
+    """Run git inside the project folder. Returns (returncode, output)."""
+    try:
+        proc = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, errors="replace")
+        return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return 124, "git timed out"
+    except FileNotFoundError:
+        return 127, "git is not installed on this server"
+    except Exception as e:
+        return 1, str(e)
+
+
+@app.get("/api/coding/git/status")
+async def coding_git_status(request: Request):
+    """Branch, ahead/behind and per-file change lists for the open folder."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(os.path.join(folder, ".git")):
+        return {"git": False, "folder": folder}
+    code, out = _coding_git(folder, ["status", "--porcelain", "--branch"])
+    if code != 0:
+        return {"git": False, "folder": folder, "error": out[:300]}
+    branch, ahead, behind = "", 0, 0
+    staged, modified, untracked, conflicted = [], [], [], []
+    for line in out.splitlines():
+        if line.startswith("##"):
+            parts = line[2:].strip()
+            branch = parts.split("...")[0].strip()
+            m = re.search(r"ahead (\d+)", parts)
+            if m:
+                ahead = int(m.group(1))
+            m = re.search(r"behind (\d+)", parts)
+            if m:
+                behind = int(m.group(1))
+            continue
+        if len(line) < 3:
+            continue
+        x, y, path = line[0], line[1], line[3:]
+        if x == "?" and y == "?":
+            untracked.append(path)
+        elif x == "U" or y == "U" or (x, y) in (("A", "A"), ("D", "D")):
+            conflicted.append(path)
+        elif x != " ":
+            staged.append(path)
+        elif y != " ":
+            modified.append(path)
+    return {"git": True, "branch": branch, "ahead": ahead, "behind": behind,
+            "clean": not (staged or modified or untracked or conflicted),
+            "staged": staged, "modified": modified, "untracked": untracked,
+            "conflicted": conflicted}
+
+
+@app.get("/api/coding/git/diff")
+async def coding_git_diff(request: Request, path: str = ""):
+    """Unified diff of the whole tree (staged + unstaged) or of one file."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(os.path.join(folder, ".git")):
+        return JSONResponse(status_code=404, content={"error": "Not a git repository"})
+    args = ["diff", "--no-color", "HEAD"]
+    if path:
+        if _bad_path(path):
+            return JSONResponse(status_code=400, content={"error": "Invalid path"})
+        full = os.path.join(folder, path)
+        if not _is_within(folder, full):
+            return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+        args += ["--", path]
+    code, out = _coding_git(folder, args, timeout=60)
+    if code != 0:
+        return JSONResponse(status_code=500, content={"error": out[:500]})
+    return {"diff": out[:200000]}
+
+
+@app.post("/api/coding/git/commit")
+async def coding_git_commit(request: Request, req: CodingGitCommit):
+    """Commit staged changes. `add: all` stages everything first; `add: none`
+    commits only what is already staged."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    message = (req.message or "").strip()
+    if not message or len(message) > 500:
+        return JSONResponse(status_code=400, content={"error": "Commit message required (max 500 chars)"})
+    if req.add not in ("all", "none"):
+        return JSONResponse(status_code=400, content={"error": "add must be 'all' or 'none'"})
+    if not folder or not os.path.isdir(os.path.join(folder, ".git")):
+        return JSONResponse(status_code=404, content={"error": "Not a git repository"})
+    if req.add == "all":
+        code, out = _coding_git(folder, ["add", "-A"])
+        if code != 0:
+            return JSONResponse(status_code=500, content={"error": out[:500]})
+    code, out = _coding_git(folder, ["commit", "-m", message])
+    if code != 0:
+        return JSONResponse(status_code=409, content={"error": out[:500]})
+    logger.info(f"[CODING] git commit user={user.get('username','-')} msg={message[:60]!r}")
+    return {"status": "ok", "output": out[:2000]}
+
+
+def _coding_validate_fetch_url(url: str):
+    """SSRF guard for the web-fetch tool: http/https only, no credentials in the
+    URL, standard ports only, and nothing that resolves to a private, loopback,
+    link-local or reserved address. Returns (parsed_url, error)."""
+    try:
+        u = urllib.parse.urlparse(url)
+    except Exception:
+        return None, "Invalid URL"
+    if u.scheme not in ("http", "https"):
+        return None, "Only http/https URLs are allowed"
+    if not u.hostname:
+        return None, "URL has no host"
+    if u.username or u.password:
+        return None, "Credentials in the URL are not allowed"
+    try:
+        port = u.port
+    except ValueError:
+        return None, "Invalid port"
+    if port and port not in (80, 443, 8080):
+        return None, "Only ports 80, 443 and 8080 are allowed"
+    try:
+        infos = socket.getaddrinfo(u.hostname, port or 443)
+    except Exception:
+        return None, "Host does not resolve"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except Exception:
+            return None, "Unparseable address"
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return None, "Private/internal addresses are not allowed"
+    return u, None
+
+
+class _CodingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follows redirects only through URLs that pass the same SSRF guard."""
+    def __init__(self, final_url):
+        super().__init__()
+        self.final_url = final_url
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        u, verr = _coding_validate_fetch_url(newurl)
+        if verr:
+            return None
+        self.final_url[0] = u.geturl()
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@app.get("/api/coding/web-fetch")
+async def coding_web_fetch(request: Request, url: str):
+    """Fetch a URL for the model (opencode-style web tool). SSRF-guarded,
+    redirect-checked, size-capped; HTML is flattened to readable text."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    u, verr = _coding_validate_fetch_url(url)
+    if verr:
+        return JSONResponse(status_code=400, content={"error": verr})
+    final_url = [u.geturl()]
+    opener = urllib.request.build_opener(_CodingRedirectHandler(final_url))
+    req = urllib.request.Request(
+        u.geturl(),
+        headers={"User-Agent": "Mozilla/5.0 (compatible; ModellinkCoding/1.0)"})
+    try:
+        with opener.open(req, timeout=15) as resp:
+            ctype = resp.headers.get("Content-Type", "text/plain")
+            raw = resp.read(1024 * 1024)
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Fetch failed: {e}"})
+    text = raw.decode("utf-8", errors="replace")
+    if "html" in ctype.lower():
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+    return {"url": final_url[0], "content_type": ctype, "size": len(raw),
+            "text": text[:100000]}
 
 # ==========================================
 # API Key Management

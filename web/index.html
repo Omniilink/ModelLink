@@ -488,6 +488,28 @@ a:hover{text-decoration:underline}
 .cmd-item .cmd-shortcut{margin-left:auto;font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-tertiary);padding:2px 6px;border-radius:4px}
 .cmd-section{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:8px 14px 4px;font-weight:600}
 
+/* Coding: search / git / history */
+.search-hint{padding:14px 4px;color:var(--text-muted);font-size:12px;text-align:center}
+.search-hit{display:flex;gap:10px;padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;align-items:baseline;border-bottom:1px solid var(--border)}
+.search-hit:hover{background:var(--bg-tertiary)}
+.search-hit-path{font-family:var(--mono);font-size:11px;color:var(--accent-light);flex-shrink:0}
+.search-hit-text{font-family:var(--mono);font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.git-head{display:flex;align-items:center;gap:10px;padding:6px 2px}
+.git-branch{font-family:var(--mono);font-size:13px;color:var(--accent-light);font-weight:600}
+.git-clean{font-size:11px;color:var(--success)}
+.git-sync{font-size:11px;color:var(--text-muted)}
+.git-files{margin:8px 0}
+.git-file{display:flex;align-items:center;gap:8px;padding:3px 2px;font-size:12px}
+.git-status{width:16px;height:16px;border-radius:3px;background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--mono)}
+.git-path{font-family:var(--mono);color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.git-diff-wrap{margin:10px 0}
+.git-diff-head{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);font-weight:600;margin-bottom:4px}
+.git-diff{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;font-family:var(--mono);font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
+.git-commit-row{display:flex;gap:8px;margin-top:12px}
+.history-row{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--border);font-size:12px}
+.history-when{color:var(--text-secondary);flex:1;min-width:0}
+.history-size{color:var(--text-muted);font-family:var(--mono);font-size:11px;flex-shrink:0}
+
 /* Message bookmarks */
 .msg-bookmark-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:all .15s}
 .msg-bookmark-btn:hover{color:var(--warning);border-color:var(--warning)}
@@ -966,6 +988,9 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button class="primary" id="coding-open-btn" onclick="openCodingFolder()">Open</button>
           <button onclick="refreshCodingTree()">Refresh</button>
           <button onclick="toggleCodingOutput()">Terminal</button>
+          <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
+          <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
+          <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
           <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
@@ -978,6 +1003,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div class="coding-filetree" id="coding-filetree"><div class="filetree-empty">Open a folder to see files</div></div>
           <div class="coding-main">
             <div class="coding-sticky-bar" id="coding-sticky-bar"><span>Tool actions detected</span><button onclick="copyAllCodeBlocks()">Copy All Code</button><button class="primary" onclick="applyAllToolBlocks()">Apply All</button></div>
+            <div id="coding-plan-banner" style="display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px">Plan mode is ON — the model's actions are staged, nothing runs until you approve. <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="applyAllToolBlocks()">Run staged actions</button></div>
             <div class="coding-chat" id="coding-chat"></div>
             <div class="coding-output" id="coding-output"><div class="coding-output-header"><span>Terminal Output</span><button class="header-btn" style="padding:2px 8px;font-size:10px" onclick="clearCodingOutput()">Clear</button></div><div class="coding-output-body" id="coding-output-body"></div></div>
             <div class="coding-input-area">
@@ -996,6 +1022,9 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
   </div>
 </div>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
+<div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
+<div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
+<div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
@@ -1346,7 +1375,7 @@ function renderSettings(){
   // Coding Mode
   const cs=document.createElement('div');cs.className='settings-section';cs.innerHTML='<h3>Coding Mode</h3>';
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cod=>{
-    [{key:'auto_create',label:'Auto-Create Files',desc:'Automatically create new files without asking first'},{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'}].forEach(t=>{
+    [{key:'auto_create',label:'Auto-Create Files',desc:'Automatically create new files without asking first'},{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'},{key:'plan_mode',label:'Plan Mode',desc:'Stage every action for review — nothing runs until you approve the plan'}].forEach(t=>{
       const row=document.createElement('div');row.className='toggle-row';const left=document.createElement('div');left.innerHTML='<div class="toggle-label">'+t.label+'</div><div class="toggle-desc">'+t.desc+'</div>';
       const sw=document.createElement('div');sw.className='toggle-switch'+(cod[t.key]?' on':'');sw.onclick=()=>{sw.classList.toggle('on');authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[t.key]:sw.classList.contains('on')})})};
       row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
@@ -1505,7 +1534,7 @@ function applyCodingToolbarPermissions(){
   if(btn)btn.style.display=isAdmin?'':'none';
   if(inp)inp.placeholder=isAdmin?'Or enter any folder path...':'Open a project from Projects';
 }
-function initCodingView(){if(codingFolder){document.getElementById('coding-folder-input').value=folderBaseName(codingFolder);document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions()}
+function initCodingView(){if(codingFolder){document.getElementById('coding-folder-input').value=folderBaseName(codingFolder);document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher()}
 function closeCodingFolder(){codingFolder=null;fsHandle=null;allCodingFiles=[];authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-folder-input').value='';document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
@@ -1582,6 +1611,7 @@ function openFileActionModal(path,execCmd){
   const actions=document.getElementById('file-action-actions');actions.innerHTML='';
   const mk=(label,cls,fn)=>{const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=fn;actions.appendChild(b)};
   mk('View code','btn btn-ghost',()=>{closeFileActionModal();viewCodingFile(path)});
+  mk('History','btn btn-ghost',()=>{closeFileActionModal();openFileHistoryModal(path)});
   const ext=(path.split('.').pop()||'').toLowerCase();
   const runners={py:'python',js:'node',ts:'npx ts-node',sh:'bash',rb:'ruby',php:'php',go:'go run',ps1:'powershell -File'};
   if(execCmd||runners[ext])mk('Run','btn btn-primary',()=>{closeFileActionModal();runFileScanned(path,execCmd||runners[ext])});
@@ -1715,7 +1745,7 @@ function streamHiddenSpans(fullText){
   let m;
   const fp=/```\w*\n[\s\S]*?\n```/g;
   while((m=fp.exec(fullText)))push(m.index,m.index+m[0].length);
-  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
+  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
   while((m=bp.exec(fullText)))push(m.index,m.index+m[0].length);
   // Protocol lines: the parser reads them, the user never should.
   const pp1=/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*[ \t]*\r?\n?/gmi;
@@ -1827,6 +1857,7 @@ async function sendCodingMessage(){
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);codingHistory.push({role:'user',content:cleanText});persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
+  if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
   let next={blocks:false,actionable:false};
@@ -1838,7 +1869,7 @@ async function sendCodingMessage(){
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
-  if(next.actionable)codingAutoContinue().catch(reportCodingLoopCrash);
+  if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
 }
 
@@ -1948,6 +1979,7 @@ function stripToolBlocks(text){
   c=c.replace(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g,'');
   c=c.replace(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,'');
   c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
+  c=c.replace(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g,'');
   c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,'');
   c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,'');
   return c.trim();
@@ -1958,7 +1990,7 @@ function stripProtocolLines(text){
   let c=String(text||'');
   c=c.replace(/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*\r?\n?/gmi,'');
   c=c.replace(/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi,'');
-  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_TODO_LIST)[^\n]*\r?\n?/gmi,'');
+  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST)[^\n]*\r?\n?/gmi,'');
   return c;
 }
 function cleanCodingProse(text){
@@ -2136,19 +2168,22 @@ async function processCodingActions(text,msgEl){
   let shownFallback=0;
   const truncFrom=codingTruncatedAt(text);
   const parseText=truncFrom>=0?text.slice(0,truncFrom):text;
-  const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
-  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
-  parseCodingTodos(parseText);
-  if(hasToolBlocks){stickyBar.classList.add('visible');const count=fileCreates.length+fileEdits.length+filePatches.length;stickyBar.querySelector('span').textContent=count+' file action'+(count!==1?'s':'')+' + '+commands.length+' command'+(commands.length!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
-  const contentEl=msgEl.querySelector('.coding-msg-content');
-  if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(fileCreates.length+fileEdits.length+filePatches.length)parts.push((fileCreates.length+fileEdits.length+filePatches.length)+' file action'+(fileCreates.length+fileEdits.length+filePatches.length!==1?'s':''));if(commands.length)parts.push(commands.length+' command'+(commands.length!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   const codingSettings=await fetchCodingSettings();
+  const planMode=!!codingSettings.plan_mode;
+  const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
+  const webFetches=[...parseText.matchAll(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g)].map(m=>({url:m[0].replace(/^WEB_FETCH:[ \t]*\r?\n?/,'').replace(/\nEND_WEB_FETCH$/,'').trim()}));
+  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  parseCodingTodos(parseText);
+  const autoFile=fileCreates.length+fileEdits.length+filePatches.length,autoCmd=commands.length;
+  if(autoFile+autoCmd>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=autoFile+' file action'+(autoFile!==1?'s':'')+' + '+autoCmd+' command'+(autoCmd!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
+  const contentEl=msgEl.querySelector('.coding-msg-content');
+  if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
-    if(codingSettings.auto_create){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
-    if(codingSettings.auto_edit){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
@@ -2179,15 +2214,37 @@ async function processCodingActions(text,msgEl){
     }catch(e){previewErr=e.message}
     if(previewErr){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit){const result=await codingPatchFile(path,oldText,newText);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Patched successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Patched successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Patched!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'}
+    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  for(const wf of webFetches){
+    const url=wf.url;
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-fetch';
+    if(!/^https?:\/\//i.test(url)){toolDiv.innerHTML='<div class="tool-label">Fetch URL</div><div style="color:var(--error);font-size:11px">Not a valid http(s) URL: '+escapeHtml(url)+'</div>';msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
+    toolDiv.innerHTML='<div class="tool-label">Fetch URL: '+escapeHtml(url)+'</div>';
+    const bar=document.createElement('div');bar.className='approve-bar';
+    const ab=document.createElement('button');ab.className='approve';ab.textContent='Fetch';
+    ab.onclick=async()=>{
+      bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Fetching…</span>';
+      try{
+        const r=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(url));
+        const d=await r.json();
+        if(!r.ok){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+escapeHtml(d.error||'Fetch failed')+'</span>';return}
+        const pre=document.createElement('pre');pre.className='cmd-result';pre.style.cssText='max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word';
+        pre.textContent=(d.text||'(empty response)').slice(0,20000);
+        bar.innerHTML='';bar.appendChild(pre);
+      }catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+escapeHtml(e.message)+'</span>'}
+    };
+    const db=document.createElement('button');db.className='deny';db.textContent='Skip';
+    db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
+    bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const qm of questions){
     const qtext=(qm[1]||'').trim()||'Question';
@@ -3187,7 +3244,6 @@ window.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
   if(e.ctrlKey&&e.key==='t'){e.preventDefault();toggleTerminal()}
   if(e.ctrlKey&&e.key==='b'){e.preventDefault();document.querySelector('.sidebar').classList.toggle('hidden')}
-  if(e.ctrlKey&&e.key==='k'){e.preventDefault();toggleModelMenu()}
   if(e.ctrlKey&&e.key==='/'){e.preventDefault();switchView('tutorial')}
   if(e.key==='Escape'){document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'))}
 });
@@ -3566,6 +3622,26 @@ function buildCmdList(query){
   if(selectedModel!=='omnilink'){
     actions.push({icon:'\u26A1',label:'Switch to omnilink (auto-route)',action:()=>{closeCmdPalette();selectModel('omnilink')}});
   }
+  if(currentView==='coding'){
+    actions.push({section:'Coding'});
+    const codingActs=[
+      {icon:'\uD83D\uDD0D',label:'Search project contents',action:()=>{closeCmdPalette();openSearchModal()}},
+      {icon:'\uD83D\uDCCA',label:'Git status & commits',action:()=>{closeCmdPalette();openGitModal()}},
+      {icon:'\u2699',label:'Toggle plan mode',action:()=>{closeCmdPalette();togglePlanMode()}},
+      {icon:'\u26A1',label:'Run tests',action:()=>{closeCmdPalette();runProjectTests()}},
+      {icon:'\uD83D\uDCC4',label:'Export chat as Markdown',action:()=>{closeCmdPalette();exportCodingChat()}},
+      {icon:'\u2318',label:'Toggle terminal',action:()=>{closeCmdPalette();toggleCodingOutput()}},
+      {icon:'\uD83D\uDCE6',label:'Download project',action:()=>{closeCmdPalette();downloadProject()}},
+    ];
+    codingActs.push(codingFolder
+      ?{icon:'\uD83D\uDCC1',label:'Close folder',action:()=>{closeCmdPalette();closeCodingFolder()}}
+      :{icon:'\uD83D\uDCC2',label:'Open folder',action:()=>{closeCmdPalette();openCodingFolder()}});
+    codingActs.forEach(a=>actions.push(a));
+    if(allCodingFiles&&allCodingFiles.length){
+      const scored=allCodingFiles.map(f=>({f:f,s:fuzzyMatch(q,f)})).filter(x=>x.s>=0).sort((a,b)=>b.s-a.s).slice(0,8);
+      if(scored.length){actions.push({section:'Files'});scored.forEach(x=>actions.push({icon:'\uD83D\uDCC4',label:x.f,action:()=>{closeCmdPalette();viewCodingFile(x.f)}}))}
+    }
+  }
   actions.push({section:'Models'});
   const modelList=[{id:'omnilink',provider:'auto'}];
   if(allModels)allModels.filter(m=>m.id!=='omnilink').forEach(m=>modelList.push(m));
@@ -3755,6 +3831,241 @@ function sendCompareRequest(userMsg){
   }).catch(e=>{assistantEl.innerHTML=renderContent('Compare error: '+e.message)});
 }
 
+// ========== CODING: search / git / history / plan / export ==========
+function fuzzyMatch(query,text){
+  // Subsequence match with bonuses for consecutive hits and path separators.
+  if(!query)return 0;
+  const q=String(query).toLowerCase(),t=String(text||'').toLowerCase();
+  let qi=0,score=0,last=-2;
+  for(let ti=0;ti<t.length&&qi<q.length;ti++){
+    if(t[ti]===q[qi]){
+      score+=(last===ti-1?3:1)+((ti===0||t[ti-1]==='/'||t[ti-1]==='.'||t[ti-1]==='-')?1:0);
+      last=ti;qi++;
+    }
+  }
+  return qi===q.length?score:-1;
+}
+
+// ---- Plan mode: stage every action for review, run nothing automatically ----
+let planModeCache={v:false,t:0};
+function codingPlanModeNotice(){
+  return '\n\nPLAN MODE IS ON: write every intended action as a normal tool block, but they will NOT run — the user reviews the plan first. Describe what you will do and wait for approval. Never claim work is done.';
+}
+async function isPlanMode(){
+  if(Date.now()-planModeCache.t>15000){
+    try{const s=await fetchCodingSettings();planModeCache={v:!!s.plan_mode,t:Date.now()}}catch(e){}
+  }
+  return planModeCache.v;
+}
+async function togglePlanMode(){
+  let next=true;
+  try{
+    const s=await fetchCodingSettings();
+    next=!s.plan_mode;
+    await authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_mode:next})});
+  }catch(e){showToast('Could not toggle plan mode: '+e.message,'error');return}
+  planModeCache={v:next,t:Date.now()};
+  updatePlanModeUI();
+  showToast(next?'Plan mode ON — actions are staged for your review':'Plan mode OFF — actions run as usual',next?'info':'success');
+}
+function updatePlanModeUI(){
+  const btn=document.getElementById('coding-plan-btn');
+  if(btn){
+    btn.classList.toggle('primary',planModeCache.v);
+    btn.textContent=planModeCache.v?'Plan ✓':'Plan';
+    btn.title=planModeCache.v?'Plan mode ON — click to resume normal execution':'Plan mode: stage actions without running them';
+  }
+  const banner=document.getElementById('coding-plan-banner');
+  if(banner)banner.style.display=planModeCache.v?'flex':'none';
+}
+
+// ---- Project-wide search ----
+function openSearchModal(q){
+  const m=document.getElementById('search-modal');if(!m)return;
+  m.classList.add('open');
+  document.getElementById('search-input').value=q||'';
+  runSearch();
+  setTimeout(()=>document.getElementById('search-input').focus(),30);
+}
+function closeSearchModal(){const m=document.getElementById('search-modal');if(m)m.classList.remove('open')}
+async function runSearch(){
+  const box=document.getElementById('search-results');if(!box)return;
+  const q=document.getElementById('search-input').value.trim();
+  const ext=document.getElementById('search-ext').value.trim();
+  if(!q){box.innerHTML='<div class="search-hint">Type to search file contents across the project.</div>';return}
+  box.innerHTML='<div class="search-hint">Searching…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/search?q='+encodeURIComponent(q)+(ext?'&ext='+encodeURIComponent(ext):''));
+    const d=await r.json();
+    if(!r.ok){box.innerHTML='<div class="search-hint">'+escapeHtml(d.error||'search failed')+'</div>';return}
+    if(!d.results||!d.results.length){box.innerHTML='<div class="search-hint">No matches for “'+escapeHtml(q)+'”.</div>';return}
+    box.innerHTML=d.results.map(h=>'<div class="search-hit" data-path="'+escapeHtml(h.path)+'"><span class="search-hit-path">'+escapeHtml(h.path)+':'+h.line+'</span><span class="search-hit-text">'+escapeHtml(h.text)+'</span></div>').join('');
+    box.querySelectorAll('.search-hit').forEach(el=>{el.onclick=()=>{closeSearchModal();viewCodingFile(el.dataset.path)}});
+  }catch(e){box.innerHTML='<div class="search-hint">'+escapeHtml(e.message)+'</div>'}
+}
+
+// ---- Git panel ----
+function openGitModal(){const m=document.getElementById('git-modal');if(!m)return;m.classList.add('open');renderGitPanel()}
+function closeGitModal(){const m=document.getElementById('git-modal');if(m)m.classList.remove('open')}
+async function renderGitPanel(){
+  const panel=document.getElementById('git-panel');if(!panel)return;
+  panel.innerHTML='<div class="search-hint">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/git/status');
+    const d=await r.json();
+    if(!d.git){
+      panel.innerHTML='<div class="search-hint">This folder is not a git repository.</div>'+(d.error?'<div class="search-hint">'+escapeHtml(d.error)+'</div>':'');
+      return;
+    }
+    let h='<div class="git-head"><span class="git-branch">'+escapeHtml(d.branch||'detached HEAD')+'</span>';
+    if(d.clean)h+='<span class="git-clean">clean</span>';
+    h+='</div>';
+    if(d.ahead||d.behind)h+='<div class="git-sync">'+((d.ahead?'↑ '+d.ahead+' ahead':'')+(d.ahead&&d.behind?' · ':'')+(d.behind?'↓ '+d.behind+' behind':''))+'</div>';
+    const rows=[];
+    (d.conflicted||[]).forEach(p=>rows.push(['C',p]));
+    (d.staged||[]).forEach(p=>rows.push(['S',p]));
+    (d.modified||[]).forEach(p=>rows.push(['M',p]));
+    (d.untracked||[]).forEach(p=>rows.push(['?',p]));
+    if(rows.length){
+      h+='<div class="git-files">'+rows.map(r=>'<div class="git-file"><span class="git-status">'+r[0]+'</span><span class="git-path">'+escapeHtml(r[1])+'</span></div>').join('')+'</div>';
+    }
+    h+='<div class="git-diff-wrap"><div class="git-diff-head">Diff (unstaged + staged)</div><pre class="git-diff" id="git-diff"></pre></div>';
+    h+='<div class="git-commit-row"><input type="text" id="git-commit-msg" placeholder="Commit message" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><select id="git-commit-add" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 8px;color:var(--text-primary);font-size:12px;font-family:var(--font)"><option value="all">add all</option><option value="none">staged only</option></select><button class="btn btn-primary" style="font-size:11px;padding:7px 12px" id="git-commit-btn">Commit</button></div>';
+    panel.innerHTML=h;
+    document.getElementById('git-commit-btn').onclick=commitGit;
+    loadGitDiff();
+  }catch(e){panel.innerHTML='<div class="search-hint">'+escapeHtml(e.message)+'</div>'}
+}
+async function loadGitDiff(){
+  const pre=document.getElementById('git-diff');if(!pre)return;
+  pre.textContent='Loading…';
+  try{
+    const r=await authFetch(API+'/api/coding/git/diff');
+    const d=await r.json();
+    pre.textContent=r.ok?(d.diff||'(no changes)'):(d.error||'diff failed');
+  }catch(e){pre.textContent=e.message}
+}
+async function commitGit(){
+  const inp=document.getElementById('git-commit-msg');const msg=inp.value.trim();
+  if(!msg){showToast('Enter a commit message','error');return}
+  const add=document.getElementById('git-commit-add').value;
+  const btn=document.getElementById('git-commit-btn');
+  btn.disabled=true;btn.textContent='Committing…';
+  try{
+    const r=await authFetch(API+'/api/coding/git/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,add})});
+    const d=await r.json();
+    btn.disabled=false;btn.textContent='Commit';
+    if(!r.ok){showToast(d.error||'commit failed','error');return}
+    showToast('Committed','success');
+    inp.value='';
+    renderGitPanel();
+  }catch(e){btn.disabled=false;btn.textContent='Commit';showToast(e.message,'error')}
+}
+
+// ---- File version history ----
+function openFileHistoryModal(path){
+  const m=document.getElementById('history-modal');if(!m)return;
+  document.getElementById('history-title').textContent='History — '+path;
+  const view=document.getElementById('history-view');view.style.display='none';view.textContent='';
+  const list=document.getElementById('history-list');
+  list.innerHTML='<div class="search-hint">Loading…</div>';
+  m.classList.add('open');
+  authFetch(API+'/api/coding/file-versions?path='+encodeURIComponent(path)).then(r=>r.json()).then(d=>{
+    if(!d.versions||!d.versions.length){list.innerHTML='<div class="search-hint">No saved versions yet — every edit is snapshotted automatically.</div>';return}
+    list.innerHTML=d.versions.map(v=>'<div class="history-row" data-ts="'+v.ts+'"><span class="history-when">'+new Date(v.ts*1000).toLocaleString()+'</span><span class="history-size">'+v.size+' bytes</span><button class="btn btn-ghost" data-act="view" style="font-size:10px;padding:3px 10px">View</button><button class="btn btn-primary" data-act="restore" style="font-size:10px;padding:3px 10px">Restore</button></div>').join('');
+    list.querySelectorAll('.history-row').forEach(row=>{
+      const ts=row.dataset.ts;
+      row.querySelector('[data-act="view"]').onclick=()=>viewFileVersion(path,ts);
+      row.querySelector('[data-act="restore"]').onclick=()=>restoreFileVersion(path,ts);
+    });
+  }).catch(e=>{list.innerHTML='<div class="search-hint">'+escapeHtml(e.message)+'</div>'});
+}
+function closeHistoryModal(){const m=document.getElementById('history-modal');if(m)m.classList.remove('open')}
+async function viewFileVersion(path,ts){
+  const view=document.getElementById('history-view');
+  view.style.display='block';view.textContent='Loading…';
+  try{
+    const r=await authFetch(API+'/api/coding/file-version-content?path='+encodeURIComponent(path)+'&ts='+encodeURIComponent(ts));
+    const d=await r.json();
+    view.textContent=r.ok?(d.content??'(empty version)'):(d.error||'failed');
+  }catch(e){view.textContent=e.message}
+}
+async function restoreFileVersion(path,ts){
+  try{
+    const r=await authFetch(API+'/api/coding/file-restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,ts:Number(ts)})});
+    const d=await r.json();
+    if(!r.ok){showToast(d.error||'restore failed','error');return}
+    showToast('Restored '+path,'success');
+    closeHistoryModal();refreshCodingTree();
+  }catch(e){showToast(e.message,'error')}
+}
+
+// ---- Session export ----
+function codingChatToMarkdown(history){
+  const out=['# Omniilink Coding Session','','> Exported '+new Date().toLocaleString(),''];
+  const fence=(label,body)=>'```'+label+'\n'+String(body||'').replace(/\n$/,'')+'\n```';
+  for(const m of (history||[])){
+    const role=String(m.role||'user').toLowerCase();
+    out.push('## '+(role==='user'?'You':'Assistant'),'');
+    let c=String(m.content||'').replace(/\r\n/g,'\n');
+    if(role==='assistant'){
+      c=c.replace(/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*\r?\n?/gmi,'');
+      c=c.replace(/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi,'');
+      c=c.replace(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g,(x,p,code)=>fence('file: '+p.trim(),code));
+      c=c.replace(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g,(x,p,code)=>fence('file: '+p.trim(),code));
+      c=c.replace(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,(x,p,o,n)=>fence('patch: '+p.trim()+'\n--- old\n'+o+'\n+++ new\n'+n,''));
+      c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,(x,cmd)=>fence('bash\n'+cmd,''));
+      c=c.replace(/WEB_FETCH:([ \t]*\r?\n?[^\n]+?)(?:\nEND_WEB_FETCH|$)/g,(x,u)=>fence('web: '+String(u).trim(),''));
+      c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,(x,items)=>fence('todo\n'+items,''));
+      c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,(x,q,opts)=>fence('question: '+q+'\n'+opts,''));
+    }
+    out.push(c.trim(),'');
+  }
+  return out.join('\n');
+}
+function exportCodingChat(){
+  if(!codingHistory||!codingHistory.length){showToast('Nothing to export yet','error');return}
+  const blob=new Blob([codingChatToMarkdown(codingHistory)],{type:'text/markdown'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='coding-session-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.md';
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  showToast('Chat exported as Markdown','success');
+}
+
+// ---- Run the project's test suite ----
+async function runProjectTests(){
+  const files=allCodingFiles||[];
+  let cmd='';
+  if(files.includes('package.json'))cmd='npm test';
+  else if(files.some(f=>/(^|\/)(pyproject\.toml|pytest\.ini|setup\.py|tox\.ini)$/.test(f)))cmd='python -m pytest -q';
+  else if(files.some(f=>f.endsWith('.py')))cmd='python -m pytest -q';
+  if(!cmd){showToast('No test runner detected (need package.json or Python tests)','error');return}
+  addCodingSystemMsg('Running tests: '+cmd);
+  const result=await codingRunCmd(cmd);
+  addCodingSystemMsg('Exit '+result.exit_code+'\n'+(result.stdout||'(no output)'));
+  if(result.stderr)addCodingSystemMsg(result.stderr);
+}
+
+// ---- File watcher: notice when the project changes on disk ----
+let codingWatchTimer=null,codingWatchSig='';
+function startCodingWatcher(){
+  stopCodingWatcher();
+  codingWatchSig='';
+  codingWatchTimer=setInterval(async()=>{
+    if(!codingFolder||currentView!=='coding')return;
+    try{
+      const r=await authFetch(API+'/api/coding/files');
+      if(!r.ok)return;
+      const d=await r.json();
+      const sig=JSON.stringify(d.tree||d);
+      if(codingWatchSig&&sig!==codingWatchSig){refreshCodingTree();showToast('Project files changed on disk','info')}
+      codingWatchSig=sig;
+    }catch(e){}
+  },20000);
+}
+function stopCodingWatcher(){if(codingWatchTimer){clearInterval(codingWatchTimer);codingWatchTimer=null}}
+
 // ========== GLOBAL KEYBOARD SHORTCUTS ==========
 document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='k'){e.preventDefault();openCmdPalette()}
@@ -3766,6 +4077,7 @@ document.addEventListener('keydown',e=>{
   else if(e.ctrlKey&&e.key==='d'){e.preventDefault();viewBookmarks()}
   else if(e.ctrlKey&&e.key==='m'){e.preventDefault();toggleCompareMode()}
   else if(e.ctrlKey&&e.key==='/'&&currentView==='chat'){e.preventDefault();document.getElementById('shortcuts-modal').classList.add('open')}
+  else if(e.ctrlKey&&e.key==='`'&&currentView==='coding'&&!e.target.closest('input,textarea')){e.preventDefault();toggleCodingOutput()}
 });
 </script>
 </body>
