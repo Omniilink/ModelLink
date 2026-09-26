@@ -877,8 +877,7 @@ async def auth_signup(request: Request, req: SignupRequest):
     # else. A brand-new database is exempt so the deployer can still claim
     # their own handle on first run.
     names = all_usernames()
-    if names and (username in _admin_allowlist() or
-                  _safe_username(username) in {_safe_username(n) for n in _admin_allowlist()}):
+    if names and _allowlisted(username):
         return JSONResponse(status_code=409, content={"error": "That username is reserved"})
     # Two accounts must never share one filesystem folder: "bob" and "bob_"
     # both sanitize to "bob", which would merge their private data.
@@ -3100,7 +3099,7 @@ async def _do_delete(request: Request, path, name):
 # ==========================================
 # Admin panel — allowlisted super-admins only
 # ==========================================
-# Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default isaac_tribbe).
+# Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default "isaac tribbe").
 # Every mutating action is rate limited and appended to user_data/audit.log.
 
 _ADMIN_STARTED_AT = time.time()
@@ -3121,8 +3120,20 @@ _ADMIN_SHELL_SEM = asyncio.Semaphore(2)
 
 
 def _admin_allowlist() -> set:
-    raw = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac_tribbe")
+    raw = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe")
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def _allowlisted(username: str) -> bool:
+    """True if the account matches an allowlist entry, exactly or after
+    filesystem-safe normalisation — so an entry of "isaac tribbe" also
+    covers a "isaac_tribbe" account (and vice versa)."""
+    u = (username or "").strip().lower()
+    allow = _admin_allowlist()
+    if u in allow:
+        return True
+    su = _safe_username(u)
+    return any(_safe_username(a) == su for a in allow)
 
 
 def _require_superadmin(request: Request):
@@ -3135,7 +3146,7 @@ def _require_superadmin(request: Request):
         return None, err
     if not user.get("is_admin"):
         return None, JSONResponse(status_code=403, content={"error": "Admin access required"})
-    if (user.get("username") or "").lower() not in _admin_allowlist():
+    if not _allowlisted(user.get("username")):
         return None, JSONResponse(status_code=403, content={"error": "Not authorised for the admin panel"})
     return user, None
 

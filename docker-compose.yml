@@ -49,8 +49,9 @@ services:
       # Matches update.bat's C:\\Modellink - change it if you move the app.
       - OMNIILINK_SANDBOX_HOST_ROOT=C:/Modellink
       # Only these usernames can open /admin (comma separated). They are also
-      # promoted to is_admin=1 on every boot.
-      - OMNIILINK_ADMIN_USERS=isaac_tribbe
+      # promoted to is_admin=1 on every boot. "isaac tribbe" also covers an
+      # "isaac_tribbe" account, since signup forbids spaces.
+      - OMNIILINK_ADMIN_USERS=isaac tribbe
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge

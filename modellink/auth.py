@@ -3,6 +3,7 @@ Omniilink Auth Module — SQLite-based user authentication.
 Replaces Cloudflare Workers (signupomniilink + useomniilink).
 """
 import os
+import re
 import sys
 import sqlite3
 import hashlib
@@ -29,6 +30,13 @@ DB_PATH = os.path.join(_base_path(), "omnilink.db")
 # ==========================================
 # Database Setup
 # ==========================================
+def _auth_safe_username(username: str) -> str:
+    """Filesystem-safe folder form ([a-z0-9_-], 1-32 chars), mirroring
+    api_server._safe_username without importing it (would be circular)."""
+    name = re.sub(r"[^a-z0-9_-]", "_", (username or "").lower())[:32].strip("_-")
+    return name or "user"
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -107,13 +115,17 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
-    # Admin panel allowlist (default: isaac_tribbe, matching api_server):
+    # Admin panel allowlist (default: "isaac tribbe", matching api_server):
     # promoted on every boot so an existing account can always reach /admin
-    # even if is_admin was ever flipped off in the database.
-    env_admin_list = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac_tribbe").strip().lower()
+    # even if is_admin was ever flipped off in the database. Each entry also
+    # matches its filesystem-safe form, so "isaac tribbe" promotes a
+    # "isaac_tribbe" account (signup forbids spaces, so that is the real row).
+    env_admin_list = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe").strip().lower()
     admin_names = {x.strip() for x in (env_admin + "," + env_admin_list).split(",") if x.strip()}
     for u in admin_names:
         conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
+        conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?",
+                     (_auth_safe_username(u),))
     conn.commit()
     conn.close()
 
