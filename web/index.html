@@ -1155,7 +1155,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
-  updateBandwidthIndicator();setInterval(updateBandwidthIndicator,30000);
+  updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
@@ -1311,9 +1311,10 @@ async function updateBandwidthIndicator(){
     const r=await authFetch(API+'/api/bandwidth');
     if(!r.ok){el.textContent='⬇ …';return}
     const d=await r.json();
-    el.textContent='⬇ '+formatBandwidth(d.used)+' / '+formatBandwidth(d.cap);
-    el.title='Bandwidth used in the last '+d.window_hours+' hours · limit '+d.rate_mbps+' Mbit/s';
-    el.style.color=d.percent>=90?'var(--error)':d.percent>=70?'var(--warning)':'';
+    const speed=d.speed>0?' · '+formatBandwidth(d.speed)+'/s':'';
+    el.textContent='⬇ '+formatBandwidth(d.used)+(d.limited?' / '+formatBandwidth(d.cap):'')+speed;
+    el.title=(d.limited?'Bandwidth used in the last '+d.window_hours+' hours · limit '+d.rate_mbps+' Mbit/s':'Admin — unlimited bandwidth')+' · updates twice a second';
+    el.style.color=d.limited&&d.percent>=90?'var(--error)':d.limited&&d.percent>=70?'var(--warning)':'';
   }catch(e){el.textContent='⬇ …'}
 }
 

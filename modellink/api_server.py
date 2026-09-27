@@ -139,9 +139,9 @@ class BodyLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-# ---- Per-user bandwidth limits: 10 Mbit/s pacing + 500 MB per 6h window ----
+# ---- Per-user bandwidth limits: 10 Mbit/s pacing + 1 GB per 6h window ----
 BW_RATE_MBPS = float(os.environ.get("OMNIILINK_BW_RATE_MBPS", "10") or 10)
-BW_WINDOW_MB = float(os.environ.get("OMNIILINK_BW_WINDOW_MB", "500") or 500)
+BW_WINDOW_MB = float(os.environ.get("OMNIILINK_BW_WINDOW_MB", "1000") or 1000)
 BW_WINDOW_HOURS = float(os.environ.get("OMNIILINK_BW_WINDOW_HOURS", "6") or 6)
 BW_ENABLED = (os.environ.get("OMNIILINK_BW_ENABLED", "1").strip().lower()
               not in ("0", "false", "no", "off", "disabled"))
@@ -149,6 +149,10 @@ BW_RATE_BPS = BW_RATE_MBPS * 1024 * 1024 / 8.0      # bytes per second
 BW_WINDOW_BYTES = int(BW_WINDOW_MB * 1024 * 1024)
 BW_WINDOW_SECONDS = BW_WINDOW_HOURS * 3600.0
 BW_BURST_BYTES = max(1024 * 1024, int(BW_RATE_BPS * 2))   # ~2s of burst
+BW_SPEED_SECONDS = 1.5                               # rolling window for "current speed"
+# Bandwidth is accounted (and limited) on file transfers only — page loads,
+# API polling and chat streaming must not eat the quota.
+BW_TRANSFER_PREFIXES = ("/api/coding/file-upload", "/api/coding/download-project")
 
 _bw_lock = threading.Lock()
 _bw_users = {}        # user_id -> [bucket, last_ts, deque[(ts, bytes)]]
@@ -172,9 +176,22 @@ def _bandwidth_window_used(st, now):
     return sum(b for _t, b in dq)
 
 
+def _bandwidth_speed(st, now):
+    """Bytes/second over the trailing BW_SPEED_SECONDS (newest entries first)."""
+    dq = st[2]
+    cutoff = now - BW_SPEED_SECONDS
+    total = 0
+    for t, b in reversed(dq):
+        if t < cutoff:
+            break
+        total += b
+    return total / BW_SPEED_SECONDS
+
+
 def _bandwidth_gate(user):
-    """None when the user may proceed, else a 429 payload dict."""
-    if not BW_ENABLED or not user:
+    """None when the user may proceed, else a 429 payload dict. Admins are
+    exempt from the cap (their usage is still tracked)."""
+    if not BW_ENABLED or not user or user.get("is_admin"):
         return None
     st = _bandwidth_state(user["id"])
     with _bw_lock:
@@ -184,12 +201,28 @@ def _bandwidth_gate(user):
     return None
 
 
-def _bandwidth_consume(user, n_in, n_out):
-    if not user or not BW_ENABLED:
+def _bandwidth_flush(user, n_in, n_out):
+    """Record transferred bytes against the user's rolling window. Called per
+    chunk (and once more at the end) so the speed readout stays live."""
+    if not user or not BW_ENABLED or (not n_in and not n_out):
         return
     st = _bandwidth_state(user["id"])
     with _bw_lock:
-        st[2].append((time.monotonic(), int(n_in) + int(n_out)))
+        dq = st[2]
+        dq.append((time.monotonic(), int(n_in) + int(n_out)))
+        if len(dq) > 32768:
+            # Coalesce adjacent entries (sum bytes, keep the older ts) so a
+            # long transfer cannot grow the deque without bound. The 6h sum
+            # and the age cutoff both stay exact.
+            merged = collections.deque()
+            while dq:
+                t1, b1 = dq.popleft()
+                if dq:
+                    _t2, b2 = dq.popleft()
+                    merged.append((t1, b1 + b2))
+                else:
+                    merged.append((t1, b1))
+            st[2] = merged
 
 
 def _bw_pace_seconds(st, n):
@@ -206,7 +239,8 @@ def _bw_pace_seconds(st, n):
 
 
 async def _bandwidth_pace(user, n):
-    if not BW_ENABLED or not user or n <= 0:
+    """Admins are exempt from pacing (their speed is still measured)."""
+    if not BW_ENABLED or not user or user.get("is_admin") or n <= 0:
         return
     st = _bandwidth_state(user["id"])
     with _bw_lock:
@@ -246,13 +280,14 @@ def _bw_resolve_user(headers):
             _bw_user_cache[token if token else f"ak:{user['id']}"] = (user, now + 60.0)
     return user
 
-
 class BandwidthLimitMiddleware:
-    """Paces each user's responses to BW_RATE_MBPS and 429s them once they have
-    moved BW_WINDOW_MB inside the rolling BW_WINDOW_HOURS window.
+    """Paces each user's file transfers to BW_RATE_MBPS and 429s them once they
+    have moved BW_WINDOW_MB inside the rolling BW_WINDOW_HOURS window.
 
-    Registered inside CORS/SecurityHeaders so the 429 still carries those
-    headers. Counts both request and response bytes toward the window."""
+    Only upload/download endpoints are accounted — page loads and API calls
+    never touch the quota. Admins are unlimited but still measured (so the
+    indicator can show their usage and current speed). Registered inside
+    CORS/SecurityHeaders so the 429 still carries those headers."""
 
     def __init__(self, app):
         self.app = app
@@ -261,15 +296,21 @@ class BandwidthLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        path = scope.get("path", "") or ""
+        transfer = path.startswith(BW_TRANSFER_PREFIXES)
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
-        user = _bw_resolve_user(headers)
+        # Resolving the user is only needed for transfers; a page refresh
+        # must not touch bandwidth state at all.
+        user = _bw_resolve_user(headers) if transfer else None
+        limited = bool(user) and not user.get("is_admin")
 
-        if user is not None:
+        if limited:
             deny = _bandwidth_gate(user)
             if deny is not None:
                 await self._send_429(send, deny)
                 return
+
         n_in = 0
         n_out = 0
 
@@ -277,10 +318,16 @@ class BandwidthLimitMiddleware:
             nonlocal n_in
             message = await receive()
             if message["type"] == "http.request":
+                chunk = message.get("body", b"") or b""
                 try:
-                    n_in += len(message.get("body", b"") or b"")
+                    n_in += len(chunk)
                 except Exception:
                     pass
+                if chunk and limited:
+                    # Pace uploads too, then flush so the speed readout is live.
+                    await _bandwidth_pace(user, len(chunk))
+                    _bandwidth_flush(user, len(chunk), 0)
+                    n_in = 0
             return message
 
         async def send_wrapper(message):
@@ -291,15 +338,18 @@ class BandwidthLimitMiddleware:
                     n_out += len(chunk)
                 except Exception:
                     pass
-                if chunk:
-                    await _bandwidth_pace(user, len(chunk))
+                if chunk and user is not None:
+                    if limited:
+                        await _bandwidth_pace(user, len(chunk))
+                    _bandwidth_flush(user, 0, len(chunk))
+                    n_out = 0
             await send(message)
 
         try:
             await self.app(scope, recv_wrapper, send_wrapper)
         finally:
-            if user is not None:
-                _bandwidth_consume(user, n_in, n_out)
+            if user is not None and (n_in or n_out):
+                _bandwidth_flush(user, n_in, n_out)
 
     async def _send_429(self, send, payload):
         body = json.dumps(payload).encode()
@@ -3241,22 +3291,29 @@ async def coding_project_context(request: Request):
 
 @app.get("/api/bandwidth")
 async def user_bandwidth(request: Request):
-    """How much bandwidth the caller has moved inside the rolling window."""
+    """Bandwidth used inside the rolling window + current transfer speed.
+    Admins are unlimited (cap: null) but still measured."""
     user, err = _require_auth(request)
     if err:
         return err
+    is_admin = bool(user.get("is_admin"))
     used = 0
+    speed = 0.0
     if BW_ENABLED:
         st = _bandwidth_state(user["id"])
         with _bw_lock:
-            used = _bandwidth_window_used(st, time.monotonic())
+            now = time.monotonic()
+            used = _bandwidth_window_used(st, now)
+            speed = _bandwidth_speed(st, now)
     return {
         "used": used,
-        "cap": BW_WINDOW_BYTES,
+        "cap": None if is_admin else BW_WINDOW_BYTES,
         "window_hours": BW_WINDOW_HOURS,
         "rate_mbps": BW_RATE_MBPS,
-        "percent": round(100.0 * used / BW_WINDOW_BYTES, 1) if BW_WINDOW_BYTES else 0,
-        "limited": bool(BW_ENABLED),
+        "percent": round(100.0 * used / BW_WINDOW_BYTES, 1)
+        if (not is_admin and BW_WINDOW_BYTES) else 0,
+        "limited": bool(BW_ENABLED and not is_admin),
+        "speed": speed,
     }
 
 
