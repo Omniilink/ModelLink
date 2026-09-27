@@ -2514,18 +2514,33 @@ async def coding_preview_asset(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+async def _drain_request_body(request: Request):
+    """Read and discard the request body. Rejecting a request whose body was
+    never read makes the server close the connection with unread data, which
+    the client sees as a reset (WSAECONNABORTED) instead of the error."""
+    try:
+        async for _chunk in request.stream():
+            pass
+    except Exception:
+        pass
+
+
 @app.post("/api/coding/file-upload")
 async def coding_file_upload(request: Request, path: str = ""):
     """Upload a file into the open project (opencode-style drag-and-drop).
     The file travels as a raw octet-stream body and is streamed to disk with
-    a hard 50 MB cap; same containment rules as writes."""
+    a hard 50 MB cap for regular users; admins are unlimited. Same
+    containment rules as writes."""
     user, err = _require_auth(request)
     if err:
+        await _drain_request_body(request)
         return err
+    upload_limit = None if user.get("is_admin") else 50 * 1024 * 1024
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
     if access_err:
+        await _drain_request_body(request)
         return access_err
     rel = (path or "").strip().replace("\\", "/").lstrip("/")
     if not rel:
@@ -2533,13 +2548,16 @@ async def coding_file_upload(request: Request, path: str = ""):
         m = re.search(r'filename="?([^";]+)"?', cd)
         rel = (m.group(1) if m else "").strip().replace("\\", "/").lstrip("/")
     if _bad_path(rel) or not rel:
+        await _drain_request_body(request)
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     full = os.path.join(folder, rel)
     if not _is_within(folder, full):
+        await _drain_request_body(request)
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
     try:
         os.makedirs(os.path.dirname(full) or folder, exist_ok=True)
     except Exception:
+        await _drain_request_body(request)
         return JSONResponse(status_code=500, content={"error": "Cannot create target folder"})
     tmp = full + ".upload-" + secrets.token_hex(4)
     size = 0
@@ -2547,12 +2565,13 @@ async def coding_file_upload(request: Request, path: str = ""):
         with open(tmp, "wb") as out:
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > 50 * 1024 * 1024:
+                if upload_limit is not None and size > upload_limit:
                     out.close()
                     try:
                         os.remove(tmp)
                     except OSError:
                         pass
+                    await _drain_request_body(request)
                     return JSONResponse(status_code=413,
                                         content={"error": "File too large (max 50MB)"})
                 out.write(chunk)

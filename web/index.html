@@ -997,7 +997,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
           <div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>
           <button onclick="refreshCodingTree()" title="Refresh file tree">Refresh</button>
-          <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB each)">Upload</button>
+          <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
@@ -3931,9 +3931,10 @@ async function handleUploadFiles(fileList){
   if(!codingFolder){showToast('Open a folder or project first','error');return}
   const files=[...fileList||[]];
   if(!files.length)return;
+  const isAdmin=!!(window.__user&&window.__user.is_admin);
   let ok=0,fail=0;
   for(const f of files){
-    if(f.size>CODING_UPLOAD_MAX){showToast(f.name+' is larger than 50MB','error');fail++;continue}
+    if(!isAdmin&&f.size>CODING_UPLOAD_MAX){showToast(f.name+' is larger than 50MB','error');fail++;continue}
     try{
       const rel=(f.webkitRelativePath&&f.webkitRelativePath.trim()?f.webkitRelativePath:f.name).replace(/\\/g,'/').replace(/^\/+/,'');
       const r=await authFetch(API+'/api/coding/file-upload?path='+encodeURIComponent(rel),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});
