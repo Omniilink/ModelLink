@@ -288,6 +288,7 @@ a:hover{text-decoration:underline}
 .dg-row.dg-add code{color:#86efac}
 .dg-row.dg-del{background:rgba(239,68,68,.1)}
 .dg-row.dg-del code{color:#fca5a5}
+.dg-row.dg-hunk{background:var(--bg-tertiary);color:var(--accent-light);font-weight:600;padding:2px 8px;grid-template-columns:1fr}
 .api-tab{padding:5px 14px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;font-family:var(--font);transition:all .12s}
 .api-tab:hover{color:var(--text-secondary);border-color:var(--border-light)}
 .api-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -995,7 +996,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>
           <button onclick="refreshCodingTree()" title="Refresh file tree">Refresh</button>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB each)">Upload</button>
-          <button onclick="toggleCodingOutput()">Terminal</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
@@ -1011,7 +1011,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div class="coding-sticky-bar" id="coding-sticky-bar"><span>Tool actions detected</span><button onclick="copyAllCodeBlocks()">Copy All Code</button><button class="primary" onclick="applyAllToolBlocks()">Apply All</button></div>
             <div id="coding-plan-banner" style="display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px">Plan mode is ON — the model's actions are staged, nothing runs until you approve. <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="applyAllToolBlocks()">Run staged actions</button></div>
             <div class="coding-chat" id="coding-chat"></div>
-            <div class="coding-output" id="coding-output"><div class="coding-output-header"><span>Terminal Output</span><button class="header-btn" style="padding:2px 8px;font-size:10px" onclick="clearCodingOutput()">Clear</button></div><div class="coding-output-body" id="coding-output-body"></div></div>
             <div class="coding-input-area">
               <div id="coding-at-files" style="display:none;flex-wrap:wrap;gap:4px;padding:0 0 6px"></div>
               <div class="coding-todo-bar" id="coding-todo-bar" style="display:none"><div class="coding-todo-head">Todos</div><div id="coding-todo-list"></div></div>
@@ -1072,8 +1071,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingOutputLines=[],codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
-let codingOutputAuto=false,codingOutputIdleTimer=null;
+let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
 
 // Chat stores are namespaced per signed-in account so two people sharing a
 // browser never read or overwrite each other's conversations. Before the
@@ -1645,7 +1643,6 @@ async function scanPathForAction(path,action){
   const warns=(scan.findings||[]).filter(f=>f.level==='warn');
   if(dangers.length>0){
     const list=dangers.slice(0,8).map(f=>'\u2022 line '+f.line+': '+f.rule).join('\n');
-    addCodingFeed('Shell','scan BLOCKED '+path+' ('+dangers.length+' high-risk)');
     return await appConfirm('Security scan found '+dangers.length+' HIGH-RISK pattern'+(dangers.length!==1?'s':'')+' in '+path+' before '+action+':\n\n'+list+'\n\nProceed anyway?');
   }
   if(warns.length>0)showToast(warns.length+' caution flag'+(warns.length!==1?'s':'')+' on '+path+' — continuing','info');
@@ -1771,26 +1768,49 @@ function streamHiddenSpans(fullText){
     if(!merged.some(o=>s[0]<o[1]&&s[1]>o[0]))merged.push(s);
   }
   merged.sort((a,b)=>a[0]-b[0]);
-  // Unterminated tail: a marker that started but never closed. Anchored
-  // to line starts so prose mentions mid-sentence never trigger it.
-  const coveredEnd=merged.length?merged[merged.length-1][1]:0;
-  const tail=fullText.slice(coveredEnd);
-  const um=/^ {0,3}(```\w*|FILE_CREATE:[^\n]*|FILE_EDIT:[^\n]*|FILE_DELETE:[^\n]*|FILE_PATCH:[^\n]*|RUN_COMMAND:.*|TODO_LIST:|QUESTION:[^\n]*)/m.exec(tail);
-  if(um)merged.push([coveredEnd+um.index,fullText.length]);
+  // Unterminated tail: a marker line that started but never closed means the
+  // model is still streaming that block — hide it and everything after it.
+  // Scan every line (not just text after the last span) so a marker that
+  // precedes a bare-code run is still caught.
+  {
+    const lines=fullText.split('\n');
+    let acc=0;
+    for(const ln of lines){
+      if(/^[ \t]*(```\w*|FILE_CREATE:|FILE_EDIT:|FILE_DELETE:|FILE_PATCH:|RUN_COMMAND:|WEB_FETCH:|TODO_LIST:|QUESTION:)/.test(ln)){
+        if(!merged.some(o=>acc>=o[0]&&acc<o[1])){merged.push([acc,fullText.length]);break}
+      }
+      acc+=ln.length+1;
+    }
+  }
   merged.sort((a,b)=>a[0]-b[0]);
   return merged;
 }
 function streamVisibleHTML(fullText){
   const merged=streamHiddenSpans(fullText);
   if(!merged.length)return renderContent(fullText);
-  let label='writing code…';
-  const head=fullText.slice(merged[0][0],merged[0][0]+300);
-  const fm=head.match(/^(?:FILE_CREATE|FILE_EDIT):[ \t]*(?:\r?\n[ \t]*)?([^\n]+)$/m);
-  const rm=head.match(/^RUN_COMMAND:[ \t]*\n?([^\n]{1,60})/m);
-  if(fm)label='writing '+fm[1].trim().slice(0,60)+'…';
-  else if(rm&&(rm[1]||'').trim())label='running '+rm[1].trim()+'…';
-  else if(/^ {0,3}QUESTION:/m.test(head))label='asking a question…';
-  else if(/^ {0,3}TODO_LIST:/m.test(head))label='planning…';
+  // The status label follows what the model is doing RIGHT NOW: "thinking"
+  // while it reasons, "plan" once it declares steps, "building" when file and
+  // command blocks start landing. The most recent marker wins, so the note
+  // tracks the real phase instead of freezing on the first one.
+  let label='thinking…';
+  const marks=[...fullText.matchAll(/^[ \t]*(TODO_LIST:|PLAN-STEPS\s*:|FILE_CREATE:|FILE_EDIT:|FILE_PATCH:|FILE_DELETE:|RUN_COMMAND:|WEB_FETCH:|QUESTION:)[^\n]*/gm)];
+  const last=marks.length?marks[marks.length-1]:null;
+  if(last){
+    const marker=last[1],line=last[0];
+    if(marker.startsWith('TODO_LIST')||marker.startsWith('PLAN-STEPS'))label='plan…';
+    else if(marker.startsWith('QUESTION'))label='asking a question…';
+    else if(marker.startsWith('RUN_COMMAND')){
+      const rm=line.match(/^RUN_COMMAND:[ \t]*\n?([^\n]{1,60})/);
+      label='running '+(rm&&rm[1].trim()?rm[1].trim():'command')+'…';
+    }
+    else if(/^(FILE_CREATE|FILE_EDIT|FILE_PATCH):/.test(marker)){
+      const fm=line.match(/^(?:FILE_CREATE|FILE_EDIT|FILE_PATCH):[ \t]*\r?\n?([^\n]+)/);
+      label='building '+(fm&&fm[1].trim()?fm[1].trim():'files')+'…';
+    }
+    else if(marker.startsWith('WEB_FETCH'))label='fetching…';
+    else label='building…';
+  }
+  else if(merged.length)label='building…';
   let out='',pos=0;
   for(const s of merged){out+=fullText.slice(pos,s[0]);pos=s[1]}
   out+=fullText.slice(pos);
@@ -1874,14 +1894,15 @@ async function sendCodingMessage(){
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+    contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
   if(!next.blocks){
-    // A turn with no tool blocks keeps the streamed bubble — including the
-    // "planning…" spinner. Render the final text now so the spinner is gone.
+    // A turn with no tool blocks keeps the streamed bubble — render the final
+    // text now so no status note is left behind.
     const cleaned=cleanCodingProse(fullText);
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
@@ -2031,6 +2052,32 @@ function diffLineOps(oldLines,newLines){
   while(j<m){ops.push({t:'+',text:newLines[j],an:null,bn:bn++});j++}
   return ops;
 }
+function unifiedDiffHunks(oldLines,newLines,ctx){
+  // Group the LCS ops into unified-diff hunks: each change plus up to ctx
+  // unchanged lines of context around it, merging hunks that overlap.
+  const ops=diffLineOps(oldLines,newLines);
+  if(!ops)return null;
+  const changes=[];
+  for(let i=0;i<ops.length;i++)if(ops[i].t!==' ')changes.push(i);
+  if(!changes.length)return [];
+  const hunks=[];
+  for(const ci of changes){
+    const start=Math.max(0,ci-ctx),end=Math.min(ops.length-1,ci+ctx);
+    const last=hunks[hunks.length-1];
+    if(last&&start<=last.end+1)last.end=Math.max(last.end,end);
+    else hunks.push({start,end});
+  }
+  const out=[];let oi=1,ni=1,hi=0;
+  for(let i=0;i<ops.length&&hi<hunks.length;i++){
+    if(i===hunks[hi].start)out.push({a:oi,b:ni,rows:[]});
+    if(hi<hunks.length&&i>=hunks[hi].start&&i<=hunks[hi].end)
+      out[out.length-1].rows.push(ops[i]);
+    const o=ops[i];
+    if(o.t===' '){oi++;ni++}else if(o.t==='-'){oi++}else{ni++}
+    if(hi<hunks.length&&i===hunks[hi].end)hi++;
+  }
+  return out;
+}
 async function fetchOldProjectFile(path){
   // Best-effort current content for diffing. Null = missing/unreadable.
   try{
@@ -2064,17 +2111,29 @@ async function fillFileDiff(toolDiv,path,content,kind){
   head.onclick=()=>wrap.classList.toggle('open');
   wrap.appendChild(head);
   const body=document.createElement('div');body.className='diff-body';
-  if(!ops){const s=document.createElement('div');s.className='dg-row';s.textContent='Diff too large to display ('+oldLines.length+' → '+newLines.length+' lines).';body.appendChild(s)}
+  const hunks=unifiedDiffHunks(oldLines,newLines,3);
+  if(!hunks){const s=document.createElement('div');s.className='dg-row';s.textContent='Diff too large to display ('+oldLines.length+' → '+newLines.length+' lines).';body.appendChild(s)}
   else{
-    const rows=ops.slice(0,400);
-    for(const o of rows){
-      const row=document.createElement('div');row.className='dg-row'+(o.t==='+'?' dg-add':o.t==='-'?' dg-del':'');
-      const ga=document.createElement('span');ga.className='dg-n';ga.textContent=o.an==null?'':o.an;
-      const gb=document.createElement('span');gb.className='dg-n';gb.textContent=o.bn==null?'':o.bn;
-      const code=document.createElement('code');code.textContent=(o.t===' '?' ':o.t)+' '+o.text;
-      row.appendChild(ga);row.appendChild(gb);row.appendChild(code);body.appendChild(row);
+    const total=hunks.reduce((a,h)=>a+h.rows.length,0);
+    let shown=0;
+    for(const h of hunks){
+      if(shown>=400)break;
+      const oldCount=h.rows.filter(r=>r.t!=='+').length;
+      const newCount=h.rows.filter(r=>r.t!=='-').length;
+      const fmt=(c)=>c===1?'':','+c;
+      const hh=document.createElement('div');hh.className='dg-row dg-hunk';
+      hh.textContent='@@ -'+h.a+fmt(oldCount)+' +'+h.b+fmt(newCount)+' @@';
+      body.appendChild(hh);shown++;
+      for(const o of h.rows){
+        if(shown>=400)break;
+        const row=document.createElement('div');row.className='dg-row'+(o.t==='+'?' dg-add':o.t==='-'?' dg-del':'');
+        const ga=document.createElement('span');ga.className='dg-n';ga.textContent=o.an==null?'':o.an;
+        const gb=document.createElement('span');gb.className='dg-n';gb.textContent=o.bn==null?'':o.bn;
+        const code=document.createElement('code');code.textContent=(o.t===' '?' ':o.t)+' '+o.text;
+        row.appendChild(ga);row.appendChild(gb);row.appendChild(code);body.appendChild(row);shown++;
+      }
     }
-    if(ops.length>400){const s=document.createElement('div');s.className='dg-row';s.textContent='… '+(ops.length-400)+' more lines';body.appendChild(s)}
+    if(total>400){const s=document.createElement('div');s.className='dg-row';s.textContent='… '+(total-400)+' more lines';body.appendChild(s)}
   }
   wrap.appendChild(body);
   toolDiv.appendChild(wrap);
@@ -2125,21 +2184,8 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
   renderCodingTodos();
   return true;
 }
-function addCodingFeed(kind,target,added,removed){
-  // Opencode-style activity row in the terminal panel: Edit f +1 -0
-  const line=document.createElement('div');
-  line.className='log-line term-feed term-'+kind.toLowerCase();
-  const k=document.createElement('span');k.className='term-kind';k.textContent=kind;
-  const t=document.createElement('span');t.className='term-target';t.textContent=target;
-  line.appendChild(k);line.appendChild(t);
-  if(typeof added==='number'&&typeof removed==='number'){
-    const a=document.createElement('span');a.className='term-add';a.textContent=' +'+added;
-    const r=document.createElement('span');r.className='term-del';r.textContent=' -'+removed;
-    line.appendChild(a);line.appendChild(r);
-  }
-  codingOutputLines.push('['+kind+'] '+target);
-  const body=document.getElementById('coding-output-body');
-  body.appendChild(line);body.scrollTop=body.scrollHeight;
+function addCodingFeed(){
+  // The terminal panel is gone: activity lives in the chat cards now.
 }
 async function answerCodingQuestion(toolDiv,bar,qtext,opt){
   if(toolDiv.dataset.answered)return;
@@ -2882,13 +2928,12 @@ async function codingWriteFile(path,content){
       let existed=false;try{existed=await fsFileExists(path)}catch(e){}
       await fsWriteFile(path,content);
       const lines=content.split('\n').length;
-      addCodingFeed(existed?'Edit':'Write',path,lines,0);
       codingWrittenPaths.push(path);
       return{ok:true,added:lines,removed:0};
     }
     const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
     const data=await r.json();
-    if(r.ok){addCodingFeed(data.backed_up?'Edit':'Write',path,data.added||0,data.removed||0);codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+    if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
   }catch(e){return{ok:false,error:e.message}}
 }
@@ -2973,21 +3018,17 @@ async function codingPatchFile(path,oldText,newText){
       await fsWriteFile(path,patched);
       const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
       let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
-      addCodingFeed('Edit',path,a,r);
       codingWrittenPaths.push(path);
       return{ok:true,added:a,removed:r};
     }
     const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
     const data=await r.json();
-    if(r.ok){addCodingFeed('Edit',path,data.added||0,data.removed||0);codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+    if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error||'patch failed'};
   }catch(e){return{ok:false,error:e.message}}
 }
-async function codingRunCmd(command){try{const shortCmd=command.length>120?command.slice(0,120)+'…':command;addCodingFeed('Shell',shortCmd);document.getElementById('coding-output').classList.add('open');const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){addCodingOutput('[ERR] '+data.error);return{stdout:'',stderr:data.error,exit_code:1}}if(data.stdout)addCodingOutput(data.stdout);if(data.stderr)addCodingOutput('[ERR] '+data.stderr);if(!data.stdout&&!data.stderr)addCodingOutput('(no output)');return{stdout:data.stdout,stderr:data.stderr,exit_code:data.exit_code}}catch(e){addCodingOutput('[ERROR] '+e.message);return{stdout:'',stderr:e.message,exit_code:1}}}
+async function codingRunCmd(command){try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
-    function addCodingOutput(text){codingOutputLines.push(text);const body=document.getElementById('coding-output-body');const line=document.createElement('div');line.className='log-line';line.textContent=text;body.appendChild(line);body.scrollTop=body.scrollHeight;if(!document.getElementById('coding-output').classList.contains('open')){codingOutputAuto=true;document.getElementById('coding-output').classList.add('open')}resetCodingOutputIdle()}
-    function resetCodingOutputIdle(){clearTimeout(codingOutputIdleTimer);codingOutputIdleTimer=setTimeout(()=>{if(codingOutputAuto){codingOutputAuto=false;document.getElementById('coding-output').classList.remove('open')}},20000)}
-    function toggleCodingOutput(){clearTimeout(codingOutputIdleTimer);codingOutputAuto=false;document.getElementById('coding-output').classList.toggle('open')}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
@@ -3157,7 +3198,6 @@ async function clearCodingChat(){
   }catch(e){}
   showToast('Coding chat cleared','success');
 }
-function clearCodingOutput(){document.getElementById('coding-output-body').innerHTML='';codingOutputLines=[]}
 
 async function fsEnsurePermission(handle){const opts={mode:'readwrite'};if((await handle.queryPermission(opts))==='granted')return true;if((await handle.requestPermission(opts))==='granted')return true;return false}
 async function fsResolveParent(handle,path){const parts=path.split('/').filter(Boolean);let current=handle;for(let i=0;i<parts.length-1;i++)current=await current.getDirectoryHandle(parts[i]);return{parent:current,name:parts[parts.length-1]}}
@@ -3651,7 +3691,6 @@ function buildCmdList(query){
       {icon:'\u2699',label:'Toggle plan mode',action:()=>{closeCmdPalette();togglePlanMode()}},
       {icon:'\u26A1',label:'Run tests',action:()=>{closeCmdPalette();runProjectTests()}},
       {icon:'\uD83D\uDCC4',label:'Export chat as Markdown',action:()=>{closeCmdPalette();exportCodingChat()}},
-      {icon:'\u2318',label:'Toggle terminal',action:()=>{closeCmdPalette();toggleCodingOutput()}},
       {icon:'\uD83D\uDCE6',label:'Download project',action:()=>{closeCmdPalette();downloadProject()}},
     ];
     codingActs.push(codingFolder
@@ -4147,7 +4186,6 @@ document.addEventListener('keydown',e=>{
   else if(e.ctrlKey&&e.key==='d'){e.preventDefault();viewBookmarks()}
   else if(e.ctrlKey&&e.key==='m'){e.preventDefault();toggleCompareMode()}
   else if(e.ctrlKey&&e.key==='/'&&currentView==='chat'){e.preventDefault();document.getElementById('shortcuts-modal').classList.add('open')}
-  else if(e.ctrlKey&&e.key==='`'&&currentView==='coding'&&!e.target.closest('input,textarea')){e.preventDefault();toggleCodingOutput()}
 });
 </script>
 </body>
