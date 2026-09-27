@@ -295,6 +295,9 @@ a:hover{text-decoration:underline}
 .up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
 .up-name{font-family:var(--mono);color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .up-pct{font-variant-numeric:tabular-nums;color:var(--text-muted);flex-shrink:0}
+.up-cancel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);border-radius:4px;font-size:10px;padding:2px 8px;cursor:pointer;flex-shrink:0;font-family:var(--font);transition:all .12s}
+.up-cancel:hover{color:var(--error);border-color:var(--error)}
+.up-cancel:disabled{opacity:.5;cursor:default}
 .up-bar{height:6px;border-radius:3px;background:var(--bg-tertiary);overflow:hidden}
 .up-fill{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .15s}
 .up-meta{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:3px;font-variant-numeric:tabular-nums}
@@ -3950,7 +3953,7 @@ function showUploadProgress(files){
 function addUploadEntry(file){
   const box=document.getElementById('upload-progress');
   const row=document.createElement('div');row.className='up-row';
-  row.innerHTML='<div class="up-head"><span class="up-name"></span><span class="up-pct"></span></div>'+
+  row.innerHTML='<div class="up-head"><span class="up-name"></span><span class="up-pct"></span><button class="up-cancel" type="button">Cancel</button></div>'+
     '<div class="up-bar"><div class="up-fill"></div></div>'+
     '<div class="up-meta"><span class="up-size"></span><span class="up-speed"></span></div>';
   row.querySelector('.up-name').textContent=file.name;
@@ -3960,8 +3963,10 @@ function addUploadEntry(file){
 }
 function uploadFileWithProgress(file,row){
   const fill=row.querySelector('.up-fill'),pct=row.querySelector('.up-pct'),speed=row.querySelector('.up-speed');
+  const cancelBtn=row.querySelector('.up-cancel');
   const isAdmin=!!(window.__user&&window.__user.is_admin);
   if(!isAdmin&&file.size>CODING_UPLOAD_MAX){
+    cancelBtn.style.display='none';
     fill.style.width='100%';fill.style.background='var(--error)';pct.textContent='—';
     speed.textContent='over the 50MB limit';
     setTimeout(()=>{row.remove();maybeHideUploadProgress()},2500);
@@ -3971,19 +3976,34 @@ function uploadFileWithProgress(file,row){
   const xhr=new XMLHttpRequest();
   xhr.open('POST',API+'/api/coding/file-upload?path='+encodeURIComponent(rel));
   xhr.setRequestHeader('Content-Type','application/octet-stream');
+  const state={loaded:0,total:file.size,done:false};
   let lastLoaded=0,lastT=Date.now();
-  xhr.upload.onprogress=function(e){
-    if(!e.lengthComputable)return;
+  function render(){
+    const total=state.total||file.size;
+    const p=total>0?Math.min(100,Math.round(state.loaded/total*100)):0;
+    fill.style.width=p+'%';pct.textContent=p+'%';
     const now=Date.now();
     const dt=(now-lastT)/1000;
-    if(dt>=0.25){
-      speed.textContent=formatBandwidth((e.loaded-lastLoaded)/dt)+'/s';
-      lastLoaded=e.loaded;lastT=now;
+    if(dt>0&&state.loaded>lastLoaded){
+      speed.textContent=formatBandwidth((state.loaded-lastLoaded)/dt)+'/s';
+      lastLoaded=state.loaded;lastT=now;
     }
-    const p=Math.min(100,Math.round(e.loaded/e.total*100));
-    fill.style.width=p+'%';pct.textContent=p+'%';
+  }
+  xhr.upload.onprogress=function(e){
+    if(!e.lengthComputable)return;
+    state.loaded=e.loaded;state.total=e.total;
+    render();
   };
+  // The bar and speed also refresh on a 0.5s tick, so the popup keeps
+  // updating even when the browser emits few progress events (fast local
+  // uploads) or the transfer is paced.
+  const timer=setInterval(()=>{
+    if(state.done){clearInterval(timer);return}
+    render();
+  },500);
+  cancelBtn.onclick=()=>{if(state.done||cancelBtn.disabled)return;cancelBtn.disabled=true;cancelBtn.textContent='…';xhr.abort();};
   xhr.onload=function(){
+    state.done=true;clearInterval(timer);cancelBtn.disabled=true;
     let ok=xhr.status>=200&&xhr.status<300,msg='';
     try{msg=JSON.parse(xhr.responseText).error||''}catch(e){}
     if(xhr.status===401&&typeof showAuthModal==='function')showAuthModal();
@@ -4001,10 +4021,17 @@ function uploadFileWithProgress(file,row){
     }
   };
   xhr.onerror=function(){
+    state.done=true;clearInterval(timer);cancelBtn.disabled=true;
     fill.style.background='var(--error)';pct.textContent='Failed';
     speed.textContent='Network error';
     showToast(file.name+': upload failed','error');
     setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
+  };
+  xhr.onabort=function(){
+    state.done=true;clearInterval(timer);
+    fill.style.background='var(--text-muted)';pct.textContent='—';
+    speed.textContent='Cancelled';
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},1500);
   };
   xhr.send(file);
 }
