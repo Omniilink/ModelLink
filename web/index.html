@@ -290,6 +290,14 @@ a:hover{text-decoration:underline}
 .dg-row.dg-del{background:rgba(239,68,68,.1)}
 .dg-row.dg-del code{color:#fca5a5}
 .dg-row.dg-hunk{background:var(--bg-tertiary);color:var(--accent-light);font-weight:600;padding:2px 8px;grid-template-columns:1fr}
+#upload-progress .up-row{margin-bottom:12px}
+#upload-progress .up-row:last-child{margin-bottom:0}
+.up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
+.up-name{font-family:var(--mono);color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.up-pct{font-variant-numeric:tabular-nums;color:var(--text-muted);flex-shrink:0}
+.up-bar{height:6px;border-radius:3px;background:var(--bg-tertiary);overflow:hidden}
+.up-fill{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .15s}
+.up-meta{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:3px;font-variant-numeric:tabular-nums}
 .api-tab{padding:5px 14px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;font-family:var(--font);transition:all .12s}
 .api-tab:hover{color:var(--text-secondary);border-color:var(--border-light)}
 .api-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1038,6 +1046,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
+<div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
 <div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
@@ -3924,27 +3933,84 @@ function syncCodingModelSelect(){
   sel.value=models.some(m=>m.id===cur)?cur:'omnilink';
 }
 
-// ---- File upload (50 MB per file) ----
+// ---- File upload (50 MB per file, admins unlimited) ----
 const CODING_UPLOAD_MAX=50*1024*1024;
 function openUploadPicker(){const inp=document.getElementById('coding-upload-input');if(!inp)return;inp.value='';inp.click()}
-async function handleUploadFiles(fileList){
+function handleUploadFiles(fileList){
   if(!codingFolder){showToast('Open a folder or project first','error');return}
   const files=[...fileList||[]];
   if(!files.length)return;
+  showUploadProgress(files);
+}
+function showUploadProgress(files){
+  const box=document.getElementById('upload-progress');
+  box.style.display='block';
+  [...files].forEach(addUploadEntry);
+}
+function addUploadEntry(file){
+  const box=document.getElementById('upload-progress');
+  const row=document.createElement('div');row.className='up-row';
+  row.innerHTML='<div class="up-head"><span class="up-name"></span><span class="up-pct"></span></div>'+
+    '<div class="up-bar"><div class="up-fill"></div></div>'+
+    '<div class="up-meta"><span class="up-size"></span><span class="up-speed"></span></div>';
+  row.querySelector('.up-name').textContent=file.name;
+  row.querySelector('.up-size').textContent=formatBandwidth(file.size);
+  box.appendChild(row);
+  uploadFileWithProgress(file,row);
+}
+function uploadFileWithProgress(file,row){
+  const fill=row.querySelector('.up-fill'),pct=row.querySelector('.up-pct'),speed=row.querySelector('.up-speed');
   const isAdmin=!!(window.__user&&window.__user.is_admin);
-  let ok=0,fail=0;
-  for(const f of files){
-    if(!isAdmin&&f.size>CODING_UPLOAD_MAX){showToast(f.name+' is larger than 50MB','error');fail++;continue}
-    try{
-      const rel=(f.webkitRelativePath&&f.webkitRelativePath.trim()?f.webkitRelativePath:f.name).replace(/\\/g,'/').replace(/^\/+/,'');
-      const r=await authFetch(API+'/api/coding/file-upload?path='+encodeURIComponent(rel),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});
-      const d=await r.json();
-      if(!r.ok){showToast(f.name+': '+(d.error||'upload failed'),'error');fail++;continue}
-      ok++;
-    }catch(e){showToast(f.name+': '+e.message,'error');fail++}
+  if(!isAdmin&&file.size>CODING_UPLOAD_MAX){
+    fill.style.width='100%';fill.style.background='var(--error)';pct.textContent='—';
+    speed.textContent='over the 50MB limit';
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},2500);
+    return;
   }
-  if(ok)showToast('Uploaded '+ok+' file'+(ok!==1?'s':''),'success');
-  if(ok)refreshCodingTree();
+  const rel=(file.webkitRelativePath&&file.webkitRelativePath.trim()?file.webkitRelativePath:file.name).replace(/\\/g,'/').replace(/^\/+/,'');
+  const xhr=new XMLHttpRequest();
+  xhr.open('POST',API+'/api/coding/file-upload?path='+encodeURIComponent(rel));
+  xhr.setRequestHeader('Content-Type','application/octet-stream');
+  let lastLoaded=0,lastT=Date.now();
+  xhr.upload.onprogress=function(e){
+    if(!e.lengthComputable)return;
+    const now=Date.now();
+    const dt=(now-lastT)/1000;
+    if(dt>=0.25){
+      speed.textContent=formatBandwidth((e.loaded-lastLoaded)/dt)+'/s';
+      lastLoaded=e.loaded;lastT=now;
+    }
+    const p=Math.min(100,Math.round(e.loaded/e.total*100));
+    fill.style.width=p+'%';pct.textContent=p+'%';
+  };
+  xhr.onload=function(){
+    let ok=xhr.status>=200&&xhr.status<300,msg='';
+    try{msg=JSON.parse(xhr.responseText).error||''}catch(e){}
+    if(xhr.status===401&&typeof showAuthModal==='function')showAuthModal();
+    if(ok){
+      fill.style.width='100%';fill.style.background='var(--success)';pct.textContent='100%';
+      speed.textContent='Done';
+      showToast('Uploaded '+file.name,'success');
+      refreshCodingTree();
+      setTimeout(()=>{row.remove();maybeHideUploadProgress()},1200);
+    }else{
+      fill.style.background='var(--error)';pct.textContent='Failed';
+      speed.textContent=msg||('Error '+xhr.status);
+      showToast(file.name+': '+(msg||'upload failed'),'error');
+      setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
+    }
+  };
+  xhr.onerror=function(){
+    fill.style.background='var(--error)';pct.textContent='Failed';
+    speed.textContent='Network error';
+    showToast(file.name+': upload failed','error');
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
+  };
+  xhr.send(file);
+}
+function maybeHideUploadProgress(){
+  const box=document.getElementById('upload-progress');
+  if(box&&!box.querySelector('.up-row'))box.style.display='none';
 }
 function setupCodingDragDrop(){
   const main=document.querySelector('.coding-main');if(!main)return;
