@@ -57,6 +57,10 @@ services:
       # re-reads it from the mounted .env, so adding
       # OMNIILINK_GIT_TOKEN there needs no container restart.
       - OMNIILINK_GIT_TOKEN=${OMNIILINK_GIT_TOKEN:-}
+      # Converter API base URL for in-browser YouTube downloads
+      # (More → YouTube). Same pattern as the git token: explicit env wins,
+      # otherwise the api re-reads it from the mounted .env.
+      - OMNIILINK_CONVERTER_API=${OMNIILINK_CONVERTER_API:-}
       # Sandbox network: "bridge" lets pip/npm install work; use "none" for
       # maximum isolation (offline code only).
       - OMNIILINK_SANDBOX_NET=bridge
@@ -83,6 +87,18 @@ services:
       context: .
       dockerfile: updater.Dockerfile
     image: omniilink-updater:latest
+
+  # Self-hosted converter for in-browser YouTube downloads (More → YouTube).
+  # The page talks to this directly, so video bytes never touch the api
+  # container. Reached publicly as https://omniilink.dpdns.org/converter
+  # via the tunnel path rule below (same origin = no CORS setup needed).
+  cobalt:
+    image: ghcr.io/imputnet/cobalt:latest
+    restart: unless-stopped
+    environment:
+      - API_URL=https://omniilink.dpdns.org/converter
+    networks:
+      - omniilink-net
 
   tunnel:
     # Named tunnel using YOUR existing credentials file — no Cloudflare

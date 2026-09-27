@@ -3266,12 +3266,22 @@ async def tools_youtube_info(request: Request, req: YTInfoRequest):
 
 @app.get("/api/tools/converter")
 async def tools_converter(request: Request):
-    """Browser-side converter API base URL from server config (empty means
-    the browser-download path is not set up; the server fallback still works)."""
+    """Browser-side converter API base URL (empty means the browser-download
+    path is not set up; the server fallback still works). Explicit env wins;
+    otherwise the mounted host .env is re-read, so adding the URL there
+    needs no container restart."""
     user, err = _require_auth(request)
     if err:
         return err
-    return {"url": os.environ.get("OMNIILINK_CONVERTER_API", "").strip()}
+    url = (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip()
+    if not url:
+        try:
+            from dotenv import dotenv_values
+            vals = dotenv_values(os.path.join(APP_DIR, ".env"))
+            url = ((vals or {}).get("OMNIILINK_CONVERTER_API", "") or "").strip()
+        except Exception:
+            url = ""
+    return {"url": url}
 
 
 @app.post("/api/tools/youtube/download")

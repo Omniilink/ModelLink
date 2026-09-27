@@ -7,5 +7,8 @@ credentials-file: /etc/cloudflared-creds/7f35f941-d7fd-41c6-99a7-b4679e4bb77d.js
 
 ingress:
   - hostname: omniilink.dpdns.org
+    path: /converter/*
+    service: http://cobalt:9000
+  - hostname: omniilink.dpdns.org
     service: http://api:8080
   - service: http_status:404

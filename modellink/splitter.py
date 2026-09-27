@@ -29,12 +29,14 @@ def _resource_path(relative_path):
     base = _base_path()
     return os.path.join(base, relative_path)
 
-# Load .env from the correct location
+# Load .env from the correct location. Explicit process environment always
+# wins over the file (override=False) — otherwise tests and container env
+# could never override local .env values.
 env_path = _resource_path(".env")
 if os.path.isfile(env_path):
-    load_dotenv(dotenv_path=env_path, override=True)
+    load_dotenv(dotenv_path=env_path, override=False)
 else:
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
 MODEL_NAME = "omniilink"
 
@@ -389,7 +391,7 @@ class RateLimiter:
 
 
 def load_all_keys():
-    load_dotenv(override=True)
+    load_dotenv(override=False)
     provider_keys = {}
     placeholder_prefixes = ("your_", "sk-test", "placeholder", "xxx", "changeme")
     for env_key, value in os.environ.items():
