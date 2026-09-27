@@ -3264,23 +3264,36 @@ async def tools_youtube_info(request: Request, req: YTInfoRequest):
             "qualities": qualities}
 
 
+# Default converter address: our own cobalt instance on the committed
+# *.cfargotunnel.com tunnel route. No DNS or extra setup needed.
+CONVERTER_DEFAULT_URL = "https://7f35f941-d7fd-41c6-99a7-b4679e4bb77d.cfargotunnel.com/"
+
+
+def _converter_url_from_dotenv() -> str:
+    try:
+        from dotenv import dotenv_values
+        vals = dotenv_values(os.path.join(APP_DIR, ".env"))
+        return ((vals or {}).get("OMNIILINK_CONVERTER_API", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _converter_url(env_val: str, file_val: str) -> str:
+    return (env_val or "").strip() or (file_val or "").strip() or CONVERTER_DEFAULT_URL
+
+
 @app.get("/api/tools/converter")
 async def tools_converter(request: Request):
-    """Browser-side converter API base URL (empty means the browser-download
-    path is not set up; the server fallback still works). Explicit env wins;
-    otherwise the mounted host .env is re-read, so adding the URL there
-    needs no container restart."""
+    """Browser-side converter API base URL. Explicit env wins, then the
+    mounted host .env, then the built-in default (our own instance on the
+    committed tunnel route) — so the browser flow works with zero setup.
+    Set OMNIILINK_CONVERTER_API to override."""
     user, err = _require_auth(request)
     if err:
         return err
-    url = (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip()
-    if not url:
-        try:
-            from dotenv import dotenv_values
-            vals = dotenv_values(os.path.join(APP_DIR, ".env"))
-            url = ((vals or {}).get("OMNIILINK_CONVERTER_API", "") or "").strip()
-        except Exception:
-            url = ""
+    url = _converter_url(
+        (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip(),
+        _converter_url_from_dotenv())
     return {"url": url}
 
 
