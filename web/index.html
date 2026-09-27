@@ -62,6 +62,7 @@ a:hover{text-decoration:underline}
 .chat-item:hover .chat-item-del{opacity:1}
 .chat-item-del:hover{background:var(--error);color:#fff}
 .sidebar-footer{padding:10px 16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:8px}
+#bw-indicator{white-space:nowrap;font-variant-numeric:tabular-nums}
 .status-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:all .3s}
 .status-dot.online{background:var(--success);box-shadow:0 0 6px var(--success)}
 .status-dot.offline{background:var(--error)}
@@ -747,6 +748,7 @@ pre{max-width:100%}
     <div class="sidebar-footer">
       <span class="status-dot" id="status-dot"></span>
       <span id="status-text">Connecting...</span>
+      <span id="bw-indicator" title="Bandwidth used in the last 6 hours">⬇ …</span>
       <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">
         <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
         <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -1153,6 +1155,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
+  updateBandwidthIndicator();setInterval(updateBandwidthIndicator,30000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
@@ -1293,6 +1296,26 @@ function renderProviders(providers){
   }
 }
 async function loadProviderStatus(){try{const r=await fetch(API+'/api/health');const data=await r.json();if(data.status==='ok'){document.getElementById('status-dot').className='status-dot online';document.getElementById('status-text').textContent='Connected'}else{document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}
+
+// ---- Bandwidth usage indicator (sidebar footer) ----
+function formatBandwidth(bytes){
+  const mb=1048576,kb=1024;
+  if(bytes<kb)return bytes+' B';
+  if(bytes<mb)return (bytes/kb).toFixed(0)+' KB';
+  if(bytes<1000*mb)return (bytes/mb).toFixed(1)+' MB';
+  return (bytes/mb/1024).toFixed(2)+' GB';
+}
+async function updateBandwidthIndicator(){
+  const el=document.getElementById('bw-indicator');if(!el)return;
+  try{
+    const r=await authFetch(API+'/api/bandwidth');
+    if(!r.ok){el.textContent='⬇ …';return}
+    const d=await r.json();
+    el.textContent='⬇ '+formatBandwidth(d.used)+' / '+formatBandwidth(d.cap);
+    el.title='Bandwidth used in the last '+d.window_hours+' hours · limit '+d.rate_mbps+' Mbit/s';
+    el.style.color=d.percent>=90?'var(--error)':d.percent>=70?'var(--warning)':'';
+  }catch(e){el.textContent='⬇ …'}
+}
 
 function handleKey(e){if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();sendMessage()}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,160)+'px'}

@@ -14,6 +14,7 @@ import tempfile
 import tarfile
 import zipfile
 import threading
+import collections
 
 # ==========================================
 # PyInstaller path resolution
@@ -59,7 +60,7 @@ from modellink.auth import (
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
     delete_user_provider_key, get_db, get_user_from_session,
     revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key,
-    all_usernames
+    all_usernames, validate_api_key
 )
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
@@ -136,6 +137,182 @@ class BodyLimitMiddleware:
                         (b"connection", b"close")],
         })
         await send({"type": "http.response.body", "body": body})
+
+
+# ---- Per-user bandwidth limits: 10 Mbit/s pacing + 500 MB per 6h window ----
+BW_RATE_MBPS = float(os.environ.get("OMNIILINK_BW_RATE_MBPS", "10") or 10)
+BW_WINDOW_MB = float(os.environ.get("OMNIILINK_BW_WINDOW_MB", "500") or 500)
+BW_WINDOW_HOURS = float(os.environ.get("OMNIILINK_BW_WINDOW_HOURS", "6") or 6)
+BW_ENABLED = (os.environ.get("OMNIILINK_BW_ENABLED", "1").strip().lower()
+              not in ("0", "false", "no", "off", "disabled"))
+BW_RATE_BPS = BW_RATE_MBPS * 1024 * 1024 / 8.0      # bytes per second
+BW_WINDOW_BYTES = int(BW_WINDOW_MB * 1024 * 1024)
+BW_WINDOW_SECONDS = BW_WINDOW_HOURS * 3600.0
+BW_BURST_BYTES = max(1024 * 1024, int(BW_RATE_BPS * 2))   # ~2s of burst
+
+_bw_lock = threading.Lock()
+_bw_users = {}        # user_id -> [bucket, last_ts, deque[(ts, bytes)]]
+_bw_user_cache = {}  # session token -> (user, expires monotonic)
+
+
+def _bandwidth_state(user_id):
+    with _bw_lock:
+        st = _bw_users.get(user_id)
+        if st is None:
+            st = [float(BW_BURST_BYTES), time.monotonic(), collections.deque()]
+            _bw_users[user_id] = st
+        return st
+
+
+def _bandwidth_window_used(st, now):
+    dq = st[2]
+    cutoff = now - BW_WINDOW_SECONDS
+    while dq and dq[0][0] < cutoff:
+        dq.popleft()
+    return sum(b for _t, b in dq)
+
+
+def _bandwidth_gate(user):
+    """None when the user may proceed, else a 429 payload dict."""
+    if not BW_ENABLED or not user:
+        return None
+    st = _bandwidth_state(user["id"])
+    with _bw_lock:
+        if _bandwidth_window_used(st, time.monotonic()) >= BW_WINDOW_BYTES:
+            return {"error": f"Bandwidth cap reached: {BW_WINDOW_MB:.0f} MB per "
+                             f"{BW_WINDOW_HOURS:.0f} hours. Try again later."}
+    return None
+
+
+def _bandwidth_consume(user, n_in, n_out):
+    if not user or not BW_ENABLED:
+        return
+    st = _bandwidth_state(user["id"])
+    with _bw_lock:
+        st[2].append((time.monotonic(), int(n_in) + int(n_out)))
+
+
+def _bw_pace_seconds(st, n):
+    """Token-bucket math: seconds the caller must wait before n bytes go out."""
+    now = time.monotonic()
+    st[0] = min(float(BW_BURST_BYTES), st[0] + (now - st[1]) * BW_RATE_BPS)
+    st[1] = now
+    if st[0] >= n:
+        st[0] -= n
+        return 0.0
+    need = (n - st[0]) / BW_RATE_BPS
+    st[0] = 0.0
+    return need
+
+
+async def _bandwidth_pace(user, n):
+    if not BW_ENABLED or not user or n <= 0:
+        return
+    st = _bandwidth_state(user["id"])
+    with _bw_lock:
+        need = _bw_pace_seconds(st, n)
+    if need > 0:
+        await asyncio.sleep(need)
+
+
+def _bw_resolve_user(headers):
+    """Session cookie (or API key) -> user, cached for 60s. None if anonymous."""
+    cookie = headers.get("cookie", "") or ""
+    token = None
+    for part in cookie.split(";"):
+        part = part.strip()
+        if part.startswith("omnilink_token="):
+            token = part.split("=", 1)[1].strip()
+            break
+    api_key_id = None
+    if not token:
+        auth = headers.get("authorization", "")
+        if auth.startswith("Bearer ml-"):
+            api_key_id = validate_api_key(auth[7:])
+    if not token and api_key_id is None:
+        return None
+    now = time.monotonic()
+    with _bw_lock:
+        if len(_bw_user_cache) > 5000:
+            _bw_user_cache.clear()
+        hit = _bw_user_cache.get(token) if token else None
+        if hit and hit[1] > now:
+            return hit[0]
+    user = get_user_from_session(token) if token else None
+    if user is None and api_key_id is not None:
+        user = get_user_by_id(api_key_id)
+    if user is not None:
+        with _bw_lock:
+            _bw_user_cache[token if token else f"ak:{user['id']}"] = (user, now + 60.0)
+    return user
+
+
+class BandwidthLimitMiddleware:
+    """Paces each user's responses to BW_RATE_MBPS and 429s them once they have
+    moved BW_WINDOW_MB inside the rolling BW_WINDOW_HOURS window.
+
+    Registered inside CORS/SecurityHeaders so the 429 still carries those
+    headers. Counts both request and response bytes toward the window."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        user = _bw_resolve_user(headers)
+
+        if user is not None:
+            deny = _bandwidth_gate(user)
+            if deny is not None:
+                await self._send_429(send, deny)
+                return
+        n_in = 0
+        n_out = 0
+
+        async def recv_wrapper():
+            nonlocal n_in
+            message = await receive()
+            if message["type"] == "http.request":
+                try:
+                    n_in += len(message.get("body", b"") or b"")
+                except Exception:
+                    pass
+            return message
+
+        async def send_wrapper(message):
+            nonlocal n_out
+            if message["type"] == "http.response.body":
+                chunk = message.get("body", b"") or b""
+                try:
+                    n_out += len(chunk)
+                except Exception:
+                    pass
+                if chunk:
+                    await _bandwidth_pace(user, len(chunk))
+            await send(message)
+
+        try:
+            await self.app(scope, recv_wrapper, send_wrapper)
+        finally:
+            if user is not None:
+                _bandwidth_consume(user, n_in, n_out)
+
+    async def _send_429(self, send, payload):
+        body = json.dumps(payload).encode()
+        await send({
+            "type": "http.response.start", "status": 429,
+            "headers": [(b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"connection", b"close")],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(BandwidthLimitMiddleware)
 
 app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 
@@ -3060,6 +3237,27 @@ async def coding_project_context(request: Request):
                 context_lines.append(f"{prefix}{e['name']} ({size} bytes)")
     _render_tree(tree)
     return {"context": "\n".join(context_lines), "folder": folder}
+
+
+@app.get("/api/bandwidth")
+async def user_bandwidth(request: Request):
+    """How much bandwidth the caller has moved inside the rolling window."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    used = 0
+    if BW_ENABLED:
+        st = _bandwidth_state(user["id"])
+        with _bw_lock:
+            used = _bandwidth_window_used(st, time.monotonic())
+    return {
+        "used": used,
+        "cap": BW_WINDOW_BYTES,
+        "window_hours": BW_WINDOW_HOURS,
+        "rate_mbps": BW_RATE_MBPS,
+        "percent": round(100.0 * used / BW_WINDOW_BYTES, 1) if BW_WINDOW_BYTES else 0,
+        "limited": bool(BW_ENABLED),
+    }
 
 
 @app.get("/api/coding/search")
