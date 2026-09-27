@@ -3241,17 +3241,44 @@ async def tools_youtube_info(request: Request, req: YTInfoRequest):
         duration = int(info.get("duration") or 0)
     except Exception:
         duration = 0
+    quals = {}
+    for f in info.get("formats") or []:
+        try:
+            h = int(f.get("height") or 0)
+        except Exception:
+            continue
+        if h <= 0 or (f.get("vcodec") or "none") == "none":
+            continue
+        if (f.get("ext") or "") != "mp4":
+            continue
+        prog = (f.get("acodec") or "none") != "none"
+        if h not in quals or (prog and not quals[h]):
+            quals[h] = prog
+    qualities = [{"height": h, "progressive": quals[h]}
+                 for h in sorted(quals, reverse=True)[:8]]
     return {"title": info.get("title") or "YouTube video",
             "duration": duration,
             "thumbnail": info.get("thumbnail") or "",
             "uploader": info.get("uploader") or "",
-            "ok_duration": duration <= YT_MAX_DURATION}
+            "ok_duration": duration <= YT_MAX_DURATION,
+            "qualities": qualities}
+
+
+@app.get("/api/tools/converter")
+async def tools_converter(request: Request):
+    """Browser-side converter API base URL from server config (empty means
+    the browser-download path is not set up; the server fallback still works)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return {"url": os.environ.get("OMNIILINK_CONVERTER_API", "").strip()}
 
 
 @app.post("/api/tools/youtube/download")
 async def tools_youtube_download(request: Request, req: YTDownloadRequest):
     """Download a YouTube video as MP3 or MP4. Runs yt-dlp on this server and
-    streams the finished file back."""
+    streams the finished file back. Fallback path — the primary flow downloads
+    straight to the browser via the configured converter API."""
     user, err = _require_auth(request)
     if err:
         return err

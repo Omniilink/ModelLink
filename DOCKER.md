@@ -182,6 +182,7 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
 | `OMNIILINK_SANDBOX_CPUS` | `1.0` | CPU cap per command |
 | `OMNIILINK_UPLOAD_LIMIT_MB` | `50` | Per-file upload cap for regular users (admins unlimited). Files over ~8MB upload in 4MB chunks automatically, so big files survive flaky connections; uploaded `.zip` files are extracted into a folder named after the archive |
+| `OMNIILINK_CONVERTER_API` | *(empty)* | Base URL of a Cobalt-compatible converter API for in-browser YouTube downloads (e.g. your own instance at `https://converter.example.com`). Empty = browser path shows a setup hint and the slower server download is used. Self-host with `ghcr.io/imputnet/cobalt` (`API_URL` set, plus `CORS_URL` pointing at this app or `CORS_WILDCARD=1` so the page may call it). Do NOT point it at the public `api.cobalt.tools` without permission — it also blocks YouTube. |
 
 After editing, restart just the API: `docker compose up -d api`.
 Installing other runtimes (another Python/Node version) means extending

@@ -552,6 +552,10 @@ a:hover{text-decoration:underline}
 .tool-result-title{font-size:13px;font-weight:600}
 .tool-result-sub{font-size:11px;color:var(--text-muted);margin-top:2px}
 .tool-status{font-size:12px;color:var(--text-muted);min-height:18px}
+.tool-hint{font-size:12px;color:var(--text-muted);margin-top:8px}
+.tool-hint a{color:var(--accent-light);cursor:pointer}
+.dl-progress{height:8px;border-radius:4px;background:var(--bg-tertiary);overflow:hidden;margin:10px 0 4px}
+.dl-fill{height:100%;width:0;background:var(--accent);border-radius:4px;transition:width .2s}
 
 /* Message bookmarks */
 .msg-bookmark-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:all .15s}
@@ -1048,17 +1052,24 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <h3>YouTube to MP3 / MP4</h3>
               <div class="tool-row">
                 <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" />
-                <select id="yt-format" title="Output format">
+                <select id="yt-format" title="Output format" onchange="ytFormatChanged()">
                   <option value="mp3">MP3 (audio)</option>
                   <option value="mp4">MP4 (video)</option>
                 </select>
               </div>
+              <div class="tool-row" id="yt-quality-row" style="display:none">
+                <label>Quality <select id="yt-quality" title="Video quality"></select></label>
+                <span class="tool-result-sub" id="yt-quality-note"></span>
+              </div>
               <div class="tool-row">
                 <button class="btn btn-ghost" id="yt-info-btn" onclick="ytFetchInfo()">Get info</button>
-                <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownload()">Download</button>
+                <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownloadBrowser()">Download</button>
               </div>
+              <div class="dl-progress" id="yt-progress" style="display:none"><div class="dl-fill" id="yt-fill"></div></div>
               <div id="yt-info" class="tool-result" style="display:none"></div>
               <div id="yt-status" class="tool-status"></div>
+              <div id="yt-setup" class="tool-hint" style="display:none"></div>
+              <div class="tool-hint">Having trouble? <a href="#" onclick="ytDownloadServer();return false">Download via server instead</a> (slower, counts toward bandwidth).</div>
             </div>
             <div class="tool-pane" id="tool-convert" style="display:none">
               <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
@@ -3532,10 +3543,64 @@ function ytFmtDur(sec){
   const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;
   return (h?h+':':'')+(h?String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0');
 }
+let ytConverterApi=null, ytInfoCache=null;
+async function ytConverterUrl(){
+  if(ytConverterApi!==null)return ytConverterApi;
+  try{
+    const r=await authFetch(API+'/api/tools/converter');
+    const d=await r.json();
+    ytConverterApi=(d.url||'').replace(/\/+$/,'');
+  }catch(e){ytConverterApi='';}
+  return ytConverterApi;
+}
+function ytQualityOptions(qualities){
+  const seen={};
+  return (qualities||[]).filter(q=>q&&q.height>0).sort((a,b)=>b.height-a.height)
+    .filter(q=>{if(seen[q.height])return false;seen[q.height]=1;return true})
+    .map(q=>({value:String(q.height),label:q.height+'p'}));
+}
+function ytFormatChanged(){
+  const fmt=document.getElementById('yt-format').value;
+  const row=document.getElementById('yt-quality-row');
+  const sel=document.getElementById('yt-quality');
+  if(fmt==='mp4'&&ytInfoCache&&ytInfoCache.qualities&&ytInfoCache.qualities.length){
+    sel.innerHTML=ytQualityOptions(ytInfoCache.qualities)
+      .map(o=>'<option value="'+o.value+'">'+o.label+'</option>').join('');
+    row.style.display='flex';
+    document.getElementById('yt-quality-note').textContent='Only qualities this video actually has.';
+  }else{
+    row.style.display='none';
+  }
+}
+function dlPercent(loaded,total){
+  if(!total||total<=0)return 0;
+  return Math.min(100,Math.round(loaded/total*100));
+}
+function ytShowProgress(pct,text){
+  const bar=document.getElementById('yt-progress');
+  bar.style.display='block';
+  document.getElementById('yt-fill').style.width=pct+'%';
+  if(text!==undefined)document.getElementById('yt-status').textContent=text;
+}
+function ytHideProgress(){document.getElementById('yt-progress').style.display='none'}
+async function ytFetchWithProgress(url,onp){
+  const r=await fetch(url);
+  if(!r.ok)throw new Error('Converter stream failed ('+r.status+')');
+  const total=parseInt(r.headers.get('Content-Length')||r.headers.get('Estimated-Content-Length')||'0',10)||0;
+  const reader=r.body.getReader();
+  const chunks=[];let loaded=0;
+  for(;;){
+    const it=await reader.read();
+    if(it.done)break;
+    chunks.push(it.value);loaded+=it.value.length;onp(loaded,total);
+  }
+  return new Blob(chunks);
+}
 async function ytFetchInfo(){
   const url=document.getElementById('yt-url').value.trim();
   const box=document.getElementById('yt-info'),st=document.getElementById('yt-status');
   box.style.display='none';box.innerHTML='';
+  document.getElementById('yt-setup').style.display='none';
   if(!url){st.textContent='Paste a YouTube link first.';return}
   st.textContent='Reading video info…';
   try{
@@ -3546,10 +3611,71 @@ async function ytFetchInfo(){
       '<div><div class="tool-result-title">'+escapeHtml(d.title||'YouTube video')+'</div>'+
       '<div class="tool-result-sub">'+escapeHtml([d.uploader,ytFmtDur(d.duration)].filter(Boolean).join(' · '))+'</div></div>';
     box.style.display='flex';
+    ytInfoCache=d;
+    ytFormatChanged();
     st.textContent=d.ok_duration?'Ready — pick MP3 or MP4 and hit Download.':'That video is over 3 hours long.';
+    const api=await ytConverterUrl();
+    if(!api){
+      const setup=document.getElementById('yt-setup');
+      setup.innerHTML='Browser download needs a converter address (set OMNIILINK_CONVERTER_API). Until then you can still use the server fallback link below.';
+      setup.style.display='block';
+    }
   }catch(e){st.textContent='Network error: '+e.message}
 }
-async function ytDownload(){
+async function ytDownloadBrowser(){
+  const url=document.getElementById('yt-url').value.trim();
+  const fmt=document.getElementById('yt-format').value;
+  const st=document.getElementById('yt-status');
+  const btn=document.getElementById('yt-dl-btn');
+  if(!url){st.textContent='Paste a YouTube link first.';return}
+  const api=await ytConverterUrl();
+  if(!api){
+    st.textContent='No converter address configured — set OMNIILINK_CONVERTER_API on the server, or use the server fallback below.';
+    return;
+  }
+  btn.disabled=true;
+  ytShowProgress(0,'Contacting converter…');
+  try{
+    const body={url,downloadMode:fmt==='mp3'?'audio':'auto'};
+    if(fmt==='mp3'){body.audioFormat='mp3';}
+    else{
+      const q=document.getElementById('yt-quality').value||'1080';
+      body.videoQuality=q;body.youtubeVideoContainer='mp4';
+    }
+    const r=await fetch(api+'/',{method:'POST',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body:JSON.stringify(body)});
+    let d=null;
+    try{d=await r.json()}catch(e){}
+    if(!r.ok||!d||d.status==='error'){
+      const code=(d&&(d.error&&(d.error.code||d.error.message))||'')+'';
+      st.textContent='Converter refused it'+(code?': '+code:'')+'. Try the server fallback below.';
+      ytHideProgress();return;
+    }
+    if(d.status==='tunnel'){
+      const blob=await ytFetchWithProgress(d.url,(loaded,total)=>{
+        const pct=dlPercent(loaded,total);
+        ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)':formatBandwidth(loaded)+' downloaded…');
+      });
+      downloadBlob(blob,d.filename||('youtube.'+fmt));
+      ytShowProgress(100,'Saved '+(d.filename||('youtube.'+fmt)));
+    }else if(d.status==='redirect'){
+      st.textContent='Converter handed back a direct link — opening it in a new tab.';
+      ytHideProgress();
+      window.open(d.url,'_blank','noopener');
+    }else if(d.status==='picker'){
+      st.textContent='That link has multiple items — open one video at a time.';
+      ytHideProgress();
+    }else{
+      st.textContent='Unexpected converter reply — try the server fallback below.';
+      ytHideProgress();
+    }
+  }catch(e){
+    st.textContent='Could not reach the converter (it may block browser access — allow this page in its CORS settings). Server fallback is below.';
+    ytHideProgress();
+  }finally{btn.disabled=false}
+}
+async function ytDownloadServer(){
   const url=document.getElementById('yt-url').value.trim();
   const fmt=document.getElementById('yt-format').value;
   const st=document.getElementById('yt-status');
