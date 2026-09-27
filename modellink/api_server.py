@@ -3242,6 +3242,33 @@ class YTDownloadRequest(BaseModel):
     format: str = "mp3"
 
 
+@app.get("/api/tools/converter/health")
+async def tools_converter_health(request: Request):
+    """Can THIS server reach the configured converter? Distinguishes a dead
+    container/route (fix on the server) from a browser-side block (CORS,
+    ad-blocker, VPN). Any HTTP reply counts as alive — even a 404."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    url = _converter_url(
+        (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip(),
+        _converter_url_from_dotenv())
+    if not url:
+        return {"ok": False, "reason": "not-configured"}
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Omniilink/1.0"})
+        resp = await asyncio.to_thread(urllib.request.urlopen, req, timeout=10)
+        try:
+            resp.read(1)
+        except Exception:
+            pass
+        return {"ok": True, "status": resp.status}
+    except urllib.error.HTTPError as e:
+        return {"ok": True, "status": e.code, "note": "route live"}
+    except Exception as e:
+        return {"ok": False, "reason": "unreachable", "detail": str(e)[:120]}
+
+
 @app.post("/api/tools/youtube/info")
 async def tools_youtube_info(request: Request, req: YTInfoRequest):
     """Video metadata without downloading: title, duration, thumbnail."""

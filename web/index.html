@@ -3576,6 +3576,19 @@ function dlPercent(loaded,total){
   if(!total||total<=0)return 0;
   return Math.min(100,Math.round(loaded/total*100));
 }
+async function ytProbeConverter(api){
+  // A CORS preflight failure looks identical to a dead server (both throw),
+  // so probe with a preflight-free request: opaque reply = network path OK.
+  try{
+    await fetch(api+'/',{mode:'no-cors'});
+    return 'reachable';
+  }catch(e){return 'unreachable';}
+}
+function ytConverterErrorHint(probe){
+  if(probe==='reachable')
+    return 'Converter machine answers, but the browser call is blocked — stale tunnel route (run update.bat to restart it) or CORS off on the instance. Server fallback is below.';
+  return 'Converter address is not reachable at all — the cobalt container is likely not running. On the server: update.bat, then check docker compose ps shows cobalt. Server fallback is below.';
+}
 function ytShowProgress(pct,text){
   const bar=document.getElementById('yt-progress');
   bar.style.display='block';
@@ -3671,8 +3684,21 @@ async function ytDownloadBrowser(){
       ytHideProgress();
     }
   }catch(e){
-    st.textContent='Could not reach the converter (it may block browser access — allow this page in its CORS settings). Server fallback is below.';
+    st.textContent='Contacting the converter failed — checking why…';
     ytHideProgress();
+    try{
+      const probe=await ytProbeConverter(api);
+      let msg=ytConverterErrorHint(probe);
+      try{
+        const hr=await authFetch(API+'/api/tools/converter/health');
+        const hd=await hr.json();
+        if(hd.ok)msg+=' The server reaches it fine, so the block is in this browser (ad-blocker, VPN or filtered DNS).';
+        else msg+=' The server cannot reach it either — the container or tunnel route is down over there.';
+      }catch(e3){}
+      st.textContent=msg;
+    }catch(e2){
+      st.textContent='Could not reach the converter. Server fallback is below.';
+    }
   }finally{btn.disabled=false}
 }
 async function ytDownloadServer(){
