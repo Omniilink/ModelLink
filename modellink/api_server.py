@@ -387,6 +387,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Converter origin for connect-src, refreshed slowly so .env edits take
+# effect without a restart and responses don't pay a file read each time.
+_csp_extra = {"value": "", "ts": 0.0}
+
+
+def _csp_connect_extra():
+    now = time.monotonic()
+    cur = _csp_extra
+    if now - cur["ts"] < 60.0:
+        return cur["value"]
+    origin = ""
+    try:
+        url = _converter_url(
+            (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip(),
+            _converter_url_from_dotenv())
+        parts = urllib.parse.urlparse(url)
+        if parts.scheme in ("http", "https") and parts.hostname:
+            origin = f"{parts.scheme}://{parts.hostname}"
+            if parts.port and parts.port not in (80, 443):
+                origin += f":{parts.port}"
+            origin.encode("ascii")  # IDN/unicode origins can't go in a header
+    except Exception:
+        origin = ""
+    _csp_extra["value"] = origin
+    _csp_extra["ts"] = now
+    return origin
+
+
+def _csp_policy():
+    extra = _csp_connect_extra()
+    connect = "connect-src 'self' cloudflareinsights.com" + (f" {extra}" if extra else "")
+    return ("default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: *.ytimg.com; "
+            f"{connect}; font-src 'self'; object-src 'none'; "
+            "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+
+
 class SecurityHeadersMiddleware:
     """Raw ASGI middleware — avoids nested BaseHTTPMiddleware + StreamingResponse bug in Starlette 1.6."""
     def __init__(self, app):
@@ -424,11 +461,11 @@ class SecurityHeadersMiddleware:
                     else:
                         # static.cloudflareinsights.com: Cloudflare's own RUM
                         # beacon auto-injected by the proxy; harmless analytics.
+                        # connect-src also allows the configured converter API
+                        # (in-browser YouTube downloads) and img-src the
+                        # YouTube thumbnail CDN.
                         headers.append((b"content-security-policy",
-                            b"default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
-                            b"style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-                            b"connect-src 'self' cloudflareinsights.com; font-src 'self'; object-src 'none'; "
-                            b"base-uri 'self'; form-action 'self'; frame-ancestors 'none'"))
+                                        _csp_policy().encode("ascii")))
                 if is_https and "strict-transport-security" not in existing:
                     headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
                 message["headers"] = headers
