@@ -6,8 +6,11 @@ tunnel: omniilink
 credentials-file: /etc/cloudflared-creds/7f35f941-d7fd-41c6-99a7-b4679e4bb77d.json
 
 ingress:
-  - hostname: omniilink.dpdns.org
-    path: /converter/*
+  # Dedicated route for the self-hosted converter (More → YouTube downloads).
+  # Every tunnel answers on <tunnel-id>.cfargotunnel.com with no DNS setup;
+  # a path rule on the main hostname would NOT work (cobalt serves /tunnel
+  # at root and the proxy does not strip prefixes).
+  - hostname: 7f35f941-d7fd-41c6-99a7-b4679e4bb77d.cfargotunnel.com
     service: http://cobalt:9000
   - hostname: omniilink.dpdns.org
     service: http://api:8080

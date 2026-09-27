@@ -29,6 +29,9 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+REM Tunnel ingress comes from a mounted file, which compose does not watch:
+REM restart it so new routes (e.g. the converter) always go live on update.
+docker compose restart tunnel
 echo.
 echo === Status ===
 docker compose ps

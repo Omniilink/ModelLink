@@ -90,13 +90,17 @@ services:
 
   # Self-hosted converter for in-browser YouTube downloads (More → YouTube).
   # The page talks to this directly, so video bytes never touch the api
-  # container. Reached publicly as https://omniilink.dpdns.org/converter
-  # via the tunnel path rule below (same origin = no CORS setup needed).
+  # container. Reached publicly at its own tunnel address (see the
+  # cfargotunnel.com ingress rule); same-origin tricks do not apply because
+  # cobalt has no subpath support, hence the dedicated route.
   cobalt:
     image: ghcr.io/imputnet/cobalt:latest
     restart: unless-stopped
     environment:
-      - API_URL=https://omniilink.dpdns.org/converter
+      - API_URL=${OMNIILINK_CONVERTER_API:-https://7f35f941-d7fd-41c6-99a7-b4679e4bb77d.cfargotunnel.com/}
+      # Personal instance behind an unguessable URL: let the page call it
+      # from anywhere (localhost dev included) without per-origin setup.
+      - CORS_WILDCARD=1
     networks:
       - omniilink-net
 
