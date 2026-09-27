@@ -3269,13 +3269,13 @@ async def tools_converter_health(request: Request):
         return {"ok": False, "reason": "unreachable", "detail": str(e)[:120]}
 
 
-def _converter_verdict(url, dns_ok, cobalt, http_ok, http_status):
+def _converter_verdict(url, host, dns_ok, cobalt, http_ok, http_status, internal):
     """Pure verdict picker for the diagnostics panel (unit-tested). cobalt is
-    None (docker unavailable), or a dict with present/running/status."""
+    None (docker unavailable), or a dict with present/running/status.
+    internal is None (not probed), True (cobalt answers over docker DNS) or
+    False (container addressable but silent)."""
     if not url:
         return "not-configured: set OMNIILINK_CONVERTER_API (or rely on the built-in default) and restart."
-    if not dns_ok:
-        return "dns-fail: the converter hostname does not resolve from this server — check DNS/filtering."
     if cobalt is not None:
         if not cobalt.get("present"):
             return "cobalt-missing: no cobalt container exists — run update.bat (docker compose up -d) on the server."
@@ -3283,6 +3283,13 @@ def _converter_verdict(url, dns_ok, cobalt, http_ok, http_status):
             return ("cobalt-down: container exists but is not Up"
                     + (f" ({cobalt.get('status')})" if cobalt.get("status") else "")
                     + " — check docker logs cobalt on the server.")
+        if internal is False:
+            return ("cobalt-unhealthy: container is Up but does not answer on :9000 "
+                    "— check docker logs cobalt on the server.")
+    if not dns_ok:
+        return (f"dns-fail: {host or 'the converter hostname'} does not resolve from this server "
+                "— whitelist *.cfargotunnel.com in the network DNS filter, or try mobile data on the phone. "
+                "The container itself may be fine.")
     if not http_ok:
         return "route-down: DNS works but nothing answers — the tunnel route is missing/stale (update.bat restarts it) or the container is unreachable."
     if http_status in (502, 503, 504):
@@ -3357,11 +3364,27 @@ async def tools_converter_diagnostics(request: Request):
             http_ok, http_status, http_detail = True, e.code, "route live"
         except Exception as e:
             http_ok, http_detail = False, str(e)[:120]
-    verdict = _converter_verdict(url, dns_ok, cobalt, http_ok, http_status)
+    internal = None
+    if cobalt is not None and cobalt.get("present") and cobalt.get("running"):
+        # Same docker network, no public DNS involved: proves whether the
+        # container itself is healthy regardless of tunnel/DNS state.
+        try:
+            req_in = urllib.request.Request("http://cobalt:9000/",
+                                            headers={"User-Agent": "Omniilink/1.0"})
+            resp_in = await asyncio.to_thread(urllib.request.urlopen, req_in, timeout=8)
+            try:
+                resp_in.read(1)
+            except Exception:
+                pass
+            internal = True
+        except Exception:
+            internal = False
+    verdict = _converter_verdict(url, host, dns_ok, cobalt, http_ok, http_status, internal)
     return {"url": url, "dns": {"ok": dns_ok, "addrs": addrs},
             "docker": {"available": docker_bin is not None,
                        "cobalt": cobalt, "tunnel": tunnel},
             "http": {"ok": http_ok, "status": http_status, "detail": http_detail},
+            "internal": {"probed": internal is not None, "ok": internal is True},
             "verdict": verdict}
 
 
