@@ -1574,7 +1574,7 @@ function folderBaseName(p){const parts=String(p||'').split(/[\\/]/).filter(Boole
 function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
-function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState()}
+function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
 function closeCodingFolder(){codingFolder=null;fsHandle=null;allCodingFiles=[];authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
@@ -3936,8 +3936,31 @@ function syncCodingModelSelect(){
   sel.value=models.some(m=>m.id===cur)?cur:'omnilink';
 }
 
-// ---- File upload (50 MB per file, admins unlimited) ----
-const CODING_UPLOAD_MAX=50*1024*1024;
+// ---- File upload (server limit from settings; admins unlimited;
+// files above the chunk threshold go up in small sequential chunks) ----
+const CODING_UPLOAD_MAX=50*1024*1024;   // fallback until settings load
+const CODING_CHUNK_THRESHOLD=8*1024*1024;
+let codingUploadLimitMB=50,codingUploadChunkMB=4;
+async function loadUploadLimits(){try{const s=await fetchCodingSettings();if(s&&typeof s.upload_limit_mb==='number'&&s.upload_limit_mb>0)codingUploadLimitMB=s.upload_limit_mb;if(s&&typeof s.upload_chunk_mb==='number'&&s.upload_chunk_mb>0)codingUploadChunkMB=s.upload_chunk_mb}catch(e){}}
+function uploadLimitMB(){return (typeof codingUploadLimitMB==='number'&&codingUploadLimitMB>0)?codingUploadLimitMB:50}
+function uploadLimitBytes(){return Math.floor(uploadLimitMB()*1024*1024)}
+function uploadLimitLabel(){const mb=uploadLimitMB();return mb>=1024?(mb/1024)+'GB':mb+'MB'}
+function uploadChunkMB(){return (typeof codingUploadChunkMB==='number'&&codingUploadChunkMB>0)?codingUploadChunkMB:4}
+function shouldChunkUpload(size){const th=(typeof CODING_CHUNK_THRESHOLD==='number'&&CODING_CHUNK_THRESHOLD>0)?CODING_CHUNK_THRESHOLD:8*1024*1024;return size>th}
+function uploadChunkPlan(total){
+  const cs=Math.max(1*1024*1024,Math.floor(uploadChunkMB()*1024*1024));
+  return {chunkSize:cs,chunks:Math.max(1,Math.ceil(total/cs))};
+}
+function uploadRenderTick(ui,state,mem){
+  const total=state.total||1;
+  const p=Math.min(100,Math.round(state.loaded/total*100));
+  ui.fill.style.width=p+'%';ui.pct.textContent=p+'%';
+  const now=Date.now(),dt=(now-mem.t)/1000;
+  if(dt>0&&state.loaded>mem.loaded){
+    ui.speed.textContent=formatBandwidth((state.loaded-mem.loaded)/dt)+'/s';
+    mem.loaded=state.loaded;mem.t=now;
+  }
+}
 function openUploadPicker(){const inp=document.getElementById('coding-upload-input');if(!inp)return;inp.value='';inp.click()}
 function handleUploadFiles(fileList){
   if(!codingFolder){showToast('Open a folder or project first','error');return}
@@ -3962,78 +3985,168 @@ function addUploadEntry(file){
   uploadFileWithProgress(file,row);
 }
 function uploadFileWithProgress(file,row){
-  const fill=row.querySelector('.up-fill'),pct=row.querySelector('.up-pct'),speed=row.querySelector('.up-speed');
-  const cancelBtn=row.querySelector('.up-cancel');
+  const ui={fill:row.querySelector('.up-fill'),pct:row.querySelector('.up-pct'),speed:row.querySelector('.up-speed'),cancel:row.querySelector('.up-cancel')};
   const isAdmin=!!(window.__user&&window.__user.is_admin);
-  if(!isAdmin&&file.size>CODING_UPLOAD_MAX){
-    cancelBtn.style.display='none';
-    fill.style.width='100%';fill.style.background='var(--error)';pct.textContent='—';
-    speed.textContent='over the 50MB limit';
+  const limit=uploadLimitBytes();
+  if(!isAdmin&&file.size>limit){
+    ui.cancel.style.display='none';
+    ui.fill.style.width='100%';ui.fill.style.background='var(--error)';ui.pct.textContent='—';
+    ui.speed.textContent='over the '+uploadLimitLabel()+' limit';
     setTimeout(()=>{row.remove();maybeHideUploadProgress()},2500);
     return;
   }
   const rel=(file.webkitRelativePath&&file.webkitRelativePath.trim()?file.webkitRelativePath:file.name).replace(/\\/g,'/').replace(/^\/+/,'');
+  if(shouldChunkUpload(file.size))uploadFileChunked(file,row,rel,ui).catch(()=>{});
+  else uploadFileSingleShot(file,row,rel,ui);
+}
+function uploadFileSingleShot(file,row,rel,ui){
   const xhr=new XMLHttpRequest();
   xhr.open('POST',API+'/api/coding/file-upload?path='+encodeURIComponent(rel));
   xhr.setRequestHeader('Content-Type','application/octet-stream');
   const state={loaded:0,total:file.size,done:false};
-  let lastLoaded=0,lastT=Date.now();
-  function render(){
-    const total=state.total||file.size;
-    const p=total>0?Math.min(100,Math.round(state.loaded/total*100)):0;
-    fill.style.width=p+'%';pct.textContent=p+'%';
-    const now=Date.now();
-    const dt=(now-lastT)/1000;
-    if(dt>0&&state.loaded>lastLoaded){
-      speed.textContent=formatBandwidth((state.loaded-lastLoaded)/dt)+'/s';
-      lastLoaded=state.loaded;lastT=now;
-    }
-  }
+  const mem={loaded:0,t:Date.now()};
   xhr.upload.onprogress=function(e){
     if(!e.lengthComputable)return;
     state.loaded=e.loaded;state.total=e.total;
-    render();
+    uploadRenderTick(ui,state,mem);
   };
   // The bar and speed also refresh on a 0.5s tick, so the popup keeps
   // updating even when the browser emits few progress events (fast local
   // uploads) or the transfer is paced.
   const timer=setInterval(()=>{
     if(state.done){clearInterval(timer);return}
-    render();
+    uploadRenderTick(ui,state,mem);
   },500);
-  cancelBtn.onclick=()=>{if(state.done||cancelBtn.disabled)return;cancelBtn.disabled=true;cancelBtn.textContent='…';xhr.abort();};
+  ui.cancel.onclick=()=>{if(state.done||ui.cancel.disabled)return;ui.cancel.disabled=true;ui.cancel.textContent='…';xhr.abort();};
   xhr.onload=function(){
-    state.done=true;clearInterval(timer);cancelBtn.disabled=true;
-    let ok=xhr.status>=200&&xhr.status<300,msg='';
-    try{msg=JSON.parse(xhr.responseText).error||''}catch(e){}
+    state.done=true;clearInterval(timer);ui.cancel.disabled=true;
+    let ok=xhr.status>=200&&xhr.status<300,msg='',data=null;
+    try{data=JSON.parse(xhr.responseText);msg=(data&&data.error)||''}catch(e){}
     if(xhr.status===401&&typeof showAuthModal==='function')showAuthModal();
     if(ok){
-      fill.style.width='100%';fill.style.background='var(--success)';pct.textContent='100%';
-      speed.textContent='Done';
-      showToast('Uploaded '+file.name,'success');
+      ui.fill.style.width='100%';ui.fill.style.background='var(--success)';ui.pct.textContent='100%';
+      ui.speed.textContent='Done';
+      let note='Uploaded '+file.name;
+      if(data&&data.extracted)note+=' — extracted into '+data.extracted.folder+' ('+data.extracted.files+' files)';
+      showToast(note,'success');
       refreshCodingTree();
       setTimeout(()=>{row.remove();maybeHideUploadProgress()},1200);
     }else{
-      fill.style.background='var(--error)';pct.textContent='Failed';
-      speed.textContent=msg||('Error '+xhr.status);
+      ui.fill.style.background='var(--error)';ui.pct.textContent='Failed';
+      ui.speed.textContent=msg||('Error '+xhr.status);
       showToast(file.name+': '+(msg||'upload failed'),'error');
       setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
     }
   };
   xhr.onerror=function(){
-    state.done=true;clearInterval(timer);cancelBtn.disabled=true;
-    fill.style.background='var(--error)';pct.textContent='Failed';
-    speed.textContent='Network error';
+    state.done=true;clearInterval(timer);ui.cancel.disabled=true;
+    ui.fill.style.background='var(--error)';ui.pct.textContent='Failed';
+    ui.speed.textContent='Network error';
     showToast(file.name+': upload failed','error');
     setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
   };
   xhr.onabort=function(){
     state.done=true;clearInterval(timer);
-    fill.style.background='var(--text-muted)';pct.textContent='—';
-    speed.textContent='Cancelled';
+    ui.fill.style.background='var(--text-muted)';ui.pct.textContent='—';
+    ui.speed.textContent='Cancelled';
     setTimeout(()=>{row.remove();maybeHideUploadProgress()},1500);
   };
   xhr.send(file);
+}
+function postUploadChunk(state,uploadId,index,blob){
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();
+    state.xhr=xhr;
+    xhr.open('POST',API+'/api/coding/file-upload-chunk?upload_id='+encodeURIComponent(uploadId)+'&index='+index);
+    xhr.setRequestHeader('Content-Type','application/octet-stream');
+    xhr.upload.onprogress=function(e){
+      if(!e.lengthComputable)return;
+      state.loaded=state.confirmed+e.loaded;
+    };
+    xhr.onload=function(){
+      state.xhr=null;
+      let ok=xhr.status>=200&&xhr.status<300,msg='';
+      try{msg=JSON.parse(xhr.responseText).error||''}catch(e2){}
+      if(ok)resolve();
+      else reject(new Error(msg||('Error '+xhr.status)));
+    };
+    xhr.onerror=function(){state.xhr=null;reject(new Error('Network error'))};
+    xhr.onabort=function(){state.xhr=null;reject(new Error('Cancelled'))};
+    xhr.send(blob);
+  });
+}
+async function abortUploadSession(uploadId){
+  try{await authFetch(API+'/api/coding/file-upload?upload_id='+encodeURIComponent(uploadId),{method:'DELETE'})}catch(e){}
+}
+async function uploadFileChunked(file,row,rel,ui){
+  const plan=uploadChunkPlan(file.size);
+  const state={loaded:0,total:file.size,done:false,cancelled:false,confirmed:0,xhr:null,uploadId:null};
+  const mem={loaded:0,t:Date.now()};
+  const timer=setInterval(()=>{
+    if(state.done){clearInterval(timer);return}
+    uploadRenderTick(ui,state,mem);
+  },500);
+  function fail(msg){
+    if(state.done)return;
+    state.done=true;clearInterval(timer);ui.cancel.disabled=true;
+    ui.fill.style.background='var(--error)';ui.pct.textContent='Failed';
+    ui.speed.textContent=msg;
+    showToast(file.name+': '+msg,'error');
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},4000);
+  }
+  ui.cancel.onclick=()=>{
+    if(state.done||ui.cancel.disabled)return;
+    ui.cancel.disabled=true;ui.cancel.textContent='…';state.cancelled=true;
+    if(state.xhr){try{state.xhr.abort()}catch(e){}}
+    if(state.uploadId)abortUploadSession(state.uploadId);
+    state.done=true;clearInterval(timer);
+    ui.fill.style.background='var(--text-muted)';ui.pct.textContent='—';
+    ui.speed.textContent='Cancelled';
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},1500);
+  };
+  let init;
+  try{
+    const r=await authFetch(API+'/api/coding/file-upload-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:rel,size:file.size,chunks:plan.chunks})});
+    init=await r.json();
+    if(!r.ok)throw new Error(init.error||('Error '+r.status));
+  }catch(e){fail(e.message||'could not start upload');return}
+  state.uploadId=init.upload_id;
+  if(state.cancelled)return;
+  for(let i=0;i<plan.chunks;i++){
+    if(state.cancelled)return;
+    const start=i*plan.chunkSize,end=Math.min(file.size,start+plan.chunkSize);
+    const blob=file.slice(start,end);
+    let attempt=0,sent=false;
+    while(!sent&&attempt<3){
+      if(state.cancelled)return;
+      attempt++;
+      try{
+        await postUploadChunk(state,init.upload_id,i,blob);
+        sent=true;
+      }catch(e){
+        if(state.cancelled)return;
+        if(attempt>=3){fail(e.message||('chunk '+(i+1)+' failed'));abortUploadSession(init.upload_id);return}
+        await new Promise(r=>setTimeout(r,500*attempt));
+      }
+    }
+    state.confirmed+=blob.size;
+    state.loaded=state.confirmed;
+    uploadRenderTick(ui,state,mem);
+  }
+  if(state.cancelled)return;
+  try{
+    const r=await authFetch(API+'/api/coding/file-upload-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:init.upload_id})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||('Error '+r.status));
+    state.done=true;clearInterval(timer);ui.cancel.disabled=true;
+    ui.fill.style.width='100%';ui.fill.style.background='var(--success)';ui.pct.textContent='100%';
+    ui.speed.textContent='Done';
+    let note='Uploaded '+file.name;
+    if(d&&d.extracted)note+=' — extracted into '+d.extracted.folder+' ('+d.extracted.files+' files)';
+    showToast(note,'success');
+    refreshCodingTree();
+    setTimeout(()=>{row.remove();maybeHideUploadProgress()},1200);
+  }catch(e){fail(e.message||'could not finish upload')}
 }
 function maybeHideUploadProgress(){
   const box=document.getElementById('upload-progress');
@@ -4286,10 +4399,10 @@ function startCodingWatcher(){
       if(!r.ok)return;
       const d=await r.json();
       const sig=JSON.stringify(d.tree||d);
-      if(codingWatchSig&&sig!==codingWatchSig){refreshCodingTree();showToast('Project files changed on disk','info')}
+      if(codingWatchSig&&sig!==codingWatchSig){refreshCodingTree();allCodingFiles=[];showToast('Project files changed on disk','info')}
       codingWatchSig=sig;
     }catch(e){}
-  },20000);
+  },5000);
 }
 function stopCodingWatcher(){if(codingWatchTimer){clearInterval(codingWatchTimer);codingWatchTimer=null}}
 

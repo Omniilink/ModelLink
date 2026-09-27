@@ -68,6 +68,14 @@ MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
 # The one endpoint allowed past the cap: coding file uploads (the endpoint
 # itself enforces a hard 50 MB while streaming to disk).
 BODY_LIMIT_EXEMPT_PREFIXES = ("/api/coding/file-upload",)
+UPLOAD_LIMIT_MB = float(os.environ.get("OMNIILINK_UPLOAD_LIMIT_MB", "50") or 50)
+UPLOAD_LIMIT_BYTES = int(UPLOAD_LIMIT_MB * 1024 * 1024)
+UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024       # frontend chunk size for big files
+UPLOAD_CHUNK_MAX_BYTES = 16 * 1024 * 1024  # server-side per-chunk ceiling
+UPLOAD_PART_TTL_SECONDS = 24 * 3600        # stale chunk sessions pruned at init
+UPLOAD_MAX_CHUNKS = 65536
+ZIP_EXTRACT_MAX_FILES = 20000
+ZIP_EXTRACT_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2GB uncompressed (zip-bomb guard)
 
 
 class BodyLimitMiddleware:
@@ -1863,18 +1871,31 @@ def _build_file_tree(root_path, prefix=""):
             if name not in IGNORE_DIRS and not name.startswith("."):
                 dirs.append(name)
         else:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in IGNORE_EXTS and not name.startswith("."):
+            # Every file shows in the tree (archives, media, binaries included);
+            # only dotfiles are hidden. Directories above still skip the big
+            # generated trees (node_modules, .git, ...).
+            if not name.startswith("."):
                 files.append(name)
     for d in dirs:
         sub_path = os.path.join(root_path, d)
         children = _build_file_tree(sub_path, prefix + d + "/")
         if children:
-            entries.append({"name": d, "type": "dir", "children": children})
+            entries.append({"name": d, "type": "dir", "path": prefix + d, "children": children})
     for f in files:
         size = os.path.getsize(os.path.join(root_path, f))
-        entries.append({"name": f, "type": "file", "size": size})
+        entries.append({"name": f, "type": "file", "path": prefix + f, "size": size})
     return entries
+
+
+def _count_tree_files(entries):
+    """Count file entries in a _build_file_tree result (matches the tree)."""
+    n = 0
+    for e in entries or []:
+        if e.get("type") == "dir":
+            n += _count_tree_files(e.get("children") or [])
+        else:
+            n += 1
+    return n
 
 DEFAULT_CODING_PROMPT = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
 
@@ -2008,7 +2029,7 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     coding_state["folder"] = folder
     _save_coding_folder(user_id, folder)
     tree = _build_file_tree(folder)
-    file_count = sum(1 for _ in os.walk(folder) for f in _[2] if not any(f.endswith(e) for e in IGNORE_EXTS))
+    file_count = _count_tree_files(tree)
     logger.info(f"[CODING] Opened folder: {folder} ({file_count} files) user={user.get('username','-')}")
     return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count}
 
@@ -2525,6 +2546,172 @@ async def _drain_request_body(request: Request):
         pass
 
 
+def _extract_zip_safely(zip_path: str, dest: str, max_files: int = 20000,
+                        max_total: int = 2 * 1024 * 1024 * 1024):
+    """Extract a zip into dest, guarding against zip-slip, bombs and junk.
+
+    Returns (file_count, total_bytes). Raises ValueError on unsafe entries,
+    corrupt archives, or cap breaches."""
+    import posixpath
+    with zipfile.ZipFile(zip_path) as zf:
+        members = [i for i in zf.infolist() if not i.is_dir()]
+        if len(members) > max_files:
+            raise ValueError(f"Too many files in zip ({len(members)})")
+        total = sum(i.file_size for i in members)
+        if total > max_total:
+            raise ValueError("Uncompressed zip contents too large")
+        os.makedirs(dest, exist_ok=True)
+        count = 0
+        for info in members:
+            name = info.filename.replace("\\", "/").lstrip("/")
+            if name.startswith("__MACOSX/"):
+                continue
+            parts = [p for p in name.split("/") if p not in ("", ".")]
+            if (not parts or name.startswith("/")
+                    or any(p == ".." for p in parts)
+                    or any(re.match(r"^[A-Za-z]:$", p) for p in parts)):
+                raise ValueError(f"Unsafe entry in zip: {info.filename!r}")
+            target = os.path.join(dest, *parts)
+            if os.path.normcase(os.path.abspath(target)) != os.path.normcase(os.path.abspath(dest)) \
+                    and not _is_within(dest, target):
+                raise ValueError(f"Unsafe entry in zip: {info.filename!r}")
+            parent = os.path.dirname(target)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out, length=1024 * 1024)
+            count += 1
+    # posixpath import kept local to this helper's original scope note
+    _ = posixpath  # silence linters about the local import
+    return count, total
+
+
+class _UploadRefused(Exception):
+    def __init__(self, status, error):
+        self.status = status
+        self.error = error
+
+
+def _upload_session_root(user_id: str) -> str:
+    d = os.path.join(_user_data_dir(user_id), "coding_upload_parts")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _upload_session_dir(user_id: str, upload_id: str):
+    """Session dir for a chunked upload, or None for a malformed id (never
+    let a client-supplied id escape into a path)."""
+    if not re.fullmatch(r"[0-9a-f]{32}", upload_id or ""):
+        return None
+    return os.path.join(_upload_session_root(user_id), upload_id)
+
+
+def _prune_upload_sessions(user_id: str):
+    try:
+        root = _upload_session_root(user_id)
+        now = time.time()
+        for name in os.listdir(root)[:500]:
+            d = os.path.join(root, name)
+            if not os.path.isdir(d):
+                continue
+            try:
+                if now - os.path.getmtime(d) > UPLOAD_PART_TTL_SECONDS:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _load_upload_meta(user_id: str, upload_id: str):
+    sdir = _upload_session_dir(user_id, upload_id)
+    if not sdir or not os.path.isdir(sdir):
+        return None, None
+    try:
+        with open(os.path.join(sdir, "meta.json"), "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            return None, None
+        return sdir, meta
+    except Exception:
+        return None, None
+
+
+def _save_upload_meta(sdir: str, meta: dict):
+    with open(os.path.join(sdir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+
+
+def _coding_after_store(user, user_id: str, folder: str, rel: str, size: int):
+    """Shared tail for single-shot and chunked uploads: quota-check the file,
+    auto-extract zips into a sibling folder named after the archive, log, and
+    build the response dict. Raises _UploadRefused(status, error)."""
+    qerr = _check_quota(user, user_id, size)
+    if qerr is not None:
+        try:
+            os.remove(os.path.join(folder, rel))
+        except OSError:
+            pass
+        try:
+            msg = json.loads(qerr.body.decode("utf-8")).get("error", "Storage quota exceeded")
+        except Exception:
+            msg = "Storage quota exceeded"
+        raise _UploadRefused(qerr.status_code, msg)
+    resp = {"status": "ok", "path": rel, "size": size}
+    if rel.lower().endswith(".zip"):
+        base = os.path.basename(rel)
+        stem = re.sub(r"[^A-Za-z0-9_.\- ]", "_", base[:-4].strip()).strip(" .")[:80] or "unzipped"
+        parent = os.path.dirname(rel).replace("\\", "/")
+        dest_rel = (parent + "/" + stem).lstrip("/") if parent else stem
+        dest_full = os.path.join(folder, dest_rel)
+        try:
+            with zipfile.ZipFile(os.path.join(folder, rel)) as _zf:
+                _uncompressed = sum(i.file_size for i in _zf.infolist() if not i.is_dir())
+        except Exception:
+            _uncompressed = 0
+        if _uncompressed:
+            _qerr = _check_quota(user, user_id, _uncompressed)
+            if _qerr is not None:
+                try:
+                    os.remove(os.path.join(folder, rel))
+                except OSError:
+                    pass
+                try:
+                    _msg = json.loads(_qerr.body.decode("utf-8")).get("error", "Storage quota exceeded")
+                except Exception:
+                    _msg = "Storage quota exceeded"
+                raise _UploadRefused(_qerr.status_code, _msg)
+        try:
+            count, _total = _extract_zip_safely(
+                os.path.join(folder, rel), dest_full,
+                max_files=ZIP_EXTRACT_MAX_FILES, max_total=ZIP_EXTRACT_MAX_BYTES)
+        except ValueError as e:
+            raise _UploadRefused(400, str(e))
+        except zipfile.BadZipFile:
+            raise _UploadRefused(400, "Not a valid zip file")
+        except RuntimeError:
+            raise _UploadRefused(400, "Encrypted zips are not supported")
+        except Exception as e:
+            raise _UploadRefused(500, f"Zip extraction failed: {e}")
+        try:
+            os.remove(os.path.join(folder, rel))
+        except OSError:
+            pass
+        resp["extracted"] = {"folder": dest_rel, "files": count}
+    logger.info(f"[CODING] Uploaded file: {rel} ({size} bytes) user={user.get('username','-')}")
+    return resp
+
+
+class CodingUploadInit(BaseModel):
+    path: str
+    size: int
+    chunks: int
+
+
+class CodingUploadComplete(BaseModel):
+    upload_id: str
+
+
 @app.post("/api/coding/file-upload")
 async def coding_file_upload(request: Request, path: str = ""):
     """Upload a file into the open project (opencode-style drag-and-drop).
@@ -2535,7 +2722,8 @@ async def coding_file_upload(request: Request, path: str = ""):
     if err:
         await _drain_request_body(request)
         return err
-    upload_limit = None if user.get("is_admin") else 50 * 1024 * 1024
+    upload_limit = None if user.get("is_admin") else UPLOAD_LIMIT_BYTES
+    user_id = _safe_username(user["username"])
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
@@ -2573,7 +2761,7 @@ async def coding_file_upload(request: Request, path: str = ""):
                         pass
                     await _drain_request_body(request)
                     return JSONResponse(status_code=413,
-                                        content={"error": "File too large (max 50MB)"})
+                                        content={"error": f"File too large (max {UPLOAD_LIMIT_MB:g}MB)"})
                 out.write(chunk)
         os.replace(tmp, full)
     except Exception as e:
@@ -2582,15 +2770,162 @@ async def coding_file_upload(request: Request, path: str = ""):
         except OSError:
             pass
         return JSONResponse(status_code=500, content={"error": str(e)})
-    quota_err = _check_quota(user, _safe_username(user["username"]), size)
-    if quota_err:
-        try:
-            os.remove(full)
-        except OSError:
-            pass
-        return quota_err
-    logger.info(f"[CODING] Uploaded file: {rel} ({size} bytes) user={user.get('username','-')}")
-    return {"status": "ok", "path": rel, "size": size}
+    try:
+        return _coding_after_store(user, user_id, folder, rel, size)
+    except _UploadRefused as refused:
+        return JSONResponse(status_code=refused.status, content={"error": refused.error})
+
+
+@app.post("/api/coding/file-upload-init")
+async def coding_file_upload_init(request: Request, req: CodingUploadInit):
+    """Start a chunked upload session for a big file. Each chunk stays small
+    (so proxies and timeouts never see a giant single body); the server
+    reassembles on complete. Returns an upload_id for the chunk calls."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _get_coding_state(user_id).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
+    if _bad_path(rel) or not rel:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    try:
+        size = int(req.size)
+        chunks = int(req.chunks)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid size/chunks"})
+    if size <= 0 or chunks < 1 or chunks > UPLOAD_MAX_CHUNKS:
+        return JSONResponse(status_code=400, content={"error": "Invalid size/chunks"})
+    upload_limit = None if user.get("is_admin") else UPLOAD_LIMIT_BYTES
+    if upload_limit is not None and size > upload_limit:
+        return JSONResponse(status_code=413,
+                            content={"error": f"File too large (max {UPLOAD_LIMIT_MB:g}MB)"})
+    _prune_upload_sessions(user_id)
+    upload_id = secrets.token_hex(16)
+    sdir = os.path.join(_upload_session_root(user_id), upload_id)
+    try:
+        os.makedirs(sdir, exist_ok=False)
+        _save_upload_meta(sdir, {"rel": rel, "size": size, "chunks": chunks,
+                                 "received": 0, "received_bytes": 0,
+                                 "created": time.time()})
+    except Exception as e:
+        shutil.rmtree(sdir, ignore_errors=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"upload_id": upload_id}
+
+
+@app.post("/api/coding/file-upload-chunk")
+async def coding_file_upload_chunk(request: Request, upload_id: str, index: int):
+    """Accept one chunk (raw bytes) of a session started by file-upload-init.
+    Chunks must arrive in order; out-of-order chunks get a 409 with the
+    expected index so the client can resume cleanly."""
+    user, err = _require_auth(request)
+    if err:
+        await _drain_request_body(request)
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _get_coding_state(user_id).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        await _drain_request_body(request)
+        return access_err
+    sdir, meta = _load_upload_meta(user_id, upload_id or "")
+    if meta is None:
+        await _drain_request_body(request)
+        return JSONResponse(status_code=404, content={"error": "Unknown or expired upload session"})
+    full = os.path.join(folder, meta.get("rel", ""))
+    if not _is_within(folder, full):
+        await _drain_request_body(request)
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if index != meta.get("received", -1):
+        await _drain_request_body(request)
+        return JSONResponse(status_code=409, content={"error": "Out-of-order chunk",
+                                                      "expected": meta.get("received", 0)})
+    try:
+        body = await request.body()
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Could not read chunk: {e}"})
+    if len(body) > UPLOAD_CHUNK_MAX_BYTES:
+        await _drain_request_body(request)
+        return JSONResponse(status_code=413, content={"error": "Chunk too large"})
+    if not body:
+        return JSONResponse(status_code=400, content={"error": "Empty chunk"})
+    upload_limit = None if user.get("is_admin") else UPLOAD_LIMIT_BYTES
+    if upload_limit is not None and meta.get("received_bytes", 0) + len(body) > upload_limit:
+        shutil.rmtree(sdir, ignore_errors=True)
+        return JSONResponse(status_code=413,
+                            content={"error": f"File too large (max {UPLOAD_LIMIT_MB:g}MB)"})
+    try:
+        with open(os.path.join(sdir, "data.part"), "ab") as out:
+            out.write(body)
+        meta["received"] = meta.get("received", 0) + 1
+        meta["received_bytes"] = meta.get("received_bytes", 0) + len(body)
+        _save_upload_meta(sdir, meta)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"received": meta["received"], "chunks": meta.get("chunks")}
+
+
+@app.post("/api/coding/file-upload-complete")
+async def coding_file_upload_complete(request: Request, req: CodingUploadComplete):
+    """Finish a chunked upload: verify every chunk landed, move the assembled
+    file into the project (with zip auto-extract), and clean up the session."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _get_coding_state(user_id).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    sdir, meta = _load_upload_meta(user_id, req.upload_id or "")
+    if meta is None:
+        return JSONResponse(status_code=404, content={"error": "Unknown or expired upload session"})
+    rel = meta.get("rel", "")
+    full = os.path.join(folder, rel)
+    if _bad_path(rel) or not rel or not _is_within(folder, full):
+        shutil.rmtree(sdir, ignore_errors=True)
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if meta.get("received", 0) != meta.get("chunks", -1):
+        return JSONResponse(status_code=400, content={"error": "Upload incomplete",
+                                                      "received": meta.get("received", 0),
+                                                      "chunks": meta.get("chunks", 0)})
+    part = os.path.join(sdir, "data.part")
+    try:
+        size = os.path.getsize(part)
+    except OSError:
+        shutil.rmtree(sdir, ignore_errors=True)
+        return JSONResponse(status_code=400, content={"error": "Upload data missing"})
+    try:
+        os.makedirs(os.path.dirname(full) or folder, exist_ok=True)
+        os.replace(part, full)
+    except Exception as e:
+        shutil.rmtree(sdir, ignore_errors=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    shutil.rmtree(sdir, ignore_errors=True)
+    try:
+        return _coding_after_store(user, user_id, folder, rel, size)
+    except _UploadRefused as refused:
+        return JSONResponse(status_code=refused.status, content={"error": refused.error})
+
+
+@app.delete("/api/coding/file-upload")
+async def coding_file_upload_abort(request: Request, upload_id: str):
+    """Cancel a chunked upload: drop its buffered chunks."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    sdir = _upload_session_dir(_safe_username(user["username"]), upload_id or "")
+    if sdir is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid upload id"})
+    shutil.rmtree(sdir, ignore_errors=True)
+    return {"status": "ok"}
 
 
 @app.post("/api/coding/file-write")
@@ -3265,6 +3600,8 @@ async def coding_get_settings(request: Request):
     coding_state = _get_coding_state(_safe_username(user["username"]))
     settings = dict(coding_state["settings"])
     settings["sandbox"] = _sandbox_config() is not None
+    settings["upload_limit_mb"] = UPLOAD_LIMIT_MB
+    settings["upload_chunk_mb"] = UPLOAD_CHUNK_BYTES // (1024 * 1024)
     return settings
 
 @app.post("/api/coding/settings")
@@ -3798,7 +4135,7 @@ async def open_project(request: Request, req: ProjectCreate):
     coding_state["folder"] = path
     _save_coding_folder(user_id, path)
     tree = _build_file_tree(path)
-    file_count = sum(1 for _, _, files in os.walk(path) for f in files if not any(f.endswith(e) for e in IGNORE_EXTS))
+    file_count = _count_tree_files(tree)
     logger.info(f"[PROJECT] Opened: {name} ({file_count} files) user={user.get('username','-')}")
     return {"status": "ok", "name": name, "folder": path, "tree": tree, "file_count": file_count}
 
