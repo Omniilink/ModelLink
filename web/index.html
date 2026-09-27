@@ -533,6 +533,26 @@ a:hover{text-decoration:underline}
 .history-when{color:var(--text-secondary);flex:1;min-width:0}
 .history-size{color:var(--text-muted);font-family:var(--mono);font-size:11px;flex-shrink:0}
 
+/* More tools */
+.tools-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px}
+.tool-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:18px;cursor:pointer;transition:border-color .15s}
+.tool-card:hover{border-color:var(--accent-light)}
+.tool-icon{font-size:22px;margin-bottom:8px}
+.tool-name{font-size:14px;font-weight:600;margin-bottom:4px}
+.tool-desc{font-size:12px;color:var(--text-muted);line-height:1.5}
+.tool-pane{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:18px;max-width:640px}
+.tool-pane h3{margin:12px 0}
+.tool-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+.tool-row input[type=text]{flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none}
+.tool-row select{background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 8px;color:var(--text-primary);font-size:12px;font-family:var(--font)}
+.tool-row input[type=file]{font-size:12px;color:var(--text-secondary);max-width:100%}
+.tool-row label{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.tool-result{display:flex;gap:12px;align-items:center;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin:10px 0}
+.tool-result img{width:120px;border-radius:6px;flex-shrink:0}
+.tool-result-title{font-size:13px;font-weight:600}
+.tool-result-sub{font-size:11px;color:var(--text-muted);margin-top:2px}
+.tool-status{font-size:12px;color:var(--text-muted);min-height:18px}
+
 /* Message bookmarks */
 .msg-bookmark-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:all .15s}
 .msg-bookmark-btn:hover{color:var(--warning);border-color:var(--warning)}
@@ -660,7 +680,7 @@ img,svg,video,canvas{max-width:100%}
 pre{max-width:100%}
 /* Command palette + toasts fit the smallest phones */
 .cmd-box{max-width:calc(100vw - 32px)}
-.cmd-box{max-height:calc(100vh - 48px)}
+.cmd-box{max-height:calc(100dvh - 48px)}
 .toast{max-width:min(320px,calc(100vw - 40px))}
 /* Tables scroll instead of squeezing content off-screen */
 #us-key-table{display:block;overflow-x:auto;max-width:100%}
@@ -676,6 +696,7 @@ pre{max-width:100%}
   .header{overflow-x:auto;scrollbar-width:none}
   .header::-webkit-scrollbar{display:none}
   .header>*{flex-shrink:0}
+  .header .hide-mobile{display:none}
   .header-spacer{min-width:2px}
   .header-title{max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #model-btn-text{display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
@@ -684,6 +705,15 @@ pre{max-width:100%}
   .terminal-search input{width:100px}
   .view-header h2{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
   .file-write-diff{font-size:10px}
+  /* flex children must be allowed to shrink or they push the page sideways */
+  .view-panel,.content,.main,.coding-main{min-width:0}
+  /* toolbar children keep their size so the bar scrolls instead of squashing */
+  .coding-toolbar>*{flex-shrink:0}
+  /* 16px inputs stop iOS from auto-zooming on focus */
+  .coding-input-box textarea{font-size:16px}
+  /* tool panes stack */
+  .tool-result{flex-direction:column;align-items:flex-start}
+  .tool-result img{width:100%;max-width:280px}
 }
 /* Visible keyboard focus everywhere; mouse users unaffected */
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
@@ -722,6 +752,10 @@ pre{max-width:100%}
         <div class="nav-item" data-view="projects">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
           Projects
+        </div>
+        <div class="nav-item" data-view="more">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          More
         </div>
         <div class="nav-section">System</div>
         <div class="nav-item" data-view="api">
@@ -782,14 +816,14 @@ pre{max-width:100%}
       <button class="header-btn" onclick="openChatSearch()" title="Search in Chat (Ctrl+F)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
-      <button class="header-btn" onclick="document.getElementById('shortcuts-modal').classList.add('open')" title="Keyboard Shortcuts">
+      <button class="header-btn hide-mobile" onclick="document.getElementById('shortcuts-modal').classList.add('open')" title="Keyboard Shortcuts">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="6" y1="16" x2="18" y2="16"/></svg>
       </button>
-      <button class="header-btn" onclick="exportChatMD()" title="Export as Markdown">
+      <button class="header-btn hide-mobile" onclick="exportChatMD()" title="Export as Markdown">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span>MD</span>
       </button>
-      <button class="header-btn" onclick="exportChatJSON()" title="Export as JSON">
+      <button class="header-btn hide-mobile" onclick="exportChatJSON()" title="Export as JSON">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span>JSON</span>
       </button>
@@ -992,6 +1026,66 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
       <div class="view-panel" id="projects-view">
         <div class="view-header"><h2>Projects</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
         <div class="view-body" id="projects-body"></div>
+      </div>
+      <div class="view-panel" id="more-view">
+        <div class="view-header"><h2>More Tools</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-body" id="more-body">
+          <div style="max-width:1000px;margin:0 auto">
+            <div class="tools-grid" id="tools-grid">
+              <div class="tool-card" onclick="openTool('youtube')">
+                <div class="tool-icon">▶</div>
+                <div class="tool-name">YouTube to MP3 / MP4</div>
+                <div class="tool-desc">Paste a link, download audio or video. Runs on your own server — no shady converter sites.</div>
+              </div>
+              <div class="tool-card" onclick="openTool('convert')">
+                <div class="tool-icon">⇄</div>
+                <div class="tool-name">File Converter</div>
+                <div class="tool-desc">Images between PNG, JPG, WebP, GIF, BMP, TIFF and ICO — plus PDF pages to images.</div>
+              </div>
+            </div>
+            <div class="tool-pane" id="tool-youtube" style="display:none">
+              <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
+              <h3>YouTube to MP3 / MP4</h3>
+              <div class="tool-row">
+                <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" />
+                <select id="yt-format" title="Output format">
+                  <option value="mp3">MP3 (audio)</option>
+                  <option value="mp4">MP4 (video)</option>
+                </select>
+              </div>
+              <div class="tool-row">
+                <button class="btn btn-ghost" id="yt-info-btn" onclick="ytFetchInfo()">Get info</button>
+                <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownload()">Download</button>
+              </div>
+              <div id="yt-info" class="tool-result" style="display:none"></div>
+              <div id="yt-status" class="tool-status"></div>
+            </div>
+            <div class="tool-pane" id="tool-convert" style="display:none">
+              <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
+              <h3>File Converter</h3>
+              <div class="tool-row">
+                <input type="file" id="conv-file" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.tiff,.tif,.ico,.pdf" />
+                <select id="conv-target" title="Convert to">
+                  <option value="png">PNG</option>
+                  <option value="jpg">JPG</option>
+                  <option value="webp">WebP</option>
+                  <option value="gif">GIF</option>
+                  <option value="bmp">BMP</option>
+                  <option value="tiff">TIFF</option>
+                  <option value="ico">ICO</option>
+                </select>
+              </div>
+              <div class="tool-row">
+                <label>Quality <span id="conv-q-val">85</span><input type="range" id="conv-quality" min="1" max="100" value="85" oninput="document.getElementById('conv-q-val').textContent=this.value" /></label>
+                <label>Max width <input type="number" id="conv-width" placeholder="original" min="0" style="width:110px" /></label>
+              </div>
+              <div class="tool-row">
+                <button class="btn btn-primary" id="conv-btn" onclick="convertFile()">Convert &amp; download</button>
+              </div>
+              <div id="conv-status" class="tool-status"></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="view-panel" id="prompts-view">
         <div class="view-header"><h2>Prompts Library</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
@@ -1248,6 +1342,7 @@ function switchView(view){
   document.getElementById('api-view').classList.toggle('open',view==='api');
   document.getElementById('coding-view').classList.toggle('open',view==='coding');
   document.getElementById('projects-view').classList.toggle('open',view==='projects');
+  document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
@@ -3420,6 +3515,91 @@ function forgetCodingChatForFolder(folderPath){
 }
 async function deleteProject(name,path){try{const r=await authFetch(API+'/api/projects/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const res=await r.json();if(res.error){appAlert('Delete failed: '+res.error);return false}forgetCodingChatForFolder(path);if(name===currentProjectName){updateProjectBadge('');closeCodingFolder()}loadProjectList();loadProjectsSidebar();return true}catch(e){appAlert('Delete failed: '+e.message);return false}}
 
+// ========== MORE TOOLS: YouTube download + file converter ==========
+function openTool(name){
+  document.getElementById('tools-grid').style.display='none';
+  document.getElementById('tool-youtube').style.display=name==='youtube'?'block':'none';
+  document.getElementById('tool-convert').style.display=name==='convert'?'block':'none';
+}
+function closeTool(){
+  document.getElementById('tools-grid').style.display='';
+  document.getElementById('tool-youtube').style.display='none';
+  document.getElementById('tool-convert').style.display='none';
+}
+function ytFmtDur(sec){
+  sec=parseInt(sec||0,10);
+  if(!isFinite(sec)||sec<0)sec=0;
+  const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;
+  return (h?h+':':'')+(h?String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0');
+}
+async function ytFetchInfo(){
+  const url=document.getElementById('yt-url').value.trim();
+  const box=document.getElementById('yt-info'),st=document.getElementById('yt-status');
+  box.style.display='none';box.innerHTML='';
+  if(!url){st.textContent='Paste a YouTube link first.';return}
+  st.textContent='Reading video info…';
+  try{
+    const r=await authFetch(API+'/api/tools/youtube/info',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    const d=await r.json();
+    if(!r.ok){st.textContent=d.error||'Could not read that video.';return}
+    box.innerHTML=(d.thumbnail?'<img src="'+escapeHtml(d.thumbnail)+'" alt="" />':'')+
+      '<div><div class="tool-result-title">'+escapeHtml(d.title||'YouTube video')+'</div>'+
+      '<div class="tool-result-sub">'+escapeHtml([d.uploader,ytFmtDur(d.duration)].filter(Boolean).join(' · '))+'</div></div>';
+    box.style.display='flex';
+    st.textContent=d.ok_duration?'Ready — pick MP3 or MP4 and hit Download.':'That video is over 3 hours long.';
+  }catch(e){st.textContent='Network error: '+e.message}
+}
+async function ytDownload(){
+  const url=document.getElementById('yt-url').value.trim();
+  const fmt=document.getElementById('yt-format').value;
+  const st=document.getElementById('yt-status');
+  const btn=document.getElementById('yt-dl-btn');
+  if(!url){st.textContent='Paste a YouTube link first.';return}
+  btn.disabled=true;st.textContent='Downloading and converting — this can take a few minutes for long videos…';
+  try{
+    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,format:fmt})});
+    if(!r.ok){
+      let msg='Download failed.';
+      try{msg=(await r.json()).error||msg}catch(e){}
+      st.textContent=msg;return;
+    }
+    const blob=await r.blob();
+    let name='youtube.'+fmt;
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename\*=UTF-8''([^;]+)/);
+    if(m){try{name=decodeURIComponent(m[1])}catch(e){}}
+    downloadBlob(blob,name);
+    st.textContent='Saved '+name;
+  }catch(e){st.textContent='Network error: '+e.message}
+  finally{btn.disabled=false}
+}
+async function convertFile(){
+  const inp=document.getElementById('conv-file');
+  const target=document.getElementById('conv-target').value;
+  const st=document.getElementById('conv-status');
+  const btn=document.getElementById('conv-btn');
+  if(!inp.files||!inp.files.length){st.textContent='Choose a file first.';return}
+  const file=inp.files[0];
+  btn.disabled=true;st.textContent='Converting '+file.name+' → '+target.toUpperCase()+'…';
+  try{
+    const q=document.getElementById('conv-quality').value||'85';
+    const w=document.getElementById('conv-width').value||'0';
+    const r=await authFetch(API+'/api/tools/convert?target='+encodeURIComponent(target)+'&quality='+encodeURIComponent(q)+'&max_width='+encodeURIComponent(w)+'&filename='+encodeURIComponent(file.name),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+    if(!r.ok){
+      let msg='Conversion failed.';
+      try{msg=(await r.json()).error||msg}catch(e){}
+      st.textContent=msg;return;
+    }
+    const blob=await r.blob();
+    let name='converted.'+target;
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename\*=UTF-8''([^;]+)/);
+    if(m){try{name=decodeURIComponent(m[1])}catch(e){}}
+    downloadBlob(blob,name);
+    st.textContent='Saved '+name;
+  }catch(e){st.textContent='Network error: '+e.message}
+  finally{btn.disabled=false}
+}
 function renderPromptsPage(){
   const body=document.getElementById('prompts-body');body.innerHTML='';
   const prompts=getPrompts();

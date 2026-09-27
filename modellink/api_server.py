@@ -67,7 +67,7 @@ app = FastAPI(title="Omniilink API", version="3.0.0")
 MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
 # The one endpoint allowed past the cap: coding file uploads (the endpoint
 # itself enforces a hard 50 MB while streaming to disk).
-BODY_LIMIT_EXEMPT_PREFIXES = ("/api/coding/file-upload",)
+BODY_LIMIT_EXEMPT_PREFIXES = ("/api/coding/file-upload", "/api/tools/convert")
 UPLOAD_LIMIT_MB = float(os.environ.get("OMNIILINK_UPLOAD_LIMIT_MB", "50") or 50)
 UPLOAD_LIMIT_BYTES = int(UPLOAD_LIMIT_MB * 1024 * 1024)
 UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024       # frontend chunk size for big files
@@ -160,7 +160,8 @@ BW_BURST_BYTES = max(1024 * 1024, int(BW_RATE_BPS * 2))   # ~2s of burst
 BW_SPEED_SECONDS = 1.5                               # rolling window for "current speed"
 # Bandwidth is accounted (and limited) on file transfers only — page loads,
 # API polling and chat streaming must not eat the quota.
-BW_TRANSFER_PREFIXES = ("/api/coding/file-upload", "/api/coding/download-project")
+BW_TRANSFER_PREFIXES = ("/api/coding/file-upload", "/api/coding/download-project",
+                          "/api/tools/")
 
 _bw_lock = threading.Lock()
 _bw_users = {}        # user_id -> [bucket, last_ts, deque[(ts, bytes)]]
@@ -3131,6 +3132,415 @@ async def coding_file_delete(request: Request, path: str):
         return {"status": "ok"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ==========================================
+# More Tools: YouTube download + file conversion
+# ==========================================
+# Everything runs on this server (your own machine) — no third-party
+# converter sites. Requires the yt-dlp + pypdfium2 + imageio-ffmpeg packages
+# in requirements.txt (ffmpeg binary via imageio-ffmpeg when missing).
+YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
+            "music.youtube.com", "youtu.be", "www.youtu.be",
+            "youtube-nocookie.com", "www.youtube-nocookie.com"}
+YT_MAX_DURATION = 3 * 3600          # refuse videos longer than 3h
+YT_TIMEOUT_INFO = 60
+YT_TIMEOUT_DOWNLOAD = 900
+TOOLS_MAX_PAGES = 200               # PDF page cap for conversion
+
+
+def _tools_ytdlp_base():
+    """Argv prefix that invokes yt-dlp, or None when unavailable."""
+    if shutil.which("yt-dlp"):
+        return ["yt-dlp"]
+    try:
+        import yt_dlp  # noqa: F401
+        return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        return None
+
+
+def _tools_ffmpeg_bin():
+    """ffmpeg path: system binary first, else the bundled imageio-ffmpeg one."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except Exception:
+        pass
+    return None
+
+
+def _tools_check_youtube_url(url: str):
+    """Return (clean_url, None) or (None, error). Only YouTube hosts allowed."""
+    u = (url or "").strip()
+    if not u or len(u) > 2048:
+        return None, "Paste a YouTube link"
+    if not u.startswith(("http://", "https://")):
+        u = "https://" + u
+    try:
+        host = urllib.parse.urlparse(u).hostname or ""
+    except Exception:
+        return None, "That link is not valid"
+    if host.lower() not in YT_HOSTS:
+        return None, "Only youtube.com / youtu.be links are supported"
+    return u, None
+
+
+def _tools_safe_filename(name: str, ext: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9 _.\-]+", "_", (name or "download").strip())[:80].strip(" .") or "download"
+    return f"{base}.{ext}"
+
+
+class YTInfoRequest(BaseModel):
+    url: str
+
+
+class YTDownloadRequest(BaseModel):
+    url: str
+    format: str = "mp3"
+
+
+@app.post("/api/tools/youtube/info")
+async def tools_youtube_info(request: Request, req: YTInfoRequest):
+    """Video metadata without downloading: title, duration, thumbnail."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    url, uerr = _tools_check_youtube_url(req.url)
+    if uerr:
+        return JSONResponse(status_code=400, content={"error": uerr})
+    ytdlp = _tools_ytdlp_base()
+    if not ytdlp:
+        return JSONResponse(status_code=503, content={
+            "error": "YouTube support is not installed on this server (needs the yt-dlp package)"})
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, ytdlp + ["--dump-json", "--no-playlist",
+                                     "--no-warnings", url],
+            capture_output=True, text=True, timeout=YT_TIMEOUT_INFO)
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "YouTube took too long to respond"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    if proc.returncode != 0:
+        msg = (proc.stderr or "").strip().splitlines()
+        detail = msg[-1] if msg else "Could not read that video"
+        if len(detail) > 200:
+            detail = detail[:200]
+        return JSONResponse(status_code=400, content={"error": detail})
+    try:
+        info = json.loads(proc.stdout)
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "Could not parse video info"})
+    try:
+        duration = int(info.get("duration") or 0)
+    except Exception:
+        duration = 0
+    return {"title": info.get("title") or "YouTube video",
+            "duration": duration,
+            "thumbnail": info.get("thumbnail") or "",
+            "uploader": info.get("uploader") or "",
+            "ok_duration": duration <= YT_MAX_DURATION}
+
+
+@app.post("/api/tools/youtube/download")
+async def tools_youtube_download(request: Request, req: YTDownloadRequest):
+    """Download a YouTube video as MP3 or MP4. Runs yt-dlp on this server and
+    streams the finished file back."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    url, uerr = _tools_check_youtube_url(req.url)
+    if uerr:
+        return JSONResponse(status_code=400, content={"error": uerr})
+    fmt = (req.format or "mp3").strip().lower()
+    if fmt not in ("mp3", "mp4"):
+        return JSONResponse(status_code=400, content={"error": "Format must be mp3 or mp4"})
+    ytdlp = _tools_ytdlp_base()
+    if not ytdlp:
+        return JSONResponse(status_code=503, content={
+            "error": "YouTube support is not installed on this server (needs the yt-dlp package)"})
+    ffmpeg = _tools_ffmpeg_bin()
+    if fmt == "mp3" and not ffmpeg:
+        return JSONResponse(status_code=503, content={
+            "error": "MP3 needs ffmpeg on this server — install it or pick MP4"})
+    tmpdir = tempfile.mkdtemp(prefix="yt_")
+
+    def _cleanup():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    try:
+        # Metadata first: enforce the duration cap before any bytes move.
+        proc = await asyncio.to_thread(
+            subprocess.run, ytdlp + ["--dump-json", "--no-playlist",
+                                     "--no-warnings", url],
+            capture_output=True, text=True, timeout=YT_TIMEOUT_INFO)
+        if proc.returncode != 0:
+            msg = (proc.stderr or "").strip().splitlines()
+            detail = msg[-1] if msg else "Could not read that video"
+            return JSONResponse(status_code=400, content={"error": detail[:200]})
+        try:
+            info = json.loads(proc.stdout)
+            duration = int(info.get("duration") or 0)
+        except Exception:
+            info, duration = {}, 0
+        if duration > YT_MAX_DURATION:
+            return JSONResponse(status_code=400, content={
+                "error": f"Video is too long ({duration // 3600}h+ — 3h max)"})
+        out_tpl = os.path.join(tmpdir, "media.%(ext)s")
+        if fmt == "mp3":
+            cmd = ytdlp + ["--no-playlist", "--no-warnings",
+                           "-f", "bestaudio/best",
+                           "-o", out_tpl, url]
+        else:
+            # Progressive single-file MP4 needs no merging (and no ffmpeg).
+            cmd = ytdlp + ["--no-playlist", "--no-warnings",
+                           "-f", "b[ext=mp4]",
+                           "-o", out_tpl, url]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True,
+                timeout=YT_TIMEOUT_DOWNLOAD)
+        except subprocess.TimeoutExpired:
+            return JSONResponse(status_code=504, content={"error": "Download timed out"})
+        if proc.returncode != 0 and fmt == "mp4":
+            # No progressive MP4 (split DASH streams only): download video +
+            # audio separately and merge with our own ffmpeg (copy, no
+            # re-encode — ffprobe is not needed for this).
+            if not ffmpeg:
+                return JSONResponse(status_code=503, content={
+                    "error": "This video needs merging and ffmpeg is missing on this server"})
+            v_tpl = os.path.join(tmpdir, "video.%(ext)s")
+            a_tpl = os.path.join(tmpdir, "audio.%(ext)s")
+            try:
+                vproc = await asyncio.to_thread(
+                    subprocess.run, ytdlp + ["--no-playlist", "--no-warnings",
+                                            "-f", "bv*[ext=mp4]/bv*",
+                                            "-o", v_tpl, url],
+                    capture_output=True, text=True, timeout=YT_TIMEOUT_DOWNLOAD)
+                aproc = await asyncio.to_thread(
+                    subprocess.run, ytdlp + ["--no-playlist", "--no-warnings",
+                                            "-f", "ba[ext=m4a]/ba/bestaudio",
+                                            "-o", a_tpl, url],
+                    capture_output=True, text=True, timeout=YT_TIMEOUT_DOWNLOAD)
+                if vproc.returncode != 0 or aproc.returncode != 0:
+                    raise RuntimeError("split-stream download failed")
+                vids = [f for f in os.listdir(tmpdir) if f.startswith("video.")]
+                auds = [f for f in os.listdir(tmpdir) if f.startswith("audio.")]
+                if not vids or not auds:
+                    raise RuntimeError("split-stream download failed")
+                merged = os.path.join(tmpdir, "media.mp4")
+                mproc = await asyncio.to_thread(
+                    subprocess.run,
+                    [ffmpeg, "-y", "-v", "error",
+                     "-i", os.path.join(tmpdir, vids[0]),
+                     "-i", os.path.join(tmpdir, auds[0]),
+                     "-c", "copy", "-movflags", "+faststart", merged],
+                    capture_output=True, text=True, timeout=600)
+                if mproc.returncode != 0 or not os.path.isfile(merged):
+                    raise RuntimeError("merge failed")
+                for f in vids + auds:
+                    try:
+                        os.remove(os.path.join(tmpdir, f))
+                    except OSError:
+                        pass
+                proc = None  # merged file is the product now
+            except subprocess.TimeoutExpired:
+                return JSONResponse(status_code=504, content={"error": "Download timed out"})
+            except RuntimeError as rexc:
+                return JSONResponse(status_code=400, content={"error": str(rexc)[:200]})
+        if proc is not None and proc.returncode != 0:
+            msg = (proc.stderr or "").strip().splitlines()
+            detail = msg[-1] if msg else "Download failed"
+            return JSONResponse(status_code=400, content={"error": detail[:200]})
+        produced = [f for f in os.listdir(tmpdir)
+                    if os.path.isfile(os.path.join(tmpdir, f))
+                    and not f.endswith((".part", ".ytdl", ".temp", ".tmp"))]
+        if not produced:
+            return JSONResponse(status_code=500, content={"error": "Nothing was downloaded"})
+        produced.sort(key=lambda f: os.path.getsize(os.path.join(tmpdir, f)), reverse=True)
+        src = os.path.join(tmpdir, produced[0])
+        if fmt == "mp3":
+            # Convert here with ffmpeg directly (yt-dlp's own audio extraction
+            # would demand ffprobe, which bundled builds don't ship).
+            converted = os.path.join(tmpdir, "media.mp3")
+            try:
+                cproc = await asyncio.to_thread(
+                    subprocess.run,
+                    [ffmpeg, "-y", "-v", "error", "-i", src,
+                     "-codec:a", "libmp3lame", "-q:a", "2", converted],
+                    capture_output=True, text=True, timeout=600)
+            except subprocess.TimeoutExpired:
+                return JSONResponse(status_code=504, content={"error": "Audio conversion timed out"})
+            if cproc.returncode != 0 or not os.path.isfile(converted):
+                return JSONResponse(status_code=500, content={"error": "Audio conversion failed"})
+            try:
+                os.remove(src)
+            except OSError:
+                pass
+            src = converted
+        title = (info.get("title") if isinstance(info, dict) else "") or "youtube"
+        fname = _tools_safe_filename(title, fmt)
+        disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname)
+        return FileResponse(src, media_type="audio/mpeg" if fmt == "mp3" else "video/mp4",
+                            headers={"Content-Disposition": disp},
+                            background=BackgroundTask(_cleanup))
+    except Exception as e:
+        _cleanup()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+CONVERT_TARGETS = {
+    "png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP",
+    "gif": "GIF", "bmp": "BMP", "tiff": "TIFF", "ico": "ICO",
+}
+CONVERT_FROM_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+                     ".tiff", ".tif", ".ico", ".pdf"}
+CONVERT_MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+                "tiff": "image/tiff", "ico": "image/x-icon", "zip": "application/zip"}
+
+
+@app.post("/api/tools/convert")
+async def tools_convert(request: Request, target: str = "", quality: int = 85,
+                        max_width: int = 0, filename: str = ""):
+    """Convert an uploaded file: images between formats (PNG/JPG/WebP/GIF/BMP/
+    TIFF/ICO) or PDF pages to images. Raw octet-stream body like file-upload;
+    target/quality/max_width are query params. Multi-page PDFs come back as
+    a zip of page images."""
+    user, err = _require_auth(request)
+    if err:
+        await _drain_request_body(request)
+        return err
+    target = (target or "").strip().lower().lstrip(".")
+    if target not in CONVERT_TARGETS:
+        await _drain_request_body(request)
+        return JSONResponse(status_code=400, content={
+            "error": "Target must be one of: " + ", ".join(sorted(CONVERT_TARGETS))})
+    try:
+        quality = max(1, min(100, int(quality)))
+    except Exception:
+        quality = 85
+    try:
+        max_width = max(0, int(max_width))
+    except Exception:
+        max_width = 0
+    fname = (filename or "").strip().replace("\\", "/").split("/")[-1][:120]
+    ext = os.path.splitext(fname)[1].lower() if fname else ""
+    if ext not in CONVERT_FROM_EXTS:
+        await _drain_request_body(request)
+        return JSONResponse(status_code=400, content={
+            "error": "Upload a PNG, JPG, WebP, GIF, BMP, TIFF, ICO or PDF file"})
+    upload_limit = None if user.get("is_admin") else UPLOAD_LIMIT_BYTES
+    tmpdir = tempfile.mkdtemp(prefix="conv_")
+
+    def _cleanup():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    try:
+        src = os.path.join(tmpdir, "input" + ext)
+        size = 0
+        with open(src, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if upload_limit is not None and size > upload_limit:
+                    out.close()
+                    await _drain_request_body(request)
+                    return JSONResponse(status_code=413, content={
+                        "error": f"File too large (max {UPLOAD_LIMIT_MB:g}MB)"})
+                out.write(chunk)
+        if size == 0:
+            return JSONResponse(status_code=400, content={"error": "Empty file"})
+
+        def _prep(img):
+            if max_width and img.width > max_width:
+                h = round(img.height * max_width / img.width)
+                img = img.resize((max_width, h))
+            return img
+
+        try:
+            from PIL import Image as PIL_Image
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                "error": "Image support is not installed on this server"})
+
+        def _save(img, path, fmt):
+            kw = {}
+            if fmt in ("JPEG", "WEBP"):
+                kw["quality"] = quality
+            if fmt == "JPEG" and img.mode in ("RGBA", "LA", "PA"):
+                bg = PIL_Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1])
+                img = bg
+            elif fmt in ("JPEG", "BMP") and img.mode not in ("RGB",):
+                img = img.convert("RGB")
+            img.save(path, fmt, **kw)
+
+        pages = []
+        if ext == ".pdf":
+            try:
+                import pypdfium2 as pdfium
+            except Exception:
+                return JSONResponse(status_code=503, content={
+                    "error": "PDF support is not installed on this server"})
+            try:
+                pdf = pdfium.PdfDocument(src)
+            except Exception:
+                return JSONResponse(status_code=400, content={"error": "Not a valid PDF file"})
+            try:
+                if len(pdf) > TOOLS_MAX_PAGES:
+                    return JSONResponse(status_code=400, content={
+                        "error": f"PDF has too many pages (max {TOOLS_MAX_PAGES})"})
+                for i, page in enumerate(pdf):
+                    bitmap = page.render(scale=2)
+                    pages.append(bitmap.to_pil())
+            finally:
+                try:
+                    pdf.close()
+                except Exception:
+                    pass
+            if not pages:
+                return JSONResponse(status_code=400, content={"error": "PDF has no pages"})
+        else:
+            try:
+                with PIL_Image.open(src) as im:
+                    im.load()
+                    pages = [im.convert("RGBA") if im.mode == "P" else im.copy()]
+            except Exception:
+                return JSONResponse(status_code=400, content={"error": "Not a valid image file"})
+        fmt = CONVERT_TARGETS[target]
+        stem = (os.path.splitext(fname)[0] or "converted")[:60] or "converted"
+        stem = re.sub(r"[^A-Za-z0-9 _.\-]+", "_", stem).strip(" .") or "converted"
+        if len(pages) == 1:
+            out_path = os.path.join(tmpdir, f"{stem}.{target}")
+            _save(_prep(pages[0]), out_path, fmt)
+            disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(f"{stem}.{target}")
+            return FileResponse(out_path, media_type=CONVERT_MIME[target],
+                                headers={"Content-Disposition": disp},
+                                background=BackgroundTask(_cleanup))
+        zip_path = os.path.join(tmpdir, f"{stem}-{target}.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, pg in enumerate(pages, 1):
+                tmp_img = os.path.join(tmpdir, f"page-{i:03d}.{target}")
+                _save(_prep(pg), tmp_img, fmt)
+                zf.write(tmp_img, f"page-{i:03d}.{target}")
+                try:
+                    os.remove(tmp_img)
+                except OSError:
+                    pass
+        disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(f"{stem}-{target}.zip")
+        return FileResponse(zip_path, media_type=CONVERT_MIME["zip"],
+                            headers={"Content-Disposition": disp},
+                            background=BackgroundTask(_cleanup))
+    except Exception as e:
+        _cleanup()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 class ScanRequest(BaseModel):
     path: Optional[str] = ""
