@@ -3695,6 +3695,13 @@ async function ytDownloadBrowser(){
         if(hd.ok)msg+=' The server reaches it fine, so the block is in this browser (ad-blocker, VPN or filtered DNS).';
         else msg+=' The server cannot reach it either — the container or tunnel route is down over there.';
       }catch(e3){}
+      if(window.__user&&window.__user.is_admin){
+        try{
+          const dr=await authFetch(API+'/api/tools/converter/diagnostics');
+          const dd=await dr.json();
+          if(dr.ok&&dd.verdict)msg+=' Diagnostics: '+dd.verdict;
+        }catch(e4){}
+      }
       st.textContent=msg;
     }catch(e2){
       st.textContent='Could not reach the converter. Server fallback is below.';

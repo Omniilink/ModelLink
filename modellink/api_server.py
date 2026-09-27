@@ -3269,6 +3269,102 @@ async def tools_converter_health(request: Request):
         return {"ok": False, "reason": "unreachable", "detail": str(e)[:120]}
 
 
+def _converter_verdict(url, dns_ok, cobalt, http_ok, http_status):
+    """Pure verdict picker for the diagnostics panel (unit-tested). cobalt is
+    None (docker unavailable), or a dict with present/running/status."""
+    if not url:
+        return "not-configured: set OMNIILINK_CONVERTER_API (or rely on the built-in default) and restart."
+    if not dns_ok:
+        return "dns-fail: the converter hostname does not resolve from this server — check DNS/filtering."
+    if cobalt is not None:
+        if not cobalt.get("present"):
+            return "cobalt-missing: no cobalt container exists — run update.bat (docker compose up -d) on the server."
+        if not cobalt.get("running"):
+            return ("cobalt-down: container exists but is not Up"
+                    + (f" ({cobalt.get('status')})" if cobalt.get("status") else "")
+                    + " — check docker logs cobalt on the server.")
+    if not http_ok:
+        return "route-down: DNS works but nothing answers — the tunnel route is missing/stale (update.bat restarts it) or the container is unreachable."
+    if http_status in (502, 503, 504):
+        return "bad-gateway: the tunnel answers but the converter does not — container crashing or still starting (docker logs cobalt)."
+    return "healthy: the server reaches the converter — a browser failure is client-side (CORS, ad-blocker, VPN, filtered DNS)."
+
+
+@app.get("/api/tools/converter/diagnostics")
+async def tools_converter_diagnostics(request: Request):
+    """Admin-only ground truth about the converter chain: configured URL, DNS
+    from this server, cobalt/tunnel container state via docker, plus a live
+    HTTP probe. The page shows the verdict when a download fails."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    url = _converter_url(
+        (os.environ.get("OMNIILINK_CONVERTER_API", "") or "").strip(),
+        _converter_url_from_dotenv())
+    host = ""
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "") if url else ""
+    except Exception:
+        host = ""
+    dns_ok, addrs = False, []
+    if host:
+        try:
+            infos = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, 443), timeout=8)
+            seen = []
+            for fam, _typ, _proto, _canon, sockaddr in infos:
+                ip = sockaddr[0]
+                if ip not in seen:
+                    seen.append(ip)
+            addrs = seen[:6]
+            dns_ok = bool(addrs)
+        except Exception:
+            dns_ok, addrs = False, []
+    cobalt = None
+    tunnel = None
+    docker_bin = shutil.which("docker")
+    if docker_bin:
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, [docker_bin, "ps", "--format", "{{.Names}}|{{.Status}}|{{.Image}}"],
+                capture_output=True, text=True, timeout=12)
+            if proc.returncode == 0:
+                for line in (proc.stdout or "").splitlines():
+                    parts = line.split("|")
+                    if len(parts) < 3:
+                        continue
+                    name, status, image = parts[0], parts[1], parts[2]
+                    entry = {"present": True, "running": status.strip().lower().startswith("up"),
+                             "status": status.strip()[:80]}
+                    low = (name + " " + image).lower()
+                    if "cobalt" in low and cobalt is None:
+                        cobalt = entry
+                    if ("cloudflared" in low or "tunnel" in name.lower()) and tunnel is None:
+                        tunnel = entry
+        except Exception:
+            pass
+    http_ok, http_status, http_detail = False, None, ""
+    if url:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Omniilink/1.0"})
+            resp = await asyncio.to_thread(urllib.request.urlopen, req, timeout=10)
+            try:
+                resp.read(1)
+            except Exception:
+                pass
+            http_ok, http_status = True, resp.status
+        except urllib.error.HTTPError as e:
+            http_ok, http_status, http_detail = True, e.code, "route live"
+        except Exception as e:
+            http_ok, http_detail = False, str(e)[:120]
+    verdict = _converter_verdict(url, dns_ok, cobalt, http_ok, http_status)
+    return {"url": url, "dns": {"ok": dns_ok, "addrs": addrs},
+            "docker": {"available": docker_bin is not None,
+                       "cobalt": cobalt, "tunnel": tunnel},
+            "http": {"ok": http_ok, "status": http_status, "detail": http_detail},
+            "verdict": verdict}
+
+
 @app.post("/api/tools/youtube/info")
 async def tools_youtube_info(request: Request, req: YTInfoRequest):
     """Video metadata without downloading: title, duration, thumbnail."""
