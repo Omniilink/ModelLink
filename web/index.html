@@ -1177,7 +1177,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
-          <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
+           <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
+           <button onclick="toggleCodingNotify()" id="coding-notify-btn" title="Notify when a coding task finishes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg></button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
           <button onclick="closeCodingFolder()" title="Close folder" id="coding-close-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font)">&times;</button>
         </div>
@@ -1331,7 +1332,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
-  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
+  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
 });
@@ -2077,9 +2078,67 @@ function compactCodingMessages(messages){
   }
   return out;
 }
+let codingNotifyRequest='';
+function codingNotifyOn(){
+  try{return localStorage.getItem('omnilink_coding_notify')!=='0'}catch(e){return true}
+}
+function codingNotifyTitleText(summary,project){
+  return '('+(summary||'Coding update')+') ('+(project||'project')+')';
+}
+function codingProjectLabel(){
+  try{
+    if(currentProjectName)return currentProjectName;
+    if(typeof fsHandle!=='undefined'&&fsHandle&&fsHandle.name)return fsHandle.name;
+    return folderBaseName(codingFolder)||'project';
+  }catch(e){return 'project'}
+}
+async function codingNotifyTitle(userText){
+  try{
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,temperature:0.3,max_tokens:32,messages:[{role:'system',content:'Summarize the coding request as a very short title: 8 words or fewer, plain words, no quotes, no trailing period.'},{role:'user',content:String(userText||'').slice(0,600)}]})});
+    if(!r.ok)return '';
+    const d=await r.json();
+    const c=((d.choices||[])[0]||{}).message||{};
+    return String(c.content||'').replace(/\s+/g,' ').trim().replace(/^["'(\[]+|["'),.;:\s]+$/g,'').slice(0,64);
+  }catch(e){return ''}
+}
+async function codingNotifyDone(finalText){
+  try{
+    if(!codingNotifyOn())return;
+    if(typeof Notification==='undefined'||!document.hidden)return;
+    if(Notification.permission==='default'){try{await Notification.requestPermission()}catch(e){}}
+    if(Notification.permission!=='granted')return;
+    const req=codingNotifyRequest||(((([...codingHistory].reverse().find(m=>m&&m.role==='user'&&m.content))||{}).content)||'');
+    const summary=await codingNotifyTitle(req);
+    const pick=t=>(String(t||'').split('\n').map(s=>s.trim()).filter(s=>s&&!/^(FILE_CREATE|FILE_PATCH|RUN_COMMAND|TODO_LIST|PLAN-STEPS|END_)/i.test(s))[0])||'';
+    let body=pick(finalText);
+    if(!body){
+      const lastA=[...codingHistory].reverse().find(m=>m&&m.role==='assistant'&&m.content);
+      body=pick(lastA&&lastA.content)||'Task finished.';
+    }
+    new Notification(codingNotifyTitleText(summary,codingProjectLabel()),{body:String(body).slice(0,140),tag:'omnilink-coding',icon:'favicon.ico'});
+  }catch(e){}
+}
+async function toggleCodingNotify(){
+  const on=!codingNotifyOn();
+  try{localStorage.setItem('omnilink_coding_notify',on?'1':'0')}catch(e){}
+  syncCodingNotifyBtn();
+  if(on&&typeof Notification!=='undefined'&&Notification.permission==='default'){
+    try{
+      if(await Notification.requestPermission()!=='granted')showToast('Notifications are blocked — allow them in the browser site settings to get pinged when tasks finish.','error');
+    }catch(e){}
+  }
+}
+function syncCodingNotifyBtn(){
+  const b=document.getElementById('coding-notify-btn');
+  if(!b)return;
+  const on=codingNotifyOn();
+  b.style.opacity=on?'':'0.4';
+  b.title=on?'Notify when a coding task finishes (on)':'Notify when a coding task finishes (off)';
+}
 async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
+  codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
   codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);codingHistory.push({role:'user',content:cleanText});persistCodingChat();
@@ -2088,15 +2147,17 @@ async function sendCodingMessage(){
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
+  let fullText='';
+  let aborted=false;
   let next={blocks:false,actionable:false};
   try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
-    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='';
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
-  }catch(e){if(e&&e.name==='AbortError'){contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
+  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -2106,6 +2167,7 @@ async function sendCodingMessage(){
     const cleaned=cleanCodingProse(fullText);
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
+  if(!aborted&&(!next.actionable||await isPlanMode()))await codingNotifyDone(fullText).catch(()=>{});
 }
 
 function isCodeLine(ln){
@@ -3120,6 +3182,7 @@ async function codingAutoContinue(){
   document.getElementById('coding-send-btn').disabled=false;
   document.getElementById('coding-input').focus();
   await maybeOfferPendingFiles().catch(()=>{});
+  if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
 
 async function codingWriteFile(path,content){
