@@ -1963,7 +1963,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   // The server prompt already carries this block (api_server.py
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
   // for identical output. Only add it when it is genuinely missing.
-  if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block naming every file you will create, so progress can be verified file by file.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
+  if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block. Split it SMALL: one file, one feature, or one check per item — one giant item covering the whole task is wrong, break it into its parts so progress is verifiable step by step.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -2208,7 +2208,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();if(!rawText)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);codingHistory.push({role:'user',content:cleanText});persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
@@ -2491,6 +2491,7 @@ function completeAllTodos(){
     setTimeout(()=>{if(gen!==codingTodoGen)return;bar.style.display='none';bar.style.opacity=''},900);
   },2400);
 }
+let codingSplitNudgeSig='';
 function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g)];
   if(blocks.length===0)return false;
   const last=blocks[blocks.length-1][1];
@@ -2508,6 +2509,16 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
     fresh.push({done:m[1].toLowerCase()==='x'||doneSet.has(key),text:m[2]});
   }
   if(fresh.length>0)codingTodos=fresh;
+  const open=fresh.filter(f=>!f.done);
+  const longest=open.reduce((m,f)=>Math.max(m,f.text.length),0);
+  if(open.length>0&&(longest>150||(open.length<3&&longest>80))){
+    const sig=open.map(f=>norm(f.text)).sort().join('|');
+    if(sig!==codingSplitNudgeSig){
+      codingSplitNudgeSig=sig;
+      codingHistory.push({role:'user',content:'Break this TODO_LIST into smaller steps before continuing: one file, one feature, or one check per item. Re-emit the full split list with the items already done marked [x].'});
+      persistCodingChat();
+    }
+  }
   // True when THIS message introduced open work the loop should pursue,
   // even if it carried zero executable blocks.
   codingTodosNew=fresh.some(f=>!f.done&&!beforeOpen.has(norm(f.text)));

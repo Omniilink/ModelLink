@@ -1978,10 +1978,18 @@ END_FILE_PATCH
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
-2. For any task with 2+ steps, start with a TODO_LIST block and mark items done as you go:
+2. For any task with 2+ steps, start with a TODO_LIST block and mark items done as you go.
+   Split the work into SMALL steps: one file, one feature, or one check per
+   item. NEVER write one giant item covering the whole task — "Create a 3D
+   scene with cabin, trees, terrain, fog, lighting and controls" must become
+   an item per part, not a single item:
 TODO_LIST:
 - [ ] Inspect project files
-- [ ] Create index.html
+- [ ] Create cabin in index.html
+- [ ] Add pine trees
+- [ ] Add terrain and fog
+- [ ] Add lighting and controls
+- [ ] Verify file and syntax
 END_TODO_LIST
 Update it in later replies (repeat the full list with [x] on finished items).
 3. Explain briefly, then emit blocks.
@@ -2002,6 +2010,8 @@ STEP PLANNING (how this run is budgeted):
 - PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST.
   For any task with 2+ steps you still start with a TODO_LIST block naming
   every file you will create, so progress can be verified file by file.
+  Split it SMALL: one file, one feature, or one check per item - never one
+  giant item for the whole task.
 - Count GENEROUSLY: inspection + one round per file + a verification round +
   a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of
   1-2 steps for a multi-file task is wrong; under-declaring costs a round.
