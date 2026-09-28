@@ -89,18 +89,28 @@ services:
     image: omniilink-updater:latest
 
   # Self-hosted converter for in-browser YouTube downloads (More → YouTube).
-  # The page talks to this directly, so video bytes never touch the api
-  # container. Reached publicly at its own tunnel address (see the
-  # cfargotunnel.com ingress rule); same-origin tricks do not apply because
-  # cobalt has no subpath support, hence the dedicated route.
+  # The page talks to it at https://omniilink.dpdns.org/converter, so video
+  # bytes never touch the api container. The converter-proxy sidecar strips
+  # the /converter prefix (cobalt has no subpath support) and streams files
+  # straight through to the browser.
   cobalt:
     image: ghcr.io/imputnet/cobalt:latest
     restart: unless-stopped
     environment:
-      - API_URL=${OMNIILINK_CONVERTER_API:-https://7f35f941-d7fd-41c6-99a7-b4679e4bb77d.cfargotunnel.com/}
-      # Personal instance behind an unguessable URL: let the page call it
+      - API_URL=${OMNIILINK_CONVERTER_API:-https://omniilink.dpdns.org/converter/}
+      # Personal instance behind your own login: let the page call it
       # from anywhere (localhost dev included) without per-origin setup.
       - CORS_WILDCARD=1
+    networks:
+      - omniilink-net
+
+  # Prefix-stripping proxy in front of cobalt (see converter-proxy.conf).
+  # Tiny (nginx:alpine), stateless, no volumes but its config file.
+  converter-proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./converter-proxy.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - omniilink-net
 

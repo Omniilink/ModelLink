@@ -3447,9 +3447,11 @@ async def tools_youtube_info(request: Request, req: YTInfoRequest):
             "qualities": qualities}
 
 
-# Default converter address: our own cobalt instance on the committed
-# *.cfargotunnel.com tunnel route. No DNS or extra setup needed.
-CONVERTER_DEFAULT_URL = "https://7f35f941-d7fd-41c6-99a7-b4679e4bb77d.cfargotunnel.com/"
+# Default converter address: our own cobalt instance behind the nginx
+# sidecar on the main hostname. Same-origin for the page (no CORS issues)
+# and reachable over plain IPv4 (the tunnel's own *.cfargotunnel.com name
+# has no IPv4 record, so it is unusable from phones and IPv4-only nets).
+CONVERTER_DEFAULT_URL = "https://omniilink.dpdns.org/converter/"
 
 
 def _converter_url_from_dotenv() -> str:

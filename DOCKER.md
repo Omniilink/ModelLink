@@ -182,7 +182,7 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
 | `OMNIILINK_SANDBOX_CPUS` | `1.0` | CPU cap per command |
 | `OMNIILINK_UPLOAD_LIMIT_MB` | `50` | Per-file upload cap for regular users (admins unlimited). Files over ~8MB upload in 4MB chunks automatically, so big files survive flaky connections; uploaded `.zip` files are extracted into a folder named after the archive |
-| `OMNIILINK_CONVERTER_API` | *(tunnel URL)* | Base URL of the self-hosted converter for in-browser YouTube downloads. Already wired: the `cobalt` compose service plus the `*.cfargotunnel.com` tunnel rule expose it with no extra DNS, with a working default — just `docker compose up -d --build`. Only set this to override. A subpath on the main hostname (e.g. `/converter/*`) does NOT work (cobalt serves `/tunnel` at root, proxies don't strip prefixes). Do NOT point it at the public `api.cobalt.tools` without permission — it also blocks YouTube. |
+| `OMNIILINK_CONVERTER_API` | *(tunnel URL)* | Base URL of the self-hosted converter for in-browser YouTube downloads. Already wired: the `cobalt` service plus an nginx sidecar (`converter-proxy.conf`) served at `/converter/*` on the main hostname, so the page calls it same-origin with no extra DNS and no CORS setup, with a working default — just `docker compose up -d --build`. Only set this to override. A subpath on the main hostname (e.g. `/converter/*`) does NOT work (cobalt serves `/tunnel` at root, proxies don't strip prefixes). Do NOT point it at the public `api.cobalt.tools` without permission — it also blocks YouTube. |
 
 After editing, restart just the API: `docker compose up -d api`.
 Installing other runtimes (another Python/Node version) means extending
