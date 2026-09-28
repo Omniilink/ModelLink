@@ -11,8 +11,11 @@ ingress:
   # NOTE: this must stay a same-hostname path rule — the tunnel's own
   # *.cfargotunnel.com address has no IPv4 record, so phones and IPv4-only
   # networks cannot reach it at all.
+  # NOTE: cloudflared matches `path` as a PARTIAL regular expression, so the
+  # rule MUST be anchored with ^ — an unanchored /converter/* also matches
+  # /api/tools/converter and steals our own config endpoint (404 from nginx).
   - hostname: omniilink.dpdns.org
-    path: /converter/*
+    path: ^/converter(/|$)
     service: http://converter-proxy:80
   - hostname: omniilink.dpdns.org
     service: http://api:8080
