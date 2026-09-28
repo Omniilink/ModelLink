@@ -873,10 +873,10 @@ pre{max-width:100%}
           </div>
           <div class="level-group" title="Reasoning effort and thinking budget">
             <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" onchange="setLevelCtl('effort',this.value)">
-              <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option>
+              <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
             </select>
             <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" onchange="setLevelCtl('thinking',this.value)">
-              <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option>
+              <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
             </select>
           </div>
         </div>
@@ -1194,8 +1194,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="coding-todo-bar" id="coding-todo-bar" style="display:none"><div class="coding-todo-head">Todos</div><div id="coding-todo-list"></div></div>
               <div class="coding-controls">
                 <select id="coding-model" title="Model" onchange="selectModel(this.value)"></select>
-                <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
-                <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select>
+                <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+                <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
               </div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
@@ -1429,7 +1429,7 @@ function toggleModelMenu(){document.getElementById('model-menu').classList.toggl
     function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));const cm=document.getElementById('coding-model');if(cm&&cm.value!==id)cm.value=id}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
-const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh'];
+const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
 function getLevel(kind){
   try{const v=localStorage.getItem('omnilink_'+kind);if(v&&LEVEL_VALUES.indexOf(v)>-1)return v}catch(e){}
   return 'auto';

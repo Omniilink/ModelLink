@@ -252,12 +252,12 @@ PROVIDERS = {
 # Caller-supplied generation options
 # (temperature / max_tokens / effort / thinking)
 # ==========================================
-EFFORT_LEVELS = ("minimum", "low", "medium", "high", "xhigh", "auto")
+EFFORT_LEVELS = ("minimum", "low", "medium", "high", "xhigh", "xxhigh", "max", "auto")
 # Reasoning budget in tokens, per level, for budget-based providers
 # (Gemini thinkingConfig, Anthropic thinking).
-THINKING_BUDGET = {"minimum": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
+THINKING_BUDGET = {"minimum": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768, "xxhigh": 65536, "max": 131072}
 # OpenAI-style reasoning_effort only accepts these literal strings.
-OPENAI_EFFORT = {"minimum": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
+OPENAI_EFFORT = {"minimum": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "xxhigh": "high", "max": "high"}
 # Providers whose reasoning knob is a token budget rather than an effort string.
 BUDGET_PROVIDERS = {"gemini", "anthropic"}
 
