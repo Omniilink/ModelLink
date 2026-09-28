@@ -1051,7 +1051,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
               <h3>YouTube downloader</h3>
               <div class="tool-row">
-                <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" />
+                <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" oninput="ytUrlChanged()" />
                 <select id="yt-format" title="What to download" onchange="ytFormatChanged()">
                   <option value="video">Video</option>
                   <option value="audio">Audio</option>
@@ -1119,7 +1119,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 </div>
               </div>
               <div class="tool-row">
-                <button class="btn btn-ghost" id="yt-info-btn" onclick="ytFetchInfo()">Get info</button>
                 <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownloadBrowser()">Download</button>
                 <button class="btn btn-ghost" id="yt-cancel-btn" style="display:none" onclick="ytCancelDownload()">Cancel</button>
                 <span class="tool-result-sub" id="yt-path-note"></span>
@@ -3768,8 +3767,18 @@ async function ytFetchWithProgress(url,onp,signal){
   if(!out.size)throw Object.assign(new Error('converter returned an empty file'),{emptyFile:true});
   return {blob:out,name:ytCdFilename(r.headers.get('Content-Disposition')||'')};
 }
+let ytUrlTimer=null,ytInfoSeq=0;
+function ytUrlChanged(){
+  if(ytUrlTimer)clearTimeout(ytUrlTimer);
+  ytUrlTimer=setTimeout(()=>{
+    ytUrlTimer=null;
+    const url=(document.getElementById('yt-url').value||'').trim();
+    if(url.length>8&&url.includes('youtu'))ytFetchInfo();
+  },700);
+}
 async function ytFetchInfo(){
   const url=document.getElementById('yt-url').value.trim();
+  const my=++ytInfoSeq;
   const box=document.getElementById('yt-info'),st=document.getElementById('yt-status');
   box.style.display='none';box.innerHTML='';
   document.getElementById('yt-setup').style.display='none';
@@ -3779,6 +3788,7 @@ async function ytFetchInfo(){
     const r=await authFetch(API+'/api/tools/youtube/info',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
     const d=await r.json();
     if(!r.ok){st.textContent=d.error||'Could not read that video.';return}
+    if(my!==ytInfoSeq)return;
     box.innerHTML=(d.thumbnail?'<img src="'+escapeHtml(d.thumbnail)+'" alt="" />':'')+
       '<div><div class="tool-result-title">'+escapeHtml(d.title||'YouTube video')+'</div>'+
       '<div class="tool-result-sub">'+escapeHtml([d.uploader,ytFmtDur(d.duration)].filter(Boolean).join(' · '))+'</div></div>';
