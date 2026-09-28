@@ -216,7 +216,8 @@ a:hover{text-decoration:underline}
 .coding-input-box:focus-within{border-color:var(--accent)}
 .coding-input-box textarea{flex:1;background:transparent;border:none;padding:7px 0;color:var(--text-primary);font-family:var(--font);font-size:13px;resize:none;outline:none;min-height:20px;max-height:120px;line-height:1.5}
 .coding-input-box textarea::placeholder{color:var(--text-muted)}
-.file-preview{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;color:var(--text-muted);max-height:120px;overflow:auto;white-space:pre}
+.file-preview{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--text-muted);max-height:360px;overflow:auto;white-space:pre}
+.file-edit{display:block;width:100%;box-sizing:border-box;min-height:200px;height:320px;resize:vertical;background:var(--bg-secondary);border:1px solid var(--accent);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--text-primary);white-space:pre}
 .cmd-result{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;white-space:pre-wrap;max-height:200px;overflow:auto}
 .cmd-result.stdout{color:var(--text-secondary)}
 .cmd-result.stderr{color:var(--error)}
@@ -1795,6 +1796,10 @@ function renderFileTree(tree){
   if(codingFolder){const footer=document.createElement('div');footer.style.cssText='padding:6px 10px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted);display:flex;align-items:center;gap:6px';const dot=document.createElement('span');dot.style.cssText='width:6px;height:6px;border-radius:50%;flex-shrink:0;background:'+(fsHandle?'var(--success)':'var(--warning)');footer.appendChild(dot);footer.appendChild(document.createTextNode(fsHandle?'Direct access':'Server mode'));container.appendChild(footer)}
 }
 
+function filePreviewText(content){
+  const t=String(content==null?'':content);
+  return t.length>4000?t.slice(0,4000)+'\n... (truncated)':t;
+}
 async function viewCodingFile(name){
   if(!codingFolder)return;
   try{let content;
@@ -1806,8 +1811,46 @@ async function viewCodingFile(name){
       content=data.content}
     lastOpenedFile=name;lastFileContent=content;const lang=getLangForFile(name);
     const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant';
-    const preview=content.length>4000?content.slice(0,4000)+'\n... (truncated)':content;
-    msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">Opened <strong>'+escapeHtml(name)+'</strong>'+(lang?' <span style="color:var(--text-muted);font-size:11px">('+lang+')</span>':'')+'</div><div class="file-preview">'+escapeHtml(preview)+'</div><div style="margin-top:6px"><button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="addAtFile(\''+escapeHtml(name)+'\')">@ Add to context</button></div></div>';
+    const binary=/\0/.test(content);
+    const editable=!binary&&content.length<=512000;
+    const wrap=document.createElement('div');
+    const avatar=document.createElement('div');avatar.className='coding-msg-avatar';avatar.textContent='O';msg.appendChild(avatar);
+    const head=document.createElement('div');head.className='coding-msg-content';
+    head.innerHTML='Opened <strong>'+escapeHtml(name)+'</strong>'+(lang?' <span style="color:var(--text-muted);font-size:11px">('+lang+')</span>':'');
+    wrap.appendChild(head);
+    const prev=document.createElement('div');prev.className='file-preview';prev.textContent=filePreviewText(content);
+    wrap.appendChild(prev);
+    const bar=document.createElement('div');bar.style.cssText='margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap';
+    const atBtn=document.createElement('button');atBtn.className='btn btn-ghost';atBtn.style.cssText='font-size:11px;padding:3px 10px';atBtn.textContent='@ Add to context';atBtn.onclick=()=>addAtFile(name);bar.appendChild(atBtn);
+    let area=null,editBtn=null,saveBtn=null,cancelBtn=null;
+    const closeEditor=()=>{if(area){area.remove();area=null}prev.style.display='';if(editBtn)editBtn.style.display='';if(saveBtn)saveBtn.style.display='none';if(cancelBtn)cancelBtn.style.display='none'};
+    if(editable){
+      editBtn=document.createElement('button');editBtn.className='btn btn-ghost';editBtn.style.cssText='font-size:11px;padding:3px 10px';editBtn.textContent='Edit';
+      saveBtn=document.createElement('button');saveBtn.className='btn btn-primary btn-sm';saveBtn.style.cssText='font-size:11px;padding:3px 10px;display:none';saveBtn.textContent='Save';
+      cancelBtn=document.createElement('button');cancelBtn.className='btn btn-ghost';cancelBtn.style.cssText='font-size:11px;padding:3px 10px;display:none';cancelBtn.textContent='Cancel';
+      editBtn.onclick=()=>{
+        area=document.createElement('textarea');area.className='file-edit';area.spellcheck=false;area.value=content;
+        prev.style.display='none';wrap.insertBefore(area,bar);
+        editBtn.style.display='none';saveBtn.style.display='';cancelBtn.style.display='';
+      };
+      cancelBtn.onclick=()=>closeEditor();
+      saveBtn.onclick=async()=>{
+        saveBtn.disabled=true;saveBtn.textContent='Saving…';
+        try{
+          const res=await codingWriteFile(name,area.value);
+          if(res&&res.ok){content=area.value;lastFileContent=content;prev.textContent=filePreviewText(content);closeEditor();showToast('Saved '+name,'success')}
+          else showToast('Save failed: '+((res&&res.error)||'unknown error'),'error');
+        }catch(e){showToast('Save failed: '+e.message,'error')}
+        saveBtn.disabled=false;saveBtn.textContent='Save';
+      };
+      bar.appendChild(editBtn);bar.appendChild(saveBtn);bar.appendChild(cancelBtn);
+    }else{
+      const note=document.createElement('span');note.style.cssText='font-size:11px;color:var(--text-muted)';
+      note.textContent=binary?'Binary file — editing disabled.':'File is too large to edit here.';
+      bar.appendChild(note);
+    }
+    wrap.appendChild(bar);
+    msg.appendChild(wrap);
     chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;codingHistory.push({role:'assistant',content:'[Viewed file: '+name+']\n```\n'+content.slice(0,1500)+'\n```'});
   }catch(e){appAlert('Error: '+e.message)}
 }
