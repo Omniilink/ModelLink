@@ -1038,8 +1038,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div class="tools-grid" id="tools-grid">
               <div class="tool-card" onclick="openTool('youtube')">
                 <div class="tool-icon">▶</div>
-                <div class="tool-name">YouTube to MP3 / MP4</div>
-                <div class="tool-desc">Paste a link, download audio or video. Runs on your own server — no shady converter sites.</div>
+                <div class="tool-name">YouTube downloader</div>
+                <div class="tool-desc">Paste a link, then pick video or audio, the file type, codec, compression and stream layout. Runs on your own server — no shady converter sites.</div>
               </div>
               <div class="tool-card" onclick="openTool('convert')">
                 <div class="tool-icon">⇄</div>
@@ -1049,21 +1049,79 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             </div>
             <div class="tool-pane" id="tool-youtube" style="display:none">
               <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
-              <h3>YouTube to MP3 / MP4</h3>
+              <h3>YouTube downloader</h3>
               <div class="tool-row">
                 <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" />
-                <select id="yt-format" title="Output format" onchange="ytFormatChanged()">
-                  <option value="mp3">MP3 (audio)</option>
-                  <option value="mp4">MP4 (video)</option>
+                <select id="yt-format" title="What to download" onchange="ytFormatChanged()">
+                  <option value="video">Video</option>
+                  <option value="audio">Audio</option>
                 </select>
               </div>
-              <div class="tool-row" id="yt-quality-row" style="display:none">
-                <label>Quality <select id="yt-quality" title="Video quality"></select></label>
-                <span class="tool-result-sub" id="yt-quality-note"></span>
+              <div id="yt-opts-video" style="display:none">
+                <div class="tool-row">
+                  <label>File type <select id="yt-v-container" title="Container" onchange="ytOptionsChanged()">
+                    <option value="mp4">MP4 — plays everywhere</option>
+                    <option value="mkv">MKV — keeps every track</option>
+                    <option value="webm">WebM — open format</option>
+                  </select></label>
+                  <label>Codec <select id="yt-v-codec" title="Video codec" onchange="ytOptionsChanged()">
+                    <option value="h264">H.264 — most compatible</option>
+                    <option value="av1">AV1 — smallest file</option>
+                    <option value="vp9">VP9 — open, high quality</option>
+                    <option value="h265">H.265 / HEVC — tiny, newer players</option>
+                  </select></label>
+                  <label>Compression <select id="yt-v-compress" title="Size versus quality" onchange="ytOptionsChanged()">
+                    <option value="original">Original (no re-encode)</option>
+                    <option value="small">Smaller file (re-encode)</option>
+                    <option value="tiny">Smallest file (re-encode)</option>
+                  </select></label>
+                </div>
+                <div class="tool-row">
+                  <label>Frame rate <select id="yt-v-fps" title="Frame-rate cap" onchange="ytOptionsChanged()">
+                    <option value="any">Any</option>
+                    <option value="60">60 fps or less</option>
+                    <option value="30">30 fps or less</option>
+                  </select></label>
+                  <label>Video + audio <select id="yt-v-streams" title="Stream layout" onchange="ytOptionsChanged()">
+                    <option value="combine">Combine into one file</option>
+                    <option value="split">Split into two files (video + audio)</option>
+                  </select></label>
+                  <label>Subtitles <select id="yt-v-subs" title="Embedded subtitles" onchange="ytOptionsChanged()">
+                    <option value="none">None</option>
+                    <option value="en">English (if present)</option>
+                  </select></label>
+                </div>
+                <div class="tool-row" id="yt-quality-row" style="display:none">
+                  <label>Resolution <select id="yt-quality" title="Video quality"></select></label>
+                  <span class="tool-result-sub" id="yt-quality-note"></span>
+                </div>
+              </div>
+              <div id="yt-opts-audio" style="display:none">
+                <div class="tool-row">
+                  <label>File type <select id="yt-a-format" title="Audio format" onchange="ytOptionsChanged()">
+                    <option value="original">Original (best available)</option>
+                    <option value="mp3">MP3</option>
+                    <option value="m4a">M4A (AAC)</option>
+                    <option value="opus">Opus</option>
+                    <option value="wav">WAV (lossless)</option>
+                    <option value="flac">FLAC (lossless)</option>
+                    <option value="ogg">OGG (Vorbis)</option>
+                  </select></label>
+                  <label id="yt-a-bitrate-row">Bitrate <select id="yt-a-bitrate" title="Audio bitrate" onchange="ytOptionsChanged()">
+                    <option value="320">320 kbps — best</option>
+                    <option value="256">256 kbps</option>
+                    <option value="192">192 kbps</option>
+                    <option value="128" selected>128 kbps — default</option>
+                    <option value="96">96 kbps</option>
+                    <option value="64">64 kbps — smallest</option>
+                  </select></label>
+                  <label class="tool-result-sub"><input type="checkbox" id="yt-a-cover" checked onchange="ytOptionsChanged()" /> Embed cover art</label>
+                </div>
               </div>
               <div class="tool-row">
                 <button class="btn btn-ghost" id="yt-info-btn" onclick="ytFetchInfo()">Get info</button>
                 <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownloadBrowser()">Download</button>
+                <span class="tool-result-sub" id="yt-path-note"></span>
               </div>
               <div class="dl-progress" id="yt-progress" style="display:none"><div class="dl-fill" id="yt-fill"></div></div>
               <div id="yt-info" class="tool-result" style="display:none"></div>
@@ -3531,6 +3589,7 @@ function openTool(name){
   document.getElementById('tools-grid').style.display='none';
   document.getElementById('tool-youtube').style.display=name==='youtube'?'block':'none';
   document.getElementById('tool-convert').style.display=name==='convert'?'block':'none';
+  if(name==='youtube'&&typeof ytFormatChanged==='function')ytFormatChanged();
 }
 function closeTool(){
   document.getElementById('tools-grid').style.display='';
@@ -3561,9 +3620,13 @@ function ytQualityOptions(qualities){
 }
 function ytFormatChanged(){
   const fmt=document.getElementById('yt-format').value;
+  const vo=document.getElementById('yt-opts-video');
+  const ao=document.getElementById('yt-opts-audio');
+  if(vo)vo.style.display=fmt==='video'?'':'none';
+  if(ao)ao.style.display=fmt==='audio'?'':'none';
   const row=document.getElementById('yt-quality-row');
   const sel=document.getElementById('yt-quality');
-  if(fmt==='mp4'&&ytInfoCache&&ytInfoCache.qualities&&ytInfoCache.qualities.length){
+  if(fmt==='video'&&ytInfoCache&&ytInfoCache.qualities&&ytInfoCache.qualities.length){
     sel.innerHTML=ytQualityOptions(ytInfoCache.qualities)
       .map(o=>'<option value="'+o.value+'">'+o.label+'</option>').join('');
     row.style.display='flex';
@@ -3571,6 +3634,86 @@ function ytFormatChanged(){
   }else{
     row.style.display='none';
   }
+  ytOptionsChanged();
+}
+function ytSelection(){
+  const g=id=>{const e=document.getElementById(id);return e?(e.value||''):''};
+  const setv=(id,v)=>{const e=document.getElementById(id);if(e&&e.value!==v)e.value=v;};
+  const c=document.getElementById('yt-a-cover');
+  const sel={
+    type:g('yt-format')||'video',
+    container:g('yt-v-container')||'mp4',
+    codec:g('yt-v-codec')||'h264',
+    compress:g('yt-v-compress')||'original',
+    fps:g('yt-v-fps')||'any',
+    height:g('yt-quality')||'',
+    streams:g('yt-v-streams')||'combine',
+    subs:g('yt-v-subs')||'none',
+    aFormat:g('yt-a-format')||'original',
+    aBitrate:g('yt-a-bitrate')||'128',
+    cover:c?!!c.checked:true
+  };
+  if(sel.type==='video'){
+    // WebM cannot hold H.264/H.265, and VP9+Opus belongs in WebM — keep
+    // whatever the user picked when it is legal, coerce the rest (mirrors
+    // the server's _yt_compat).
+    if(sel.container==='webm'&&sel.codec!=='vp9'&&sel.codec!=='av1'){sel.codec='vp9';setv('yt-v-codec','vp9');}
+    else if(sel.codec==='vp9'&&sel.container==='mp4'){sel.container='webm';setv('yt-v-container','webm');}
+  }
+  return sel;
+}
+function ytNeedsServer(sel){
+  if(!sel)return '';
+  if(sel.type==='audio'){
+    if(sel.aFormat==='m4a'||sel.aFormat==='flac')return sel.aFormat.toUpperCase()+' encoding runs on the server';
+    if(sel.aBitrate==='192')return '192 kbps is produced by the server';
+    return '';
+  }
+  if(sel.codec==='h265')return 'H.265 encoding runs on the server';
+  if(sel.compress&&sel.compress!=='original')return 're-compressing runs on the server';
+  if(sel.fps&&sel.fps!=='any')return 'frame-rate caps run on the server';
+  return '';
+}
+function ytCobaltBody(sel,url){
+  const Q=['max','4320','2160','1440','1080','720','480','360','240','144'];
+  const b={url:url};
+  if(sel.type==='audio'){
+    b.downloadMode='audio';
+    b.audioFormat=sel.aFormat==='original'?'best':sel.aFormat;
+    b.audioBitrate=String(sel.aBitrate||'128');
+    if(!sel.cover)b.disableMetadata=true;
+    return b;
+  }
+  b.downloadMode='auto';
+  b.videoQuality=Q.indexOf(String(sel.height||''))>=0?String(sel.height):'max';
+  b.youtubeVideoCodec=sel.codec==='h265'?'h264':(sel.codec||'h264');
+  b.youtubeVideoContainer=sel.container||'auto';
+  if(sel.subs&&sel.subs!=='none')b.subtitleLang=sel.subs;
+  if(sel.streams==='split')b.localProcessing='forced';
+  return b;
+}
+function ytOptionsChanged(){
+  const sel=ytSelection();
+  const br=document.getElementById('yt-a-bitrate-row');
+  if(br){
+    const soft=(sel.type==='audio'&&(sel.aFormat==='original'||sel.aFormat==='wav'||sel.aFormat==='flac'));
+    br.style.opacity=soft?'0.45':'';
+    const box=br.querySelector?br.querySelector('select'):null;
+    if(box)box.disabled=soft;
+  }
+  const note=document.getElementById('yt-path-note');
+  if(note){
+    const why=ytNeedsServer(sel);
+    note.textContent=why?(why+' — the server will do it (slower)'):'Downloads straight in your browser';
+  }
+}
+function ytPartName(name,idx,total){
+  const base=String(name||'youtube');
+  if(total<2)return base;
+  const m=/^(.*)(\.[A-Za-z0-9]{1,5})$/.exec(base);
+  const stem=m?m[1]:base, ext=m?m[2]:'';
+  const tag=(total===2)?(idx===0?' video':' audio'):' part'+(idx+1);
+  return stem+tag+ext;
 }
 function dlPercent(loaded,total){
   if(!total||total<=0)return 0;
@@ -3596,6 +3739,13 @@ function ytShowProgress(pct,text){
   if(text!==undefined)document.getElementById('yt-status').textContent=text;
 }
 function ytHideProgress(){document.getElementById('yt-progress').style.display='none'}
+function ytCdFilename(cd){
+  if(!cd)return '';
+  let m=/filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if(m){try{return decodeURIComponent(m[1])}catch(e){}}
+  m=/filename="?([^";]+)"?/i.exec(cd);
+  return m?m[1]:'';
+}
 async function ytFetchWithProgress(url,onp){
   const r=await fetch(url);
   if(!r.ok)throw new Error('Converter stream failed ('+r.status+')');
@@ -3607,7 +3757,7 @@ async function ytFetchWithProgress(url,onp){
     if(it.done)break;
     chunks.push(it.value);loaded+=it.value.length;onp(loaded,total);
   }
-  return new Blob(chunks);
+  return {blob:new Blob(chunks),name:ytCdFilename(r.headers.get('Content-Disposition')||'')};
 }
 async function ytFetchInfo(){
   const url=document.getElementById('yt-url').value.trim();
@@ -3626,7 +3776,7 @@ async function ytFetchInfo(){
     box.style.display='flex';
     ytInfoCache=d;
     ytFormatChanged();
-    st.textContent=d.ok_duration?'Ready — pick MP3 or MP4 and hit Download.':'That video is over 3 hours long.';
+    st.textContent=d.ok_duration?'Ready — set your options and hit Download.':'That video is over 3 hours long.';
     const api=await ytConverterUrl();
     if(!api){
       const setup=document.getElementById('yt-setup');
@@ -3637,10 +3787,16 @@ async function ytFetchInfo(){
 }
 async function ytDownloadBrowser(){
   const url=document.getElementById('yt-url').value.trim();
-  const fmt=document.getElementById('yt-format').value;
   const st=document.getElementById('yt-status');
   const btn=document.getElementById('yt-dl-btn');
   if(!url){st.textContent='Paste a YouTube link first.';return}
+  const sel=ytSelection();
+  const why=ytNeedsServer(sel);
+  if(why){
+    st.textContent=why.charAt(0).toUpperCase()+why.slice(1)+' — switching to the server download…';
+    await ytDownloadServer();
+    return;
+  }
   const api=await ytConverterUrl();
   if(!api){
     st.textContent='No converter address configured — set OMNIILINK_CONVERTER_API on the server, or use the server fallback below.';
@@ -3649,12 +3805,7 @@ async function ytDownloadBrowser(){
   btn.disabled=true;
   ytShowProgress(0,'Contacting converter…');
   try{
-    const body={url,downloadMode:fmt==='mp3'?'audio':'auto'};
-    if(fmt==='mp3'){body.audioFormat='mp3';}
-    else{
-      const q=document.getElementById('yt-quality').value||'1080';
-      body.videoQuality=q;body.youtubeVideoContainer='mp4';
-    }
+    const body=ytCobaltBody(sel,url);
     const r=await fetch(api+'/',{method:'POST',
       headers:{'Accept':'application/json','Content-Type':'application/json'},
       body:JSON.stringify(body)});
@@ -3665,13 +3816,29 @@ async function ytDownloadBrowser(){
       st.textContent='Converter refused it'+(code?': '+code:'')+'. Try the server fallback below.';
       ytHideProgress();return;
     }
-    if(d.status==='tunnel'){
-      const blob=await ytFetchWithProgress(d.url,(loaded,total)=>{
-        const pct=dlPercent(loaded,total);
-        ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)':formatBandwidth(loaded)+' downloaded…');
-      });
-      downloadBlob(blob,d.filename||('youtube.'+fmt));
-      ytShowProgress(100,'Saved '+(d.filename||('youtube.'+fmt)));
+    const onp=(loaded,total)=>{
+      const pct=dlPercent(loaded,total);
+      ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)':formatBandwidth(loaded)+' downloaded…');
+    };
+    if(d.status==='local-processing'){
+      const parts=(d.tunnel||[]).filter(Boolean);
+      if(!parts.length)throw new Error('converter returned no streams');
+      const named=d.output&&d.output.filename?d.output.filename:'youtube';
+      const saved=[];
+      for(let i=0;i<parts.length;i++){
+        const got=await ytFetchWithProgress(parts[i],onp);
+        const fname=ytPartName(got.name||named,i,parts.length);
+        downloadBlob(got.blob,fname);
+        saved.push(fname);
+        ytShowProgress(Math.round((i+1)/parts.length*100),'Saved '+fname+(i+1<parts.length?' — fetching the next part…':''));
+        if(i+1<parts.length)await new Promise(res=>setTimeout(res,500));
+      }
+      ytShowProgress(100,'Saved '+saved.length+' files: '+saved.join(', '));
+    }else if(d.status==='tunnel'){
+      const got=await ytFetchWithProgress(d.url,onp);
+      const fname=got.name||d.filename||('youtube.'+(sel.type==='audio'?'mp3':'mp4'));
+      downloadBlob(got.blob,fname);
+      ytShowProgress(100,'Saved '+fname);
     }else if(d.status==='redirect'){
       st.textContent='Converter handed back a direct link — opening it in a new tab.';
       ytHideProgress();
@@ -3710,20 +3877,23 @@ async function ytDownloadBrowser(){
 }
 async function ytDownloadServer(){
   const url=document.getElementById('yt-url').value.trim();
-  const fmt=document.getElementById('yt-format').value;
+  const sel=ytSelection();
   const st=document.getElementById('yt-status');
   const btn=document.getElementById('yt-dl-btn');
   if(!url){st.textContent='Paste a YouTube link first.';return}
-  btn.disabled=true;st.textContent='Downloading and converting — this can take a few minutes for long videos…';
+  btn.disabled=true;st.textContent='Downloading on the server — this can take a few minutes for long videos…';
   try{
-    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,format:fmt})});
+    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url:url,format:sel.type==='audio'?'mp3':'mp4',kind:sel.type,
+        container:sel.container,codec:sel.codec,compress:sel.compress,fps:sel.fps,height:sel.height,
+        streams:sel.streams,subs:sel.subs,audio_format:sel.aFormat,audio_bitrate:sel.aBitrate,cover:sel.cover})});
     if(!r.ok){
       let msg='Download failed.';
       try{msg=(await r.json()).error||msg}catch(e){}
       st.textContent=msg;return;
     }
     const blob=await r.blob();
-    let name='youtube.'+fmt;
+    let name='youtube.'+(sel.type==='audio'?(sel.aFormat==='original'?'m4a':sel.aFormat):(sel.container||'mp4'));
     const cd=r.headers.get('Content-Disposition')||'';
     const m=cd.match(/filename\*=UTF-8''([^;]+)/);
     if(m){try{name=decodeURIComponent(m[1])}catch(e){}}

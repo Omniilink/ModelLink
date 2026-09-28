@@ -3239,7 +3239,18 @@ class YTInfoRequest(BaseModel):
 
 class YTDownloadRequest(BaseModel):
     url: str
-    format: str = "mp3"
+    format: str = "mp4"       # legacy: mp3 (audio) | mp4 (video)
+    kind: str = ""            # video | audio (new UI; wins over format)
+    container: str = ""       # mp4 | mkv | webm
+    codec: str = ""           # h264 | h265 | av1 | vp9
+    compress: str = ""        # original | small | tiny
+    fps: str = ""             # any | 30 | 60
+    height: str = ""          # "" (best) or a detected height
+    streams: str = ""         # combine | split
+    subs: str = ""            # none | en
+    audio_format: str = ""    # original | mp3 | m4a | opus | wav | flac | ogg
+    audio_bitrate: str = ""   # 64 96 128 192 256 320
+    cover: bool = True        # embed the thumbnail for audio
 
 
 @app.get("/api/tools/converter/health")
@@ -3482,39 +3493,240 @@ async def tools_converter(request: Request):
     return {"url": url}
 
 
+# ---- YouTube download options (pure helpers, unit-tested) ----------------
+# Source-codec prefixes YouTube reports, and the ffmpeg encoder used when we
+# have to re-encode instead of copying the stream.
+YT_VCODEC_SRC = {"h264": "avc1", "vp9": "vp09", "av1": "av01", "h265": "hev1"}
+YT_VCODEC_ENC = {"h264": "libx264", "h265": "libx265",
+                 "av1": "libaom-av1", "vp9": "libvpx-vp9"}
+YT_CONTAINER_EXT = {"mp4": "mp4", "mkv": "mkv", "webm": "webm"}
+YT_AUDIO_ENC = {"mp3": ("libmp3lame", "mp3"), "m4a": ("aac", "m4a"),
+                "opus": ("libopus", "opus"), "ogg": ("libvorbis", "ogg"),
+                "wav": ("pcm_s16le", "wav"), "flac": ("flac", "flac")}
+YT_COMPRESS_CRF = {"small": "26", "tiny": "31"}
+YT_AUDIO_BITRATES = ("64", "96", "128", "192", "256", "320")
+YT_MIME = {"mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm",
+           "mp3": "audio/mpeg", "m4a": "audio/mp4", "opus": "audio/ogg",
+           "ogg": "audio/ogg", "wav": "audio/wav", "flac": "audio/flac",
+           "zip": "application/zip"}
+# Lossy formats where a bitrate actually applies (the rest are already fixed).
+YT_LOSSLESS_AUDIO = ("original", "wav", "flac")
+
+
+def _yt_compat(container: str, codec: str) -> tuple:
+    """Coerce container + codec into a pair that actually muxes: WebM cannot
+    hold H.264/H.265 (and its audio would be Opus), while VP9+Opus belongs in
+    WebM rather than MP4. Keeps whatever the user picked when it is legal."""
+    container = container if container in YT_CONTAINER_EXT else "mp4"
+    codec = codec if codec in YT_VCODEC_SRC else "h264"
+    if container == "webm" and codec not in ("vp9", "av1"):
+        codec = "vp9"
+    elif codec == "vp9" and container == "mp4":
+        container = "webm"
+    return container, codec
+
+
+def _yt_format_sel(codec: str, height, fps, split: bool) -> str:
+    """yt-dlp format selector: prefer the requested codec at or below the
+    requested resolution/frame rate, then fall back to any codec so the
+    download still succeeds."""
+    h = f"[height<=?{int(height)}]" if height else ""
+    f = f"[fps<=?{int(fps)}]" if str(fps) not in ("", "any", "None") else ""
+    src = YT_VCODEC_SRC.get(codec)
+    vcond = f"[vcodec^={src}]" if src else ""
+    if split:
+        return f"bv*{h}{f}{vcond}/bv*{h}{f}"
+    return f"bv*{h}{f}{vcond}+ba/bv*{h}{f}+ba/b{h}{f}"
+
+
+def _yt_plan(req: YTDownloadRequest) -> tuple:
+    """Validate the requested options and turn them into an execution plan.
+    Returns (plan, "") or (None, error message)."""
+    kind = (req.kind or "").strip().lower()
+    legacy = not kind
+    if not kind:
+        kind = "audio" if (req.format or "").strip().lower() == "mp3" else "video"
+    if kind not in ("video", "audio"):
+        return None, "Type must be video or audio"
+    if kind == "audio":
+        a_format = (req.audio_format or "").strip().lower()
+        if not a_format:
+            # Old clients only send format=mp3, so keep honouring it as mp3.
+            a_format = "mp3" if legacy else "original"
+        if a_format == "aac":
+            a_format = "m4a"
+        if a_format != "original" and a_format not in YT_AUDIO_ENC:
+            return None, "Audio file type must be one of: original, " + ", ".join(YT_AUDIO_ENC)
+        br = str(req.audio_bitrate or "128").strip()
+        if br not in YT_AUDIO_BITRATES:
+            br = "128"
+        return {"kind": "audio", "a_format": a_format, "a_bitrate": br,
+                "cover": bool(req.cover), "lossless": a_format in YT_LOSSLESS_AUDIO,
+                "format_sel": "ba/best",
+                "ext": "" if a_format == "original" else YT_AUDIO_ENC[a_format][1],
+                "enc": "" if a_format == "original" else YT_AUDIO_ENC[a_format][0]}, ""
+    raw_container = (req.container or "mp4").strip().lower()
+    if raw_container not in YT_CONTAINER_EXT:
+        return None, "File type must be mp4, mkv or webm"
+    raw_codec = (req.codec or "h264").strip().lower()
+    if raw_codec not in YT_VCODEC_SRC:
+        return None, "Codec must be h264, h265, av1 or vp9"
+    container, codec = _yt_compat(raw_container, raw_codec)
+    compress = (req.compress or "original").strip().lower()
+    if compress != "original" and compress not in YT_COMPRESS_CRF:
+        return None, "Compression must be original, small or tiny"
+    fps = str(req.fps or "any").strip().lower()
+    if fps not in ("any", "30", "60"):
+        return None, "Frame rate must be any, 30 or 60"
+    try:
+        height = int(req.height or 0)
+    except (TypeError, ValueError):
+        height = 0
+    if height and not (144 <= height <= 4320):
+        height = 0
+    streams = (req.streams or "combine").strip().lower()
+    if streams not in ("combine", "split"):
+        return None, "Streams must be combine or split"
+    subs = (req.subs or "none").strip().lower()
+    if subs not in ("none", "en"):
+        return None, "Subtitles must be none or en"
+    return {"kind": "video", "container": container, "codec": codec,
+            "compress": compress, "fps": fps, "height": height,
+            "split": streams == "split", "subs": subs, "ext": container,
+            "format_sel": _yt_format_sel(codec, height, fps, streams == "split")}, ""
+
+
+_YT_ENCODERS_RAW = None
+
+
+def _yt_have_encoder(name: str) -> bool:
+    """True when this ffmpeg build can encode with `name` (cached)."""
+    global _YT_ENCODERS_RAW
+    if _YT_ENCODERS_RAW is None:
+        ff = _tools_ffmpeg_bin()
+        raw = ""
+        if ff:
+            try:
+                raw = subprocess.run([ff, "-hide_banner", "-encoders"],
+                                     capture_output=True, text=True, timeout=30).stdout or ""
+            except Exception:
+                raw = ""
+        _YT_ENCODERS_RAW = raw
+    return bool(re.search(r"\s" + re.escape(name) + r"\s", _YT_ENCODERS_RAW))
+
+
+def _yt_video_ffmpeg(ff: str, plan: dict, src: str, dst: str) -> list:
+    """ffmpeg argv that rewrites `src` into the requested container, applying
+    the requested compression. Copy when possible; re-encode only when asked."""
+    args = [ff, "-y", "-v", "error", "-i", src, "-map", "0"]
+    if plan["compress"] == "original":
+        args += ["-c", "copy"]
+    else:
+        enc = YT_VCODEC_ENC.get(plan["codec"], "libx264")
+        if not _yt_have_encoder(enc):
+            raise ValueError(f"this server's ffmpeg cannot encode {plan['codec'].upper()} — pick a different codec")
+        args += ["-c:v", enc, "-crf", YT_COMPRESS_CRF[plan["compress"]]]
+        if enc in ("libvpx-vp9", "libaom-av1"):
+            args += ["-b:v", "0"]
+        else:
+            args += ["-preset", "medium"]
+        if plan["container"] == "mp4":
+            args += ["-c:a", "aac", "-b:a", "192k"]
+        else:
+            args += ["-c:a", "copy"]
+    if plan["container"] == "mp4":
+        args += ["-movflags", "+faststart"]
+    return args + [dst]
+
+
+def _yt_audio_ffmpeg(ff: str, plan: dict, src: str, dst: str, cover: str = "") -> list:
+    """ffmpeg argv that encodes the first audio stream to the chosen format,
+    optionally embedding the thumbnail as cover art."""
+    enc, ext = YT_AUDIO_ENC[plan["a_format"]]
+    if not _yt_have_encoder(enc):
+        raise ValueError(f"this server's ffmpeg cannot write {plan['a_format'].upper()}")
+    args = [ff, "-y", "-v", "error", "-i", src]
+    use_cover = bool(cover) and os.path.isfile(cover)
+    if use_cover:
+        args += ["-i", cover]
+    args += ["-map", "0:a:0"]
+    if use_cover:
+        args += ["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]
+    args += ["-c:a", enc]
+    if not plan["lossless"]:
+        args += ["-b:a", plan["a_bitrate"] + "k"]
+    if plan["a_format"] == "opus":
+        args += ["-vbr", "off"]
+    if plan["a_format"] == "m4a":
+        args += ["-movflags", "+faststart"]
+    return args + [dst]
+
+
+def _yt_video_reencode(ff: str, plan: dict, src: str, dst: str, drop_subs: bool = False) -> list:
+    """ffmpeg argv that re-encodes `src` into the requested container. Used
+    when a plain stream copy cannot carry the source into that container
+    (H.264+AAC into WebM, VP9/Opus into MP4, …)."""
+    enc = YT_VCODEC_ENC.get(plan["codec"], "libx264")
+    if not _yt_have_encoder(enc):
+        raise ValueError(f"this server's ffmpeg cannot encode {plan['codec'].upper()} — pick a different codec")
+    args = [ff, "-y", "-v", "error", "-i", src, "-map", "0:v", "-map", "0:a"]
+    if drop_subs:
+        args += ["-sn"]
+    args += ["-c:v", enc, "-crf", YT_COMPRESS_CRF.get(plan["compress"], "26")]
+    if enc in ("libvpx-vp9", "libaom-av1"):
+        args += ["-b:v", "0"]
+    else:
+        args += ["-preset", "medium"]
+    if plan["container"] == "mp4":
+        args += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+    elif plan["container"] == "webm":
+        args += ["-c:a", "libopus", "-b:a", "160k"]
+    else:
+        args += ["-c:a", "copy"]
+    return args + [dst]
+
+
 @app.post("/api/tools/youtube/download")
 async def tools_youtube_download(request: Request, req: YTDownloadRequest):
-    """Download a YouTube video as MP3 or MP4. Runs yt-dlp on this server and
-    streams the finished file back. Fallback path — the primary flow downloads
-    straight to the browser via the configured converter API."""
+    """Download a YouTube video or audio honouring the chosen file type, codec,
+    compression, frame rate, stream layout (one merged file or separate video +
+    audio) and subtitles. Runs yt-dlp plus ffmpeg on this server and streams the
+    result back — the fallback path; the primary flow downloads straight to the
+    browser via the configured converter API."""
     user, err = _require_auth(request)
     if err:
         return err
     url, uerr = _tools_check_youtube_url(req.url)
     if uerr:
         return JSONResponse(status_code=400, content={"error": uerr})
-    fmt = (req.format or "mp3").strip().lower()
+    fmt = (req.format or "mp4").strip().lower()
     if fmt not in ("mp3", "mp4"):
         return JSONResponse(status_code=400, content={"error": "Format must be mp3 or mp4"})
+    plan, perr = _yt_plan(req)
+    if perr:
+        return JSONResponse(status_code=400, content={"error": perr})
     ytdlp = _tools_ytdlp_base()
     if not ytdlp:
         return JSONResponse(status_code=503, content={
             "error": "YouTube support is not installed on this server (needs the yt-dlp package)"})
     ffmpeg = _tools_ffmpeg_bin()
-    if fmt == "mp3" and not ffmpeg:
+    needs_ff = plan["kind"] == "video" or (plan["kind"] == "audio" and plan["a_format"] != "original")
+    if needs_ff and not ffmpeg:
         return JSONResponse(status_code=503, content={
-            "error": "MP3 needs ffmpeg on this server — install it or pick MP4"})
+            "error": "This selection needs ffmpeg on this server — install it or pick a simpler format"})
     tmpdir = tempfile.mkdtemp(prefix="yt_")
 
     def _cleanup():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+    async def _run(args, timeout):
+        return await asyncio.to_thread(subprocess.run, args, capture_output=True,
+                                       text=True, timeout=timeout)
+
     try:
         # Metadata first: enforce the duration cap before any bytes move.
-        proc = await asyncio.to_thread(
-            subprocess.run, ytdlp + ["--dump-json", "--no-playlist",
-                                     "--no-warnings", url],
-            capture_output=True, text=True, timeout=YT_TIMEOUT_INFO)
+        proc = await _run(ytdlp + ["--dump-json", "--no-playlist",
+                                   "--no-warnings", url], YT_TIMEOUT_INFO)
         if proc.returncode != 0:
             msg = (proc.stderr or "").strip().splitlines()
             detail = msg[-1] if msg else "Could not read that video"
@@ -3527,104 +3739,129 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
         if duration > YT_MAX_DURATION:
             return JSONResponse(status_code=400, content={
                 "error": f"Video is too long ({duration // 3600}h+ — 3h max)"})
+        title = (info.get("title") if isinstance(info, dict) else "") or "youtube"
+        base = ytdlp + ["--no-playlist", "--no-warnings"]
+        if ffmpeg:
+            base += ["--ffmpeg-location", ffmpeg]
         out_tpl = os.path.join(tmpdir, "media.%(ext)s")
-        if fmt == "mp3":
-            cmd = ytdlp + ["--no-playlist", "--no-warnings",
-                           "-f", "bestaudio/best",
-                           "-o", out_tpl, url]
+        split = plan["split"] if plan["kind"] == "video" else False
+
+        # ---- download ----
+        if split:
+            # Two independent pulls: video-only and audio-only, kept as-is.
+            for tag, sel in (("video", plan["format_sel"]),
+                             ("audio", "ba/best")):
+                tpl = os.path.join(tmpdir, tag + ".%(ext)s")
+                p = await _run(base + ["-f", sel, "-o", tpl, url], YT_TIMEOUT_DOWNLOAD)
+                if p.returncode != 0:
+                    msg = (p.stderr or "").strip().splitlines()
+                    detail = msg[-1] if msg else f"Could not download the {tag} stream"
+                    return JSONResponse(status_code=400, content={"error": detail[:200]})
         else:
-            # Progressive single-file MP4 needs no merging (and no ffmpeg).
-            cmd = ytdlp + ["--no-playlist", "--no-warnings",
-                           "-f", "b[ext=mp4]",
-                           "-o", out_tpl, url]
-        try:
-            proc = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True,
-                timeout=YT_TIMEOUT_DOWNLOAD)
-        except subprocess.TimeoutExpired:
-            return JSONResponse(status_code=504, content={"error": "Download timed out"})
-        if proc.returncode != 0 and fmt == "mp4":
-            # No progressive MP4 (split DASH streams only): download video +
-            # audio separately and merge with our own ffmpeg (copy, no
-            # re-encode — ffprobe is not needed for this).
-            if not ffmpeg:
-                return JSONResponse(status_code=503, content={
-                    "error": "This video needs merging and ffmpeg is missing on this server"})
-            v_tpl = os.path.join(tmpdir, "video.%(ext)s")
-            a_tpl = os.path.join(tmpdir, "audio.%(ext)s")
+            dl = base + ["-f", plan["format_sel"], "-o", out_tpl]
+            if plan["kind"] == "video":
+                dl += ["--merge-output-format", plan["container"]]
+                if plan["subs"] != "none":
+                    dl += ["--write-subs", "--write-auto-subs",
+                           "--sub-langs", plan["subs"], "--embed-subs"]
+            elif plan["cover"]:
+                dl += ["--write-thumbnail"]
             try:
-                vproc = await asyncio.to_thread(
-                    subprocess.run, ytdlp + ["--no-playlist", "--no-warnings",
-                                            "-f", "bv*[ext=mp4]/bv*",
-                                            "-o", v_tpl, url],
-                    capture_output=True, text=True, timeout=YT_TIMEOUT_DOWNLOAD)
-                aproc = await asyncio.to_thread(
-                    subprocess.run, ytdlp + ["--no-playlist", "--no-warnings",
-                                            "-f", "ba[ext=m4a]/ba/bestaudio",
-                                            "-o", a_tpl, url],
-                    capture_output=True, text=True, timeout=YT_TIMEOUT_DOWNLOAD)
-                if vproc.returncode != 0 or aproc.returncode != 0:
-                    raise RuntimeError("split-stream download failed")
-                vids = [f for f in os.listdir(tmpdir) if f.startswith("video.")]
-                auds = [f for f in os.listdir(tmpdir) if f.startswith("audio.")]
-                if not vids or not auds:
-                    raise RuntimeError("split-stream download failed")
-                merged = os.path.join(tmpdir, "media.mp4")
-                mproc = await asyncio.to_thread(
-                    subprocess.run,
-                    [ffmpeg, "-y", "-v", "error",
-                     "-i", os.path.join(tmpdir, vids[0]),
-                     "-i", os.path.join(tmpdir, auds[0]),
-                     "-c", "copy", "-movflags", "+faststart", merged],
-                    capture_output=True, text=True, timeout=600)
-                if mproc.returncode != 0 or not os.path.isfile(merged):
-                    raise RuntimeError("merge failed")
-                for f in vids + auds:
-                    try:
-                        os.remove(os.path.join(tmpdir, f))
-                    except OSError:
-                        pass
-                proc = None  # merged file is the product now
+                proc = await _run(dl + [url], YT_TIMEOUT_DOWNLOAD)
             except subprocess.TimeoutExpired:
                 return JSONResponse(status_code=504, content={"error": "Download timed out"})
-            except RuntimeError as rexc:
-                return JSONResponse(status_code=400, content={"error": str(rexc)[:200]})
-        if proc is not None and proc.returncode != 0:
-            msg = (proc.stderr or "").strip().splitlines()
-            detail = msg[-1] if msg else "Download failed"
-            return JSONResponse(status_code=400, content={"error": detail[:200]})
+            if proc.returncode != 0:
+                msg = (proc.stderr or "").strip().splitlines()
+                detail = msg[-1] if msg else "Download failed"
+                return JSONResponse(status_code=400, content={"error": detail[:200]})
+
         produced = [f for f in os.listdir(tmpdir)
                     if os.path.isfile(os.path.join(tmpdir, f))
                     and not f.endswith((".part", ".ytdl", ".temp", ".tmp"))]
         if not produced:
             return JSONResponse(status_code=500, content={"error": "Nothing was downloaded"})
+
+        # ---- package ----
+        if split:
+            vids = [f for f in produced if f.startswith("video.")]
+            auds = [f for f in produced if f.startswith("audio.")]
+            if not vids or not auds:
+                return JSONResponse(status_code=400, content={
+                    "error": "Could not get both streams — try Combine into one file"})
+            vids.sort(key=lambda f: os.path.getsize(os.path.join(tmpdir, f)), reverse=True)
+            auds.sort(key=lambda f: os.path.getsize(os.path.join(tmpdir, f)), reverse=True)
+            zpath = os.path.join(tmpdir, "split.zip")
+            with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as zf:
+                zf.write(os.path.join(tmpdir, vids[0]),
+                         _tools_safe_filename(title + " video", vids[0].split(".")[-1]))
+                zf.write(os.path.join(tmpdir, auds[0]),
+                         _tools_safe_filename(title + " audio", auds[0].split(".")[-1]))
+            fname = _tools_safe_filename(title, "zip")
+            disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname)
+            return FileResponse(zpath, media_type=YT_MIME["zip"],
+                                headers={"Content-Disposition": disp},
+                                background=BackgroundTask(_cleanup))
+
         produced.sort(key=lambda f: os.path.getsize(os.path.join(tmpdir, f)), reverse=True)
-        src = os.path.join(tmpdir, produced[0])
-        if fmt == "mp3":
-            # Convert here with ffmpeg directly (yt-dlp's own audio extraction
-            # would demand ffprobe, which bundled builds don't ship).
-            converted = os.path.join(tmpdir, "media.mp3")
+        media = [f for f in produced if not f.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".webp", ".gif", ".vtt", ".srt"))] or produced
+        src = os.path.join(tmpdir, media[0])
+        ext = media[0].rsplit(".", 1)[-1].lower()
+
+        if plan["kind"] == "video":
+            dst = os.path.join(tmpdir, "out." + plan["container"])
+            # Ladder: plain copy/re-encode first, then re-encode into the
+            # target container, then the same without subtitle tracks a
+            # container refuses to carry.
+            attempts, build_err = [], ""
+            for builder in (lambda: _yt_video_ffmpeg(ffmpeg, plan, src, dst),
+                            lambda: _yt_video_reencode(ffmpeg, plan, src, dst),
+                            lambda: _yt_video_reencode(ffmpeg, plan, src, dst, True)):
+                try:
+                    attempts.append(builder())
+                except ValueError as ve:
+                    build_err = str(ve)
+            if not attempts:
+                return JSONResponse(status_code=400, content={"error": build_err or "Cannot encode that combination"})
+            fproc = None
             try:
-                cproc = await asyncio.to_thread(
-                    subprocess.run,
-                    [ffmpeg, "-y", "-v", "error", "-i", src,
-                     "-codec:a", "libmp3lame", "-q:a", "2", converted],
-                    capture_output=True, text=True, timeout=600)
+                for argv in attempts:
+                    fproc = await _run(argv, 3600)
+                    if fproc.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+                        break
             except subprocess.TimeoutExpired:
-                return JSONResponse(status_code=504, content={"error": "Audio conversion timed out"})
-            if cproc.returncode != 0 or not os.path.isfile(converted):
-                return JSONResponse(status_code=500, content={"error": "Audio conversion failed"})
-            try:
-                os.remove(src)
-            except OSError:
-                pass
-            src = converted
-        title = (info.get("title") if isinstance(info, dict) else "") or "youtube"
-        fname = _tools_safe_filename(title, fmt)
+                return JSONResponse(status_code=504, content={"error": "Re-encoding timed out"})
+            if fproc is None or fproc.returncode != 0 or not os.path.isfile(dst):
+                lines = ((fproc.stderr if fproc else "") or "").strip().splitlines()
+                return JSONResponse(status_code=500, content={
+                    "error": (lines[-1] if lines else build_err or "Remux failed")[:200]})
+            src, ext = dst, plan["container"]
+        else:
+            if plan["a_format"] != "original":
+                dst = os.path.join(tmpdir, "out." + plan["ext"])
+                thumbs = [f for f in produced if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+                cover = os.path.join(tmpdir, thumbs[0]) if (plan["cover"] and thumbs) else ""
+                try:
+                    fproc = await _run(_yt_audio_ffmpeg(ffmpeg, plan, src, dst, cover), 1800)
+                except ValueError as ve:
+                    return JSONResponse(status_code=400, content={"error": str(ve)})
+                except subprocess.TimeoutExpired:
+                    return JSONResponse(status_code=504, content={"error": "Audio conversion timed out"})
+                if (fproc.returncode != 0 or not os.path.isfile(dst)) and cover:
+                    fproc = await _run(_yt_audio_ffmpeg(ffmpeg, plan, src, dst, ""), 1800)
+                if fproc.returncode != 0 or not os.path.isfile(dst):
+                    err_line = ((fproc.stderr or "").strip().splitlines() or ["Conversion failed"])[-1]
+                    return JSONResponse(status_code=500, content={"error": err_line[:200]})
+                src, ext = dst, plan["ext"]
+
+        fname = _tools_safe_filename(title, ext)
         disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname)
-        return FileResponse(src, media_type="audio/mpeg" if fmt == "mp3" else "video/mp4",
+        return FileResponse(src, media_type=YT_MIME.get(ext, "application/octet-stream"),
                             headers={"Content-Disposition": disp},
                             background=BackgroundTask(_cleanup))
+    except subprocess.TimeoutExpired:
+        _cleanup()
+        return JSONResponse(status_code=504, content={"error": "Download timed out"})
     except Exception as e:
         _cleanup()
         return JSONResponse(status_code=500, content={"error": str(e)})
