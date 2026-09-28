@@ -2101,10 +2101,29 @@ async function codingNotifyTitle(userText){
     return String(c.content||'').replace(/\s+/g,' ').trim().replace(/^["'(\[]+|["'),.;:\s]+$/g,'').slice(0,64);
   }catch(e){return ''}
 }
+function codingNotifyBeep(){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC)return;
+    codingNotifyBeep.ctx=codingNotifyBeep.ctx||new AC();
+    const ctx=codingNotifyBeep.ctx;
+    if(ctx.state==='suspended'){try{ctx.resume()}catch(e){}}
+    const t=ctx.currentTime+0.02;
+    [880,1174.66].forEach((f,i)=>{
+      const o=ctx.createOscillator(),g=ctx.createGain();
+      o.type='sine';o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,t+i*0.18);
+      g.gain.exponentialRampToValueAtTime(0.4,t+i*0.18+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+i*0.18+0.16);
+      o.connect(g);g.connect(ctx.destination);
+      o.start(t+i*0.18);o.stop(t+i*0.18+0.2);
+    });
+  }catch(e){}
+}
 async function codingNotifyDone(finalText){
   try{
     if(!codingNotifyOn())return;
-    if(typeof Notification==='undefined'||!document.hidden)return;
+    if(typeof Notification==='undefined')return;
     if(Notification.permission==='default'){try{await Notification.requestPermission()}catch(e){}}
     if(Notification.permission!=='granted')return;
     const req=codingNotifyRequest||(((([...codingHistory].reverse().find(m=>m&&m.role==='user'&&m.content))||{}).content)||'');
@@ -2116,17 +2135,23 @@ async function codingNotifyDone(finalText){
       body=pick(lastA&&lastA.content)||'Task finished.';
     }
     new Notification(codingNotifyTitleText(summary,codingProjectLabel()),{body:String(body).slice(0,140),tag:'omnilink-coding',icon:'favicon.ico'});
+    if(document.hidden)codingNotifyBeep();
   }catch(e){}
 }
 async function toggleCodingNotify(){
   const on=!codingNotifyOn();
   try{localStorage.setItem('omnilink_coding_notify',on?'1':'0')}catch(e){}
   syncCodingNotifyBtn();
-  if(on&&typeof Notification!=='undefined'&&Notification.permission==='default'){
-    try{
-      if(await Notification.requestPermission()!=='granted')showToast('Notifications are blocked — allow them in the browser site settings to get pinged when tasks finish.','error');
-    }catch(e){}
-  }
+  if(!on||typeof Notification==='undefined')return;
+  try{
+    if(Notification.permission==='default'&&await Notification.requestPermission()!=='granted'){
+      showToast('Notifications are blocked — allow them in the browser site settings to get pinged when tasks finish.','error');
+      return;
+    }
+    if(Notification.permission!=='granted')return;
+    new Notification(codingNotifyTitleText('Notifications on',codingProjectLabel()),{body:'You will get pinged here when coding tasks finish.',tag:'omnilink-coding-test',icon:'favicon.ico'});
+    codingNotifyBeep();
+  }catch(e){}
 }
 function syncCodingNotifyBtn(){
   const b=document.getElementById('coding-notify-btn');
