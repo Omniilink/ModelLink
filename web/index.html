@@ -3828,12 +3828,16 @@ async function ytDownloadBrowser(){
       st.textContent='Converter refused it'+(code?': '+code:'')+'. Try the server fallback below.';
       ytHideProgress();return;
     }
-    let lastT=performance.now(),lastB=0,ema=0;
+    let lastT=performance.now(),lastB=0,lastSpdT=0,ema=0,spd='';
     const onp=(loaded,total)=>{
       const pct=dlPercent(loaded,total);
-      const now=performance.now(),dt=(now-lastT)/1000;
-      if(dt>0){const inst=(loaded-lastB)/dt;ema=ema>0?ema*0.7+inst*0.3:inst;lastT=now;lastB=loaded;}
-      const spd=ytSpeedText(ema);
+      const now=performance.now();
+      if(now-lastSpdT>=200){
+        const dt=(now-lastT)/1000;
+        if(dt>0){const inst=(loaded-lastB)/dt;ema=ema>0?ema*0.7+inst*0.3:inst;}
+        lastT=now;lastB=loaded;lastSpdT=now;
+        spd=ytSpeedText(ema);
+      }
       ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)'+(spd?' · '+spd:''):formatBandwidth(loaded)+' downloaded…'+(spd?' · '+spd:''));
     };
     if(d.status==='local-processing'){
