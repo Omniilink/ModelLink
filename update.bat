@@ -8,7 +8,12 @@ if errorlevel 1 (
   exit /b 1
 )
 echo === Pulling latest code ===
-git pull
+REM Prod is also a deploy target (scp'd files + cobaltv18/), so the tree is
+REM usually dirty and plain `git pull` would refuse. Snapshot prod-side
+REM changes into the stash (see them with `git stash list`) and pull clean.
+if exist cobaltv18 git -c user.name="update.bat" -c user.email="update@localhost" stash push -m "update.bat snapshot" --include-untracked -- cobaltv18
+git -c user.name="update.bat" -c user.email="update@localhost" stash push -m "update.bat snapshot"
+git pull --ff-only
 if errorlevel 1 (
   echo GIT PULL FAILED - fix the error above and try again.
   pause
