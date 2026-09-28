@@ -94,13 +94,14 @@ services:
   # the /converter prefix (cobalt has no subpath support) and streams files
   # straight through to the browser.
   cobalt:
-    image: ghcr.io/imputnet/cobalt:latest
+    image: modellink-cobalt:v18
     restart: unless-stopped
     environment:
       - API_URL=${OMNIILINK_CONVERTER_API:-https://omniilink.dpdns.org/converter/}
       # Personal instance behind your own login: let the page call it
       # from anywhere (localhost dev included) without per-origin setup.
       - CORS_WILDCARD=1
+      - CUSTOM_INNERTUBE_CLIENT=VISIONOS
     networks:
       - omniilink-net
 

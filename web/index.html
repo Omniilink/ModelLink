@@ -3704,7 +3704,7 @@ function ytOptionsChanged(){
   const note=document.getElementById('yt-path-note');
   if(note){
     const why=ytNeedsServer(sel);
-    note.textContent=why?(why+' — the server will do it (slower)'):'Downloads straight in your browser';
+    note.textContent=why?(why+' — use the server link below for it'):'Downloads straight in your browser';
   }
 }
 function ytPartName(name,idx,total){
@@ -3795,8 +3795,7 @@ async function ytDownloadBrowser(){
   const sel=ytSelection();
   const why=ytNeedsServer(sel);
   if(why){
-    st.textContent=why.charAt(0).toUpperCase()+why.slice(1)+' — switching to the server download…';
-    await ytDownloadServer();
+    st.textContent=why.charAt(0).toUpperCase()+why.slice(1)+' — not supported in the browser; use the server link below for it.';
     return;
   }
   const api=await ytConverterUrl();
@@ -3854,10 +3853,8 @@ async function ytDownloadBrowser(){
     }
   }catch(e){
     if(e&&e.emptyFile){
-      // Known cobalt failure: YouTube 403s its stream, so the tunnel answers
-      // 200 with no bytes. The server side uses yt-dlp instead, so retry there.
-      st.textContent='The converter sent an empty file (YouTube is blocking it) — downloading on your server instead…';
-      await ytDownloadServer();
+      st.textContent='The converter sent an empty file (YouTube is blocking it) — try again in a moment, or use the server link below.';
+      ytHideProgress();
       return;
     }
     st.textContent='Contacting the converter failed — checking why…';
