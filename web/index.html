@@ -3757,7 +3757,9 @@ async function ytFetchWithProgress(url,onp){
     if(it.done)break;
     chunks.push(it.value);loaded+=it.value.length;onp(loaded,total);
   }
-  return {blob:new Blob(chunks),name:ytCdFilename(r.headers.get('Content-Disposition')||'')};
+  const out=new Blob(chunks);
+  if(!out.size)throw Object.assign(new Error('converter returned an empty file'),{emptyFile:true});
+  return {blob:out,name:ytCdFilename(r.headers.get('Content-Disposition')||'')};
 }
 async function ytFetchInfo(){
   const url=document.getElementById('yt-url').value.trim();
@@ -3851,6 +3853,13 @@ async function ytDownloadBrowser(){
       ytHideProgress();
     }
   }catch(e){
+    if(e&&e.emptyFile){
+      // Known cobalt failure: YouTube 403s its stream, so the tunnel answers
+      // 200 with no bytes. The server side uses yt-dlp instead, so retry there.
+      st.textContent='The converter sent an empty file (YouTube is blocking it) — downloading on your server instead…';
+      await ytDownloadServer();
+      return;
+    }
     st.textContent='Contacting the converter failed — checking why…';
     ytHideProgress();
     try{
@@ -3893,6 +3902,10 @@ async function ytDownloadServer(){
       st.textContent=msg;return;
     }
     const blob=await r.blob();
+    if(!blob.size){
+      st.textContent='The server produced an empty file — YouTube may be rate-limiting it. Try again in a few minutes.';
+      return;
+    }
     let name='youtube.'+(sel.type==='audio'?(sel.aFormat==='original'?'m4a':sel.aFormat):(sel.container||'mp4'));
     const cd=r.headers.get('Content-Disposition')||'';
     const m=cd.match(/filename\*=UTF-8''([^;]+)/);

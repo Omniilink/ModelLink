@@ -3639,6 +3639,14 @@ def _yt_video_ffmpeg(ff: str, plan: dict, src: str, dst: str) -> list:
     return args + [dst]
 
 
+def _yt_cover_map(cover: str) -> list:
+    """Map + encoder for an embedded cover image. Tags only accept JPEG/PNG,
+    so anything else (YouTube hands out .webp) gets re-encoded first."""
+    if cover.lower().endswith((".jpg", ".jpeg", ".png")):
+        return ["-map", "1:v", "-c:v", "copy"]
+    return ["-map", "1:v", "-c:v", "mjpeg"]
+
+
 def _yt_audio_ffmpeg(ff: str, plan: dict, src: str, dst: str, cover: str = "") -> list:
     """ffmpeg argv that encodes the first audio stream to the chosen format,
     optionally embedding the thumbnail as cover art."""
@@ -3646,12 +3654,13 @@ def _yt_audio_ffmpeg(ff: str, plan: dict, src: str, dst: str, cover: str = "") -
     if not _yt_have_encoder(enc):
         raise ValueError(f"this server's ffmpeg cannot write {plan['a_format'].upper()}")
     args = [ff, "-y", "-v", "error", "-i", src]
-    use_cover = bool(cover) and os.path.isfile(cover)
+    # WAV cannot carry a picture, so do not even ask for one.
+    use_cover = bool(cover) and plan["a_format"] != "wav" and os.path.isfile(cover)
     if use_cover:
         args += ["-i", cover]
     args += ["-map", "0:a:0"]
     if use_cover:
-        args += ["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]
+        args += _yt_cover_map(cover) + ["-disposition:v", "attached_pic"]
     args += ["-c:a", enc]
     if not plan["lossless"]:
         args += ["-b:a", plan["a_bitrate"] + "k"]
@@ -3839,7 +3848,7 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
         else:
             if plan["a_format"] != "original":
                 dst = os.path.join(tmpdir, "out." + plan["ext"])
-                thumbs = [f for f in produced if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+                thumbs = [f for f in produced if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))]
                 cover = os.path.join(tmpdir, thumbs[0]) if (plan["cover"] and thumbs) else ""
                 try:
                     fproc = await _run(_yt_audio_ffmpeg(ffmpeg, plan, src, dst, cover), 1800)
