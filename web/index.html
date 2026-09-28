@@ -1121,6 +1121,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="tool-row">
                 <button class="btn btn-ghost" id="yt-info-btn" onclick="ytFetchInfo()">Get info</button>
                 <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownloadBrowser()">Download</button>
+                <button class="btn btn-ghost" id="yt-cancel-btn" style="display:none" onclick="ytCancelDownload()">Cancel</button>
                 <span class="tool-result-sub" id="yt-path-note"></span>
               </div>
               <div class="dl-progress" id="yt-progress" style="display:none"><div class="dl-fill" id="yt-fill"></div></div>
@@ -3732,6 +3733,12 @@ function ytConverterErrorHint(probe){
     return 'Converter machine answers, but the browser call is blocked — stale tunnel route (run update.bat to restart it) or CORS off on the instance. Server fallback is below.';
   return 'Converter address is not reachable at all — the cobalt container is likely not running. On the server: update.bat, then check docker compose ps shows cobalt. Server fallback is below.';
 }
+function ytSpeedText(bps){
+  if(!(bps>0))return '';
+  return (bps*8/1000000).toFixed(1)+' Mbps · '+(bps/1048576).toFixed(1)+' MB/s';
+}
+let ytDlCtrl=null;
+function ytCancelDownload(){if(ytDlCtrl)ytDlCtrl.abort()}
 function ytShowProgress(pct,text){
   const bar=document.getElementById('yt-progress');
   bar.style.display='block';
@@ -3746,8 +3753,8 @@ function ytCdFilename(cd){
   m=/filename="?([^";]+)"?/i.exec(cd);
   return m?m[1]:'';
 }
-async function ytFetchWithProgress(url,onp){
-  const r=await fetch(url);
+async function ytFetchWithProgress(url,onp,signal){
+  const r=await fetch(url,signal?{signal}:undefined);
   if(!r.ok)throw new Error('Converter stream failed ('+r.status+')');
   const total=parseInt(r.headers.get('Content-Length')||r.headers.get('Estimated-Content-Length')||'0',10)||0;
   const reader=r.body.getReader();
@@ -3804,6 +3811,10 @@ async function ytDownloadBrowser(){
     return;
   }
   btn.disabled=true;
+  const cancelBtn=document.getElementById('yt-cancel-btn');
+  if(cancelBtn)cancelBtn.style.display='';
+  ytDlCtrl=new AbortController();
+  const dlSignal=ytDlCtrl.signal;
   ytShowProgress(0,'Contacting converter…');
   try{
     const body=ytCobaltBody(sel,url);
@@ -3817,9 +3828,13 @@ async function ytDownloadBrowser(){
       st.textContent='Converter refused it'+(code?': '+code:'')+'. Try the server fallback below.';
       ytHideProgress();return;
     }
+    let lastT=performance.now(),lastB=0,ema=0;
     const onp=(loaded,total)=>{
       const pct=dlPercent(loaded,total);
-      ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)':formatBandwidth(loaded)+' downloaded…');
+      const now=performance.now(),dt=(now-lastT)/1000;
+      if(dt>0){const inst=(loaded-lastB)/dt;ema=ema>0?ema*0.7+inst*0.3:inst;lastT=now;lastB=loaded;}
+      const spd=ytSpeedText(ema);
+      ytShowProgress(pct,total?formatBandwidth(loaded)+' / '+formatBandwidth(total)+' ('+pct+'%)'+(spd?' · '+spd:''):formatBandwidth(loaded)+' downloaded…'+(spd?' · '+spd:''));
     };
     if(d.status==='local-processing'){
       const parts=(d.tunnel||[]).filter(Boolean);
@@ -3827,7 +3842,7 @@ async function ytDownloadBrowser(){
       const named=d.output&&d.output.filename?d.output.filename:'youtube';
       const saved=[];
       for(let i=0;i<parts.length;i++){
-        const got=await ytFetchWithProgress(parts[i],onp);
+        const got=await ytFetchWithProgress(parts[i],onp,dlSignal);
         const fname=ytPartName(got.name||named,i,parts.length);
         downloadBlob(got.blob,fname);
         saved.push(fname);
@@ -3836,7 +3851,7 @@ async function ytDownloadBrowser(){
       }
       ytShowProgress(100,'Saved '+saved.length+' files: '+saved.join(', '));
     }else if(d.status==='tunnel'){
-      const got=await ytFetchWithProgress(d.url,onp);
+      const got=await ytFetchWithProgress(d.url,onp,dlSignal);
       const fname=got.name||d.filename||('youtube.'+(sel.type==='audio'?'mp3':'mp4'));
       downloadBlob(got.blob,fname);
       ytShowProgress(100,'Saved '+fname);
@@ -3854,6 +3869,11 @@ async function ytDownloadBrowser(){
   }catch(e){
     if(e&&e.emptyFile){
       st.textContent='The converter sent an empty file (YouTube is blocking it) — try again in a moment, or use the server link below.';
+      ytHideProgress();
+      return;
+    }
+    if(e&&e.name==='AbortError'){
+      st.textContent='Download cancelled.';
       ytHideProgress();
       return;
     }
@@ -3879,7 +3899,7 @@ async function ytDownloadBrowser(){
     }catch(e2){
       st.textContent='Could not reach the converter. Server fallback is below.';
     }
-  }finally{btn.disabled=false}
+  }finally{btn.disabled=false;if(cancelBtn)cancelBtn.style.display='none';ytDlCtrl=null}
 }
 async function ytDownloadServer(){
   const url=document.getElementById('yt-url').value.trim();
@@ -3887,9 +3907,13 @@ async function ytDownloadServer(){
   const st=document.getElementById('yt-status');
   const btn=document.getElementById('yt-dl-btn');
   if(!url){st.textContent='Paste a YouTube link first.';return}
-  btn.disabled=true;st.textContent='Downloading on the server — this can take a few minutes for long videos…';
+  btn.disabled=true;
+  const cancelBtn=document.getElementById('yt-cancel-btn');
+  if(cancelBtn)cancelBtn.style.display='';
+  ytDlCtrl=new AbortController();
+  st.textContent='Downloading on the server — this can take a few minutes for long videos…';
   try{
-    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},signal:ytDlCtrl.signal,
       body:JSON.stringify({url:url,format:sel.type==='audio'?'mp3':'mp4',kind:sel.type,
         container:sel.container,codec:sel.codec,compress:sel.compress,fps:sel.fps,height:sel.height,
         streams:sel.streams,subs:sel.subs,audio_format:sel.aFormat,audio_bitrate:sel.aBitrate,cover:sel.cover})});
@@ -3909,8 +3933,10 @@ async function ytDownloadServer(){
     if(m){try{name=decodeURIComponent(m[1])}catch(e){}}
     downloadBlob(blob,name);
     st.textContent='Saved '+name;
-  }catch(e){st.textContent='Network error: '+e.message}
-  finally{btn.disabled=false}
+  }catch(e){
+    st.textContent=(e&&e.name==='AbortError')?'Download cancelled.':'Network error: '+e.message;
+  }
+  finally{btn.disabled=false;if(cancelBtn)cancelBtn.style.display='none';ytDlCtrl=null}
 }
 async function convertFile(){
   const inp=document.getElementById('conv-file');
