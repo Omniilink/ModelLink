@@ -29,7 +29,7 @@ if "%REMOTE%"=="" (
   exit /b 0
 )
 if "%LOCAL%"=="%REMOTE%" (
-  echo [%date% %time%] Up to date (%LOCAL:~0,7%).
+  echo [%date% %time%] Up to date %LOCAL:~0,7%.
   exit /b 0
 )
 echo.
