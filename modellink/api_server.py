@@ -6000,8 +6000,8 @@ async def serve_favicon():
 
 @app.get("/favicon.ico")
 async def serve_favicon_ico():
-    favicon_path = os.path.join(APP_DIR, "web", "favicon.svg")
-    return FileResponse(favicon_path, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+    favicon_path = os.path.join(APP_DIR, "web", "favicon.ico")
+    return FileResponse(favicon_path, media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
 
 web_dir = os.path.join(APP_DIR, "web")
 if os.path.isdir(web_dir):
