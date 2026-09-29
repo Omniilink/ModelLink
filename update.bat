@@ -11,8 +11,15 @@ if errorlevel 1 (
 )
 
 :watchloop
-set FORCE_UPDATE=1
-call :update_once
+if not defined WATCH_STARTED set FORCE_UPDATE=1
+set WATCH_STARTED=1
+REM NOTE: :update_once may rewrite this very file (git pull), which desyncs
+REM the reader - resuming on the next line would execute garbage (this once
+REM stuck FORCE_UPDATE=1 on and rebuilt every 5s). Chain the jump on the
+REM SAME line as the call: it is parsed before the mutation runs, and goto
+REM rescans the file, so execution always resumes at fresh offsets.
+call :update_once && goto :watch_cont || goto :watch_cont
+:watch_cont
 set FORCE_UPDATE=
 echo.
 echo --- Watching for updates every 5s (Ctrl+C to stop) ---
