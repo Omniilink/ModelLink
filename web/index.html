@@ -992,7 +992,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="omnilink",
+    model="omniilink",
     messages=[{"role": "user", "content": "Hello"}]
 )
 print(response.choices[0].message.content)</code></pre></div></div>
@@ -1004,7 +1004,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: "omnilink",
+    model: "omniilink",
   messages: [{ role: "user", content: "Hello" }],
 });
 console.log(response.choices[0].message.content);</code></pre></div></div>
@@ -1012,7 +1012,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "omnilink",
+    "model": "omniilink",
     "messages": [{"role": "user", "content": "Hello"}]
   }'</code></pre></div></div>
               <div id="api-code-config" class="api-code-block" style="display:none"><div style="position:relative"><button class="copy-btn" onclick="copyApiCode('config')">Copy</button><pre><code id="opencode-config-json"></code></pre></div><p style="font-size:11px;color:var(--text-muted);margin-top:10px">Works with OpenCode, Cursor, Continue, Cline, and any OpenAI-compatible tool</p></div>
@@ -1035,8 +1035,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <h2 style="margin-bottom:16px">Welcome to Omniilink</h2>
           <p style="color:var(--text-secondary);margin-bottom:20px">Omniilink is a multi-provider AI load balancer. It routes your prompts to the best available AI model automatically.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Getting Started</h3>
-          <ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li style="margin-bottom:8px"><strong>Add API Keys</strong> &mdash; Go to Providers and add at least one key (Groq is free and fast — each provider card has a setup guide)</li><li style="margin-bottom:8px"><strong>Start Chatting</strong> &mdash; Type a message and press Enter. Omniilink auto-routes to the best model.</li><li style="margin-bottom:8px"><strong>Choose a Model</strong> &mdash; Click the model button to pick a specific provider, or leave it on "omnilink" for auto-routing.</li></ol>
-          <h3 style="margin:20px 0 10px;color:var(--accent)">Smart Routing</h3><p style="color:var(--text-secondary);margin-bottom:20px">When set to "omnilink", the system classifies your message as simple, medium, or complex, then picks the best model for the task.</p>
+          <ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li style="margin-bottom:8px"><strong>Add API Keys</strong> &mdash; Go to Providers and add at least one key (Groq is free and fast — each provider card has a setup guide)</li><li style="margin-bottom:8px"><strong>Start Chatting</strong> &mdash; Type a message and press Enter. Omniilink auto-routes to the best model.</li><li style="margin-bottom:8px"><strong>Choose a Model</strong> &mdash; Click the model button to pick a specific provider, or leave it on "omniilink" for auto-routing.</li></ol>
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Smart Routing</h3><p style="color:var(--text-secondary);margin-bottom:20px">When set to "omniilink", the system classifies your message as simple, medium, or complex, then picks the best model for the task.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Coding Mode</h3><p style="color:var(--text-secondary);margin-bottom:20px">Click the code icon in the sidebar to switch to Coding Mode. This provides a file tree, project management, and a terminal panel.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Prompts Library</h3><p style="color:var(--text-secondary);margin-bottom:20px">Save and reuse prompt templates. Organize by category: Coding, Writing, Analysis, or Custom.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Keyboard Shortcuts</h3><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li><strong>Ctrl+Enter</strong> &mdash; Send message</li><li><strong>Ctrl+N</strong> &mdash; New chat</li><li><strong>Ctrl+/</strong> &mdash; Open help</li><li><strong>Escape</strong> &mdash; Close menus</li></ul>
@@ -1531,9 +1531,9 @@ async function loadModels(){
 }
 function renderModelMenu(models,backupModel){
   const menu=document.getElementById('model-menu');menu.innerHTML='';
-  const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omnilink';
-  opt.innerHTML='<span>omnilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omnilink');menu.appendChild(opt);
-  const grouped={};models.filter(m=>m.id!=='omnilink').forEach(m=>{const p=m.provider||'other';if(!grouped[p])grouped[p]=[];grouped[p].push(m)});
+  const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omniilink';
+  opt.innerHTML='<span>omniilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omniilink');menu.appendChild(opt);
+  const grouped={};models.filter(m=>m.id!=='omniilink').forEach(m=>{const p=m.provider||'other';if(!grouped[p])grouped[p]=[];grouped[p].push(m)});
   const providerOrder=['ollama','opencode','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[0]);const bi=providerOrder.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[provider,pm]of sorted){
@@ -3865,7 +3865,7 @@ async function loadApiPage(){
 function renderProviderCards(providers){const grid=document.getElementById('api-providers-grid');if(!grid)return;grid.innerHTML='';for(const[id,p]of Object.entries(providers)){const icon=PROVIDER_ICONS[id]||{letter:id.substring(0,2).toUpperCase(),color:'#71717A'};const card=document.createElement('div');card.className='provider-card';card.innerHTML='<div class="prov-icon" style="background:'+icon.color+'">'+icon.letter+'</div><div class="prov-info"><div class="prov-name">'+(p.name||id)+'</div><div class="prov-status '+(p.configured?'on':'off')+'">'+(p.configured?'Connected':'Not configured')+'</div></div>';grid.appendChild(card)}}
 function renderApiKeys(keys){const list=document.getElementById('api-keys-list');if(!list)return;if(keys.length===0){list.innerHTML='<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No API keys yet. Generate one to use with opencode, curl, or any OpenAI-compatible client.</div>';return}list.innerHTML='';for(const k of keys){const row=document.createElement('div');row.className='api-key-row';row.innerHTML='<code>'+escapeHtml(k.key)+'</code><button onclick="navigator.clipboard.writeText(\''+k.key+'\').then(()=>{this.textContent=\'Copied!\';setTimeout(()=>this.textContent=\'Copy\',1500)})">Copy</button><button class="danger" onclick="revokeApiKey(\''+k.key+'\')">Revoke</button>';list.appendChild(row)}}
 function renderRoutingInfo(tiers,providers){const container=document.getElementById('api-routing-info');if(!container)return;container.innerHTML='';for(const[level,models]of Object.entries(tiers)){const first=models[0];const provName=providers[first[0]]?.name||first[0];const card=document.createElement('div');card.className='tier-card';card.innerHTML='<div class="tier-label">'+level+'</div><div class="tier-model">'+first[1]+'</div><div class="tier-desc">'+(TIER_DESCS[level]||'')+'</div><div style="font-size:10px;color:var(--accent-light);margin-top:4px">'+provName+'</div>';container.appendChild(card)}}
-function renderConfigSnippet(info){const el=document.getElementById('opencode-config-json');if(!el)return;const base=API_BASE||window.location.origin;const config={"$schema":"https://opencode.ai/config.json","provider":{"omnilink":{"npm":"@ai-sdk/openai-compatible","name":"Omniilink","options":{"baseURL":base.replace(/\/$/,'')+"/v1"},"models":{"omnilink":{"name":"Omniilink (Auto-Route)"}}}}};el.textContent=JSON.stringify(config,null,2)}
+function renderConfigSnippet(info){const el=document.getElementById('opencode-config-json');if(!el)return;const base=API_BASE||window.location.origin;const config={"$schema":"https://opencode.ai/config.json","provider":{"omniilink":{"npm":"@ai-sdk/openai-compatible","name":"Omniilink","options":{"baseURL":base.replace(/\/$/,'')+"/v1"},"models":{"omniilink":{"name":"Omniilink (Auto-Route)"}}}}};el.textContent=JSON.stringify(config,null,2)}
 async function generateApiKey(){const btn=document.querySelector('[onclick="generateApiKey()"]');if(btn){btn.disabled=true;btn.textContent='Generating...'}try{const r=await authFetch(API+'/api/keys/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const data=await r.json();if(r.ok&&data.key){showToast('API Key generated!','success');loadApiPage();appAlert('API Key Generated\n\n'+data.key+'\n\nCopy this key now. It won\'t be shown again.')}else{appAlert('Failed to generate key: '+(data.error||'Unknown error (status '+r.status+')'))}}catch(e){appAlert('Failed to generate key: '+e.message)}finally{if(btn){btn.disabled=false;btn.textContent='+ New Key'}}}
 async function revokeApiKey(key){if(await appConfirm('Revoke this API key?')){try{await authFetch(API+'/api/keys/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key})});loadApiPage();showToast('Key revoked','success')}catch(e){appAlert('Failed to revoke key')}}}
 
@@ -4611,8 +4611,8 @@ function buildCmdList(query){
     {icon:'\u2605',label:'View Bookmarks',action:()=>{closeCmdPalette();viewBookmarks()},keys:'Ctrl+D'},
     {icon:'\u2194',label:'Compare Models',action:()=>{closeCmdPalette();toggleCompareMode()},keys:'Ctrl+M'},
   ];
-  if(selectedModel!=='omnilink'){
-    actions.push({icon:'\u26A1',label:'Switch to omnilink (auto-route)',action:()=>{closeCmdPalette();selectModel('omnilink')}});
+  if(selectedModel!=='omniilink'){
+    actions.push({icon:'\u26A1',label:'Switch to omniilink (auto-route)',action:()=>{closeCmdPalette();selectModel('omniilink')}});
   }
   if(currentView==='coding'){
     actions.push({section:'Coding'});
@@ -4634,8 +4634,8 @@ function buildCmdList(query){
     }
   }
   actions.push({section:'Models'});
-  const modelList=[{id:'omnilink',provider:'auto'}];
-  if(allModels)allModels.filter(m=>m.id!=='omnilink').forEach(m=>modelList.push(m));
+const modelList=[{id:'omniilink',provider:'auto'}];
+if(allModels)allModels.filter(m=>m.id!=='omniilink').forEach(m=>modelList.push(m));
   modelList.forEach(m=>{
     actions.push({icon:m.provider?m.provider.substring(0,2).toUpperCase():'AI',label:m.id,action:()=>{closeCmdPalette();selectModel(m.id)},sub:m.provider||''});
   });
@@ -4825,10 +4825,10 @@ function sendCompareRequest(userMsg){
 // ========== CODING: search / git / history / plan / export ==========
 function syncCodingModelSelect(){
   const sel=document.getElementById('coding-model');if(!sel)return;
-  const models=[{id:'omnilink',provider:'auto'}].concat(allModels||[]);
-  const cur=selectedModel||'omnilink';
+  const models=[{id:'omniilink',provider:'auto'}].concat((allModels||[]).filter(m=>m.id!=='omniilink'));
+  const cur=selectedModel||'omniilink';
   sel.innerHTML=models.map(m=>'<option value="'+escapeHtml(m.id)+'">'+escapeHtml(m.id)+(m.provider?' ('+escapeHtml(m.provider)+')':'')+'</option>').join('');
-  sel.value=models.some(m=>m.id===cur)?cur:'omnilink';
+  sel.value=models.some(m=>m.id===cur)?cur:'omniilink';
 }
 
 // ---- File upload (server limit from settings; admins unlimited;

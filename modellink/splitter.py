@@ -692,7 +692,7 @@ class MultiProviderBalancer:
 
     def generate(self, messages, model=MODEL_NAME, temperature=0.7, max_tokens=4000, stream=True, user_keys=None, opts=None):
         messages = self._inject_system_prompt(messages, opts)
-        if model == MODEL_NAME:
+        if model == MODEL_NAME or model == "omnilink":
             task = classify_task(messages)
             logger.info(f"[ROUTING] Task classified as '{task}'")
             return self._smart_generate(messages, task, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
