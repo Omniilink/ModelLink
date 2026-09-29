@@ -39,11 +39,14 @@ REM so the tree is usually dirty and plain `git pull` would refuse. Snapshot
 REM prod-side changes into the stash (see them with `git stash list`) first.
 if exist cobaltv18 git -c user.name="update.bat" -c user.email="update@localhost" stash push -m "update.bat snapshot" --include-untracked -- cobaltv18
 git -c user.name="update.bat" -c user.email="update@localhost" stash push -m "update.bat snapshot"
-git pull --ff-only
-if errorlevel 1 (
-  echo GIT PULL FAILED - will retry on the next check.
-  exit /b 0
-)
+git pull --ff-only && goto :pull_ok || goto :pull_fail
+:pull_fail
+echo GIT PULL FAILED - will retry on the next check.
+exit /b 0
+:pull_ok
+REM NOTE: the pull above rewrites this very file mid-run, which desyncs the
+REM reader - the next line read would be garbage. Always jump (goto rescans
+REM the file) right after pulling, never read straight on.
 echo.
 echo === Checking mounted files ===
 call :ensure_file "network_usage.json"
