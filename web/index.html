@@ -72,7 +72,7 @@ a:hover{text-decoration:underline}
 .theme-btn svg{width:14px;height:14px}
 .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
 .header{height:52px;min-height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0}
-.header-title{font-weight:600;font-size:14px;color:var(--text-primary)}
+.header-title{font-weight:600;font-size:14px;color:var(--text-primary);display:flex;align-items:center;gap:8px}
 .header-sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
 .header-spacer{flex:1}
 .header-btn{background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:4px 12px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;transition:all .12s;display:flex;align-items:center;gap:5px;font-family:var(--font);white-space:nowrap}
@@ -741,8 +741,9 @@ pre{max-width:100%}
       <div class="logo">
         <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
           <rect width="32" height="32" rx="8" fill="#2563eb"/>
-          <circle cx="13" cy="16" r="5" stroke="#fff" stroke-width="2.2" fill="none"/>
-          <circle cx="19" cy="16" r="5" stroke="rgba(255,255,255,0.65)" stroke-width="2.2" fill="none"/>
+          <path d="M8 12c0-2.2 1.8-4 4-4h2c2.2 0 4 1.8 4 4v0c0 2.2-1.8 4-4 4h-2c-2.2 0-4-1.8-4-4z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M14 20c0 2.2 1.8 4 4 4h2c2.2 0 4-1.8 4-4v0c0-2.2-1.8-4-4-4h-2c-2.2 0-4 1.8-4 4z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          <line x1="14" y1="16" x2="18" y2="16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
         </svg>
         <span class="logo-text">Omniilink</span>
       </div>
@@ -825,7 +826,7 @@ pre{max-width:100%}
       <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <div class="header-title">Omniilink</div>
+      <div class="header-title"><svg width="20" height="20" viewBox="0 0 32 32" fill="none" style="flex-shrink:0"><rect width="32" height="32" rx="8" fill="#2563eb"/><path d="M8 12c0-2.2 1.8-4 4-4h2c2.2 0 4 1.8 4 4v0c0 2.2-1.8 4-4 4h-2c-2.2 0-4-1.8-4-4z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M14 20c0 2.2 1.8 4 4 4h2c2.2 0 4-1.8 4-4v0c0-2.2-1.8-4-4-4h-2c-2.2 0-4 1.8-4 4z" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><line x1="14" y1="16" x2="18" y2="16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg><span>Omniilink</span></div>
       <div class="header-spacer"></div>
       <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)" style="font-size:11px;gap:4px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
