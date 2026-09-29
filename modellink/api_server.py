@@ -5990,8 +5990,8 @@ async def serve_admin(request: Request):
 
 @app.get("/")
 async def serve_index():
-    index_path = os.path.join(APP_DIR, "web", "index.html")
-    return FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+    landing_path = os.path.join(APP_DIR, "web", "landing.html")
+    return FileResponse(landing_path, headers={"Cache-Control": "public, max-age=600"})
 
 @app.get("/favicon.svg")
 async def serve_favicon():
