@@ -217,7 +217,9 @@ a:hover{text-decoration:underline}
 .coding-input-box textarea{flex:1;background:transparent;border:none;padding:7px 0;color:var(--text-primary);font-family:var(--font);font-size:13px;resize:none;outline:none;min-height:20px;max-height:120px;line-height:1.5}
 .coding-input-box textarea::placeholder{color:var(--text-muted)}
 .file-preview{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--text-muted);max-height:360px;overflow:auto;white-space:pre}
-.file-edit{display:block;width:100%;box-sizing:border-box;min-height:200px;height:320px;resize:vertical;background:var(--bg-secondary);border:1px solid var(--accent);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--text-primary);white-space:pre}
+#file-edit-modal .modal{height:92vh;max-height:92vh}
+#file-edit-area{flex:1;min-height:0;resize:none;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:12px 14px;margin:0;font-family:var(--mono);font-size:12px;line-height:1.6;color:var(--text-primary);white-space:pre;box-sizing:border-box;width:100%}
+#file-edit-area:focus{border-color:var(--accent);outline:none}
 .cmd-result{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;white-space:pre-wrap;max-height:200px;overflow:auto}
 .cmd-result.stdout{color:var(--text-secondary)}
 .cmd-result.stderr{color:var(--error)}
@@ -905,7 +907,7 @@ pre{max-width:100%}
         <div class="terminal-body" id="terminal-body"></div>
       </div>
       <div class="view-panel" id="usage-view">
-        <div class="view-header"><h2>Usage Analytics</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-header"><h2>Usage Analytics</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="usage-body">
           <div style="max-width:1000px;margin:0 auto">
             <div class="usage-range" id="usage-range">
@@ -962,7 +964,7 @@ pre{max-width:100%}
         </div>
       </div>
       <div class="view-panel" id="api-view">
-        <div class="view-header"><h2>API</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-header"><h2>API</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="api-body">
           <div style="max-width:680px;margin:0 auto">
             <div id="api-connection-status" class="connection-status" style="display:none"></div>
@@ -1008,12 +1010,12 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         </div>
       </div>
       <div class="view-panel" id="settings-view">
-        <div class="view-header"><h2>Settings</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back to Chat</button></div>
+        <div class="view-header"><h2>Settings</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back to Chat</button></div>
         <div class="view-body" id="settings-body"></div>
-        <div class="view-footer"><button class="btn btn-ghost" onclick="switchView('chat')">Cancel</button><button class="btn btn-primary" onclick="saveSettings()">Save All</button></div>
+        <div class="view-footer"><button class="btn btn-ghost" onclick="navigate('chat')">Cancel</button><button class="btn btn-primary" onclick="saveSettings()">Save All</button></div>
       </div>
       <div class="view-panel" id="tutorial-view">
-        <div class="view-header"><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">&larr; Back</button><span style="font-weight:600">Help &amp; Tutorial</span><span></span></div>
+        <div class="view-header"><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">&larr; Back</button><span style="font-weight:600">Help &amp; Tutorial</span><span></span></div>
         <div class="view-body" style="max-width:700px;margin:0 auto;line-height:1.7">
           <h2 style="margin-bottom:16px">Welcome to Omniilink</h2>
           <p style="color:var(--text-secondary);margin-bottom:20px">Omniilink is a multi-provider AI load balancer. It routes your prompts to the best available AI model automatically.</p>
@@ -1029,27 +1031,27 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         </div>
       </div>
       <div class="view-panel" id="projects-view">
-        <div class="view-header"><h2>Projects</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-header"><h2>Projects</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="projects-body"></div>
       </div>
       <div class="view-panel" id="more-view">
-        <div class="view-header"><h2>More Tools</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-header"><h2>More Tools</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="more-body">
           <div style="max-width:1000px;margin:0 auto">
             <div class="tools-grid" id="tools-grid">
-              <div class="tool-card" onclick="openTool('youtube')">
+              <div class="tool-card" onclick="navigateTool('youtube')">
                 <div class="tool-icon">▶</div>
                 <div class="tool-name">YouTube downloader</div>
                 <div class="tool-desc">Paste a link, then pick video or audio, the file type, codec, compression and stream layout. Runs on your own server — no shady converter sites.</div>
               </div>
-              <div class="tool-card" onclick="openTool('convert')">
+              <div class="tool-card" onclick="navigateTool('convert')">
                 <div class="tool-icon">⇄</div>
                 <div class="tool-name">File Converter</div>
                 <div class="tool-desc">Images between PNG, JPG, WebP, GIF, BMP, TIFF and ICO — plus PDF pages to images.</div>
               </div>
             </div>
             <div class="tool-pane" id="tool-youtube" style="display:none">
-              <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
+              <button class="btn btn-ghost btn-sm" onclick="navigate('more')">← All tools</button>
               <h3>YouTube downloader</h3>
               <div class="tool-row">
                 <input type="text" id="yt-url" placeholder="Paste a YouTube link…" autocomplete="off" oninput="ytUrlChanged()" />
@@ -1131,7 +1133,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="tool-hint">Having trouble? <a href="#" onclick="ytDownloadServer();return false">Download via server instead</a> (slower, counts toward bandwidth).</div>
             </div>
             <div class="tool-pane" id="tool-convert" style="display:none">
-              <button class="btn btn-ghost btn-sm" onclick="closeTool()">← All tools</button>
+              <button class="btn btn-ghost btn-sm" onclick="navigate('more')">← All tools</button>
               <h3>File Converter</h3>
               <div class="tool-row">
                 <input type="file" id="conv-file" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.tiff,.tif,.ico,.pdf" />
@@ -1158,7 +1160,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         </div>
       </div>
       <div class="view-panel" id="prompts-view">
-        <div class="view-header"><h2>Prompts Library</h2><button class="btn btn-ghost btn-sm" onclick="switchView('chat')">Back</button></div>
+        <div class="view-header"><h2>Prompts Library</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="prompts-body"></div>
       </div>
       <div class="coding-view" id="coding-view">
@@ -1216,6 +1218,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
 <div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
+<div class="modal-overlay" id="file-edit-modal" onclick="if(event.target===this){event.stopPropagation();closeFileEditor()}"><div class="modal" style="max-width:96vw;width:1200px"><div class="modal-header"><h2 id="file-edit-title">Edit file</h2><span id="file-edit-meta" class="tool-result-sub"></span><button class="modal-close" onclick="closeFileEditor()">&times;</button></div><div class="modal-body" style="display:flex;flex-direction:column"><textarea id="file-edit-area" spellcheck="false" onkeydown="fileEditKey(event)"></textarea></div><div class="modal-actions"><span id="file-edit-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeFileEditor()">Cancel</button><button class="btn btn-primary" id="file-edit-save" onclick="saveFileEditor()">Save</button></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
@@ -1331,7 +1334,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
-  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();
+  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
@@ -1423,8 +1426,45 @@ function switchView(view){
   if(view==='usage')loadUsage('24h');
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
+const VIEW_ROUTES={chat:'/',coding:'/code',projects:'/projects',more:'/more',api:'/keys',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial'};
+const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help'};
+function routeFromPath(path){
+  path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
+  if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
+  for(const t in TOOL_ROUTES)if(TOOL_ROUTES[t]===path)return{view:'more',tool:t};
+  for(const v in VIEW_ROUTES)if(VIEW_ROUTES[v]===path)return{view:v,tool:null};
+  return{view:'chat',tool:null};
+}
+function routeFor(view,tool){
+  if(tool&&TOOL_ROUTES[tool])return TOOL_ROUTES[tool];
+  return VIEW_ROUTES[view]||'/';
+}
+function applyRoute(view,tool){
+  if(!VIEW_ROUTES[view])view='chat';
+  switchView(view);
+  if(view==='more'){if(tool)openTool(tool);else closeTool()}
+  else if(tool)openTool(tool);
+  try{
+    const label=(tool?tool.charAt(0).toUpperCase()+tool.slice(1)+' — ':'')+(VIEW_TITLES[view]||'Chat');
+    document.title=label+' — Omniilink';
+  }catch(e){}
+}
+function navigate(view,tool){
+  try{if(typeof history!=='undefined'&&history.pushState)history.pushState({view:view,tool:tool||null},'',routeFor(view,tool))}catch(e){}
+  applyRoute(view,tool);
+}
+function navigateTool(name){navigate('more',name)}
+function applyInitialRoute(){
+  try{
+    if(typeof location==='undefined')return;
+    const r=routeFromPath(location.pathname);
+    if(r.view!=='chat'||r.tool)applyRoute(r.view,r.tool);
+  }catch(e){}
+}
+if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('popstate',()=>{try{const r=routeFromPath(location.pathname);applyRoute(r.view,r.tool)}catch(e){}});
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
-function toggleTerminal(){switchView(currentView==='terminal'?'chat':'terminal')}
+function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
     function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));const cm=document.getElementById('coding-model');if(cm&&cm.value!==id)cm.value=id}
 
@@ -1587,7 +1627,7 @@ async function loadSettingsData(){
   try{const r=await authFetch(API+'/api/settings');if(!r.ok)throw new Error('offline');settingsData=await r.json();renderSettings()}
   catch(e){document.getElementById('settings-body').innerHTML='<div style="padding:20px;text-align:center;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not connect to Omniilink backend</p></div>'}
 }
-async function openSettings(){switchView('settings')}
+async function openSettings(){navigate('settings')}
 function renderSettings(){
   const body=document.getElementById('settings-body');body.innerHTML='';
   const names={gemini:'Google Gemini',openai:'OpenAI',anthropic:'Anthropic',openrouter:'OpenRouter',groq:'Groq',mistral:'Mistral',together:'Together AI',deepseek:'DeepSeek',cohere:'Cohere',opencode:'OpenCode'};
@@ -1737,11 +1777,11 @@ async function saveSettings(){
   if(failed>0)showToast('Saved '+saved+', '+failed+' failed','error');
   else showToast(saved>0?'API keys saved':'Nothing new to save','success');
   refreshProviderKeyState();
-  switchView('chat');
+  navigate('chat');
   setTimeout(()=>{loadModels();loadProviderStatus()},500);
 }
 
-document.querySelectorAll('.nav-item[data-view]').forEach(item=>{item.addEventListener('click',()=>switchView(item.dataset.view))});
+document.querySelectorAll('.nav-item[data-view]').forEach(item=>{item.addEventListener('click',()=>navigate(item.dataset.view))});
 document.addEventListener('click',e=>{if(!e.target.closest('#coding-input')&&!e.target.closest('#at-dropdown'))closeAtDropdown();if(e.target.classList.contains('modal-overlay'))e.target.classList.remove('open')});
 
 const LANG_MAP={'.py':'Python','.js':'JavaScript','.ts':'TypeScript','.jsx':'React JSX','.tsx':'React TSX','.html':'HTML','.css':'CSS','.scss':'SCSS','.json':'JSON','.yaml':'YAML','.yml':'YAML','.toml':'TOML','.xml':'XML','.java':'Java','.c':'C','.cpp':'C++','.h':'C Header','.cs':'C#','.go':'Go','.rs':'Rust','.rb':'Ruby','.php':'PHP','.swift':'Swift','.kt':'Kotlin','.sh':'Shell','.bash':'Bash','.ps1':'PowerShell','.sql':'SQL','.r':'R','.lua':'Lua','.dart':'Dart','.md':'Markdown','.txt':'Text','.vue':'Vue','.svelte':'Svelte','.dockerfile':'Dockerfile','.tf':'Terraform','.ipynb':'Jupyter','.gitignore':'Gitignore','.env':'Env'};
@@ -1814,6 +1854,51 @@ function filePreviewText(content){
   const t=String(content==null?'':content);
   return t.length>4000?t.slice(0,4000)+'\n... (truncated)':t;
 }
+let fileEditName='',fileEditOrig='',fileEditPreviewEl=null;
+function setFileEditMeta(){
+  const area=document.getElementById('file-edit-area');
+  const t=area?area.value:'';
+  const meta=document.getElementById('file-edit-meta');
+  if(meta)meta.textContent=t.length+' chars · '+t.split('\n').length+' lines';
+  const st=document.getElementById('file-edit-status');
+  if(st)st.textContent=(t!==fileEditOrig?'edited':'');
+}
+function openFileEditor(name,content,previewEl){
+  fileEditName=name;fileEditOrig=String(content==null?'':content);fileEditPreviewEl=previewEl||null;
+  document.getElementById('file-edit-title').textContent='Edit '+name;
+  const area=document.getElementById('file-edit-area');area.value=fileEditOrig;
+  setFileEditMeta();
+  document.getElementById('file-edit-modal').classList.add('open');
+  area.focus();
+}
+function fileEditKey(e){
+  if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();e.stopPropagation();saveFileEditor();return}
+  if(e.key==='Tab'){e.preventDefault();e.stopPropagation();const a=e.target;const s=a.selectionStart==null?0:a.selectionStart,en=a.selectionEnd==null?s:a.selectionEnd;a.setRangeText('  ',s,en,'end');setFileEditMeta();return}
+  if(e.key==='Escape'){e.stopPropagation();closeFileEditor()}
+}
+async function saveFileEditor(){
+  const area=document.getElementById('file-edit-area');
+  const btn=document.getElementById('file-edit-save');
+  if(btn){btn.disabled=true;btn.textContent='Saving…'}
+  try{
+    const res=await codingWriteFile(fileEditName,area.value);
+    if(res&&res.ok){
+      fileEditOrig=area.value;lastFileContent=area.value;
+      if(fileEditPreviewEl&&fileEditPreviewEl.isConnected)fileEditPreviewEl.textContent=filePreviewText(area.value);
+      setFileEditMeta();
+      document.getElementById('file-edit-modal').classList.remove('open');
+      showToast('Saved '+fileEditName,'success');
+    }else showToast('Save failed: '+((res&&res.error)||'unknown error'),'error');
+  }catch(e){showToast('Save failed: '+e.message,'error')}
+  if(btn){btn.disabled=false;btn.textContent='Save'}
+}
+async function closeFileEditor(){
+  const area=document.getElementById('file-edit-area');
+  if(area&&area.value!==fileEditOrig){
+    if(!(await appConfirm('Discard unsaved changes to '+fileEditName+'?')))return;
+  }
+  document.getElementById('file-edit-modal').classList.remove('open');
+}
 async function viewCodingFile(name){
   if(!codingFolder)return;
   try{let content;
@@ -1836,28 +1921,10 @@ async function viewCodingFile(name){
     wrap.appendChild(prev);
     const bar=document.createElement('div');bar.style.cssText='margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap';
     const atBtn=document.createElement('button');atBtn.className='btn btn-ghost';atBtn.style.cssText='font-size:11px;padding:3px 10px';atBtn.textContent='@ Add to context';atBtn.onclick=()=>addAtFile(name);bar.appendChild(atBtn);
-    let area=null,editBtn=null,saveBtn=null,cancelBtn=null;
-    const closeEditor=()=>{if(area){area.remove();area=null}prev.style.display='';if(editBtn)editBtn.style.display='';if(saveBtn)saveBtn.style.display='none';if(cancelBtn)cancelBtn.style.display='none'};
     if(editable){
-      editBtn=document.createElement('button');editBtn.className='btn btn-ghost';editBtn.style.cssText='font-size:11px;padding:3px 10px';editBtn.textContent='Edit';
-      saveBtn=document.createElement('button');saveBtn.className='btn btn-primary btn-sm';saveBtn.style.cssText='font-size:11px;padding:3px 10px;display:none';saveBtn.textContent='Save';
-      cancelBtn=document.createElement('button');cancelBtn.className='btn btn-ghost';cancelBtn.style.cssText='font-size:11px;padding:3px 10px;display:none';cancelBtn.textContent='Cancel';
-      editBtn.onclick=()=>{
-        area=document.createElement('textarea');area.className='file-edit';area.spellcheck=false;area.value=content;
-        prev.style.display='none';wrap.insertBefore(area,bar);
-        editBtn.style.display='none';saveBtn.style.display='';cancelBtn.style.display='';
-      };
-      cancelBtn.onclick=()=>closeEditor();
-      saveBtn.onclick=async()=>{
-        saveBtn.disabled=true;saveBtn.textContent='Saving…';
-        try{
-          const res=await codingWriteFile(name,area.value);
-          if(res&&res.ok){content=area.value;lastFileContent=content;prev.textContent=filePreviewText(content);closeEditor();showToast('Saved '+name,'success')}
-          else showToast('Save failed: '+((res&&res.error)||'unknown error'),'error');
-        }catch(e){showToast('Save failed: '+e.message,'error')}
-        saveBtn.disabled=false;saveBtn.textContent='Save';
-      };
-      bar.appendChild(editBtn);bar.appendChild(saveBtn);bar.appendChild(cancelBtn);
+      const editBtn=document.createElement('button');editBtn.className='btn btn-ghost';editBtn.style.cssText='font-size:11px;padding:3px 10px';editBtn.textContent='Edit';
+      editBtn.onclick=()=>openFileEditor(name,content,prev);
+      bar.appendChild(editBtn);
     }else{
       const note=document.createElement('span');note.style.cssText='font-size:11px;color:var(--text-muted)';
       note.textContent=binary?'Binary file — editing disabled.':'File is too large to edit here.';
@@ -3679,7 +3746,7 @@ window.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
   if(e.ctrlKey&&e.key==='t'){e.preventDefault();toggleTerminal()}
   if(e.ctrlKey&&e.key==='b'){e.preventDefault();document.querySelector('.sidebar').classList.toggle('hidden')}
-  if(e.ctrlKey&&e.key==='/'){e.preventDefault();switchView('tutorial')}
+  if(e.ctrlKey&&e.key==='/'){e.preventDefault();navigate('tutorial')}
   if(e.key==='Escape'){document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'))}
 });
 
@@ -4183,7 +4250,7 @@ function renderPromptList(category){
     card.appendChild(header);card.appendChild(content);card.appendChild(actions);
     container.appendChild(card)}
 }
-function usePrompt(content){const input=document.getElementById('chat-input');input.value=content+'\n\n';input.focus();autoResize(input);switchView('chat')}
+function usePrompt(content){const input=document.getElementById('chat-input');input.value=content+'\n\n';input.focus();autoResize(input);navigate('chat')}
 function showNewPromptForm(){const body=document.getElementById('prompts-body');body.innerHTML='';
   body.innerHTML='<h3 style="margin-bottom:16px;font-size:14px">New Prompt</h3><div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Name</label><input type="text" id="prompt-name-input" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)" placeholder="My Prompt"></div><div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Category</label><select id="prompt-cat-input" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)"><option>Coding</option><option>Writing</option><option>Analysis</option><option>Custom</option></select></div><div style="margin-bottom:16px"><label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px">Content</label><textarea id="prompt-content-input" style="width:100%;min-height:150px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);resize:vertical" placeholder="Enter your prompt template..."></textarea></div><div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="saveNewPrompt()">Save</button><button class="btn btn-ghost" onclick="renderPromptsPage()">Cancel</button></div>';
 }
@@ -4437,12 +4504,12 @@ function buildCmdList(query){
   const actions=[
     {section:'Actions'},
     {icon:'+',label:'New Chat',action:()=>{closeCmdPalette();newChat()},keys:'Ctrl+N'},
-    {icon:'\u2699',label:'Settings',action:()=>{closeCmdPalette();switchView('settings')},keys:'Ctrl+,'},
+    {icon:'\u2699',label:'Settings',action:()=>{closeCmdPalette();navigate('settings')},keys:'Ctrl+,'},
     {icon:'\u2328',label:'Keyboard Shortcuts',action:()=>{closeCmdPalette();document.getElementById('shortcuts-modal').classList.add('open')}},
-    {icon:'\uD83D\uDCCB',label:'Projects',action:()=>{closeCmdPalette();switchView('projects')}},
-    {icon:'\u266B',label:'Prompts Library',action:()=>{closeCmdPalette();switchView('prompts')}},
-    {icon:'\u2699',label:'API Keys',action:()=>{closeCmdPalette();switchView('api')}},
-    {icon:'\uD83D\uDCCA',label:'Usage Dashboard',action:()=>{closeCmdPalette();switchView('usage')}},
+    {icon:'\uD83D\uDCCB',label:'Projects',action:()=>{closeCmdPalette();navigate('projects')}},
+    {icon:'\u266B',label:'Prompts Library',action:()=>{closeCmdPalette();navigate('prompts')}},
+    {icon:'\u2699',label:'API Keys',action:()=>{closeCmdPalette();navigate('api')}},
+    {icon:'\uD83D\uDCCA',label:'Usage Dashboard',action:()=>{closeCmdPalette();navigate('usage')}},
     {icon:'\uD83D\uDCD1',label:'Toggle Sidebar',action:()=>{closeCmdPalette();toggleSidebar()},keys:'Ctrl+B'},
     {icon:'\uD83C\uDF19',label:'Toggle Theme',action:()=>{closeCmdPalette();toggleTheme()},keys:'Ctrl+\\'},
     {icon:'\uD83D\uDD0D',label:'Search in Chat',action:()=>{closeCmdPalette();openChatSearch()},keys:'Ctrl+F'},
@@ -4522,7 +4589,7 @@ function toggleBookmark(msgIdx){
   showToast(bookmarks.includes(msgIdx)?'Message bookmarked':'Bookmark removed','success');
 }
 function viewBookmarks(){
-  switchView('chat');
+  navigate('chat');
   const bookmarks=getBookmarks();
   if(bookmarks.length===0){showToast('No bookmarks yet','info');return}
   const area=document.getElementById('chat-area');
@@ -5144,7 +5211,7 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='k'){e.preventDefault();openCmdPalette()}
   else if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
   else if(e.ctrlKey&&e.key==='b'&&!e.target.closest('.coding-view')){e.preventDefault();toggleSidebar()}
-  else if(e.ctrlKey&&e.key===','){e.preventDefault();switchView('settings')}
+  else if(e.ctrlKey&&e.key===','){e.preventDefault();navigate('settings')}
   else if(e.ctrlKey&&e.key==='f'&&!e.target.closest('.coding-view')&&currentView==='chat'){e.preventDefault();openChatSearch()}
   else if(e.ctrlKey&&e.key==='\\'){e.preventDefault();toggleTheme()}
   else if(e.ctrlKey&&e.key==='d'){e.preventDefault();viewBookmarks()}
