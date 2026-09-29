@@ -740,7 +740,7 @@ pre{max-width:100%}
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="logo">
-        <img src="/favicon.svg?v=4" width="28" height="28" alt="Omniilink">
+        <img src="/favicon.svg?v=4" height="28" alt="Omniilink">
         <span class="logo-text">Omniilink</span>
       </div>
     </div>
@@ -822,7 +822,7 @@ pre{max-width:100%}
       <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <div class="header-title"><img src="/favicon.svg?v=4" width="20" height="20" alt="Omniilink" style="flex-shrink:0"><span>Omniilink</span></div>
+      <div class="header-title"><img src="/favicon.svg?v=4" height="20" alt="Omniilink" style="flex-shrink:0"><span>Omniilink</span></div>
       <div class="header-spacer"></div>
       <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)" style="font-size:11px;gap:4px">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1341,7 +1341,7 @@ function saveCurrentChat(){
   saveChats(chats);renderChatList();
 }
 
-const EMPTY_CHAT_HTML='<div class="chat-empty" id="chat-empty"><div class="chat-empty-icon"><img src="/favicon.svg?v=4" width="56" height="56" alt="Omniilink"></div><h2>Omniilink</h2><p>Multi-provider AI load balancer</p><div class="quick-actions"><button class="quick-action-btn" onclick="useQuickAction(\'Summarize the following text concisely:\')">Summarize</button><button class="quick-action-btn" onclick="useQuickAction(\'Explain the following code step by step:\')">Explain Code</button><button class="quick-action-btn" onclick="useQuickAction(\'Write unit tests for the following code:\')">Write Tests</button><button class="quick-action-btn" onclick="useQuickAction(\'Help me debug the following issue:\')">Debug</button></div></div>';
+const EMPTY_CHAT_HTML='<div class="chat-empty" id="chat-empty"><div class="chat-empty-icon"><img src="/favicon.svg?v=4" height="56" alt="Omniilink"></div><h2>Omniilink</h2><p>Multi-provider AI load balancer</p><div class="quick-actions"><button class="quick-action-btn" onclick="useQuickAction(\'Summarize the following text concisely:\')">Summarize</button><button class="quick-action-btn" onclick="useQuickAction(\'Explain the following code step by step:\')">Explain Code</button><button class="quick-action-btn" onclick="useQuickAction(\'Write unit tests for the following code:\')">Write Tests</button><button class="quick-action-btn" onclick="useQuickAction(\'Help me debug the following issue:\')">Debug</button></div></div>';
 
 function newChat(){saveCurrentChat();currentChatId='chat_'+Date.now();chatHistory=[];messageCounter=0;document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML;renderChatList();document.getElementById('chat-input').focus()}
 function loadChat(id){
