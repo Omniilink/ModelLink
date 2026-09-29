@@ -128,6 +128,9 @@ def init_db():
     if "is_admin" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)")
+    if "google_sub" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
     # Admin panel allowlist (default: "isaac tribbe", matching api_server):
     # promoted on every boot so an existing account can always reach /admin
@@ -277,6 +280,42 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
             d["is_admin"] = bool(d.get("is_admin"))
             return d
         return None
+    finally:
+        conn.close()
+
+
+def get_user_by_google_sub(sub: str):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, username, name, created_at, is_admin FROM users WHERE google_sub = ?",
+            (sub,)
+        ).fetchone()
+        if row:
+            d = dict(row)
+            d["is_admin"] = bool(d.get("is_admin"))
+            return d
+        return None
+    finally:
+        conn.close()
+
+
+def username_taken(username: str) -> bool:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE username = ?",
+                           (username,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def set_user_google_sub(user_id: int, sub: str):
+    conn = get_db()
+    try:
+        conn.execute("UPDATE users SET google_sub = ? WHERE id = ?",
+                     (sub, user_id))
+        conn.commit()
     finally:
         conn.close()
 

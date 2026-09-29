@@ -201,6 +201,25 @@ Private repo? `git pull` needs credentials of its own. Create a token
 git for later pulls. `OMNIILINK_GIT_TOKEN` exists only for the optional
 `updater/omni-update` script, which nothing runs automatically.
 
+## Sign in with Google (optional)
+
+The Sign in / Get started pages grow a Google button once these are set.
+Without them the button stays hidden with an explanatory note.
+
+1. Open `console.cloud.google.com/apis/credentials` (any Google Cloud
+   project, OAuth consent screen set to External).
+2. Create Credentials → **OAuth client ID** → **Web application**.
+3. Under Authorized redirect URIs add exactly:
+   `https://omniilink.dpdns.org/api/auth/google/callback`
+4. Copy the client ID and secret into `C:\Modellink\.env`:
+   `GOOGLE_CLIENT_ID=...` and `GOOGLE_CLIENT_SECRET=...`
+   (or export them next to compose — the file takes the same names).
+5. `docker compose up -d api` (env only, no rebuild needed).
+
+First Google sign-in creates a normal account (username from the email
+address, random unusable password) and lands on `/chat`. Returning users
+are matched by their Google subject id, never by email alone.
+
 ## Useful commands
 
 ```powershell

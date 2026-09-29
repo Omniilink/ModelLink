@@ -59,7 +59,8 @@ from modellink.auth import (
     update_user_name, update_user_password, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
     delete_user_provider_key, get_custom_providers, get_custom_provider,
-    save_custom_provider, delete_custom_provider, get_db, get_user_from_session,
+    save_custom_provider, delete_custom_provider, get_user_by_google_sub,
+    username_taken, set_user_google_sub, get_db, get_user_from_session,
     revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key,
     all_usernames, validate_api_key
 )
@@ -691,9 +692,9 @@ async def _safe_json(request: Request):
 
 def _user_quota_bytes() -> int:
     try:
-        return int(os.environ.get("OMNIILINK_USER_QUOTA", str(5 * 1024 * 1024 * 1024)))
+        return int(os.environ.get("OMNIILINK_USER_QUOTA", str(1 * 1024 * 1024 * 1024)))
     except ValueError:
-        return 5 * 1024 * 1024 * 1024
+        return 1 * 1024 * 1024 * 1024
 
 def _dir_size(path: str) -> int:
     total = 0
@@ -1343,6 +1344,117 @@ async def auth_signout(request: Request):
         destroy_session(token)
     resp = JSONResponse(content={"status": "ok"})
     resp.delete_cookie("omnilink_token", path="/")
+    return resp
+
+def _google_oauth_configured() -> bool:
+    return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"))
+
+def _google_redirect_uri() -> str:
+    return os.environ.get("GOOGLE_REDIRECT_URI", "https://omniilink.dpdns.org/api/auth/google/callback")
+
+@app.get("/api/auth/oauth-status")
+async def oauth_status():
+    return {"google": _google_oauth_configured()}
+
+@app.get("/api/auth/google/start")
+async def google_oauth_start(request: Request):
+    if not _google_oauth_configured():
+        return JSONResponse(status_code=501, content={"error": "Google sign-in is not set up on this server"})
+    state = secrets.token_urlsafe(24)
+    params = urllib.parse.urlencode({
+        "client_id": os.environ["GOOGLE_CLIENT_ID"],
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+    })
+    resp = RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + params, status_code=302)
+    resp.set_cookie(key="g_oauth_state", value=state, httponly=True, samesite="lax",
+                    secure=_request_is_https(request), max_age=600, path="/")
+    return resp
+
+def _google_post(url: str, data: dict):
+    body = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(url, data=body,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                 method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+def _google_get(url: str, token: str):
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+@app.get("/api/auth/google/callback")
+async def google_oauth_callback(request: Request):
+    def fail(msg: str):
+        return RedirectResponse("/signin?error=" + urllib.parse.quote(msg), status_code=302)
+    if request.query_params.get("error"):
+        return fail(request.query_params.get("error_description") or request.query_params.get("error"))
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    want = request.cookies.get("g_oauth_state", "")
+    if not code or not state or not want or not hmac.compare_digest(state, want):
+        return fail("Sign-in expired - please try again")
+    if not _google_oauth_configured():
+        return fail("Google sign-in is not set up on this server")
+    try:
+        tok = _google_post("https://oauth2.googleapis.com/token", {
+            "code": code,
+            "client_id": os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+            "redirect_uri": _google_redirect_uri(),
+            "grant_type": "authorization_code",
+        })
+        access = tok.get("access_token", "")
+        if not access:
+            return fail("Google did not return a token")
+        info = _google_get("https://openidconnect.googleapis.com/v1/userinfo", access)
+    except Exception as e:
+        logger.warning(f"[AUTH] Google token exchange failed: {e}")
+        return fail("Could not finish Google sign-in - try again")
+    sub = str(info.get("sub") or "")
+    email = str(info.get("email") or "")
+    if not sub or not email or info.get("email_verified") is not True:
+        return fail("Google did not verify an email address")
+    user = get_user_by_google_sub(sub)
+    if not user:
+        ip = request.headers.get("cf-connecting-ip", "") or (request.client.host if request.client else "")
+        if not _signup_allowed(ip):
+            return fail("Too many signups. Try again later.")
+        base = re.sub(r"[^a-z0-9_]", "", email.split("@")[0].lower()).strip("_") or "user"
+        if len(base) < 3:
+            base = (base + "user")[:24]
+        base = base[:24]
+        names = all_usernames()
+        if names and _allowlisted(base):
+            return fail("That username is reserved - sign up with a password instead")
+        username = base
+        n = 0
+        while username_taken(username) or any(_safe_username(x) == _safe_username(username) for x in names):
+            n += 1
+            if n > 60:
+                return fail("Could not pick a username - sign up with a password instead")
+            username = (base[:20] + str(n))[:24]
+        created = create_user(username, secrets.token_urlsafe(32), email.split("@")[0])
+        if "error" in created:
+            return fail(created["error"])
+        set_user_google_sub(created["id"], sub)
+        try:
+            _user_projects_dir(username)
+        except Exception:
+            pass
+        _record_signup(ip)
+        user = get_user_by_id(created["id"])
+        logger.info(f"[AUTH] Google signup user={username}")
+    else:
+        logger.info(f"[AUTH] Google signin user={user.get('username','-')}")
+    token = create_session(user["id"])
+    resp = RedirectResponse("/chat", status_code=302)
+    set_session_cookie(resp, token, secure=_request_is_https(request))
+    resp.delete_cookie("g_oauth_state", path="/")
     return resp
 
 @app.get("/api/auth/me")
@@ -5060,7 +5172,7 @@ async def list_projects(request: Request):
             mtime = os.path.getmtime(path)
             total_size += dir_size
             projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime, "size_bytes": dir_size})
-    return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": 5 * 1024 * 1024 * 1024}
+    return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
 
 class ProjectCreate(BaseModel):
     name: str
@@ -5992,6 +6104,16 @@ async def serve_admin(request: Request):
 async def serve_index():
     landing_path = os.path.join(APP_DIR, "web", "landing.html")
     return FileResponse(landing_path, headers={"Cache-Control": "public, max-age=600"})
+
+@app.get("/signin")
+async def serve_signin():
+    p = os.path.join(APP_DIR, "web", "signin.html")
+    return FileResponse(p, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
+@app.get("/signup")
+async def serve_signup():
+    p = os.path.join(APP_DIR, "web", "signup.html")
+    return FileResponse(p, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 @app.get("/favicon.svg")
 async def serve_favicon():

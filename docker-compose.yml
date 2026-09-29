@@ -57,6 +57,14 @@ services:
       # re-reads it from the mounted .env, so adding
       # OMNIILINK_GIT_TOKEN there needs no container restart.
       - OMNIILINK_GIT_TOKEN=${OMNIILINK_GIT_TOKEN:-}
+      # Google sign-in (Sign in with Google on /signin and /signup). Create a
+      # Web-application OAuth client at console.cloud.google.com/apis/credentials
+      # with authorized redirect URI
+      # https://omniilink.dpdns.org/api/auth/google/callback, then put the id
+      # and secret in C:\Modellink\.env (or export them here). Empty = the
+      # Google buttons stay hidden with an explanatory note.
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       # Converter API base URL for in-browser YouTube downloads
       # (More → YouTube). Same pattern as the git token: explicit env wins,
       # otherwise the api re-reads it from the mounted .env.
