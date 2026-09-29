@@ -9,4 +9,6 @@ RUN mkdir -p /app/node_modules/.pnpm/youtubei.js@18.1.0/node_modules \
 RUN cd /app && node --input-type=module -e "import('youtubei.js').then(m=>console.log('VOS='+m.Constants.SUPPORTED_CLIENTS.includes('VISIONOS')))"
 COPY internal.js /app/src/stream/internal.js
 RUN node --check /app/src/stream/internal.js
+COPY youtube.js /app/src/processing/services/youtube.js
+RUN node --check /app/src/processing/services/youtube.js
 WORKDIR /app
