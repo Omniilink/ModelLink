@@ -11,7 +11,9 @@ if errorlevel 1 (
 )
 
 :watchloop
+set FORCE_UPDATE=1
 call :update_once
+set FORCE_UPDATE=
 echo.
 echo --- Watching for updates every 5s (Ctrl+C to stop) ---
 timeout /t 5 /nobreak >nul 2>&1 || ping -n 6 127.0.0.1 >nul
@@ -30,7 +32,9 @@ if "%REMOTE%"=="" (
 )
 if "%LOCAL%"=="%REMOTE%" (
   echo [%date% %time%] Up to date %LOCAL:~0,7%.
-  exit /b 0
+  if not "%FORCE_UPDATE%"=="1" exit /b 0
+  echo First launch - rebuilding all containers anyway.
+  goto :rebuild
 )
 echo.
 echo === Update found (%LOCAL:~0,7% -^> %REMOTE:~0,7%) - pulling ===
@@ -47,6 +51,7 @@ exit /b 0
 REM NOTE: the pull above rewrites this very file mid-run, which desyncs the
 REM reader - the next line read would be garbage. Always jump (goto rescans
 REM the file) right after pulling, never read straight on.
+:rebuild
 echo.
 echo === Checking mounted files ===
 call :ensure_file "network_usage.json"
