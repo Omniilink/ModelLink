@@ -86,6 +86,19 @@ def init_db():
             UNIQUE(user_id, provider)
         );
 
+        CREATE TABLE IF NOT EXISTS custom_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL DEFAULT '',
+            api_key TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, name)
+        );
+
         CREATE TABLE IF NOT EXISTS usage_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -106,6 +119,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
         CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
         CREATE INDEX IF NOT EXISTS idx_user_api_keys_user ON user_api_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_custom_providers_user ON custom_providers(user_id);
         CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage_events(user_id, ts);
         CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts);
     """)
@@ -399,6 +413,66 @@ def delete_user_provider_key(user_id: int, key_id: int):
     try:
         conn.execute("DELETE FROM user_api_keys WHERE user_id = ? AND id = ?",
                      (user_id, key_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ==========================================
+# Custom OpenAI-compatible providers (per-user)
+# ==========================================
+def get_custom_providers(user_id: int) -> list:
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, base_url, api_key, model, created_at, updated_at "
+            "FROM custom_providers WHERE user_id = ? ORDER BY name",
+            (user_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_custom_provider(user_id: int, name: str):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, name, base_url, api_key, model, created_at, updated_at "
+            "FROM custom_providers WHERE user_id = ? AND name = ?",
+            (user_id, name)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def save_custom_provider(user_id: int, name: str, base_url: str, api_key: str, model: str) -> Optional[int]:
+    """Upsert a custom provider by (user, name); returns the row id (or None on failure)."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO custom_providers (user_id, name, base_url, api_key, model) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET base_url = ?, api_key = ?, model = ?, updated_at = datetime('now')",
+            (user_id, name, base_url, api_key, model, base_url, api_key, model)
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM custom_providers WHERE user_id = ? AND name = ?",
+            (user_id, name)
+        ).fetchone()
+        return row["id"] if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def delete_custom_provider(user_id: int, row_id: int):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM custom_providers WHERE user_id = ? AND id = ?",
+                     (user_id, row_id))
         conn.commit()
     finally:
         conn.close()

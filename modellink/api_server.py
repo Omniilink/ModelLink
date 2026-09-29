@@ -58,7 +58,8 @@ from modellink.auth import (
     create_session, destroy_session, set_session_cookie, get_user_by_id,
     update_user_name, update_user_password, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
-    delete_user_provider_key, get_db, get_user_from_session,
+    delete_user_provider_key, get_custom_providers, get_custom_provider,
+    save_custom_provider, delete_custom_provider, get_db, get_user_from_session,
     revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key,
     all_usernames, validate_api_key
 )
@@ -1234,6 +1235,12 @@ class ProviderKeyRequest(BaseModel):
     provider: str
     api_key: str
 
+class CustomProviderRequest(BaseModel):
+    name: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+
 class ProviderKeyDeleteRequest(BaseModel):
     key_id: int
 
@@ -1412,6 +1419,61 @@ async def delete_provider_key(request: Request, key_id: int):
     logger.info(f"[KEYS] Provider key deleted user={user.get('username','-')} key_id={key_id}")
     return {"status": "ok"}
 
+def _mask_key(api_key: str) -> str:
+    if len(api_key) > 12:
+        return api_key[:8] + "..." + api_key[-4:]
+    return "***"
+
+@app.get("/api/custom-providers")
+async def list_custom_providers(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    out = []
+    for r in get_custom_providers(user["id"]):
+        out.append({
+            "id": r["id"],
+            "name": r["name"],
+            "base_url": r["base_url"],
+            "model": r["model"],
+            "api_key_preview": _mask_key(r["api_key"] or ""),
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        })
+    return {"providers": out}
+
+@app.post("/api/custom-providers")
+async def save_custom_provider_ep(request: Request, req: CustomProviderRequest):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    name = (req.name or "").strip().lower()
+    base_url = (req.base_url or "").strip().rstrip("/")
+    api_key = (req.api_key or "").strip()
+    model = (req.model or "").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-_]{0,31}", name):
+        return JSONResponse(status_code=400, content={"error": "Name must be 1-32 chars: lowercase letters, digits, - _"})
+    if not re.fullmatch(r"https?://[^\s]{1,200}", base_url):
+        return JSONResponse(status_code=400, content={"error": "API link must start with http:// or https://"})
+    if not api_key or len(api_key) > 500 or any(ord(c) < 32 for c in api_key):
+        return JSONResponse(status_code=400, content={"error": "Invalid API key"})
+    if not model or len(model) > 128 or any(c.isspace() or ord(c) < 32 for c in model):
+        return JSONResponse(status_code=400, content={"error": "Model must be 1-128 chars with no spaces"})
+    row_id = save_custom_provider(user["id"], name, base_url, api_key, model)
+    if row_id is None:
+        return JSONResponse(status_code=500, content={"error": "Could not save provider"})
+    logger.info(f"[KEYS] Custom provider saved user={user.get('username','-')} name={name}")
+    return {"status": "ok", "id": row_id}
+
+@app.delete("/api/custom-providers/{row_id}")
+async def delete_custom_provider_ep(request: Request, row_id: int):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    delete_custom_provider(user["id"], row_id)
+    logger.info(f"[KEYS] Custom provider deleted user={user.get('username','-')} id={row_id}")
+    return {"status": "ok"}
+
 @app.get("/api/status")
 async def get_status(request: Request):
     _user, err = _require_auth(request)
@@ -1456,6 +1518,11 @@ async def discover_models(request: Request):
         for m in ollama_models:
             if not any(x["id"] == m for x in all_models):
                 all_models.append({"id": m, "provider": "ollama", "source": "local"})
+    for cp in get_custom_providers(_user["id"]):
+        mid = "custom/" + cp["name"]
+        discovered.setdefault("custom", []).append(mid)
+        if not any(x["id"] == mid for x in all_models):
+            all_models.append({"id": mid, "provider": "custom", "source": "custom"})
     return {"models": all_models, "by_provider": discovered, "backup_model": get_backup_model()}
 
 @app.get("/api/ollama/models")
@@ -1701,8 +1768,9 @@ async def chat_completions(request: Request):
     user_keys = None
     if not user.get("is_admin"):
         db_keys = get_user_provider_keys(user["id"])
-        if not db_keys:
-            return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your own provider keys in Settings."})
+        db_customs = get_custom_providers(user["id"])
+        if not db_keys and not db_customs:
+            return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your providers under Providers."})
         user_keys = db_keys
 
     auth_header = request.headers.get("Authorization", "")
@@ -1740,18 +1808,38 @@ async def chat_completions(request: Request):
             f"prompt~{est_prompt_tokens} completion~{completion_tokens} user={user.get('username', '-')}"
         )
 
+    custom_row = None
+    if req_model.startswith("custom/"):
+        custom_row = get_custom_provider(user["id"], req_model.split("/", 1)[1].lower())
+        if not custom_row:
+            return JSONResponse(status_code=404, content={"error": "Custom provider not found. Re-add it under Providers."})
+
     if is_stream:
         try:
-            stream, used_model = await asyncio.to_thread(
-                generate,
-                messages=messages,
-                model=req_model,
-                temperature=temp,
-                max_tokens=max_tokens,
-                stream=True,
-                user_keys=user_keys,
-                opts=req_opts,
-            )
+            if custom_row is not None:
+                stream, used_model = await asyncio.to_thread(
+                    lb.generate_custom,
+                    messages,
+                    custom_row["name"],
+                    custom_row["base_url"],
+                    custom_row["api_key"],
+                    custom_row["model"],
+                    temp,
+                    max_tokens,
+                    True,
+                    req_opts,
+                )
+            else:
+                stream, used_model = await asyncio.to_thread(
+                    generate,
+                    messages=messages,
+                    model=req_model,
+                    temperature=temp,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    user_keys=user_keys,
+                    opts=req_opts,
+                )
         except Exception as e:
             logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
             _finish_usage("unknown/unknown", completion_tokens=0, status=500)
@@ -1831,16 +1919,30 @@ async def chat_completions(request: Request):
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     else:
         try:
-            response, used_model = await asyncio.to_thread(
-                generate,
-                messages=messages,
-                model=req_model,
-                temperature=temp,
-                max_tokens=max_tokens,
-                stream=False,
-                user_keys=user_keys,
-                opts=req_opts,
-            )
+            if custom_row is not None:
+                response, used_model = await asyncio.to_thread(
+                    lb.generate_custom,
+                    messages,
+                    custom_row["name"],
+                    custom_row["base_url"],
+                    custom_row["api_key"],
+                    custom_row["model"],
+                    temp,
+                    max_tokens,
+                    False,
+                    req_opts,
+                )
+            else:
+                response, used_model = await asyncio.to_thread(
+                    generate,
+                    messages=messages,
+                    model=req_model,
+                    temperature=temp,
+                    max_tokens=max_tokens,
+                    stream=False,
+                    user_keys=user_keys,
+                    opts=req_opts,
+                )
         except Exception as e:
             _finish_usage("unknown/unknown", status=500)
             return JSONResponse(status_code=500, content={"error": str(e)})

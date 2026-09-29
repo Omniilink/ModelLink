@@ -768,6 +768,34 @@ class MultiProviderBalancer:
 
         return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
+    def generate_custom(self, messages, name, base_url, api_key, endpoint_model, temperature=0.7, max_tokens=4000, stream=True, opts=None):
+        """One-shot request against a caller-supplied OpenAI-compatible endpoint.
+
+        Returns (result, used_model) with the same contract as generate(): a
+        generator of text chunks when stream=True, a response dict otherwise.
+        Raises RuntimeError when the endpoint yields nothing usable.
+        """
+        base = (base_url or "").strip().rstrip("/")
+        url = base if base.endswith("/chat/completions") else base + "/chat/completions"
+        label = f"custom/{name}"
+        provider_cfg = {
+            "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            "build_body": lambda msgs, model, key: {"model": endpoint_model, "messages": msgs, "temperature": temperature, "max_tokens": max_tokens},
+            "stream_url": lambda model, key: url,
+            "url": lambda model, key: url,
+        }
+        resp = self._try_provider("custom", provider_cfg, messages, label, temperature, max_tokens, stream, user_keys={"custom": api_key}, opts=opts)
+        if resp is None:
+            raise RuntimeError(f"custom provider '{name}' did not return a usable response")
+        if stream:
+            return self._stream_response(resp, "custom", endpoint_model), label
+        try:
+            result = resp.json()
+        except Exception as e:
+            raise RuntimeError(f"custom provider '{name}' returned a non-JSON response: {e}")
+        result["model"] = label
+        return result, label
+
     def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None):
         ollama_models = scan_ollama_models()
         if ollama_models:
