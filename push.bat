@@ -3,9 +3,15 @@ REM Omniilink ProDesk push - commit manual changes made on this machine
 REM and push them to GitHub. Secrets and data (.env, *.db, user_data/)
 REM are git-ignored and never leave the server.
 setlocal EnableDelayedExpansion
-cd /d "C:\Modellink"
+cd /d "%~dp0"
 if errorlevel 1 (
-  echo Cannot find C:\Modellink - is this running on ProDesk?
+  echo Cannot reach this script's own folder.
+  pause
+  exit /b 1
+)
+git rev-parse --show-toplevel >nul 2>&1
+if errorlevel 1 (
+  echo This folder is not a git checkout - nothing to push.
   pause
   exit /b 1
 )
