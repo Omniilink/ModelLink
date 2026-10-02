@@ -477,10 +477,9 @@ class SecurityHeadersMiddleware:
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Access log: broadcast API activity to the terminal (skip static/health noise)
-# /api/bandwidth is polled twice a second by the UI indicator, so logging it
-# would drown every real request in the terminal.
-_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/bandwidth", "/favicon.svg", "/favicon.ico"}
+# /api/logs streams the log; /api/logs/clear manages it - neither should
+# log itself, or clearing would instantly re-add the clear request's line.
+_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/logs/clear", "/api/bandwidth", "/favicon.svg", "/favicon.ico"}
 
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
@@ -1121,6 +1120,33 @@ class LogBroadcaster:
         for q in dead:
             self._queues = [(qq, u) for qq, u in self._queues if qq is not q]
 
+    def clear_user(self, username: str) -> int:
+        """Drop one user's tagged lines from memory and the log file.
+
+        Only lines carrying this user's own tag go away - everyone else's
+        lines (and untagged system lines) stay. Returns lines removed.
+        """
+        pat = re.compile(r"user=" + re.escape(username) + r"(?=\s|$)")
+        kept_mem = [m for m in self._history if not pat.search(m)]
+        removed = len(self._history) - len(kept_mem)
+        self._history = kept_mem
+        try:
+            with self._file_lock:
+                try:
+                    with open(self._log_file, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                except FileNotFoundError:
+                    lines = []
+                kept = [ln for ln in lines if not pat.search(ln.rstrip("\n"))]
+                removed += len(lines) - len(kept)
+                tmp = self._log_file + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
+                os.replace(tmp, self._log_file)
+        except OSError:
+            pass
+        return removed
+
 log_broadcaster = LogBroadcaster()
 
 class WebLogHandler(logging.Handler):
@@ -1213,6 +1239,14 @@ async def stream_logs(request: Request):
         finally:
             log_broadcaster.unsubscribe(q)
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+@app.post("/api/logs/clear")
+async def clear_logs(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    n = log_broadcaster.clear_user(user.get("username", ""))
+    return {"status": "ok", "cleared": n}
 
 @app.get("/api/health")
 async def health_check():

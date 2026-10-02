@@ -1405,7 +1405,14 @@ function appendLog(msg){
   const autoScroll=document.getElementById('terminal-autoscroll');
   if(autoScroll&&autoScroll.classList.contains('on'))el.scrollTop=el.scrollHeight;
 }
-function clearTerminal(){document.getElementById('terminal-body').innerHTML='';updateLogCount()}
+async function clearTerminal(){
+  try{
+    const r=await authFetch(API+'/api/logs/clear',{method:'POST'});
+    if(!r.ok)throw new Error('clear failed');
+  }catch(e){showToast('Could not clear terminal history','error');return}
+  document.getElementById('terminal-body').innerHTML='';updateLogCount();
+  showToast('Terminal history cleared','success');
+}
 function updateLogCount(){const el=document.getElementById('terminal-body');const visible=el.querySelectorAll('.log-line[data-visible="1"]').length;const total=el.querySelectorAll('.log-line').length;const countEl=document.getElementById('log-count');if(countEl)countEl.textContent=visible+' / '+total+' logs'}
 let currentLogLevel='all';
 function filterLogs(level,btn){
