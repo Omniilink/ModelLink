@@ -166,7 +166,7 @@ PROVIDERS = {
     "groq": {
         "env_prefix": "GROQ_API_KEY",
         "api_base": "https://api.groq.com/openai/v1",
-        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "allam-2-7b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"],
         "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: {
             "model": model,
@@ -549,8 +549,7 @@ MODEL_TIERS = {
         ('gemini', 'gemini-3.5-flash-lite'),
         ('gemini', 'gemini-flash-latest'),
         ('groq', 'openai/gpt-oss-20b'),
-        ('groq', 'allam-2-7b'),
-        ('groq', 'qwen/qwen3.6-27b'),
+        ('groq', 'llama-3.1-8b-instant'),
         ('mistral', 'open-mistral-nemo'),
     ],
     'medium': [
@@ -558,7 +557,6 @@ MODEL_TIERS = {
         ('gemini', 'gemini-3.5-flash'),
         ('gemini', 'gemini-flash-latest'),
         ('groq', 'openai/gpt-oss-120b'),
-        ('groq', 'qwen/qwen3.8-27b'),
         ('mistral', 'mistral-small-latest'),
         ('groq', 'llama-3.3-70b-versatile'),
     ],
@@ -566,7 +564,6 @@ MODEL_TIERS = {
         ('gemini', 'gemini-3.1-pro-preview'),
         ('gemini', 'gemini-3.6-flash'),
         ('groq', 'openai/gpt-oss-120b'),
-        ('groq', 'qwen/qwen3.8-27b'),
         ('mistral', 'mistral-large-latest'),
         ('groq', 'llama-3.3-70b-versatile'),
     ],
