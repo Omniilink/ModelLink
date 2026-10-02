@@ -342,6 +342,87 @@ def apply_request_opts(provider_name, body, opts):
     return body, json.dumps(body, sort_keys=True, default=str) != before
 
 
+# ==========================================
+# Provider health (per key scope)
+# ==========================================
+# Records the outcome of every model attempt so the sidebar can colour a
+# provider dot: red when every model tried on that key failed, orange when
+# only some failed, green otherwise. Scoped by `opts["health_scope"]` so one
+# user's dead key never tints another user's dot (admin uses "server").
+_health_lock = threading.Lock()
+_model_health: dict = {}
+
+
+def record_model_outcome(scope, provider, model, outcome, detail=""):
+    if not isinstance(provider, str) or not provider:
+        return
+    if not isinstance(model, str) or not model:
+        return
+    scope = scope or "server"
+    now = time.time()
+    with _health_lock:
+        prov = _model_health.setdefault(scope, {}).setdefault(provider, {})
+        entry = prov.setdefault(model, {"ok": 0, "fail": 0, "last": "", "ts": 0.0, "detail": ""})
+        if outcome == "ok":
+            entry["ok"] += 1
+            entry["last"] = "ok"
+            entry["detail"] = ""
+        elif outcome == "fail":
+            entry["fail"] += 1
+            entry["last"] = "fail"
+            if detail:
+                entry["detail"] = str(detail)[:120]
+        elif outcome == "rate":
+            # Rate limited: the key itself is fine, only refresh the stamp so
+            # a model that never got a real answer stays out of the count.
+            if entry["last"] not in ("ok", "fail"):
+                entry["last"] = "rate"
+        entry["ts"] = now
+        if len(prov) > 64:
+            for m in list(prov):
+                if m != model and now - prov[m]["ts"] > 86400:
+                    prov.pop(m, None)
+
+
+def provider_health(scope):
+    """Roll per-model outcomes up to one status per provider."""
+    scope = scope or "server"
+    out = {}
+    with _health_lock:
+        provs = _model_health.get(scope, {})
+        for provider, models in provs.items():
+            tried = ok = failed = 0
+            detail = ""
+            newest = 0.0
+            for model, st in models.items():
+                if st["last"] not in ("ok", "fail"):
+                    continue
+                tried += 1
+                newest = max(newest, st["ts"])
+                if st["last"] == "ok":
+                    ok += 1
+                else:
+                    failed += 1
+                    if not detail and st.get("detail"):
+                        detail = f"{model}: {st['detail']}"
+            if tried == 0:
+                state = "ok"
+            elif failed == tried:
+                state = "fail"
+            elif failed > 0:
+                state = "warn"
+            else:
+                state = "ok"
+            out[provider] = {
+                "state": state,
+                "tried": tried,
+                "ok": ok,
+                "fail": failed,
+                "ts": newest,
+                "detail": detail,
+            }
+    return out
+
 
 class RateLimiter:
     def __init__(self):
@@ -617,6 +698,7 @@ class MultiProviderBalancer:
         if not keys:
             return None
 
+        scope = (opts or {}).get("health_scope") or "server"
         for key_info in keys:
             api_key = key_info["key"]
             if not self.rate_limiter.can_request(model):
@@ -651,28 +733,36 @@ class MultiProviderBalancer:
 
                 if resp.status_code == 200:
                     self.rate_limiter.record_request(model)
+                    record_model_outcome(scope, provider_name, model, "ok")
                     return resp
                 elif resp.status_code == 429:
                     retry_after = int(resp.headers.get("Retry-After", 60))
                     self.rate_limiter.set_cooldown(model, retry_after)
+                    record_model_outcome(scope, provider_name, model, "rate", "rate limited")
                     logger.warning(f"[RATE] {provider_name}/{model} rate limited, cooldown {retry_after}s")
                 elif resp.status_code in (401, 403):
                     # Dead/revoked key: cool down so every later message
                     # doesn't waste a full round trip re-proving it.
                     self.rate_limiter.set_cooldown(model, 300)
+                    record_model_outcome(scope, provider_name, model, "fail", f"auth rejected ({resp.status_code})")
                     logger.warning(f"[ERROR] {provider_name}/{model} auth rejected ({resp.status_code}), cooldown 300s")
                 elif resp.status_code >= 500:
                     self.rate_limiter.set_cooldown(model, 30)
+                    record_model_outcome(scope, provider_name, model, "fail", f"server error {resp.status_code}")
                     logger.warning(f"[ERROR] {provider_name}/{model} server error {resp.status_code}")
                 else:
+                    record_model_outcome(scope, provider_name, model, "fail", f"http {resp.status_code}")
                     logger.warning(f"[ERROR] {provider_name}/{model} error {resp.status_code}: {resp.text[:200]}")
             except requests.exceptions.ConnectionError:
                 self.rate_limiter.set_cooldown(model, 60)
+                record_model_outcome(scope, provider_name, model, "fail", "connection failed")
                 logger.warning(f"[ERROR] {provider_name}/{model} connection failed, cooldown 60s")
             except requests.exceptions.Timeout:
                 self.rate_limiter.set_cooldown(model, 30)
+                record_model_outcome(scope, provider_name, model, "fail", "timeout")
                 logger.warning(f"[ERROR] {provider_name}/{model} timeout, cooldown 30s")
             except Exception as e:
+                record_model_outcome(scope, provider_name, model, "fail", str(e))
                 logger.warning(f"[ERROR] {provider_name}/{model} exception: {e}")
 
         return None
@@ -797,6 +887,7 @@ class MultiProviderBalancer:
         ollama_models = scan_ollama_models()
         if ollama_models:
             target_model = OLLAMA_MODEL if OLLAMA_MODEL in ollama_models else ollama_models[0]
+            scope = (opts or {}).get("health_scope") or "server"
             try:
                 if opts:
                     o_temp = opts.get("temperature", temperature)
@@ -817,6 +908,7 @@ class MultiProviderBalancer:
                     body["think"] = level != "minimum"
                 resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=body, stream=stream, timeout=120)
                 if resp.status_code == 200:
+                    record_model_outcome(scope, "ollama", target_model, "ok")
                     used_model = f"ollama/{target_model}"
                     if stream:
                         return (self._stream_ollama(resp, target_model), used_model)
@@ -824,7 +916,9 @@ class MultiProviderBalancer:
                         data = resp.json()
                         content = data.get("message", {}).get("content", "")
                         return (self._make_response(content, target_model), used_model)
+                record_model_outcome(scope, "ollama", target_model, "fail", f"http {resp.status_code}")
             except Exception as e:
+                record_model_outcome(scope, "ollama", target_model, "fail", str(e))
                 logger.warning(f"[OLLAMA] Fallback failed: {e}")
 
         if stream:

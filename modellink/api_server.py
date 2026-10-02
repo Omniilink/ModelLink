@@ -51,7 +51,8 @@ from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
     load_all_keys, MODEL_RATE_LIMITS,
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL,
-    get_language, set_language, normalize_level, EFFORT_LEVELS
+    get_language, set_language, normalize_level, EFFORT_LEVELS,
+    provider_health
 )
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
@@ -241,24 +242,33 @@ _BW_USAGE_PATH = os.path.join(APP_DIR, "bw_usage.json")
 _BW_PERSIST_SECONDS = 5.0
 _BW_MAX_SAVED = 10000
 _bw_saved = {}          # user_id(int) -> [[wall_ts, bytes], ...] (dirty mirror)
+_bw_dirty = False       # True once THIS process has usage the file lacks
 _bw_last_persist = 0.0
 
 
 def _bw_record_disk(uid, n):
+    global _bw_dirty
     try:
         uid = int(uid)
     except (TypeError, ValueError):
         return
     with _bw_lock:
         _bw_saved.setdefault(uid, []).append([time.time(), n])
+        _bw_dirty = True
     _bw_persist()
 
 
 def _bw_persist(force=False):
-    """Mirror recent usage to disk (wall-clock) so restarts keep the window."""
-    global _bw_last_persist
+    """Mirror recent usage to disk (wall-clock) so restarts keep the window.
+
+    Only records made by THIS process mark the mirror dirty: a process that
+    merely restored the file has nothing newer than what is already on disk,
+    and rewriting from its stale copy would clobber rows another process
+    wrote since (the last writer wins, so the freshest rows could vanish)."""
+    global _bw_last_persist, _bw_dirty
     now_wall = time.time()
-    if not force and now_wall - _bw_last_persist < _BW_PERSIST_SECONDS:
+    if not force and (not _bw_dirty
+                      or now_wall - _bw_last_persist < _BW_PERSIST_SECONDS):
         return
     _bw_last_persist = now_wall
     cutoff = now_wall - BW_WINDOW_SECONDS
@@ -286,13 +296,16 @@ def _bw_persist(force=False):
             else:
                 del _bw_saved[uid]
         snapshot = {str(uid): rows for uid, rows in _bw_saved.items()}
+        # Cleared under the lock: rows recorded from here on re-set it.
+        _bw_dirty = False
     try:
         tmp = _BW_USAGE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"entries": snapshot}, f)
         os.replace(tmp, _BW_USAGE_PATH)
     except OSError:
-        pass
+        with _bw_lock:
+            _bw_dirty = True
 
 
 def _bw_restore():
@@ -351,7 +364,7 @@ def _bw_flush_loop():
         time.sleep(1.0)
         try:
             with _bw_lock:
-                dirty = bool(_bw_saved)
+                dirty = _bw_dirty
             if dirty:
                 _bw_persist()
         except Exception:
@@ -1135,6 +1148,15 @@ def _get_coding_state(user_id: str) -> dict:
 # ==========================================
 # Provider Key Resolution
 # ==========================================
+def health_scope(request):
+    """Health bucket for the caller's key set: admin shares the server keys,
+    everyone else gets their own so one dead key never tints another user."""
+    user = get_current_user(request)
+    if not user:
+        return "anon"
+    return "server" if user.get("is_admin") else f"u{user['id']}"
+
+
 def get_provider_keys(request):
     """Get provider keys: own DB keys for users; server .env keys for admin only."""
     user = get_current_user(request)
@@ -1800,7 +1822,16 @@ async def discover_models(request: Request):
         discovered.setdefault("custom", []).append(mid)
         if not any(x["id"] == mid for x in all_models):
             all_models.append({"id": mid, "provider": "custom", "source": "custom"})
-    return {"models": all_models, "by_provider": discovered, "backup_model": get_backup_model()}
+    return {"models": all_models, "by_provider": discovered, "backup_model": get_backup_model(),
+            "health": provider_health(health_scope(request))}
+
+@app.get("/api/provider-health")
+async def get_provider_health(request: Request):
+    """Roll-up of live request outcomes per provider (in-memory, no I/O)."""
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    return {"health": provider_health(health_scope(request))}
 
 @app.get("/api/ollama/models")
 async def ollama_models(request: Request):
@@ -2039,7 +2070,8 @@ async def chat_completions(request: Request):
     effort = normalize_level(body.get("effort"), "auto")
     thinking = normalize_level(body.get("thinking"), "auto")
     req_opts = {"temperature": temp, "max_tokens": max_tokens, "effort": effort, "thinking": thinking,
-                "language": _user_language(_safe_username(user["username"]))}
+                "language": _user_language(_safe_username(user["username"])),
+                "health_scope": health_scope(request)}
 
     # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
@@ -2396,6 +2428,11 @@ STEP PLANNING (how this run is budgeted):
   1-2 steps for a multi-file task is wrong; under-declaring costs a round.
 - You get exactly N rounds — there is no other cap. Never stop early because
   of a counter; finish when the work is verified.
+- PACK every round: emit all independent actions in ONE reply — several
+  FILE_CREATE/FILE_EDIT blocks and several RUN_COMMANDs together. Spending a
+  whole round on one action wastes the budget you declared.
+- Never end a round with prose only while steps remain and any [ ] todo is
+  open: either send the next tool blocks or say plainly what blocks you.
 - If mid-run you realize you need more, write a new line PLAN-STEPS: M with a
   higher number and the harness grants it (you may recount up to 3 times).
 
