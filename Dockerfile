@@ -25,7 +25,7 @@ COPY run-server.py ./
 
 # Writable at runtime via volumes (see compose): user_data/, omnilink.db,
 # network_usage.json, modellink/server.log, tunnel.log
-RUN mkdir -p user_data modellink && touch omnilink.db network_usage.json tunnel.log modellink/server.log
+RUN mkdir -p user_data modellink && touch omnilink.db network_usage.json bw_usage.json tunnel.log modellink/server.log
 
 EXPOSE 8080
 

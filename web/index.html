@@ -1562,13 +1562,20 @@ function formatBandwidth(bytes){
   if(bytes<1000*mb)return (bytes/mb).toFixed(1)+' MB';
   return (bytes/mb/1024).toFixed(2)+' GB';
 }
+let bwSpeedHold={v:0,t:0};
+function bwHoldSpeed(nowMs,speed,hold){
+  if(speed>0){hold.v=speed;hold.t=nowMs;return speed}
+  if(hold.v>0&&nowMs-hold.t<3000)return hold.v;
+  hold.v=0;return 0;
+}
 async function updateBandwidthIndicator(){
   const el=document.getElementById('bw-indicator');if(!el)return;
   try{
     const r=await authFetch(API+'/api/bandwidth');
     if(!r.ok){el.textContent='⬇ …';return}
     const d=await r.json();
-    const speed=d.speed>0?' · '+formatBandwidth(d.speed)+'/s':'';
+    const shown=bwHoldSpeed(Date.now(),d.speed>0?d.speed:0,bwSpeedHold);
+    const speed=shown>0?' · '+formatBandwidth(shown)+'/s':'';
     el.textContent='⬇ '+formatBandwidth(d.used)+(d.limited?' / '+formatBandwidth(d.cap):'')+speed;
     el.title=(d.limited?'Bandwidth used in the last '+d.window_hours+' hours · limit '+d.rate_mbps+' Mbit/s':'Admin — unlimited bandwidth')+' · updates twice a second';
     el.style.color=d.limited&&d.percent>=90?'var(--error)':d.limited&&d.percent>=70?'var(--warning)':'';

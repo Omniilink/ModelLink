@@ -234,6 +234,135 @@ def _bandwidth_flush(user, n_in, n_out):
                 else:
                     merged.append((t1, b1))
             st[2] = merged
+    _bw_record_disk(user["id"], int(n_in) + int(n_out))
+
+
+_BW_USAGE_PATH = os.path.join(APP_DIR, "bw_usage.json")
+_BW_PERSIST_SECONDS = 5.0
+_BW_MAX_SAVED = 10000
+_bw_saved = {}          # user_id(int) -> [[wall_ts, bytes], ...] (dirty mirror)
+_bw_last_persist = 0.0
+
+
+def _bw_record_disk(uid, n):
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return
+    with _bw_lock:
+        _bw_saved.setdefault(uid, []).append([time.time(), n])
+    _bw_persist()
+
+
+def _bw_persist(force=False):
+    """Mirror recent usage to disk (wall-clock) so restarts keep the window."""
+    global _bw_last_persist
+    now_wall = time.time()
+    if not force and now_wall - _bw_last_persist < _BW_PERSIST_SECONDS:
+        return
+    _bw_last_persist = now_wall
+    cutoff = now_wall - BW_WINDOW_SECONDS
+    with _bw_lock:
+        for uid in list(_bw_saved.keys()):
+            clean = []
+            for row in _bw_saved[uid]:
+                try:
+                    t, b = float(row[0]), int(row[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if t >= cutoff:
+                    clean.append([t, b])
+            rows = clean
+            while len(rows) > _BW_MAX_SAVED:
+                merged = []
+                for i in range(0, len(rows), 2):
+                    if i + 1 < len(rows):
+                        merged.append([rows[i][0], rows[i][1] + rows[i + 1][1]])
+                    else:
+                        merged.append(rows[i])
+                rows = merged
+            if rows:
+                _bw_saved[uid] = rows
+            else:
+                del _bw_saved[uid]
+        snapshot = {str(uid): rows for uid, rows in _bw_saved.items()}
+    try:
+        tmp = _BW_USAGE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"entries": snapshot}, f)
+        os.replace(tmp, _BW_USAGE_PATH)
+    except OSError:
+        pass
+
+
+def _bw_restore():
+    """Rebuild in-memory windows from disk after a restart."""
+    try:
+        with open(_BW_USAGE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return
+    mono_now = time.monotonic()
+    wall_now = time.time()
+    with _bw_lock:
+        for uid_s, rows in entries.items():
+            try:
+                uid = int(uid_s)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(rows, list):
+                continue
+            valid = []
+            for row in rows:
+                try:
+                    t, b = float(row[0]), int(row[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                age = wall_now - t
+                if age < 0 or age > BW_WINDOW_SECONDS:
+                    continue
+                valid.append([t, b])
+            if not valid:
+                continue
+            _bw_saved[uid] = valid
+            st = _bw_users.get(uid)
+            if st is None:
+                st = [float(BW_BURST_BYTES), mono_now, collections.deque()]
+                _bw_users[uid] = st
+            dq = st[2]
+            for t, b in valid:
+                dq.append((mono_now - (wall_now - t), b))
+
+
+try:
+    _bw_restore()
+except Exception:
+    pass
+
+
+def _bw_flush_loop():
+    """Background flusher: rows recorded since the last throttled write would
+    otherwise sit in memory until the NEXT transfer, and a restart in between
+    loses them (usage reported before a restart but not after)."""
+    while True:
+        time.sleep(1.0)
+        try:
+            with _bw_lock:
+                dirty = bool(_bw_saved)
+            if dirty:
+                _bw_persist()
+        except Exception:
+            pass
+
+
+try:
+    _bw_thread = threading.Thread(target=_bw_flush_loop, daemon=True)
+    _bw_thread.start()
+except Exception:
+    pass
 
 
 def _bw_pace_seconds(st, n):

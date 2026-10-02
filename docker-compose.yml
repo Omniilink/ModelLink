@@ -21,6 +21,7 @@ services:
       - ./user_data:/app/user_data
       - ./omnilink.db:/app/omnilink.db
       - ./network_usage.json:/app/network_usage.json
+      - ./bw_usage.json:/app/bw_usage.json
       - ./tunnel.log:/app/tunnel.log
       - ./modellink/server.log:/app/modellink/server.log
       # Server provider keys + settings (read-write so in-app key saves

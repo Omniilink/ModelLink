@@ -62,6 +62,7 @@ REM the file) right after pulling, never read straight on.
 echo.
 echo === Checking mounted files ===
 call :ensure_file "network_usage.json"
+call :ensure_file "bw_usage.json"
 call :ensure_file "omnilink.db"
 call :ensure_file "tunnel.log"
 call :ensure_file ".env"
