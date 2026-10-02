@@ -478,7 +478,9 @@ class SecurityHeadersMiddleware:
 app.add_middleware(SecurityHeadersMiddleware)
 
 # Access log: broadcast API activity to the terminal (skip static/health noise)
-_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/favicon.svg", "/favicon.ico"}
+# /api/bandwidth is polled twice a second by the UI indicator, so logging it
+# would drown every real request in the terminal.
+_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/bandwidth", "/favicon.svg", "/favicon.ico"}
 
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
