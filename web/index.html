@@ -40,21 +40,32 @@ a:hover{text-decoration:underline}
 .app{display:flex;height:100vh;height:100dvh;width:100vw}
 .sidebar{width:248px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:width .18s ease,margin .18s ease,transform .22s ease}
 .sidebar.hidden{width:0;margin-left:-1px;overflow:hidden}
-.sidebar-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;min-height:57px}
-.logo{display:flex;align-items:center;gap:10px}
-.logo-text{font-size:15px;font-weight:650;letter-spacing:-0.2px}
-.sidebar-nav{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.nav{flex:1;overflow-y:auto;padding:8px}
+.ws-head{display:flex;align-items:center;gap:8px;padding:12px 12px 10px;min-height:58px;flex-shrink:0}
+.ws-brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.ws-brand img{flex-shrink:0}
+.ws-brand-tx{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.ws-name{font-size:14.5px;font-weight:700;letter-spacing:-0.2px}
+.ws-sub{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--text-muted);white-space:nowrap}
+.ws-x{display:none;width:28px;height:28px;border-radius:var(--radius-xs);background:transparent;border:1px solid transparent;color:var(--text-muted);cursor:pointer;font-size:17px;line-height:1;flex-shrink:0}
+.ws-x:hover{background:var(--bg-hover);color:var(--text-primary)}
+.ws-compose{display:flex;gap:6px;padding:0 12px 8px;flex-shrink:0}
+.compose-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--accent);border-color:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font)}
+.compose-btn:hover{background:var(--accent-light)}
+.compose-btn svg{width:14px;height:14px}
+.ws-iconbtn{width:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer}
+.ws-iconbtn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
+.ws-iconbtn svg{width:15px;height:15px}
+.nav{flex:1;overflow-y:auto;padding:2px 8px 12px;min-height:0}
 .nav-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);font-size:13px;margin-bottom:1px;user-select:none;border:1px solid transparent}
 .nav-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .nav-item.active{background:var(--bg-active);color:var(--text-primary);border-color:var(--border)}
 .nav-item svg{width:15px;height:15px;flex-shrink:0;opacity:.75}
+.nav-item[data-view]>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nav-item.active svg{opacity:1;color:var(--accent-light)}
-.nav-section{padding:12px 10px 5px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);font-weight:650}
-.new-chat-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);font-size:13px;margin:8px 8px 2px;border:1px solid var(--border);background:var(--bg-tertiary)}
-.new-chat-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
-.new-chat-btn svg{width:14px;height:14px;flex-shrink:0}
-.chat-list{flex:1;overflow-y:auto;padding:2px 8px 8px}
+.nav-cap{padding:14px 10px 5px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);font-weight:700}
+.nav-cap:first-child{padding-top:6px}
+.ws-foot{padding:10px 12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;min-height:48px;flex-shrink:0}
+.ws-bw{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
 .chat-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);font-size:12.5px;margin-bottom:1px;position:relative}
 .chat-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .chat-item.active{background:var(--bg-active);color:var(--text-primary)}
@@ -62,20 +73,19 @@ a:hover{text-decoration:underline}
 .chat-item-del{width:20px;height:20px;border-radius:var(--radius-xs);background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:0;flex-shrink:0}
 .chat-item:hover .chat-item-del{opacity:1}
 .chat-item-del:hover{background:var(--error);color:#fff}
-.sidebar-footer{padding:9px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:8px;min-height:44px}
+.chat-list{overflow-y:visible;padding:1px 0 2px}
 #bw-indicator{white-space:nowrap;font-variant-numeric:tabular-nums}
 .status-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .status-dot.online{background:var(--success)}
 .status-dot.offline{background:var(--error)}
 .status-dot.warn{background:var(--warning)}
-.version{font-size:10px;color:var(--text-muted);margin-left:auto;font-variant-numeric:tabular-nums}
 .theme-btn{width:28px;height:28px;border-radius:var(--radius-xs);background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .theme-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .theme-btn svg{width:14px;height:14px}
 .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
 .header{height:52px;min-height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:8px;flex-shrink:0}
-.header-title{font-weight:650;font-size:13.5px;color:var(--text-primary);display:flex;align-items:center;gap:8px;white-space:nowrap}
-.header-sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
+.crumbs{display:flex;align-items:center;gap:8px;min-width:0}
+#crumb-view{font-weight:700;font-size:13.5px;color:var(--text-primary);letter-spacing:-0.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .header-spacer{flex:1;min-width:4px}
 .header-btn{background:transparent;border:1px solid transparent;color:var(--text-muted);padding:5px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;font-family:var(--font);white-space:nowrap}
 .header-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
@@ -100,7 +110,7 @@ a:hover{text-decoration:underline}
 .model-option.selected .prov{color:var(--text-secondary)}
 .model-group-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:8px 10px 4px;font-weight:650}
 .content{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0}
-.chat-area{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;min-height:0}
+.chat-area{flex:1;overflow-y:auto;padding:22px max(20px,calc(50% - 424px));display:flex;flex-direction:column;gap:16px;min-height:0}
 .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px}
 .chat-empty-icon{width:56px;height:56px;border-radius:12px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center}
 .chat-empty h2{font-size:19px;color:var(--text-primary);font-weight:650;margin:0;letter-spacing:-0.2px}
@@ -108,14 +118,14 @@ a:hover{text-decoration:underline}
 .quick-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}
 .quick-action-btn{padding:7px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);font-size:12px;cursor:pointer;font-family:var(--font)}
 .quick-action-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
-.message{display:flex;gap:10px;max-width:78%;animation:fadeIn .15s ease}
+.message{display:flex;gap:10px;max-width:100%;animation:rise .16s ease-out}
 .message.user{align-self:flex-end;flex-direction:row-reverse}
 .message.assistant{align-self:flex-start}
 .message-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;font-weight:650}
 .message.user .message-avatar{background:var(--accent);color:#fff}
 .message.assistant .message-avatar{background:var(--bg-tertiary);color:var(--accent-light);border:1px solid var(--border)}
 .message-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;min-width:0}
-.message.user .message-content{background:var(--accent-dim);border-color:var(--accent);color:#fff}
+.message.user .message-content{background:var(--accent-dim);border-color:var(--accent);color:#fff;max-width:min(620px,88%);margin-left:auto}
 .message-meta{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px}
 .message-actions{display:flex;gap:4px;opacity:0;margin-top:4px}
 .message:hover .message-actions{opacity:1}
@@ -123,7 +133,7 @@ a:hover{text-decoration:underline}
 .msg-action-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .msg-edit-area{width:100%;background:var(--bg-input);border:1px solid var(--accent);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-family:var(--font);font-size:13.5px;resize:none;outline:none;line-height:1.5;min-height:60px}
 .msg-edit-bar{display:flex;gap:6px;margin-top:6px}
-.input-area{padding:10px 20px 14px;border-top:1px solid var(--border);background:var(--bg-secondary)}
+.input-area{padding:10px max(20px,calc(50% - 424px)) 16px;border-top:1px solid var(--border);background:var(--bg-secondary)}
 .input-box{display:flex;gap:8px;align-items:flex-end;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:4px 4px 4px 14px}
 .input-box:focus-within{border-color:var(--accent)}
 .input-box textarea{flex:1;background:transparent;border:none;padding:8px 0;color:var(--text-primary);font-family:var(--font);font-size:13.5px;resize:none;outline:none;min-height:22px;max-height:160px;line-height:1.5;min-width:0}
@@ -196,7 +206,7 @@ a:hover{text-decoration:underline}
 .coding-output-header{height:30px;display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0}
 .coding-output-header span{font-size:10.5px;color:var(--text-muted);font-weight:650;text-transform:uppercase;letter-spacing:.6px;flex:1}
 .coding-output-body{flex:1;overflow-y:auto;padding:8px 12px;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--text-secondary)}
-.coding-msg{display:flex;gap:10px;max-width:100%;animation:fadeIn .15s ease;min-width:0}
+.coding-msg{display:flex;gap:10px;max-width:100%;animation:rise .16s ease-out;min-width:0}
 .coding-msg.user{align-self:flex-end;flex-direction:row-reverse}
 .coding-msg.assistant{align-self:flex-start}
 .coding-msg-avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;font-weight:650}
@@ -387,7 +397,7 @@ a:hover{text-decoration:underline}
 .btn-sm{padding:5px 12px;font-size:11px}
 .modal-overlay{position:fixed;inset:0;background:rgba(4,6,10,.62);z-index:100;display:none;align-items:center;justify-content:center;padding:16px}
 .modal-overlay.open{display:flex}
-.modal{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:12px;width:480px;max-height:calc(100dvh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.5);max-width:100%}
+.modal{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:12px;width:480px;max-height:calc(100dvh - 48px);display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.5);max-width:100%;animation:pop .14s ease-out}
 .modal-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
 .modal-header h2{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:650}
 .modal-close{width:28px;height:28px;border-radius:50%;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
@@ -417,6 +427,8 @@ a:hover{text-decoration:underline}
 .hamburger-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
 .hamburger-btn svg{width:18px;height:18px}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:scale(.985) translateY(4px)}to{opacity:1;transform:none}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes viewIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -430,7 +442,7 @@ a:hover{text-decoration:underline}
 .loading-shimmer{background:var(--bg-tertiary);animation:pulse 1.4s infinite}
 .cmd-overlay{position:fixed;inset:0;background:rgba(4,6,10,.62);z-index:300;display:none;align-items:flex-start;justify-content:center;padding:14vh 16px 16px}
 .cmd-overlay.open{display:flex}
-.cmd-box{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:10px;width:540px;max-height:calc(100dvh - 120px);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.5);max-width:100%;display:flex;flex-direction:column}
+.cmd-box{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:10px;width:540px;max-height:calc(100dvh - 120px);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.5);max-width:100%;display:flex;flex-direction:column;animation:pop .14s ease-out}
 .cmd-input{width:100%;padding:14px 16px;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text-primary);font-size:14px;font-family:var(--font);outline:none;flex-shrink:0}
 .cmd-input::placeholder{color:var(--text-muted)}
 .cmd-results{overflow-y:auto;max-height:340px;padding:6px}
@@ -608,7 +620,8 @@ pre{max-width:100%}
 .sidebar-overlay.open{display:block}
 .hamburger-btn{display:flex !important}
 .header{padding:0 10px;gap:6px}
-.header-title{font-size:13px}
+#crumb-view{font-size:13px}
+.ws-x{display:flex;align-items:center;justify-content:center}
 .header-btn{padding:6px 8px;font-size:11px}
 .header-btn span{display:none}
 .chat-area{padding:14px 12px;gap:14px}
@@ -652,7 +665,6 @@ pre{max-width:100%}
 .header::-webkit-scrollbar{display:none}
 .header>*{flex-shrink:0}
 .header .hide-mobile{display:none}
-.header-sep{display:none}
 .model-btn{padding:5px 8px;font-size:11px}
 .chat-area{padding:10px;gap:12px}
 .message{gap:8px}
@@ -681,7 +693,7 @@ pre{max-width:100%}
 #model-btn-text{display:inline-block;max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 }
 @supports(padding:env(safe-area-inset-bottom)){.input-area{padding-bottom:calc(14px + env(safe-area-inset-bottom))}.coding-input-area{padding-bottom:calc(12px + env(safe-area-inset-bottom))}}
-@media(prefers-reduced-motion:reduce){.view-panel.open,#chat-area,.provider-card,.tier-card,.api-key-row,.message,.coding-msg{animation:none !important}.typing-indicator span{animation:none}}
+@media(prefers-reduced-motion:reduce){.view-panel.open,#chat-area,.provider-card,.tier-card,.api-key-row,.message,.coding-msg{animation:none !important}.typing-indicator span{animation:none}.modal,.cmd-box{animation:none}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 </style>
 </head>
@@ -689,100 +701,105 @@ pre{max-width:100%}
 <body>
 <div class="app">
   <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="logo">
-        <img src="/favicon.svg?v=5" height="28" alt="Omniilink">
-        <span class="logo-text">Omniilink</span>
+    <div class="ws-head">
+      <div class="ws-brand">
+        <img src="/favicon.svg?v=5" height="30" alt="Omniilink">
+        <div class="ws-brand-tx">
+          <span class="ws-name">Omniilink</span>
+          <span class="ws-sub"><span class="status-dot" id="status-dot"></span><span id="status-text">Connecting...</span></span>
+        </div>
       </div>
+      <button class="ws-x" onclick="toggleSidebar()" aria-label="Close sidebar" title="Close sidebar">&times;</button>
     </div>
-    <div class="sidebar-nav">
-      <div class="new-chat-btn" onclick="newChat()">
+    <div class="ws-compose">
+      <button class="compose-btn" onclick="newChat()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Chat
-      </div>
-      <div class="nav">
-        <div class="nav-item active" data-view="chat">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-          Chat
-        </div>
-        <div class="chat-list" id="chat-list"></div>
-        <div class="nav-section">Tools</div>
-        <div class="nav-item" data-view="coding">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-          Coding
-        </div>
-        <div class="nav-item" data-view="projects">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-          Projects
-        </div>
-        <div class="nav-item" data-view="more">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          More
-        </div>
-        <div class="nav-section">System</div>
-        <div class="nav-item" data-view="api">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 7h3a5 5 0 015 5 5 5 0 01-5 5h-3m-6 0H6a5 5 0 01-5-5 5 5 0 015-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-          API
-        </div>
-        <div class="nav-item" data-view="providers">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L21 2"/><path d="M15 8l3 3"/></svg>
-          Providers
-        </div>
-        <div class="nav-item" data-view="terminal">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-          Terminal
-        </div>
-        <div class="nav-item" data-view="usage">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
-          Usage
-        </div>
-        <div class="nav-item" data-view="settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-          Settings
-        </div>
-        <div class="nav-item" data-view="prompts">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
-          Prompts
-        </div>
-        <div class="nav-item" id="nav-admin" style="display:none" onclick="location.href='/admin'" title="Server admin panel">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Admin
-        </div>
-        <div class="nav-item" data-view="tutorial">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          Help
-        </div>
-        <div class="nav-section">Providers</div>
-        <div id="provider-list"></div>
-      </div>
+        New chat
+      </button>
+      <button class="ws-iconbtn" onclick="openCmdPalette()" title="Command palette (Ctrl+K)" aria-label="Command palette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
     </div>
-    <div class="sidebar-footer">
-      <span class="status-dot" id="status-dot"></span>
-      <span id="status-text">Connecting...</span>
-      <span id="bw-indicator" title="Bandwidth used in the last 6 hours">⬇ …</span>
+    <nav class="nav" aria-label="Sections">
+      <div class="nav-cap">Workspace</div>
+      <div class="nav-item active" data-view="chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <span>Chat</span>
+      </div>
+      <div class="chat-list" id="chat-list"></div>
+      <div class="nav-item" data-view="coding">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>Coding</span>
+      </div>
+      <div class="nav-item" data-view="projects">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        <span>Projects</span>
+      </div>
+      <div class="nav-cap">Tools</div>
+      <div class="nav-item" data-view="more">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>Media &amp; convert</span>
+      </div>
+      <div class="nav-item" data-view="prompts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+        <span>Prompts</span>
+      </div>
+      <div class="nav-item" data-view="terminal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <span>Terminal</span>
+      </div>
+      <div class="nav-item" data-view="usage">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+        <span>Usage</span>
+      </div>
+      <div class="nav-cap">Manage</div>
+      <div class="nav-item" data-view="providers">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L21 2"/><path d="M15 8l3 3"/></svg>
+        <span>Providers</span>
+      </div>
+      <div class="nav-item" data-view="api">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 7h3a5 5 0 015 5 5 5 0 01-5 5h-3m-6 0H6a5 5 0 01-5-5 5 5 0 015-5h3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        <span>API keys</span>
+      </div>
+      <div class="nav-item" data-view="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06.06A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.31.22.65.22 1h1.09a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        <span>Settings</span>
+      </div>
+      <div class="nav-item" data-view="tutorial">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>Help</span>
+      </div>
+      <div class="nav-item" id="nav-admin" style="display:none" onclick="location.href='/admin'" title="Server admin panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>Admin</span>
+      </div>
+      <div class="nav-cap">Providers</div>
+      <div id="provider-list"></div>
+    </nav>
+    <div class="ws-foot">
+      <span class="ws-bw" id="bw-indicator" title="Bandwidth used in the last 6 hours">&#8595; ...</span>
       <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">
         <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
         <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       </button>
-      <span class="version">v1.0.0</span>
     </div>
   </div>
   <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
   <div class="main">
     <div class="header">
-      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()">
+      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()" aria-label="Open navigation">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <div class="header-title"><img src="/favicon.svg?v=5" height="20" alt="Omniilink" style="flex-shrink:0"><span>Omniilink</span></div>
+      <div class="crumbs"><span id="crumb-view">Chat</span></div>
       <div class="header-spacer"></div>
-      <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)" style="font-size:11px;gap:4px">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <span>Ctrl+K</span>
       </button>
-      <button class="header-btn" onclick="openChatSearch()" title="Search in Chat (Ctrl+F)">
+      <button class="header-btn" onclick="openChatSearch()" title="Search in Chat (Ctrl+F)" aria-label="Search in chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
-      <button class="header-btn hide-mobile" onclick="document.getElementById('shortcuts-modal').classList.add('open')" title="Keyboard Shortcuts">
+      <button class="header-btn hide-mobile" onclick="document.getElementById('shortcuts-modal').classList.add('open')" title="Keyboard Shortcuts" aria-label="Keyboard shortcuts">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="6" y1="16" x2="18" y2="16"/></svg>
       </button>
       <button class="header-btn hide-mobile" onclick="exportChatMD()" title="Export as Markdown">
@@ -795,7 +812,7 @@ pre{max-width:100%}
       </button>
       <button class="header-btn" id="terminal-toggle" onclick="toggleTerminal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        Terminal
+        <span>Terminal</span>
       </button>
     </div>
     <div class="content">
@@ -808,10 +825,7 @@ pre{max-width:100%}
       <div class="chat-area" id="chat-area">
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty-icon">
-            <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
-              <circle cx="11" cy="16" r="6" stroke="#52525b" stroke-width="2.5" fill="none"/>
-              <circle cx="21" cy="16" r="6" stroke="#52525b" stroke-width="2.5" fill="none" opacity=".6"/>
-            </svg>
+            <img src="/favicon.svg?v=5" height="34" alt="Omniilink">
           </div>
           <h2>Omniilink</h2>
           <p>Multi-provider AI load balancer</p>
@@ -5366,14 +5380,19 @@ document.addEventListener('keydown',e=>{
     return 'chat';
   }
   function syncTab(){
-    var active=null,items=document.querySelectorAll('.nav-item[data-view]'),i;
+    var active=null,activeEl=null,items=document.querySelectorAll('.nav-item[data-view]'),i;
     for(i=0;i<items.length;i++){
-      if(items[i].classList.contains('active'))active=items[i].getAttribute('data-view');
+      if(items[i].classList.contains('active')){active=items[i].getAttribute('data-view');activeEl=items[i];}
     }
     var t=active?tabFor(active):'chat';
     var tabs=document.querySelectorAll('#tabbar .tab-item[data-tab]');
     for(i=0;i<tabs.length;i++){
       tabs[i].classList.toggle('active',tabs[i].getAttribute('data-tab')===t);
+    }
+    var crumb=document.getElementById('crumb-view');
+    if(crumb&&activeEl){
+      var lbl=activeEl.querySelector(':scope > span');
+      if(lbl&&lbl.textContent)crumb.textContent=lbl.textContent.trim();
     }
   }
   document.addEventListener('click',function(e){
