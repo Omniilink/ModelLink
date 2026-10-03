@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 APP_NAME = "Omniilink Companion"
@@ -66,14 +67,28 @@ def save_config(cfg):
 
 
 # ---------------- server api ----------------
+# Browsers pass through hosting edge filters; bare script user-agents often
+# do not (HTTP 403). Identify plainly as the companion, browser-style.
+COMPANION_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "OmniilinkCompanion/1.0")
+
+
 def api(server, method, path, token=None, payload=None):
     req = urllib.request.Request(server.rstrip("/") + path, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": COMPANION_UA})
     if token:
         req.add_header("Authorization", "Bearer " + token)
     body = json.dumps(payload).encode() if payload is not None else None
-    with urllib.request.urlopen(req, data=body, timeout=30) as r:
-        return json.loads(r.read().decode() or "{}")
+    try:
+        with urllib.request.urlopen(req, data=body, timeout=30) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            detail = ""
+        raise Exception(f"HTTP {e.code}: {detail.strip() or e.reason}")
 
 
 def pair(server, code, name):
@@ -323,40 +338,50 @@ def run_gui():
     root = tk.Tk()
     root.title("Omniilink Companion Setup")
     root.resizable(False, False)
+    BG, PANEL, LINE = "#0e0f12", "#101216", "#24282f"
+    TEXT, MUTED = "#e8eaed", "#9aa1ab"
+    ACCENT, ACCENT_HI = "#2f6fed", "#5b8def"
+    root.configure(bg=BG)
+    tk.Label(root, text="Omniilink Companion", fg=TEXT, bg=BG,
+             font=("Segoe UI", 13, "bold")).grid(
+                 row=0, column=0, columnspan=4, padx=14, pady=(14, 0), sticky="w")
 
     dots = {"color": "#d9a021"}
-    dot_canvas = tk.Canvas(root, width=22, height=22, highlightthickness=0)
-    dot_canvas.grid(row=0, column=0, padx=(14, 2), pady=(14, 4), sticky="w")
+    dot_canvas = tk.Canvas(root, width=22, height=22, highlightthickness=0, bg=BG)
+    dot_canvas.grid(row=1, column=0, padx=(14, 2), pady=(6, 4), sticky="w")
 
     def draw_dot():
         dot_canvas.delete("all")
         dot_canvas.create_oval(4, 4, 18, 18, fill=dots["color"], outline="")
 
     status_var = tk.StringVar(value="Not paired yet.")
-    tk.Label(root, textvariable=status_var, fg="#8a919b",
-             font=("Segoe UI", 9)).grid(row=0, column=1, columnspan=2,
-                                        padx=(0, 14), pady=(14, 4), sticky="w")
+    tk.Label(root, textvariable=status_var, fg=MUTED, bg=BG,
+             font=("Segoe UI", 9)).grid(row=1, column=1, columnspan=2,
+                                        padx=(0, 14), pady=(6, 4), sticky="w")
 
     def field(row, label, width=44):
-        tk.Label(root, text=label, font=("Segoe UI", 9)).grid(
+        tk.Label(root, text=label, fg=MUTED, bg=BG, font=("Segoe UI", 9)).grid(
             row=row, column=0, padx=(14, 6), pady=4, sticky="e")
         var = tk.StringVar()
         ent = tk.Entry(root, textvariable=var, width=width,
-                       font=("Segoe UI", 10))
+                       font=("Segoe UI", 10), bg=PANEL, fg=TEXT,
+                       insertbackground=TEXT, relief="flat",
+                       highlightthickness=1, highlightbackground=LINE,
+                       highlightcolor=ACCENT, bd=0)
         ent.grid(row=row, column=1, columnspan=2, padx=(0, 14), pady=4,
                  sticky="we")
         return var, ent
 
-    server_var, _ = field(1, "Server URL")
+    server_var, _ = field(2, "Server URL")
     server_var.set(cfg.get("server") or "")
-    code_var, code_ent = field(2, "Pairing code")
+    code_var, code_ent = field(3, "Pairing code")
     try:
         code_ent.configure(font=("Consolas", 13))
     except Exception:
         pass
-    name_var, _ = field(3, "Computer name")
+    name_var, _ = field(4, "Computer name")
     name_var.set(cfg.get("name") or socket.gethostname())
-    proj_var, _ = field(4, "Projects folder")
+    proj_var, _ = field(5, "Projects folder")
     proj_var.set(cfg.get("projects_root") or DEFAULT_PROJECTS)
 
     def browse():
@@ -364,16 +389,19 @@ def run_gui():
         if d:
             proj_var.set(d)
 
-    tk.Button(root, text="Browse…", command=browse).grid(
-        row=4, column=3, padx=(0, 14), pady=4)
+    tk.Button(root, text="Browse…", command=browse, bg="#1b1e24", fg=TEXT,
+              activebackground="#262b34", activeforeground=TEXT,
+              relief="flat", padx=10, pady=3).grid(
+        row=5, column=3, padx=(0, 14), pady=4)
     detail_var = tk.StringVar(value="Get a code from the web app: Admin > Agents > + New pairing code.")
-    tk.Label(root, textvariable=detail_var, fg="#8a919b", wraplength=380,
+    tk.Label(root, textvariable=detail_var, fg=MUTED, bg=BG, wraplength=400,
              justify="left", font=("Segoe UI", 9)).grid(
-                 row=5, column=0, columnspan=4, padx=14, pady=(2, 2), sticky="w")
+                 row=6, column=0, columnspan=4, padx=14, pady=(2, 2), sticky="w")
 
     pair_btn = tk.Button(root, text="Pair this computer", font=("Segoe UI", 11, "bold"),
-                         bg="#2f6fed", fg="white", activebackground="#5b8def",
-                         activeforeground="white", relief="flat", padx=10, pady=5)
+                         bg=ACCENT, fg="white", activebackground=ACCENT_HI,
+                         activeforeground="white", relief="flat", padx=10, pady=6,
+                         cursor="hand2")
 
     def set_status(text, color):
         dots["color"] = color
@@ -436,10 +464,10 @@ def run_gui():
         root.after(120, poll)
 
     pair_btn.configure(command=on_pair)
-    pair_btn.grid(row=6, column=0, columnspan=4, padx=14, pady=(6, 4), sticky="we")
+    pair_btn.grid(row=7, column=0, columnspan=4, padx=14, pady=(6, 4), sticky="we")
 
-    bottom = tk.Frame(root)
-    bottom.grid(row=7, column=0, columnspan=4, padx=14, pady=(0, 14), sticky="we")
+    bottom = tk.Frame(root, bg=BG)
+    bottom.grid(row=8, column=0, columnspan=4, padx=14, pady=(0, 14), sticky="we")
 
     def on_open():
         folder = proj_var.get().strip() or DEFAULT_PROJECTS
@@ -449,9 +477,13 @@ def run_gui():
         except Exception:
             pass
 
-    tk.Button(bottom, text="Open projects folder",
+    tk.Button(bottom, text="Open projects folder", bg="#1b1e24", fg=TEXT,
+              activebackground="#262b34", activeforeground=TEXT,
+              relief="flat", padx=10, pady=4,
               command=on_open).pack(side="left")
-    tk.Button(bottom, text="Close",
+    tk.Button(bottom, text="Close", bg="#1b1e24", fg=TEXT,
+              activebackground="#262b34", activeforeground=TEXT,
+              relief="flat", padx=10, pady=4,
               command=root.destroy).pack(side="right")
 
     if cfg.get("token") and cfg.get("server"):
@@ -463,8 +495,8 @@ def run_gui():
 
 
 def cmd_pair(args):
-    server = args.server or input("Server URL (https://…): ").strip()
-    code = args.code or input("Pairing code from Admin > Agents: ").strip()
+    server = normalize_server(args.server or input("Server URL (https://…): ").strip())
+    code = clean_code(args.code or input("Pairing code from Admin > Agents: ").strip())
     if not server or not code:
         print("need both --server and --code")
         return 2

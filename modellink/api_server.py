@@ -6620,6 +6620,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 SERVER = "__SERVER__"
@@ -6627,12 +6628,20 @@ SERVER = "__SERVER__"
 
 def api(method, path, token=None, payload=None):
     req = urllib.request.Request(SERVER + path, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OmniilinkAgent/1.0"})
     if token:
         req.add_header("Authorization", "Bearer " + token)
     body = json.dumps(payload).encode() if payload is not None else None
-    with urllib.request.urlopen(req, data=body, timeout=30) as r:
-        return json.loads(r.read().decode() or "{}")
+    try:
+        with urllib.request.urlopen(req, data=body, timeout=30) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            detail = ""
+        raise Exception("HTTP %s: %s" % (e.code, detail.strip() or e.reason))
 
 
 def main():
