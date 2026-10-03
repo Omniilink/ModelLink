@@ -2212,8 +2212,9 @@ async function previewFileScanned(path){
       if(tab){
         const url=URL.createObjectURL(new Blob([rewritten],{type:'text/html'}));
         setTimeout(()=>{try{URL.revokeObjectURL(url)}catch(e){}},120000);
-        tab.location.href=url;
+        tab.location.href=url;showToast('Preview opened in a new browser tab','success');
       }else{
+        showToast('Popup blocked — allow popups for full preview; using in-app frame','error');
         frame.removeAttribute('src');
         frame.srcdoc=rewritten;
         document.getElementById('file-preview-modal').classList.add('open');
@@ -2233,7 +2234,8 @@ async function previewFileScanned(path){
     token=r.headers.get('X-Preview-Token')||'';
   }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
   const url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
-  if(tab){tab.location.href=url;return}
+  if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
+  showToast('Popup blocked — allow popups for full preview; using in-app frame','error');
   frame.removeAttribute('srcdoc');
   frame.src=url;
   document.getElementById('file-preview-modal').classList.add('open');
