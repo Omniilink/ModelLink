@@ -6,8 +6,10 @@ amber = not paired yet). The web app can then run shell commands and
 create/edit files inside your local projects folder through a pairing code.
 
 Usage:
+  OmniilinkCompanion.exe             # setup window on first run, tray after
+  OmniilinkCompanion.exe gui        # setup window (server, code, folder)
+  OmniilinkCompanion.exe tray       # tray icon only
   python companion.py pair --server https://YOUR-SERVER --code ABC123
-  python companion.py            # tray icon + background loop
 
 Needs only the standard library to pair and sync; the tray icon needs
 `pip install -r requirements.txt` (pystray + Pillow).
@@ -248,15 +250,21 @@ def run_tray():
         redraw()
 
     def worker():
-        c = load_config()
-        if not c["token"] or not c["server"]:
-            state["ok"] = None
-            state["msg"] = "not paired — right-click > Pair…"
-            redraw()
-            state["stop"].wait()
-            return
-        os.makedirs(c["projects_root"], exist_ok=True)
-        sync_loop(c["server"], c["token"], c["projects_root"], state["stop"], status_cb)
+        # Reload config every round while unpaired so pairing from the
+        # Setup window (separate process) is picked up live.
+        while not state["stop"].is_set():
+            c = load_config()
+            try:
+                os.makedirs(c["projects_root"], exist_ok=True)
+            except Exception:
+                pass
+            if not c["token"] or not c["server"]:
+                state["ok"] = None
+                state["msg"] = "not paired — right-click > Setup…"
+                redraw()
+                state["stop"].wait(5)
+                continue
+            sync_loop(c["server"], c["token"], c["projects_root"], state["stop"], status_cb)
 
     def on_open(icon, item):
         folder = load_config()["projects_root"]
@@ -266,39 +274,14 @@ def run_tray():
         except Exception:
             pass
 
-    def on_pair(icon, item):
+    def on_setup(icon, item):
         try:
-            import tkinter
-            from tkinter import simpledialog
-            root = tkinter.Tk()
-            root.withdraw()
-            server = simpledialog.askstring(APP_NAME, "Server URL (https://…):") or ""
-            code = simpledialog.askstring(APP_NAME, "Pairing code from Admin > Agents:") or ""
-            root.destroy()
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable, "gui"])
+            else:
+                subprocess.Popen([sys.executable, os.path.abspath(__file__), "gui"])
         except Exception:
-            return
-        if not server.strip() or not code.strip():
-            return
-        try:
-            aid, token = pair(server.strip(), code.strip(),
-                              load_config()["name"])
-            c = load_config()
-            c.update({"server": server.strip(), "token": token, "agent_id": aid})
-            save_config(c)
-            state["stop"].clear()
-            threading.Thread(target=worker, daemon=True).start()
-        except Exception as e:
-            state["ok"] = False
-            state["msg"] = "pairing failed"
-            redraw()
-            try:
-                import tkinter.messagebox as mb
-                r = tkinter.Tk()
-                r.withdraw()
-                mb.showerror(APP_NAME, "Pairing failed:\n" + str(e))
-                r.destroy()
-            except Exception:
-                pass
+            pass
 
     def on_quit(icon, item):
         state["stop"].set()
@@ -306,13 +289,177 @@ def run_tray():
 
     menu = pystray.Menu(
         pystray.MenuItem("Open projects folder", on_open),
-        pystray.MenuItem("Pair with server…", on_pair),
+        pystray.MenuItem("Setup…", on_setup),
         pystray.MenuItem("Quit", on_quit),
     )
     icon = pystray.Icon(APP_NAME, _dot_icon((217, 160, 33)), APP_NAME + " — starting…", menu)
     state["icon"] = icon
     threading.Thread(target=worker, daemon=True).start()
     icon.run()
+
+
+# ---------------- setup gui ----------------
+def clean_code(s):
+    """ABC-123 / abc 123 -> ABC123."""
+    import re as _re
+    return _re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+def normalize_server(s):
+    s = (s or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if "://" not in s:
+        s = "https://" + s
+    return s
+
+
+def run_gui():
+    """Setup window: server + pairing code + name + folder, live status."""
+    import queue as _queue
+    import tkinter as tk
+    from tkinter import filedialog
+    cfg = load_config()
+    root = tk.Tk()
+    root.title("Omniilink Companion Setup")
+    root.resizable(False, False)
+
+    dots = {"color": "#d9a021"}
+    dot_canvas = tk.Canvas(root, width=22, height=22, highlightthickness=0)
+    dot_canvas.grid(row=0, column=0, padx=(14, 2), pady=(14, 4), sticky="w")
+
+    def draw_dot():
+        dot_canvas.delete("all")
+        dot_canvas.create_oval(4, 4, 18, 18, fill=dots["color"], outline="")
+
+    status_var = tk.StringVar(value="Not paired yet.")
+    tk.Label(root, textvariable=status_var, fg="#8a919b",
+             font=("Segoe UI", 9)).grid(row=0, column=1, columnspan=2,
+                                        padx=(0, 14), pady=(14, 4), sticky="w")
+
+    def field(row, label, width=44):
+        tk.Label(root, text=label, font=("Segoe UI", 9)).grid(
+            row=row, column=0, padx=(14, 6), pady=4, sticky="e")
+        var = tk.StringVar()
+        ent = tk.Entry(root, textvariable=var, width=width,
+                       font=("Segoe UI", 10))
+        ent.grid(row=row, column=1, columnspan=2, padx=(0, 14), pady=4,
+                 sticky="we")
+        return var, ent
+
+    server_var, _ = field(1, "Server URL")
+    server_var.set(cfg.get("server") or "")
+    code_var, code_ent = field(2, "Pairing code")
+    try:
+        code_ent.configure(font=("Consolas", 13))
+    except Exception:
+        pass
+    name_var, _ = field(3, "Computer name")
+    name_var.set(cfg.get("name") or socket.gethostname())
+    proj_var, _ = field(4, "Projects folder")
+    proj_var.set(cfg.get("projects_root") or DEFAULT_PROJECTS)
+
+    def browse():
+        d = filedialog.askdirectory(title="Projects folder")
+        if d:
+            proj_var.set(d)
+
+    tk.Button(root, text="Browse…", command=browse).grid(
+        row=4, column=3, padx=(0, 14), pady=4)
+    detail_var = tk.StringVar(value="Get a code from the web app: Admin > Agents > + New pairing code.")
+    tk.Label(root, textvariable=detail_var, fg="#8a919b", wraplength=380,
+             justify="left", font=("Segoe UI", 9)).grid(
+                 row=5, column=0, columnspan=4, padx=14, pady=(2, 2), sticky="w")
+
+    pair_btn = tk.Button(root, text="Pair this computer", font=("Segoe UI", 11, "bold"),
+                         bg="#2f6fed", fg="white", activebackground="#5b8def",
+                         activeforeground="white", relief="flat", padx=10, pady=5)
+
+    def set_status(text, color):
+        dots["color"] = color
+        status_var.set(text)
+        try:
+            draw_dot()
+        except Exception:
+            pass
+
+    def set_busy(busy):
+        try:
+            pair_btn.configure(state="disabled" if busy else "normal")
+            root.configure(cursor="watch" if busy else "")
+        except Exception:
+            pass
+
+    results = _queue.Queue()
+
+    def poll():
+        try:
+            kind, text, color = results.get_nowait()
+        except Exception:
+            root.after(120, poll)
+            return
+        if kind == "done":
+            set_status(text, color)
+            set_busy(False)
+        else:
+            root.after(120, poll)
+
+    def do_pair():
+        server = normalize_server(server_var.get())
+        code = clean_code(code_var.get())
+        name = name_var.get().strip() or socket.gethostname()
+        proot = proj_var.get().strip() or DEFAULT_PROJECTS
+        if not server or not code:
+            results.put(("done", "Enter the server address and the pairing code.", "#e5534b"))
+            return
+        try:
+            aid, token = pair(server, code, name)
+        except Exception as e:
+            results.put(("done", "Pairing failed: " + str(e), "#e5534b"))
+            return
+        try:
+            c = load_config()
+            c.update({"server": server, "token": token, "agent_id": aid,
+                      "name": name, "projects_root": proot})
+            save_config(c)
+            os.makedirs(proot, exist_ok=True)
+        except Exception as e:
+            results.put(("done", "Paired, but could not save: " + str(e), "#e5534b"))
+            return
+        results.put(("done", "Paired as agent " + aid + " — the tray dot turns green.", "#34c77b"))
+
+    def on_pair():
+        set_busy(True)
+        set_status("Pairing…", "#d9a021")
+        import threading as _th
+        _th.Thread(target=do_pair, daemon=True).start()
+        root.after(120, poll)
+
+    pair_btn.configure(command=on_pair)
+    pair_btn.grid(row=6, column=0, columnspan=4, padx=14, pady=(6, 4), sticky="we")
+
+    bottom = tk.Frame(root)
+    bottom.grid(row=7, column=0, columnspan=4, padx=14, pady=(0, 14), sticky="we")
+
+    def on_open():
+        folder = proj_var.get().strip() or DEFAULT_PROJECTS
+        try:
+            os.makedirs(folder, exist_ok=True)
+            os.startfile(folder)  # noqa: S606 -- local folder by design
+        except Exception:
+            pass
+
+    tk.Button(bottom, text="Open projects folder",
+              command=on_open).pack(side="left")
+    tk.Button(bottom, text="Close",
+              command=root.destroy).pack(side="right")
+
+    if cfg.get("token") and cfg.get("server"):
+        set_status("This computer is paired (agent " + str(cfg.get("agent_id") or "?") +
+                   "). Close this window — the tray icon handles the rest.", "#34c77b")
+    else:
+        draw_dot()
+    root.mainloop()
 
 
 def cmd_pair(args):
@@ -344,6 +491,8 @@ def main(argv=None):
     p.add_argument("--name", default="")
     p.add_argument("--projects", default="",
                    help="projects folder (default: Documents/OmniilinkProjects)")
+    sub.add_parser("tray", help="tray icon only")
+    sub.add_parser("gui", help="setup window only")
     args = ap.parse_args(argv)
     if args.cmd == "pair":
         if getattr(args, "projects", ""):
@@ -351,7 +500,24 @@ def main(argv=None):
             cfg["projects_root"] = args.projects
             save_config(cfg)
         return cmd_pair(args)
-    run_tray()
+    if args.cmd == "gui":
+        run_gui()
+        return 0
+    if args.cmd == "tray":
+        run_tray()
+        return 0
+    # No subcommand: tray when paired, otherwise setup window + tray behind it
+    # so the first run visibly works instead of hiding in the tray.
+    cfg = load_config()
+    if cfg.get("token") and cfg.get("server"):
+        run_tray()
+        return 0
+    t = threading.Thread(target=run_tray, daemon=False)
+    t.start()
+    try:
+        run_gui()
+    finally:
+        t.join()
     return 0
 
 
