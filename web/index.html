@@ -1046,7 +1046,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-bars" id="adm-usage-ts"></div></div></div>
             </div>
             <div data-apane="agents" style="display:none">
-              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/admin/companion-client" download="OmniilinkCompanionSetup.msi" title="Windows installer with tray app">Companion setup (.msi)</a><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
+              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/admin/companion-client?v=1.0.5" download="OmniilinkServerSetup.msi" title="Windows installer with tray app">Server setup (.msi)</a><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
               <div id="adm-pair-box"></div>
               <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
               <div id="adm-agents"></div>
@@ -5690,7 +5690,7 @@ async function admAgentFile(payload){
   const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)throw new Error('Pick a computer first');
   const aid=sel.value;
   const known=(admAgentsCache||[]).find(a=>String(a.id)===String(aid));
-  if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start the companion on it first');
+  if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start Omniilink Server on it first');
   const r=await authFetch(API+'/api/admin/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
@@ -5704,7 +5704,7 @@ async function admAgentFile(payload){
       throw new Error((out&&out.error)||('exit '+c.exit_code));
     }
   }
-  throw new Error('Timed out waiting for the computer (is the companion running?)');
+  throw new Error('Timed out waiting for the computer (is Omniilink Server running?)');
 }
 function admFmFmtSize(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
 async function admFmLoad(){const box=document.getElementById('adm-fm-list');if(!box)return;box.innerHTML='<div class="tool-status">Loading…</div>';

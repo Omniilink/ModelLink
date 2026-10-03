@@ -34,7 +34,8 @@ def _build_id():
     """Short id of the running code (shown in /api/health and the app
     footer) so a stale deployment is obvious instead of mysterious.
     Prefers the git sha; the Docker image has no git binary, so fall back
-    to a hash of this file's contents (changes with every backend edit)."""
+    to a hash of the shipped source files (changes with any backend or
+    frontend edit)."""
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR,
                              capture_output=True, text=True, timeout=10)
@@ -45,9 +46,13 @@ def _build_id():
         pass
     try:
         h = hashlib.sha1()
-        with open(__file__, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
+        for rel in ("modellink/api_server.py", "modellink/splitter.py",
+                    "modellink/auth.py", "web/index.html", "web/landing.html"):
+            p = os.path.join(APP_DIR, rel)
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
         return "code-" + h.hexdigest()[:7]
     except Exception:
         pass
@@ -6714,11 +6719,11 @@ async def admin_companion_client(request: Request):
     user, err = _require_superadmin(request)
     if err:
         return err
-    p = os.path.join(APP_DIR, "companion", "OmniilinkCompanionSetup.msi")
+    p = os.path.join(APP_DIR, "companion", "OmniilinkServerSetup.msi")
     if not os.path.isfile(p):
         return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
     return FileResponse(p, media_type="application/x-msi",
-                        filename="OmniilinkCompanionSetup.msi")
+                        filename="OmniilinkServerSetup.msi")
 
 
 @app.get("/api/admin/overview")

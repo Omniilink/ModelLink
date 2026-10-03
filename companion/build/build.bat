@@ -25,7 +25,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo === Building OmniilinkCompanion.exe ===
-pyinstaller --noconfirm --noconsole --onefile --name OmniilinkCompanion --clean ^
+pyinstaller --noconfirm --noconsole --onefile --name OmniilinkServer --clean ^
   --exclude-module tkinter ^
   --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0" companion.py
 if errorlevel 1 (
@@ -40,12 +40,12 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-"%WIXBIN%\light.exe" -nologo -o "..\OmniilinkCompanionSetup.msi" "%~dp0msi\companion.wixobj" -ext "%WIXBIN%\WixUIExtension.dll"
+"%WIXBIN%\light.exe" -nologo -o "..\OmniilinkServerSetup.msi" "%~dp0msi\companion.wixobj" -ext "%WIXBIN%\WixUIExtension.dll"
 if errorlevel 1 (
   echo LIGHT FAILED.
   pause
   exit /b 1
 )
 echo.
-echo Built ..\OmniilinkCompanionSetup.msi
+echo Built ..\OmniilinkServerSetup.msi
 pause

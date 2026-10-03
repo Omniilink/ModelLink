@@ -1,4 +1,4 @@
-# Omniilink Companion
+# Omniilink Server
 
 Links a Windows computer to your Omniilink server so the web app can run
 commands and create/edit files on it. Lives in the system tray: a **green**
@@ -10,7 +10,7 @@ Right-click the tray icon for: Open projects folder · Pair with server · Quit.
 ## Install (on the computer to link)
 
 1. In the web app, go to **Admin → Agents** and download
-   **Companion setup (.msi)**.
+   **Server setup (.msi)**.
 2. Run it (asks for admin once — it installs to Program Files and enables
    start-with-Windows automatically).
 3. A **Setup page** opens in your browser on first run: enter the server address, paste
@@ -18,7 +18,7 @@ Right-click the tray icon for: Open projects folder · Pair with server · Quit.
    computer name and projects folder, and press **Pair this computer**.
    The tray dot turns green. (Reopen it anytime from the tray: Setup….)
 
-To uninstall: Windows Settings → Apps → Omniilink Companion → Uninstall.
+To uninstall: Windows Settings -> Apps -> Omniilink Server -> Uninstall.
 
 ## Manual install (no admin rights)
 

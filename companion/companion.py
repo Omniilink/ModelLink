@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Omniilink Companion: links this computer to your Omniilink server.
+"""Omniilink Server: links this computer to your Omniilink server.
 
 Runs in the Windows system tray (green = connected, red = offline,
 amber = not paired yet). The web app can then run shell commands and
 create/edit files inside your local projects folder through a pairing code.
 
 Usage:
-  OmniilinkCompanion.exe             # setup window on first run, tray after
-  OmniilinkCompanion.exe gui        # setup window (server, code, folder)
-  OmniilinkCompanion.exe tray       # tray icon only
+  OmniilinkServer.exe                # setup page on first run, tray after
+  OmniilinkServer.exe gui           # setup page (server, code, folder)
+  OmniilinkServer.exe tray          # tray icon only
   python companion.py pair --server https://YOUR-SERVER --code ABC123
 
 Needs only the standard library to pair and sync; the tray icon needs
@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 
-APP_NAME = "Omniilink Companion"
+APP_NAME = "Omniilink Server"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -70,7 +70,7 @@ def save_config(cfg):
 # Browsers pass through hosting edge filters; bare script user-agents often
 # do not (HTTP 403). Identify plainly as the companion, browser-style.
 COMPANION_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "OmniilinkCompanion/1.0")
+                "OmniilinkServer/1.0")
 
 
 class ApiError(Exception):
@@ -401,38 +401,48 @@ def _read_port_file():
 
 
 def tray_lock():
-    """Single-instance guard for the tray/polling loop. True when acquired."""
+    """Single-instance guard for the tray/polling loop. True when acquired.
+
+    Time-based only: no pid signals (unreliable across platforms and
+    privilege levels). A lock older than 60s is treated as stale and
+    reclaimed; anything fresher means a live tray, so stand down."""
     global _tray_lock_fd
+    path = os.path.join(CONFIG_DIR, "tray.lock")
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
     except Exception:
         pass
-    path = os.path.join(CONFIG_DIR, "tray.lock")
-    try:
-        _tray_lock_fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+
+    def _try():
+        global _tray_lock_fd
         try:
-            os.write(_tray_lock_fd, str(os.getpid()).encode())
-        except Exception:
-            pass
-        return True
-    except FileExistsError:
-        pass
-    except OSError:
-        return False
-    # Stale lock from a dead process? Reclaim it, otherwise stand down.
+            _tray_lock_fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            try:
+                os.write(_tray_lock_fd, ("%d %d" % (os.getpid(), int(time.time()))).encode())
+            except Exception:
+                pass
+            return True
+        except FileExistsError:
+            return None
+        except OSError:
+            return False
+
+    r = _try()
+    if r is not None:
+        return r
     try:
-        with open(path, "r") as f:
-            pid = int((f.read() or "").strip() or 0)
-        if pid > 0:
-            os.kill(pid, 0)
-        return False
+        with open(path) as f:
+            parts = (f.read() or "").split()
+        age = time.time() - float(parts[1]) if len(parts) > 1 else 1e9
     except Exception:
-        pass
+        age = 1e9
+    if age < 60:
+        return False
     try:
         os.remove(path)
     except OSError:
         return False
-    return tray_lock()
+    return bool(_try())
 
 
 SETUP_CSS = ("*{box-sizing:border-box;margin:0;padding:0}"
@@ -470,10 +480,10 @@ def _setup_page():
     return ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<meta name=\"robots\" content=\"noindex,nofollow\">"
-            "<title>Omniilink Companion Setup</title><style>" + SETUP_CSS + "</style></head><body>"
+            "<title>Omniilink Server Setup</title><style>" + SETUP_CSS + "</style></head><body>"
             "<main class=\"card\"><div class=\"brand\">"
             "<span id=\"dot\" class=\"dot\" style=\"background:#d9a021\"></span>"
-            "Omniilink Companion</div>"
+            "Omniilink Server</div>"
             "<p class=\"sub\" id=\"sub\">Link this computer to your Omniilink server.</p>"
             "<div id=\"msg\"></div>"
             "<label for=\"server\">Server URL</label>"
@@ -486,16 +496,19 @@ def _setup_page():
             "<label for=\"projects\">Projects folder</label>"
             "<input id=\"projects\" value=\"" + esc(cfg.get("projects_root", "") or DEFAULT_PROJECTS) + "\" />"
             "<button class=\"btn\" id=\"pair\">Pair this computer</button>"
-            "<div class=\"btnrow\"><button class=\"btn\" id=\"open\">Open projects folder</button></div>"
+            "<div class=\"btnrow\"><button class=\"btn\" id=\"open\">Open projects folder</button>"
+            "<button class=\"btn\" id=\"diag\">Run diagnostics</button></div>"
+            "<div id=\"diagout\" style=\"margin-top:4px\"></div>"
             "<p class=\"hint\">Get a code from the web app: Admin &gt; Agents &gt; + New pairing code.<br>"
             "Green dot = connected. This page only ever runs on your own machine.</p>"
             "</main><script>(function(){"
             "var dot=document.getElementById('dot'),sub=document.getElementById('sub'),"
-            "msg=document.getElementById('msg');"
+            "msg=document.getElementById('msg'),out=document.getElementById('diagout');"
             "function show(t,ok){msg.textContent=t;msg.className=ok?'ok':'err';}"
+            "function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
             "fetch('api/status').then(function(r){return r.json()}).then(function(s){"
             "if(s.paired){dot.style.background='#34c77b';"
-            "sub.textContent='Paired'+(s.agent_id?' as agent '+s.agent_id:'')+'. '+(s.connection==='connected'?'Companion is syncing.':'Companion is not syncing right now — start the tray app.');}"
+            "sub.textContent='Paired'+(s.agent_id?' as agent '+s.agent_id:'')+'. '+(s.connection==='connected'?'Server link is syncing.':'Not syncing right now — start the tray app.');}"
             "}).catch(function(){});"
             "document.getElementById('pair').addEventListener('click',function(){"
             "var b=this;b.disabled=true;msg.className='';"
@@ -514,11 +527,21 @@ def _setup_page():
             "this.value=this.value.toUpperCase();});"
             "document.getElementById('open').addEventListener('click',function(){"
             "fetch('api/open-folder',{method:'POST'}).catch(function(){});});"
+            "document.getElementById('diag').addEventListener('click',function(){"
+            "var b=this;out.innerHTML='';b.disabled=true;"
+            "fetch('api/doctor').then(function(r){return r.json()}).then(function(d){"
+            "b.disabled=false;"
+            "out.innerHTML=(d.checks||[]).map(function(c){"
+            "return '<div style=\"padding:6px 0;border-top:1px solid #24282f;font-size:13px\">'"
+            "+'<span style=\"display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:'"
+            "+(c.ok?'#34c77b':'#e5534b')+'\"></span><b>'+esc(c.name)+'</b><br>'"
+            "+'<span style=\"color:#9aa1ab\">'+esc(c.detail)+'</span></div>'}).join('');"
+            "}).catch(function(e){b.disabled=false;out.textContent='Diagnostics failed: '+e;});});"
             "})();</script></body></html>")
 
 
 class _SetupHandler(_http_server.BaseHTTPRequestHandler):
-    server_version = "OmniilinkCompanion/1.0"
+    server_version = "OmniilinkServer/1.0"
 
     def log_message(self, *a):
         pass
@@ -547,6 +570,14 @@ class _SetupHandler(_http_server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         from urllib.parse import urlparse
+        if urlparse(self.path).path == "/api/doctor":
+            try:
+                checks = [{"name": n, "ok": bool(o), "detail": str(d or "")}
+                          for n, o, d in run_doctor()]
+                return self._json({"checks": checks})
+            except Exception as e:
+                return self._json({"checks": [{"name": "diagnostics", "ok": False,
+                                               "detail": str(e)}]})
         if urlparse(self.path).path == "/api/status":
             cfg = load_config()
             paired = bool(cfg.get("token") and cfg.get("server"))
@@ -646,6 +677,74 @@ def _setup_base():
     return None
 
 
+def tray_unlock():
+    """Release a lock WE hold (used to probe-then-release in diagnostics)."""
+    global _tray_lock_fd
+    try:
+        if _tray_lock_fd is not None:
+            try:
+                os.close(_tray_lock_fd)
+            except Exception:
+                pass
+            _tray_lock_fd = None
+        try:
+            os.remove(os.path.join(CONFIG_DIR, "tray.lock"))
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def run_doctor():
+    """Check everything between this computer and the server. Returns a list
+    of (name, ok, detail). Never raises."""
+    out = []
+    cfg = load_config()
+    if os.path.isfile(CONFIG_PATH):
+        out.append(("config file", True, CONFIG_PATH))
+    else:
+        out.append(("config file", True, "missing (defaults used)"))
+    if not cfg.get("server") or not cfg.get("token"):
+        out.append(("pairing", False, "not paired — enter a pairing code first"))
+        return out
+    out.append(("pairing", True, "agent " + str(cfg.get("agent_id") or "?")))
+    try:
+        h = api(cfg["server"], "GET", "/api/health")
+        out.append(("server reachable", True,
+                    "build " + str(h.get("build", "?")) + ", model " + str(h.get("model", "?"))))
+    except Exception as e:
+        return out + [("server reachable", False, str(e))]
+    try:
+        p = api(cfg["server"], "GET", "/api/agent/pending", cfg["token"])
+        out.append(("token accepted", True,
+                    "queue idle" if not p.get("command") else "a command is waiting"))
+    except ApiError as e:
+        if e.status == 401:
+            out.append(("token accepted", False,
+                        "server rejected the token — re-pair this computer (remove it under "
+                        "Admin > Agents first if it is still listed)"))
+        else:
+            out.append(("token accepted", False, str(e)))
+    except Exception as e:
+        out.append(("token accepted", False, str(e)))
+    proot = cfg.get("projects_root") or DEFAULT_PROJECTS
+    try:
+        os.makedirs(proot, exist_ok=True)
+        probe = os.path.join(proot, ".doctor-write-test")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+        out.append(("projects folder writable", True, proot))
+    except Exception as e:
+        out.append(("projects folder writable", False, proot + ": " + str(e)))
+    if tray_lock():
+        tray_unlock()
+        out.append(("tray running", False, "tray is not running — start Omniilink Server"))
+    else:
+        out.append(("tray running", True, "tray process holds the lock"))
+    return out
+
+
 def cmd_pair(args):
     server = normalize_server(args.server or input("Server URL (https://…): ").strip())
     code = clean_code(args.code or input("Pairing code from Admin > Agents: ").strip())
@@ -698,6 +797,7 @@ def main(argv=None):
     p.add_argument("--projects", default="",
                    help="projects folder (default: Documents/OmniilinkProjects)")
     sub.add_parser("tray", help="tray icon only")
+    sub.add_parser("doctor", help="check server, token, folder and tray")
     sub.add_parser("setup", help="browser setup panel only")
     sub.add_parser("gui", help="browser setup panel only (alias)")
     args = ap.parse_args(argv)
@@ -714,6 +814,13 @@ def main(argv=None):
             return 0
         run_tray()
         return 0
+    if args.cmd == "doctor":
+        bad = False
+        for name, ok, detail in run_doctor():
+            if not ok:
+                bad = True
+            print(("OK   " if ok else "FAIL ") + name + ((" — " + detail) if detail else ""))
+        return 1 if bad else 0
     # No subcommand: another copy already running -> show its setup panel.
     if not tray_lock():
         return _ensure_setup_page(False)

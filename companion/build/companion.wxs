@@ -1,38 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Omniilink Companion installer (WiX v3). Rebuild with build.bat. -->
+<!-- Omniilink Server installer (WiX v3). Rebuild with build.bat. -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Omniilink Companion" Language="1033" Version="1.0.4"
+  <Product Id="*" Name="Omniilink Server" Language="1033" Version="1.0.5"
            Manufacturer="Omniilink" UpgradeCode="12EF83D7-102A-4CE7-AC8D-2FEA1B3C89F0">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade Schedule="afterInstallExecute"
-                  DowngradeErrorMessage="A newer version of Omniilink Companion is already installed." />
+                  DowngradeErrorMessage="A newer version of Omniilink Server is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <UIRef Id="WixUI_Minimal" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLDIR" Name="Omniilink Companion">
-          <Component Id="CompanionExe" Guid="*" Win64="yes">
-            <File Id="OmniilinkCompanion.exe" Name="OmniilinkCompanion.exe"
-                  Source="$(var.ExeSourceDir)\OmniilinkCompanion.exe" KeyPath="yes" />
+        <Directory Id="INSTALLDIR" Name="Omniilink Server">
+          <Component Id="ServerExe" Guid="*" Win64="yes">
+            <File Id="OmniilinkServer.exe" Name="OmniilinkServer.exe"
+                  Source="$(var.ExeSourceDir)\OmniilinkServer.exe" KeyPath="yes" />
             <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuDir"
-                      Name="Omniilink Companion"
-                      Target="[#OmniilinkCompanion.exe]"
+                      Name="Omniilink Server"
+                      Target="[#OmniilinkServer.exe]"
                       WorkingDirectory="INSTALLDIR" />
             <Shortcut Id="StartupShortcut" Directory="StartupDir"
-                      Name="Omniilink Companion"
-                      Target="[#OmniilinkCompanion.exe]"
+                      Name="Omniilink Server"
+                      Target="[#OmniilinkServer.exe]"
                       Arguments="tray"
                       WorkingDirectory="INSTALLDIR" />
           </Component>
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ProgramMenuDir" Name="Omniilink Companion">
+        <Directory Id="ProgramMenuDir" Name="Omniilink Server">
           <Component Id="ProgramMenuComponent" Guid="*">
             <RemoveFolder Id="ProgramMenuDir" On="uninstall" />
-            <RegistryValue Root="HKCU" Key="Software\Omniilink Companion"
+            <RegistryValue Root="HKCU" Key="Software\Omniilink Server"
                            Name="installed" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+        </Directory>
+        <Directory Id="OldProgramMenuDir" Name="Omniilink Companion">
+          <Component Id="OldShortcutsCleanup" Guid="*">
+            <RemoveFile Id="OldStartMenuLnk" Directory="OldProgramMenuDir"
+                        Name="Omniilink Companion.lnk" On="install" />
+            <RemoveFile Id="OldStartupLnk" Directory="StartupDir"
+                        Name="Omniilink Companion.lnk" On="install" />
+            <RegistryValue Root="HKCU" Key="Software\Omniilink Server"
+                           Name="cleaned" Value="1" Type="integer" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
@@ -41,9 +51,10 @@
       </Directory>
     </Directory>
 
-    <Feature Id="Main" Title="Omniilink Companion" Level="1">
-      <ComponentRef Id="CompanionExe" />
+    <Feature Id="Main" Title="Omniilink Server" Level="1">
+      <ComponentRef Id="ServerExe" />
       <ComponentRef Id="ProgramMenuComponent" />
+      <ComponentRef Id="OldShortcutsCleanup" />
     </Feature>
   </Product>
 </Wix>
