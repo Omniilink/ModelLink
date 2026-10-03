@@ -764,6 +764,10 @@ pre{max-width:100%}
         <span>Usage</span>
       </div>
       <div class="nav-cap">Manage</div>
+      <div class="nav-item" data-view="agents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span>Agents</span>
+      </div>
       <div class="nav-item" data-view="providers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L21 2"/><path d="M15 8l3 3"/></svg>
         <span>Providers</span>
@@ -999,6 +1003,25 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         <div class="view-body" id="settings-body"></div>
         <div class="view-footer"><button class="btn btn-ghost" onclick="navigate('chat')">Back to Chat</button></div>
       </div>
+            <div class="view-panel" id="agents-view">
+        <div class="view-header"><h2>Agents</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body" id="agents-body">
+          <div style="max-width:1180px;margin:0 auto">
+
+              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/agents/client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/agents/companion" download="OmniilinkServerSetup.msi" title="Windows installer with tray app">Server setup (.msi)</a><span class="tool-result-sub" id="adm-api-build" title="Build of the API this page talks to"></span><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
+              <div id="adm-pair-box"></div>
+              <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
+              <div id="adm-agents"></div>
+              <div class="usage-section-title" style="margin-top:16px">Run command</div>
+              <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px" onchange="admFmPath='';admFmLoad()"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-cmd-out" style="max-height:320px"></div></div></div>
+              <div class="usage-section-title" style="margin-top:16px">Files on selected computer</div>
+              <div class="tool-row"><span class="tool-result-sub" id="adm-fm-path" style="font-family:var(--mono)">/</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admFmNew('file')">+ File</button><button class="btn btn-ghost btn-sm" onclick="admFmNew('dir')">+ Folder</button><button class="btn btn-ghost btn-sm" onclick="admFmLoad()">Refresh</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-fm-list" style="max-height:300px"></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="view-panel" id="providers-view">
         <div class="view-header"><h2>Providers</h2><button class="btn btn-primary btn-sm" onclick="openProvidersAdd()">+ Add</button></div>
         <div class="view-body" id="providers-body"></div>
@@ -1012,7 +1035,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="reports" onclick="admShow('reports',this)">Reports <span id="adm-rep-count"></span></button>
               <button class="modal-tab" data-atab="users" onclick="admShow('users',this)">Users</button>
               <button class="modal-tab" data-atab="usage" onclick="admShow('usage',this)">Usage</button>
-              <button class="modal-tab" data-atab="agents" onclick="admShow('agents',this)">Agents</button>
               <button class="modal-tab" data-atab="terminal" onclick="admShow('terminal',this)">Terminal</button>
               <button class="modal-tab" data-atab="docker" onclick="admShow('docker',this)">Docker</button>
               <button class="modal-tab" data-atab="logs" onclick="admShow('logs',this)">Logs</button>
@@ -1044,18 +1066,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               </div>
               <div class="usage-section-title">Requests over time</div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-bars" id="adm-usage-ts"></div></div></div>
-            </div>
-            <div data-apane="agents" style="display:none">
-              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/admin/companion-client?v=1.0.5" download="OmniilinkServerSetup.msi" title="Windows installer with tray app">Server setup (.msi)</a><span class="tool-result-sub" id="adm-api-build" title="Build of the API this page talks to"></span><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
-              <div id="adm-pair-box"></div>
-              <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
-              <div id="adm-agents"></div>
-              <div class="usage-section-title" style="margin-top:16px">Run command</div>
-              <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px" onchange="admFmPath='';admFmLoad()"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
-              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-cmd-out" style="max-height:320px"></div></div></div>
-              <div class="usage-section-title" style="margin-top:16px">Files on selected computer</div>
-              <div class="tool-row"><span class="tool-result-sub" id="adm-fm-path" style="font-family:var(--mono)">/</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admFmNew('file')">+ File</button><button class="btn btn-ghost btn-sm" onclick="admFmNew('dir')">+ Folder</button><button class="btn btn-ghost btn-sm" onclick="admFmLoad()">Refresh</button></div>
-              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-fm-list" style="max-height:300px"></div></div></div>
             </div>
             <div data-apane="terminal" style="display:none">
               <div class="tool-row"><span class="tool-result-sub">Mode</span><span class="tool-result-sub" id="adm-term-mode">…</span><span class="tool-result-sub">cwd</span><span class="tool-result-sub" id="adm-term-cwd">…</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admTermClear()">Clear</button><button class="btn btn-ghost btn-sm" onclick="admTermHist()">History</button></div>
@@ -1518,17 +1528,18 @@ function switchView(view){
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
+  document.getElementById('agents-view').classList.toggle('open',view==='agents');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -5617,7 +5628,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='agents')admLoadAgents();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -5674,16 +5685,16 @@ async function admRestartContainer(name,btn){if(!(await appConfirm('Restart cont
 async function admRestartServer(){if(!(await appConfirm('Restart the API server container? This drops every connection.')))return;try{const r=await authFetch(API+'/api/admin/server/restart',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await r.json();if(!r.ok)throw new Error((d&&(d.error||d.detail))||('HTTP '+r.status));showToast('Restarting — reconnecting…','success');setTimeout(()=>location.reload(),6000)}catch(e){showToast((e.data&&e.data.error)||e.message,'error')}}
 async function admLoadLogs(){try{const r=await authFetch(API+'/api/admin/logs?lines='+encodeURIComponent(document.getElementById('adm-logs-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-logs-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
 async function admLoadAudit(){try{const r=await authFetch(API+'/api/admin/audit?lines='+encodeURIComponent(document.getElementById('adm-audit-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-audit-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
-async function admGenPairing(){try{const r=await authFetch(API+'/api/admin/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
+async function admGenPairing(){try{const r=await authFetch(API+'/api/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
   document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admLoadAgents(){const box=document.getElementById('adm-agents');try{try{const hr=await authFetch(API+'/api/health');const hd=await hr.json();document.getElementById('adm-api-build').textContent='api '+(hd.build||'?')}catch(e){}
-const r=await authFetch(API+'/api/admin/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
+const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
   if(!(d.agents||[]).length){box.innerHTML='<div class="tool-status">No computers paired yet. Generate a pairing code above, then run the agent on the client.</div>';return}
   d.agents.forEach(a=>{const item=document.createElement('div');item.className='usage-activity-item';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span><span class="act-time">'+escapeHtml(a.last_seen||'')+'</span>';box.appendChild(item);
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
   admLoadAgentOut();if(sel.value)admFmLoad()}catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
-async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired computer? Its queued commands will be dropped.')))return;try{const r=await authFetch(API+'/api/admin/agents/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Agent removed','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired computer? Its queued commands will be dropped.')))return;try{const r=await authFetch(API+'/api/agents/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Agent removed','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 let admFmPath='',admFmMode='',admFmName='',admAgentsCache=[];
 function admFmJoin(name){return admFmPath?admFmPath+'/'+name:name}
 function admFmParent(){const i=admFmPath.lastIndexOf('/');return i<0?'':admFmPath.slice(0,i)}
@@ -5692,12 +5703,12 @@ async function admAgentFile(payload){
   const aid=sel.value;
   const known=(admAgentsCache||[]).find(a=>String(a.id)===String(aid));
   if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start Omniilink Server on it first');
-  const r=await authFetch(API+'/api/admin/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const r=await authFetch(API+'/api/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<30000){
     await new Promise(res=>setTimeout(res,1500));
-    const rr=await authFetch(API+'/api/admin/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
+    const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
     if(c&&c.status==='done'){
       let out=null;try{out=JSON.parse(c.output||'null')}catch(e){throw new Error('Bad reply from computer')}
@@ -5751,8 +5762,8 @@ async function admFmSave(){const st=document.getElementById('adm-file-status');s
 async function admFmDelete(e){if(!(await appConfirm('Delete "'+e.name+'"?'+(e.type==='dir'?' (must be empty)':''))))return;
   try{await admAgentFile({op:'delete',path:admFmJoin(e.name)});showToast('Deleted','success');admFmLoad()}catch(err){showToast(err.message,'error')}}
 async function admRunAgentCmd(){const sel=document.getElementById('adm-cmd-agent');const inp=document.getElementById('adm-cmd-input');const cmd=inp.value.trim();if(!sel.value||!cmd){showToast('Pick a computer and type a command','error');return}inp.value='';
-  try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Command queued — the agent picks it up within seconds','success');setTimeout(admLoadAgentOut,4000)}catch(e){showToast(e.message,'error')}}
-async function admLoadAgentOut(){const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)return;try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/commands?limit=10');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-cmd-out');box.innerHTML='';
+  try{const r=await authFetch(API+'/api/agents/'+sel.value+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Command queued — the agent picks it up within seconds','success');setTimeout(admLoadAgentOut,4000)}catch(e){showToast(e.message,'error')}}
+async function admLoadAgentOut(){const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)return;try{const r=await authFetch(API+'/api/agents/'+sel.value+'/commands?limit=10');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-cmd-out');box.innerHTML='';
   (d.commands||[]).forEach(c=>{const item=document.createElement('div');item.className='usage-activity-item';item.style.alignItems='flex-start';item.innerHTML='<span class="act-time">'+escapeHtml((c.created_at||'').slice(5,16))+'</span><div style="min-width:0"><div style="font-family:var(--mono);font-size:11px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word">$ '+escapeHtml(c.command||'')+'</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;max-height:160px;overflow:auto">'+escapeHtml((c.output||('['+(c.status||'queued')+']')).slice(0,4000))+'</div></div>';box.appendChild(item)});
   if(!(d.commands||[]).length)box.innerHTML='<div class="tool-status">No commands yet.</div>'}catch(e){}}
 </script>

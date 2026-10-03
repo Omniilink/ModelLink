@@ -6382,7 +6382,8 @@ def _agent_public(a):
         seen = 0
     return {"id": a.get("id", ""), "name": a.get("name", ""), "hostname": a.get("hostname", ""),
             "platform": a.get("platform", ""), "created_at": a.get("created_at", ""),
-            "last_seen": a.get("last_seen", 0), "online": bool(seen and now - seen < 75)}
+            "last_seen": a.get("last_seen", 0), "online": bool(seen and now - seen < 75),
+            "owner": a.get("owner_name", "")}
 
 
 def _agent_from_token(request):
@@ -6399,39 +6400,74 @@ def _agent_from_token(request):
     return None
 
 
-@app.post("/api/admin/agents/pairing")
-async def admin_agent_pairing(request: Request):
-    user, err = _require_superadmin(request)
+def _agent_visible(user, agent):
+    """Agents a caller may see and manage: everything for admins, only
+    self-paired machines for everyone else. Unknown agents are invisible
+    (404, never 403) so ids cannot be probed."""
+    if not user or not isinstance(agent, dict):
+        return False
+    if user.get("is_admin"):
+        return True
+    try:
+        return int(agent.get("owner_id") or 0) == int(user.get("id") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+@app.post("/api/agents/pairing")
+async def agents_pairing(request: Request):
+    user, err = _require_auth(request)
     if err:
         return err
     code = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(6))
     now = time.time()
     with _AGENT_LOCK:
         st = _agents_load()
-        st["pairing"][code] = {"code": code, "created": now, "expires": now + 600, "claimed": False}
+        st["pairing"][code] = {"code": code, "created": now, "expires": now + 600,
+                               "claimed": False, "created_by": user["id"],
+                               "created_by_name": user.get("username", "")}
         _agents_save(st)
     base = str(request.base_url or "").strip().rstrip("/")
     return {"code": code, "expires_in": 600, "server_hint": base}
 
 
-@app.get("/api/admin/agents")
-async def admin_agents(request: Request):
-    user, err = _require_superadmin(request)
+@app.get("/api/agents")
+async def agents_list(request: Request):
+    user, err = _require_auth(request)
     if err:
         return err
     with _AGENT_LOCK:
         st = _agents_load()
-        agents = [_agent_public(a) for a in st["agents"].values()]
+        agents = [_agent_public(a) for a in st["agents"].values()
+                  if _agent_visible(user, a)]
     agents.sort(key=lambda a: str(a["id"]))
     return {"agents": agents}
 
 
-@app.post("/api/admin/agents/{agent_id}/exec")
-async def admin_agent_exec(request: Request, agent_id: str):
-    actor, err = _require_superadmin(request)
+def _queue_agent_command(user, agent_id, command, kind, payload):
+    """Queue a shell/file command. Returns (command_id, None) or
+    (None, error JSONResponse)."""
+    with _AGENT_LOCK:
+        st = _agents_load()
+        a = st["agents"].get(str(agent_id))
+        if a is None or not _agent_visible(user, a):
+            return None, JSONResponse(status_code=404, content={"error": "Agent not found"})
+        cid = str(st.get("next_command", 1))
+        st["next_command"] = int(cid) + 1
+        st["commands"][cid] = {"id": cid, "agent_id": str(agent_id), "command": command,
+                               "kind": kind, "payload": payload,
+                               "status": "queued", "exit_code": None, "output": "",
+                               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": ""}
+        _agents_save(st)
+    return cid, None
+
+
+@app.post("/api/agents/{agent_id}/exec")
+async def agents_exec(request: Request, agent_id: str):
+    user, err = _require_auth(request)
     if err:
         return err
-    if not _admin_rate_ok(actor["username"], 60, 60):
+    if not _admin_rate_ok(user["username"], 60, 60, "agents"):
         return JSONResponse(status_code=429, content={"error": "Rate limit"})
     data, bad = await _safe_json(request)
     if bad:
@@ -6439,29 +6475,22 @@ async def admin_agent_exec(request: Request, agent_id: str):
     command = str((data or {}).get("command", "") or "").strip()
     if not command or len(command) > 8000:
         return JSONResponse(status_code=400, content={"error": "Empty or oversized command"})
-    with _AGENT_LOCK:
-        st = _agents_load()
-        if agent_id not in st["agents"]:
-            return JSONResponse(status_code=404, content={"error": "Agent not found"})
-        cid = str(st.get("next_command", 1))
-        st["next_command"] = int(cid) + 1
-        st["commands"][cid] = {"id": cid, "agent_id": agent_id, "command": command,
-                               "status": "queued", "exit_code": None, "output": "",
-                               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": ""}
-        _agents_save(st)
-    _audit("agent.exec", actor["username"], f"agent={agent_id} cmd={command[:120]}")
+    cid, err2 = _queue_agent_command(user, agent_id, command, "shell", None)
+    if err2:
+        return err2
+    _audit("agent.exec", user["username"], f"agent={agent_id} cmd={command[:120]}")
     return {"status": "ok", "command_id": cid}
 
 
-@app.post("/api/admin/agents/{agent_id}/file")
-async def admin_agent_file(request: Request, agent_id: str):
+@app.post("/api/agents/{agent_id}/file")
+async def agents_file(request: Request, agent_id: str):
     """Queue a file operation for a paired computer (the companion app
     executes it jailed inside its projects folder). Ops: list, read, write,
     mkdir, delete. The result arrives as JSON through the commands feed."""
-    actor, err = _require_superadmin(request)
+    user, err = _require_auth(request)
     if err:
         return err
-    if not _admin_rate_ok(actor["username"], 120, 60):
+    if not _admin_rate_ok(user["username"], 120, 60, "agents"):
         return JSONResponse(status_code=429, content={"error": "Rate limit"})
     data, bad = await _safe_json(request)
     if bad:
@@ -6479,24 +6508,16 @@ async def admin_agent_file(request: Request, agent_id: str):
         if not isinstance(content, str) or len(content) > 1024 * 1024:
             return JSONResponse(status_code=400, content={"error": "Content missing or over 1MB"})
         payload["content"] = content
-    with _AGENT_LOCK:
-        st = _agents_load()
-        if agent_id not in st["agents"]:
-            return JSONResponse(status_code=404, content={"error": "Agent not found"})
-        cid = str(st.get("next_command", 1))
-        st["next_command"] = int(cid) + 1
-        st["commands"][cid] = {"id": cid, "agent_id": agent_id, "command": "",
-                               "kind": "file", "payload": payload,
-                               "status": "queued", "exit_code": None, "output": "",
-                               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": ""}
-        _agents_save(st)
-    _audit("agent.file", actor["username"], f"agent={agent_id} op={op} path={rel[:160]}")
+    cid, err2 = _queue_agent_command(user, agent_id, "", "file", payload)
+    if err2:
+        return err2
+    _audit("agent.file", user["username"], f"agent={agent_id} op={op} path={rel[:160]}")
     return {"status": "ok", "command_id": cid}
 
 
-@app.get("/api/admin/agents/{agent_id}/commands")
-async def admin_agent_commands(request: Request, agent_id: str, limit: int = 20):
-    user, err = _require_superadmin(request)
+@app.get("/api/agents/{agent_id}/commands")
+async def agents_commands(request: Request, agent_id: str, limit: int = 20):
+    user, err = _require_auth(request)
     if err:
         return err
     try:
@@ -6505,27 +6526,53 @@ async def admin_agent_commands(request: Request, agent_id: str, limit: int = 20)
         limit = 20
     with _AGENT_LOCK:
         st = _agents_load()
+        a = st["agents"].get(str(agent_id))
+        if a is None or not _agent_visible(user, a):
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
         rows = [c for c in st["commands"].values() if str(c.get("agent_id")) == str(agent_id)]
     rows.sort(key=lambda c: int(c.get("id", 0)), reverse=True)
     return {"commands": rows[:limit]}
 
 
-@app.delete("/api/admin/agents/{agent_id}")
-async def admin_agent_delete(request: Request, agent_id: str):
-    actor, err = _require_superadmin(request)
+@app.delete("/api/agents/{agent_id}")
+async def agents_delete(request: Request, agent_id: str):
+    user, err = _require_auth(request)
     if err:
         return err
     with _AGENT_LOCK:
         st = _agents_load()
-        if agent_id not in st["agents"]:
+        a = st["agents"].get(str(agent_id))
+        if a is None or not _agent_visible(user, a):
             return JSONResponse(status_code=404, content={"error": "Agent not found"})
-        del st["agents"][agent_id]
+        del st["agents"][str(agent_id)]
         st["commands"] = {k: c for k, c in st["commands"].items() if str(c.get("agent_id")) != str(agent_id)}
         _agents_save(st)
-    _audit("agent.remove", actor["username"], f"agent={agent_id}")
+    _audit("agent.remove", user["username"], f"agent={agent_id}")
     return {"status": "ok"}
 
 
+@app.get("/api/agents/client")
+async def agents_client(request: Request):
+    """Headless agent script, server URL baked in. Any signed-in user."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    base = str(request.base_url or "").strip().rstrip("/")
+    script = AGENT_CLIENT_PY.replace("__SERVER__", base or "https://YOUR-SERVER")
+    return PlainTextResponse(script, headers={"Content-Disposition": "attachment; filename=omniilink-agent.py"})
+
+
+@app.get("/api/agents/companion")
+async def agents_companion(request: Request):
+    """Windows companion installer (MSI with tray EXE). Any signed-in user."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    p = os.path.join(APP_DIR, "companion", "OmniilinkServerSetup.msi")
+    if not os.path.isfile(p):
+        return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
+    return FileResponse(p, media_type="application/x-msi",
+                        filename="OmniilinkServerSetup.msi")
 @app.post("/api/agent/claim")
 async def agent_claim(request: Request):
     data, bad = await _safe_json(request)
@@ -6550,6 +6597,8 @@ async def agent_claim(request: Request):
         st["next_agent"] = int(aid) + 1
         st["agents"][aid] = {"id": aid, "name": name, "hostname": hostname, "platform": platform_name,
                              "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                             "owner_id": p.get("created_by"),
+                             "owner_name": p.get("created_by_name", ""),
                              "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "last_seen": 0}
         _agents_save(st)
     _audit("agent.pair", "-", f"agent={aid} host={hostname}")
@@ -6701,29 +6750,6 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 '''
-
-
-@app.get("/api/admin/agent-client")
-async def admin_agent_client(request: Request):
-    user, err = _require_superadmin(request)
-    if err:
-        return err
-    base = str(request.base_url or "").strip().rstrip("/")
-    script = AGENT_CLIENT_PY.replace("__SERVER__", base or "https://YOUR-SERVER")
-    return PlainTextResponse(script, headers={"Content-Disposition": "attachment; filename=omniilink-agent.py"})
-
-
-@app.get("/api/admin/companion-client")
-async def admin_companion_client(request: Request):
-    """Download the Windows companion installer (MSI with tray EXE)."""
-    user, err = _require_superadmin(request)
-    if err:
-        return err
-    p = os.path.join(APP_DIR, "companion", "OmniilinkServerSetup.msi")
-    if not os.path.isfile(p):
-        return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
-    return FileResponse(p, media_type="application/x-msi",
-                        filename="OmniilinkServerSetup.msi")
 
 
 @app.get("/api/admin/overview")
