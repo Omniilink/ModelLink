@@ -2865,14 +2865,19 @@ def _preview_secret() -> bytes:
 
 
 def _mint_preview_token(user_id, path: str, ttl: int = _PREVIEW_TOKEN_TTL) -> str:
-    """Mint `exp.user_id.sig` for one asset path (read-only, 1h by default)."""
+    """Mint `exp.user_id.nonce.sig` for one asset path (read-only, 1h default).
+
+    The nonce makes every mint unique, so each preview click produces a
+    fresh URL that cannot be correlated with (or replayed from) an older one.
+    """
     exp = int(time.time()) + int(ttl)
+    nonce = secrets.token_hex(8)
     sig = hmac.new(
         _preview_secret(),
-        f"{user_id}:{path}:{exp}".encode("utf-8"),
+        f"{user_id}:{path}:{exp}:{nonce}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:32]
-    return f"{exp}.{user_id}.{sig}"
+    return f"{exp}.{user_id}.{nonce}.{sig}"
 
 
 def _user_from_preview_token(token, path):
@@ -2880,12 +2885,18 @@ def _user_from_preview_token(token, path):
 
     Binds user id + exact path + expiry; signature compared in constant time.
     Tampering with any field (including swapping paths) invalidates it."""
-    if not token or not path or len(token) > 160:
+    if not token or not path or len(token) > 192:
         return None
     parts = token.split(".")
-    if len(parts) != 3:
+    if len(parts) == 4:
+        exp_s, uid_s, nonce, sig = parts
+        msg_tail = f":{nonce}"
+    elif len(parts) == 3:
+        # Legacy pre-nonce tokens: still honored until they expire.
+        exp_s, uid_s, sig = parts
+        msg_tail = ""
+    else:
         return None
-    exp_s, uid_s, sig = parts
     try:
         exp = int(exp_s)
         uid = int(uid_s)
@@ -2896,7 +2907,7 @@ def _user_from_preview_token(token, path):
         return None
     expected = hmac.new(
         _preview_secret(),
-        f"{uid}:{path}:{exp}".encode("utf-8"),
+        f"{uid}:{path}:{exp}{msg_tail}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:32]
     if not hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
