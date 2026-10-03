@@ -73,6 +73,13 @@ COMPANION_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "OmniilinkCompanion/1.0")
 
 
+class ApiError(Exception):
+    def __init__(self, status, body):
+        super().__init__(f"HTTP {status}: {body}" if body else f"HTTP {status}")
+        self.status = status
+        self.body = body
+
+
 def api(server, method, path, token=None, payload=None):
     req = urllib.request.Request(server.rstrip("/") + path, method=method,
                                  headers={"Content-Type": "application/json",
@@ -88,7 +95,12 @@ def api(server, method, path, token=None, payload=None):
             detail = e.read().decode("utf-8", "replace")[:500]
         except Exception:
             detail = ""
-        raise Exception(f"HTTP {e.code}: {detail.strip() or e.reason}")
+        try:
+            parsed = json.loads(detail or "{}")
+            detail = parsed.get("error", "") or detail
+        except Exception:
+            pass
+        raise ApiError(e.code, (detail or e.reason or "").strip())
 
 
 def pair(server, code, name):
@@ -194,9 +206,14 @@ def do_shell(cmd, timeout=CMD_TIMEOUT):
 # ---------------- sync loop ----------------
 def poll_once(server, token, root, status_cb=None):
     """One heartbeat: fetch a queued command, run it, post the result.
-    Returns 'idle' | 'ran' | 'error'."""
+    Returns 'idle' | 'ran' | 'error' | 'unauthorized' (dead/removed token —
+    the caller should reload config instead of retrying blindly)."""
     try:
         p = api(server, "GET", "/api/agent/pending", token)
+    except ApiError as e:
+        if status_cb:
+            status_cb(False, str(e))
+        return "unauthorized" if e.status == 401 else "error"
     except Exception as e:
         if status_cb:
             status_cb(False, str(e))
@@ -229,13 +246,21 @@ def poll_once(server, token, root, status_cb=None):
 
 
 def sync_loop(server, token, root, stop, status_cb=None):
+    """Poll until stopped. Returns 'unauthorized' when the token is dead so
+    the worker reloads config (re-pairing heals); 'ok' when stopped."""
     while not stop.is_set():
-        _touch_poll()
         try:
-            poll_once(server, token, root, status_cb)
+            res = poll_once(server, token, root, status_cb)
         except Exception:
-            pass
+            res = "error"
+        if res == "unauthorized":
+            return "unauthorized"
+        if res != "error":
+            # Only successful rounds count as activity: errors must not
+            # masquerade as syncing anywhere status is shown.
+            _touch_poll()
         stop.wait(POLL_SECONDS)
+    return "ok"
 
 
 # ---------------- tray ----------------
@@ -284,7 +309,12 @@ def run_tray():
                 redraw()
                 state["stop"].wait(5)
                 continue
-            sync_loop(c["server"], c["token"], c["projects_root"], state["stop"], status_cb)
+            res = sync_loop(c["server"], c["token"], c["projects_root"], state["stop"], status_cb)
+            if res == "unauthorized" and not state["stop"].is_set():
+                # Dead token (agent removed, or re-paired elsewhere): back off
+                # so we don't hammer, then reload config — a fresh pairing
+                # heals automatically without restarting.
+                state["stop"].wait(30)
 
     def on_open(icon, item):
         folder = load_config()["projects_root"]
