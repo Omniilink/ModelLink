@@ -1046,13 +1046,16 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-bars" id="adm-usage-ts"></div></div></div>
             </div>
             <div data-apane="agents" style="display:none">
-              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Download agent</a><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
+              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Headless agent</a><a class="btn btn-ghost btn-sm" href="/api/admin/companion-client" download="omniilink-companion.zip" title="Windows tray app with file access">Companion app</a><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
               <div id="adm-pair-box"></div>
               <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
               <div id="adm-agents"></div>
               <div class="usage-section-title" style="margin-top:16px">Run command</div>
-              <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
+              <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px" onchange="admFmPath='';admFmLoad()"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-cmd-out" style="max-height:320px"></div></div></div>
+              <div class="usage-section-title" style="margin-top:16px">Files on selected computer</div>
+              <div class="tool-row"><span class="tool-result-sub" id="adm-fm-path" style="font-family:var(--mono)">/</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admFmNew('file')">+ File</button><button class="btn btn-ghost btn-sm" onclick="admFmNew('dir')">+ Folder</button><button class="btn btn-ghost btn-sm" onclick="admFmLoad()">Refresh</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-fm-list" style="max-height:300px"></div></div></div>
             </div>
             <div data-apane="terminal" style="display:none">
               <div class="tool-row"><span class="tool-result-sub">Mode</span><span class="tool-result-sub" id="adm-term-mode">…</span><span class="tool-result-sub">cwd</span><span class="tool-result-sub" id="adm-term-cwd">…</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admTermClear()">Clear</button><button class="btn btn-ghost btn-sm" onclick="admTermHist()">History</button></div>
@@ -1299,13 +1302,14 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
-<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" allow="pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
+<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="btn btn-ghost btn-sm" id="preview-share-btn" onclick="sharePreview()" title="Copy a share link (live until 10 minutes after first open)">Share</button><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" allow="pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="file-edit-modal" onclick="if(event.target===this){event.stopPropagation();closeFileEditor()}"><div class="modal" style="max-width:96vw;width:1200px"><div class="modal-header"><h2 id="file-edit-title">Edit file</h2><span id="file-edit-meta" class="tool-result-sub"></span><button class="modal-close" onclick="closeFileEditor()">&times;</button></div><div class="modal-body" style="display:flex;flex-direction:column"><textarea id="file-edit-area" spellcheck="false" onkeydown="fileEditKey(event)"></textarea></div><div class="modal-actions"><span id="file-edit-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeFileEditor()">Cancel</button><button class="btn btn-primary" id="file-edit-save" onclick="saveFileEditor()">Save</button></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
 <div class="modal-overlay" id="providers-add-modal" onclick="if(event.target===this)closeProvidersAdd()"><div class="modal" style="max-width:560px"><div class="modal-header"><h2>Add provider</h2><button class="modal-close" onclick="closeProvidersAdd()">&times;</button></div><div class="modal-body" id="providers-add-body"></div></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
 <div class="modal-overlay" id="report-modal" onclick="if(event.target===this)closeReportModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2>Send error report</h2><button class="modal-close" onclick="closeReportModal()">&times;</button></div><div class="modal-body"><p id="report-summary" class="tool-result-sub" style="margin:0 0 12px"></p><div class="modal-field"><label>Note for the admin (optional)</label><input type="text" id="report-note" placeholder="What were you trying to do?" maxlength="500" onkeydown="if(event.key==='Enter')sendReport()" /></div><div class="modal-actions"><button class="btn btn-ghost" onclick="closeReportModal()">Cancel</button><button class="btn btn-primary" id="report-send-btn" onclick="sendReport()">Send report</button></div></div></div></div>
+<div class="modal-overlay" id="adm-file-modal" onclick="if(event.target===this)closeAdmFile()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2 id="adm-file-title">File</h2><button class="modal-close" onclick="closeAdmFile()">&times;</button></div><div class="modal-body"><div class="modal-field" id="adm-file-name-wrap" style="display:none"><label>Name</label><input type="text" id="adm-file-name" placeholder="notes.txt" /></div><div class="modal-field" id="adm-file-area-wrap"><textarea id="adm-file-area" spellcheck="false" style="width:100%;min-height:40vh;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-family:var(--mono);font-size:12px;resize:vertical"></textarea></div><div class="modal-actions"><span id="adm-file-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeAdmFile()">Cancel</button><button class="btn btn-primary" id="adm-file-save" onclick="admFmSave()">Save</button></div></div></div></div>
 <div class="cmd-overlay" id="cmd-overlay" onclick="if(event.target===this)closeCmdPalette()"><div class="cmd-box"><input class="cmd-input" id="cmd-input" placeholder="Search commands, models, chats..." oninput="filterCmdPalette(this.value)" onkeydown="handleCmdKey(event)" autocomplete="off" /><div class="cmd-results" id="cmd-results"></div></div></div>
 <div class="modal-overlay" id="auth-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="auth-modal-title">Sign In</h2></div><div class="modal-body"><div id="auth-form-signin"><div class="modal-field"><label>Username</label><input type="text" id="auth-username" placeholder="username" autocomplete="username" onkeydown="if(event.key==='Enter')doAuth()" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth()" /></div><div id="auth-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignup()">Create account</button><button class="btn btn-primary" onclick="doAuth()">Sign In</button></div></div><div id="auth-form-signup" style="display:none"><div class="modal-field"><label>Username</label><input type="text" id="auth-signup-username" placeholder="username (3+ chars)" autocomplete="username" onkeydown="if(event.key==='Enter')doSignup()" /></div><div class="modal-field"><label>Display Name</label><input type="text" id="auth-signup-name" placeholder="Your Name (optional)" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-signup-password" placeholder="password (6+ chars)" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSignup()" /></div><div id="auth-signup-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignin()">Back to sign in</button><button class="btn btn-primary" onclick="doSignup()">Create Account</button></div></div></div></div></div>
 <div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
@@ -2193,12 +2197,41 @@ async function runFileScanned(path,execCmd){
   if(!(await scanPathForAction(path,'run')))return;
   runCodingFile(path,execCmd);
 }
+let _previewPath=null,_previewLocal=false;
+async function sharePreview(){
+  if(!_previewPath){showToast('Open a preview first, then share it','error');return}
+  const btn=document.getElementById('preview-share-btn');if(btn)btn.disabled=true;
+  try{
+    let body;
+    if(_previewLocal){
+      let content=null;
+      try{content=await fsReadFile(_previewPath)}catch(e){}
+      if(content==null)throw new Error('Could not read file');
+      if(content.length>1024*1024)throw new Error('File too large to share (max 1MB)');
+      body={name:String(_previewPath).split('/').pop(),content};
+    }else body={path:_previewPath};
+    const r=await authFetch(API+'/api/coding/preview-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    const url=location.origin+d.url;
+    let copied=false;
+    try{if(typeof navigator!=='undefined'&&navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(url);copied=true}}catch(e){}
+    if(!copied){
+      const ta=document.createElement('textarea');ta.value=url;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();
+      try{copied=document.execCommand('copy')}catch(e){}
+      ta.remove();
+    }
+    showToast(copied?'Share link copied — live until 10 minutes after first open':'Share link ready: '+url,copied?'success':'info');
+  }catch(e){showToast('Could not create share link: '+e.message,'error')}
+  if(btn)btn.disabled=false;
+}
 async function previewFileScanned(path){
   // Previews open in a REAL browser tab so games capture input (pointer
   // lock, keys, fullscreen) exactly like the downloaded file. The tab is
   // opened synchronously to keep the click gesture (popup blockers), then
   // navigated once the async scan/token work finishes. Blocked popups fall
   // back to the in-app modal frame (limited input capture).
+  _previewPath=path;_previewLocal=!!fsHandle;
   let tab=null;
   try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
   if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
@@ -5648,8 +5681,72 @@ async function admLoadAgents(){try{const r=await authFetch(API+'/api/admin/agent
   d.agents.forEach(a=>{const item=document.createElement('div');item.className='usage-activity-item';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span><span class="act-time">'+escapeHtml(a.last_seen||'')+'</span>';box.appendChild(item);
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
-  admLoadAgentOut()}catch(e){}}
+  admLoadAgentOut();if(sel.value)admFmLoad()}catch(e){}}
 async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired computer? Its queued commands will be dropped.')))return;try{const r=await authFetch(API+'/api/admin/agents/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Agent removed','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+let admFmPath='',admFmMode='',admFmName='';
+function admFmJoin(name){return admFmPath?admFmPath+'/'+name:name}
+function admFmParent(){const i=admFmPath.lastIndexOf('/');return i<0?'':admFmPath.slice(0,i)}
+async function admAgentFile(payload){
+  const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)throw new Error('Pick a computer first');
+  const aid=sel.value;
+  const r=await authFetch(API+'/api/admin/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+  const cid=String(d.command_id);const t0=Date.now();
+  while(Date.now()-t0<30000){
+    await new Promise(res=>setTimeout(res,1500));
+    const rr=await authFetch(API+'/api/admin/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
+    const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
+    if(c&&c.status==='done'){
+      let out=null;try{out=JSON.parse(c.output||'null')}catch(e){throw new Error('Bad reply from computer')}
+      if(out&&out.ok)return out;
+      throw new Error((out&&out.error)||('exit '+c.exit_code));
+    }
+  }
+  throw new Error('Timed out waiting for the computer (is the companion running?)');
+}
+function admFmFmtSize(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
+async function admFmLoad(){const box=document.getElementById('adm-fm-list');if(!box)return;box.innerHTML='<div class="tool-status">Loading…</div>';
+  try{const out=await admAgentFile({op:'list',path:admFmPath});box.innerHTML='';
+    document.getElementById('adm-fm-path').textContent='/'+admFmPath;
+    const rows=(out.entries||[]);
+    if(admFmPath){const up=document.createElement('div');up.className='usage-activity-item';up.style.cursor='pointer';up.innerHTML='<span class="act-model">..</span><span class="act-detail">parent folder</span>';up.onclick=()=>{admFmPath=admFmParent();admFmLoad()};box.appendChild(up)}
+    if(!rows.length){box.innerHTML+='<div class="tool-status">Empty folder.</div>';return}
+    rows.forEach(e=>{const item=document.createElement('div');item.className='usage-activity-item';
+      const isDir=e.type==='dir';
+      item.innerHTML='<span class="act-model">'+escapeHtml(e.name)+'</span><span class="act-detail">'+(isDir?'folder':admFmFmtSize(e.size))+'</span>';
+      const open=document.createElement('button');open.className='btn btn-ghost btn-sm';open.textContent=isDir?'Open':'Edit';open.style.marginLeft='auto';open.onclick=()=>admFmOpen(e);item.appendChild(open);
+      const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=()=>admFmDelete(e);item.appendChild(del);
+      box.appendChild(item)});
+  }catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
+function admFmOpen(e){if(e.type==='dir'){admFmPath=admFmJoin(e.name);admFmLoad()}else admFmEdit(e.name)}
+async function admFmEdit(name){admFmMode='edit';admFmName=admFmJoin(name);
+  document.getElementById('adm-file-title').textContent=name;
+  document.getElementById('adm-file-name-wrap').style.display='none';
+  document.getElementById('adm-file-area-wrap').style.display='';
+  document.getElementById('adm-file-area').value='Loading…';
+  document.getElementById('adm-file-status').textContent='';
+  document.getElementById('adm-file-modal').classList.add('open');
+  try{const out=await admAgentFile({op:'read',path:admFmName});document.getElementById('adm-file-area').value=out.content||''}
+  catch(e){document.getElementById('adm-file-status').textContent='Error: '+e.message}}
+function admFmNew(kind){admFmMode=kind==='dir'?'newdir':'newfile';admFmName='';
+  document.getElementById('adm-file-title').textContent=kind==='dir'?'New folder':'New file';
+  document.getElementById('adm-file-name-wrap').style.display='';
+  document.getElementById('adm-file-name').value='';
+  document.getElementById('adm-file-area-wrap').style.display=kind==='dir'?'none':'';
+  document.getElementById('adm-file-area').value='';
+  document.getElementById('adm-file-status').textContent='';
+  document.getElementById('adm-file-modal').classList.add('open');
+  setTimeout(()=>{try{document.getElementById('adm-file-name').focus()}catch(e){}},60)}
+function closeAdmFile(){document.getElementById('adm-file-modal').classList.remove('open');admFmMode=''}
+async function admFmSave(){const st=document.getElementById('adm-file-status');st.textContent='Saving…';
+  try{
+    if(admFmMode==='newdir'){const n=document.getElementById('adm-file-name').value.trim();if(!n)throw new Error('Enter a name');await admAgentFile({op:'mkdir',path:admFmJoin(n)});closeAdmFile();admFmLoad();return}
+    if(admFmMode==='newfile'){const n=document.getElementById('adm-file-name').value.trim();if(!n)throw new Error('Enter a name');await admAgentFile({op:'write',path:admFmJoin(n),content:document.getElementById('adm-file-area').value});closeAdmFile();admFmLoad();return}
+    if(admFmMode==='edit'){await admAgentFile({op:'write',path:admFmName,content:document.getElementById('adm-file-area').value});st.textContent='Saved.';admFmLoad();return}
+    throw new Error('Nothing to save');
+  }catch(e){st.textContent='Error: '+e.message}}
+async function admFmDelete(e){if(!(await appConfirm('Delete "'+e.name+'"?'+(e.type==='dir'?' (must be empty)':''))))return;
+  try{await admAgentFile({op:'delete',path:admFmJoin(e.name)});showToast('Deleted','success');admFmLoad()}catch(err){showToast(err.message,'error')}}
 async function admRunAgentCmd(){const sel=document.getElementById('adm-cmd-agent');const inp=document.getElementById('adm-cmd-input');const cmd=inp.value.trim();if(!sel.value||!cmd){showToast('Pick a computer and type a command','error');return}inp.value='';
   try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Command queued — the agent picks it up within seconds','success');setTimeout(admLoadAgentOut,4000)}catch(e){showToast(e.message,'error')}}
 async function admLoadAgentOut(){const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)return;try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/commands?limit=10');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-cmd-out');box.innerHTML='';

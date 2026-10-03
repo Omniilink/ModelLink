@@ -137,6 +137,21 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS shared_previews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            folder TEXT DEFAULT '',
+            path TEXT DEFAULT '',
+            content TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            first_opened_at REAL,
+            open_count INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_previews_token ON shared_previews(token);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

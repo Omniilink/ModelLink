@@ -2941,12 +2941,15 @@ _STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)",
                              re.IGNORECASE | re.DOTALL)
 
 
-def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> bytes:
+def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None) -> bytes:
     """Rewrite relative asset URLs in a previewed HTML page to absolute
     preview-asset URLs (with a signed token), so linked CSS/JS/images actually
     load inside the opaque-origin iframe. Covers quoted, unquoted and srcset
     attributes plus inline <style> url()/@import. External, data:, fragment
-    and javascript: URLs are left untouched."""
+    and javascript: URLs are left untouched.
+
+    Pass url_for(rel_path)->url to route assets elsewhere (e.g. shared
+    preview links, which stay valid as long as the share does)."""
     try:
         text = content.decode("utf-8")
     except Exception:
@@ -2970,6 +2973,8 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> byt
         norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
         if not norm or norm == ".":
             return None
+        if url_for is not None:
+            return url_for(norm)
         return _preview_asset_url(norm, user_id)
 
     def repl_quoted(m):
@@ -3002,7 +3007,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> byt
 
     def repl_style(m):
         return (m.group(1)
-                + _rewrite_css_urls(m.group(2), page_dir, user_id)
+                + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for)
                 + m.group(3))
 
     text = _QUOTED_ASSET_RE.sub(repl_quoted, text)
@@ -3012,7 +3017,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None) -> byt
     return text.encode("utf-8")
 
 
-def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None) -> str:
+def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None) -> str:
     """Rewrite relative url(...) and @import "..." in a served stylesheet to
     preview-asset URLs so fonts/backgrounds resolve (external/data untouched)."""
     import posixpath
@@ -3029,6 +3034,8 @@ def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None) -> str:
         norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
         if not norm or norm == ".":
             return None
+        if url_for is not None:
+            return url_for(norm)
         return _preview_asset_url(norm, user_id)
 
     def repl_url(m):
@@ -3107,6 +3114,221 @@ async def coding_preview_asset(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+# ==========================================
+# Shared previews: copyable links that stay live forever until 10 minutes
+# after the first open. Token-gated (unguessable), path- and user-bound at
+# creation; assets ride the same share so they die with it.
+# ==========================================
+_SHARE_TTL_AFTER_OPEN = 600
+_SHARE_MAX_BYTES = 1024 * 1024
+
+
+def _share_lookup(token):
+    if not token or len(token) > 128:
+        return None
+    conn = get_db()
+    try:
+        return conn.execute(
+            "SELECT * FROM shared_previews WHERE token = ?", (token,)).fetchone()
+    finally:
+        conn.close()
+
+
+def _share_consume(token):
+    """Mark a share opened and return its row, or None when dead/expired."""
+    row = _share_lookup(token)
+    if row is None:
+        return None
+    now = time.time()
+    first = row["first_opened_at"]
+    conn = get_db()
+    try:
+        if first is None:
+            conn.execute("UPDATE shared_previews SET first_opened_at = ?, open_count = open_count + 1"
+                         " WHERE id = ?", (now, row["id"]))
+            conn.commit()
+            return row
+        try:
+            age = now - float(first)
+        except (TypeError, ValueError):
+            return None
+        if age > _SHARE_TTL_AFTER_OPEN:
+            return None
+        conn.execute("UPDATE shared_previews SET open_count = open_count + 1 WHERE id = ?",
+                     (row["id"],))
+        conn.commit()
+        return row
+    finally:
+        conn.close()
+
+
+def _share_alive(token):
+    """Like _share_consume but read-only (asset subrequests must not reset
+    the clock or inflate the counter)."""
+    row = _share_lookup(token)
+    if row is None:
+        return None
+    first = row["first_opened_at"]
+    if first is None:
+        return row
+    try:
+        if time.time() - float(first) > _SHARE_TTL_AFTER_OPEN:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return row
+
+
+def _share_asset_url(token, rel_path):
+    from urllib.parse import quote
+    return "/api/s/" + token + "/asset?path=" + quote(rel_path, safe="/")
+
+
+def _share_gone(expired):
+    from fastapi.responses import Response as _Response
+    msg = ("This shared preview has expired (links stay live until 10 minutes "
+           "after the first open)." if expired else "This shared preview link is invalid.")
+    return _Response(
+        content=("<!doctype html><meta charset='utf-8'><title>Preview unavailable</title>"
+                 "<body style='font-family:system-ui;background:#0b0d10;color:#e6e9ef;"
+                 "display:flex;align-items:center;justify-content:center;min-height:90vh'>"
+                 "<p>" + msg + "</p>"),
+        media_type="text/html", status_code=410 if expired else 404)
+
+
+@app.post("/api/coding/preview-share")
+async def coding_preview_share(request: Request):
+    """Create a shareable preview link. Server files are served live from the
+    project; browser-local files can be shared by uploading their content."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    folder, path, content = "", "", None
+    inline = data.get("content")
+    if inline is not None:
+        if not isinstance(inline, str) or len(inline) > _SHARE_MAX_BYTES:
+            return JSONResponse(status_code=400, content={"error": "Shared content too large (max 1MB)"})
+        name = str(data.get("name", "") or "shared.html")
+        name = re.sub(r"[^a-zA-Z0-9_.-]", "_", name.split("/")[-1].split("\\")[-1])[:128] or "shared.html"
+        if os.path.splitext(name)[1].lower() not in (".html", ".htm"):
+            name += ".html"
+        path, content = name, inline
+    else:
+        path = str(data.get("path", "") or "").strip()
+        if not path:
+            return JSONResponse(status_code=400, content={"error": "Missing path"})
+        coding_state = _get_coding_state(_safe_username(user["username"]))
+        folder = coding_state.get("folder")
+        access_err = _folder_access_error(user, folder)
+        if access_err:
+            return access_err
+        if _bad_path(path):
+            return JSONResponse(status_code=400, content={"error": "Invalid path"})
+        if os.path.splitext(path)[1].lower() not in (".html", ".htm"):
+            return JSONResponse(status_code=400, content={"error": "Sharing supports HTML files only"})
+        full = os.path.join(folder, path)
+        if not _is_within(folder, full) or not os.path.isfile(full):
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        if os.path.getsize(full) > _SHARE_MAX_BYTES:
+            return JSONResponse(status_code=400, content={"error": "File too large to share (max 1MB)"})
+    token = secrets.token_urlsafe(24)
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO shared_previews (token, user_id, username, folder, path, content)"
+                     " VALUES (?, ?, ?, ?, ?, ?)",
+                     (token, user["id"], user.get("username", ""), folder, path, content))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"url": "/api/s/" + token, "token": token}
+
+
+@app.get("/api/s/{token}")
+async def shared_preview(request: Request, token: str):
+    """Serve a shared page: sandbox allow-scripts + allow-pointer-lock (opaque
+    origin, so it cannot touch viewer storage — but games get full input)."""
+    from fastapi.responses import Response as _Response
+    row = _share_consume(token)
+    if row is None:
+        return _share_gone(_share_lookup(token) is not None)
+    if row["content"] is not None:
+        content = row["content"].encode("utf-8")
+        page_path = row["path"] or "shared.html"
+    else:
+        full = os.path.join(row["folder"], row["path"])
+        if not row["folder"] or not _is_within(row["folder"], full) or not os.path.isfile(full):
+            return _share_gone(False)
+        try:
+            with open(full, "rb") as f:
+                content = f.read()
+        except OSError:
+            return _share_gone(False)
+        if len(content) > _SHARE_MAX_BYTES:
+            return _share_gone(False)
+        page_path = row["path"]
+    url_for = lambda rel: _share_asset_url(token, rel)  # noqa: E731
+    content = _rewrite_preview_assets(content, page_path, url_for=url_for)
+    return _Response(
+        content=content,
+        media_type="text/html",
+        headers={
+            "Content-Security-Policy": "sandbox allow-scripts allow-pointer-lock",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/s/{token}/asset")
+async def shared_preview_asset(request: Request, token: str, path: str):
+    """Serve a file referenced by a shared page. Read-only liveness check:
+    never resets the expiry clock."""
+    from fastapi.responses import Response as _Response
+    import mimetypes
+    row = _share_alive(token)
+    if row is None:
+        return _share_gone(_share_lookup(token) is not None)
+    if row["content"] is not None or not row["folder"]:
+        return JSONResponse(status_code=404, content={"error": "No bundled assets"})
+    if _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(row["folder"], path)
+    if not _is_within(row["folder"], full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.getsize(full) > 5 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "File too large (max 5MB)"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        ext = os.path.splitext(path)[1].lower()
+        media_type = _ASSET_MIME_OVERRIDES.get(ext)
+        if media_type is None:
+            media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        if ext == ".css":
+            import posixpath
+            css_dir = posixpath.dirname(path.replace("\\", "/"))
+            url_for = lambda rel: _share_asset_url(token, rel)  # noqa: E731
+            try:
+                content = _rewrite_css_urls(content.decode("utf-8"), css_dir,
+                                            url_for=url_for).encode("utf-8")
+            except Exception:
+                pass
+        return _Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 async def _drain_request_body(request: Request):
     """Read and discard the request body. Rejecting a request whose body was
     never read makes the server close the connection with unread data, which
@@ -6226,6 +6448,47 @@ async def admin_agent_exec(request: Request, agent_id: str):
     return {"status": "ok", "command_id": cid}
 
 
+@app.post("/api/admin/agents/{agent_id}/file")
+async def admin_agent_file(request: Request, agent_id: str):
+    """Queue a file operation for a paired computer (the companion app
+    executes it jailed inside its projects folder). Ops: list, read, write,
+    mkdir, delete. The result arrives as JSON through the commands feed."""
+    actor, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(actor["username"], 120, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    op = str(data.get("op", "") or "").strip().lower()
+    if op not in ("list", "read", "write", "mkdir", "delete"):
+        return JSONResponse(status_code=400, content={"error": "Unknown file op"})
+    rel = str(data.get("path", "") or "")
+    if len(rel) > 1024:
+        return JSONResponse(status_code=400, content={"error": "Path too long"})
+    payload = {"op": op, "path": rel}
+    if op == "write":
+        content = data.get("content", "")
+        if not isinstance(content, str) or len(content) > 1024 * 1024:
+            return JSONResponse(status_code=400, content={"error": "Content missing or over 1MB"})
+        payload["content"] = content
+    with _AGENT_LOCK:
+        st = _agents_load()
+        if agent_id not in st["agents"]:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        cid = str(st.get("next_command", 1))
+        st["next_command"] = int(cid) + 1
+        st["commands"][cid] = {"id": cid, "agent_id": agent_id, "command": "",
+                               "kind": "file", "payload": payload,
+                               "status": "queued", "exit_code": None, "output": "",
+                               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": ""}
+        _agents_save(st)
+    _audit("agent.file", actor["username"], f"agent={agent_id} op={op} path={rel[:160]}")
+    return {"status": "ok", "command_id": cid}
+
+
 @app.get("/api/admin/agents/{agent_id}/commands")
 async def admin_agent_commands(request: Request, agent_id: str, limit: int = 20):
     user, err = _require_superadmin(request)
@@ -6310,7 +6573,11 @@ async def agent_pending(request: Request):
         _agents_save(st)
     if nxt is None:
         return {"command": None}
-    return {"command": {"id": nxt["id"], "command": nxt["command"], "timeout": _AGENT_CMD_TIMEOUT}}
+    out = {"id": nxt["id"], "kind": nxt.get("kind") or "shell",
+           "command": nxt.get("command") or "", "timeout": _AGENT_CMD_TIMEOUT}
+    if isinstance(nxt.get("payload"), dict):
+        out["payload"] = nxt["payload"]
+    return {"command": out}
 
 
 @app.post("/api/agent/result")
@@ -6430,6 +6697,35 @@ async def admin_agent_client(request: Request):
     base = str(request.base_url or "").strip().rstrip("/")
     script = AGENT_CLIENT_PY.replace("__SERVER__", base or "https://YOUR-SERVER")
     return PlainTextResponse(script, headers={"Content-Disposition": "attachment; filename=omniilink-agent.py"})
+
+
+@app.get("/api/admin/companion-client")
+async def admin_companion_client(request: Request):
+    """Download the Windows companion app (tray icon + file access) as a zip."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    import zipfile
+    src = os.path.join(APP_DIR, "companion")
+    if not os.path.isdir(src):
+        return JSONResponse(status_code=404, content={"error": "Companion app not installed on server"})
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as z:
+            for name in ("companion.py", "requirements.txt", "install.bat", "README.md"):
+                p = os.path.join(src, name)
+                if os.path.isfile(p):
+                    z.write(p, os.path.join("companion", name))
+        return FileResponse(tmp.name, media_type="application/zip",
+                            filename="omniilink-companion.zip",
+                            background=BackgroundTask(lambda: os.path.exists(tmp.name) and os.remove(tmp.name)))
+    except Exception as e:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/admin/overview")
