@@ -26,6 +26,7 @@ if errorlevel 1 (
 )
 echo === Building OmniilinkCompanion.exe ===
 pyinstaller --noconfirm --noconsole --onefile --name OmniilinkCompanion --clean ^
+  --exclude-module tkinter ^
   --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0" companion.py
 if errorlevel 1 (
   echo PYINSTALLER FAILED.

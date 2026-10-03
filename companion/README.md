@@ -13,7 +13,7 @@ Right-click the tray icon for: Open projects folder · Pair with server · Quit.
    **Companion setup (.msi)**.
 2. Run it (asks for admin once — it installs to Program Files and enables
    start-with-Windows automatically).
-3. A **Setup window** opens on first run: enter the server address, paste
+3. A **Setup page** opens in your browser on first run: enter the server address, paste
    the pairing code from **Admin → Agents → + New pairing code**, pick the
    computer name and projects folder, and press **Pair this computer**.
    The tray dot turns green. (Reopen it anytime from the tray: Setup….)

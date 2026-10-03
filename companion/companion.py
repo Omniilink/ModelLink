@@ -196,7 +196,7 @@ def poll_once(server, token, root, status_cb=None):
     """One heartbeat: fetch a queued command, run it, post the result.
     Returns 'idle' | 'ran' | 'error'."""
     try:
-        p = api("GET", "/api/agent/pending", token)
+        p = api(server, "GET", "/api/agent/pending", token)
     except Exception as e:
         if status_cb:
             status_cb(False, str(e))
@@ -214,11 +214,11 @@ def poll_once(server, token, root, status_cb=None):
             out = json.dumps(res)
         else:
             code, out = do_shell(cmd.get("command") or "", int(cmd.get("timeout") or CMD_TIMEOUT))
-        api("POST", "/api/agent/result", token,
+        api(server, "POST", "/api/agent/result", token,
             {"command_id": cmd["id"], "exit_code": code, "output": out[-65536:]})
     except Exception as e:
         try:
-            api("POST", "/api/agent/result", token,
+            api(server, "POST", "/api/agent/result", token,
                 {"command_id": cmd.get("id"), "exit_code": 1,
                  "output": "agent error: " + str(e)})
         except Exception:
@@ -230,6 +230,7 @@ def poll_once(server, token, root, status_cb=None):
 
 def sync_loop(server, token, root, stop, status_cb=None):
     while not stop.is_set():
+        _touch_poll()
         try:
             poll_once(server, token, root, status_cb)
         except Exception:
@@ -252,6 +253,10 @@ def run_tray():
     cfg = load_config()
     os.makedirs(cfg["projects_root"], exist_ok=True)
     state = {"icon": None, "ok": None, "msg": "starting…", "stop": threading.Event()}
+    try:
+        start_setup_server(SETUP_PORT)
+    except OSError:
+        pass
 
     def redraw():
         color = (52, 199, 123) if state["ok"] is True else ((217, 160, 33) if state["ok"] is None else (229, 83, 75))
@@ -290,13 +295,7 @@ def run_tray():
             pass
 
     def on_setup(icon, item):
-        try:
-            if getattr(sys, "frozen", False):
-                subprocess.Popen([sys.executable, "gui"])
-            else:
-                subprocess.Popen([sys.executable, os.path.abspath(__file__), "gui"])
-        except Exception:
-            pass
+        _ensure_setup_page(False)
 
     def on_quit(icon, item):
         state["stop"].set()
@@ -329,169 +328,292 @@ def normalize_server(s):
     return s
 
 
-def run_gui():
-    """Setup window: server + pairing code + name + folder, live status."""
-    import queue as _queue
-    import tkinter as tk
-    from tkinter import filedialog
-    cfg = load_config()
-    root = tk.Tk()
-    root.title("Omniilink Companion Setup")
-    root.resizable(False, False)
-    BG, PANEL, LINE = "#0e0f12", "#101216", "#24282f"
-    TEXT, MUTED = "#e8eaed", "#9aa1ab"
-    ACCENT, ACCENT_HI = "#2f6fed", "#5b8def"
-    root.configure(bg=BG)
-    tk.Label(root, text="Omniilink Companion", fg=TEXT, bg=BG,
-             font=("Segoe UI", 13, "bold")).grid(
-                 row=0, column=0, columnspan=4, padx=14, pady=(14, 0), sticky="w")
+SETUP_PORT = 53681
+LASTPOLL_NAME = "lastpoll"
+PORTFILE_NAME = "setup-port"
+_tray_lock_fd = None
 
-    dots = {"color": "#d9a021"}
-    dot_canvas = tk.Canvas(root, width=22, height=22, highlightthickness=0, bg=BG)
-    dot_canvas.grid(row=1, column=0, padx=(14, 2), pady=(6, 4), sticky="w")
+import http.server as _http_server
 
-    def draw_dot():
-        dot_canvas.delete("all")
-        dot_canvas.create_oval(4, 4, 18, 18, fill=dots["color"], outline="")
 
-    status_var = tk.StringVar(value="Not paired yet.")
-    tk.Label(root, textvariable=status_var, fg=MUTED, bg=BG,
-             font=("Segoe UI", 9)).grid(row=1, column=1, columnspan=2,
-                                        padx=(0, 14), pady=(6, 4), sticky="w")
-
-    def field(row, label, width=44):
-        tk.Label(root, text=label, fg=MUTED, bg=BG, font=("Segoe UI", 9)).grid(
-            row=row, column=0, padx=(14, 6), pady=4, sticky="e")
-        var = tk.StringVar()
-        ent = tk.Entry(root, textvariable=var, width=width,
-                       font=("Segoe UI", 10), bg=PANEL, fg=TEXT,
-                       insertbackground=TEXT, relief="flat",
-                       highlightthickness=1, highlightbackground=LINE,
-                       highlightcolor=ACCENT, bd=0)
-        ent.grid(row=row, column=1, columnspan=2, padx=(0, 14), pady=4,
-                 sticky="we")
-        return var, ent
-
-    server_var, _ = field(2, "Server URL")
-    server_var.set(cfg.get("server") or "")
-    code_var, code_ent = field(3, "Pairing code")
+def _touch_poll():
     try:
-        code_ent.configure(font=("Consolas", 13))
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(os.path.join(CONFIG_DIR, LASTPOLL_NAME), "w") as f:
+            f.write(str(time.time()))
     except Exception:
         pass
-    name_var, _ = field(4, "Computer name")
-    name_var.set(cfg.get("name") or socket.gethostname())
-    proj_var, _ = field(5, "Projects folder")
-    proj_var.set(cfg.get("projects_root") or DEFAULT_PROJECTS)
 
-    def browse():
-        d = filedialog.askdirectory(title="Projects folder")
-        if d:
-            proj_var.set(d)
 
-    tk.Button(root, text="Browse…", command=browse, bg="#1b1e24", fg=TEXT,
-              activebackground="#262b34", activeforeground=TEXT,
-              relief="flat", padx=10, pady=3).grid(
-        row=5, column=3, padx=(0, 14), pady=4)
-    detail_var = tk.StringVar(value="Get a code from the web app: Admin > Agents > + New pairing code.")
-    tk.Label(root, textvariable=detail_var, fg=MUTED, bg=BG, wraplength=400,
-             justify="left", font=("Segoe UI", 9)).grid(
-                 row=6, column=0, columnspan=4, padx=14, pady=(2, 2), sticky="w")
+def _poll_age():
+    try:
+        with open(os.path.join(CONFIG_DIR, LASTPOLL_NAME)) as f:
+            return time.time() - float(f.read().strip())
+    except Exception:
+        return None
 
-    pair_btn = tk.Button(root, text="Pair this computer", font=("Segoe UI", 11, "bold"),
-                         bg=ACCENT, fg="white", activebackground=ACCENT_HI,
-                         activeforeground="white", relief="flat", padx=10, pady=6,
-                         cursor="hand2")
 
-    def set_status(text, color):
-        dots["color"] = color
-        status_var.set(text)
+def _write_port_file(port):
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(os.path.join(CONFIG_DIR, PORTFILE_NAME), "w") as f:
+            f.write(str(int(port)))
+    except Exception:
+        pass
+
+
+def _read_port_file():
+    try:
+        with open(os.path.join(CONFIG_DIR, PORTFILE_NAME)) as f:
+            return int(f.read().strip())
+    except Exception:
+        return SETUP_PORT
+
+
+def tray_lock():
+    """Single-instance guard for the tray/polling loop. True when acquired."""
+    global _tray_lock_fd
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+    except Exception:
+        pass
+    path = os.path.join(CONFIG_DIR, "tray.lock")
+    try:
+        _tray_lock_fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
         try:
-            draw_dot()
+            os.write(_tray_lock_fd, str(os.getpid()).encode())
         except Exception:
             pass
+        return True
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    # Stale lock from a dead process? Reclaim it, otherwise stand down.
+    try:
+        with open(path, "r") as f:
+            pid = int((f.read() or "").strip() or 0)
+        if pid > 0:
+            os.kill(pid, 0)
+        return False
+    except Exception:
+        pass
+    try:
+        os.remove(path)
+    except OSError:
+        return False
+    return tray_lock()
 
-    def set_busy(busy):
+
+SETUP_CSS = ("*{box-sizing:border-box;margin:0;padding:0}"
+ "body{background:#0e0f12;color:#e8eaed;font-family:-apple-system,BlinkMacSystemFont,"
+ "\"Segoe UI\",Inter,Roboto,sans-serif;min-height:100vh;display:flex;"
+ "align-items:flex-start;justify-content:center;padding:48px 20px;-webkit-font-smoothing:antialiased}"
+ ".card{background:#14161a;border:1px solid #24282f;border-radius:12px;"
+ "padding:28px;width:100%;max-width:460px}"
+ ".brand{font-size:17px;font-weight:700;letter-spacing:-.01em;display:flex;"
+ "align-items:center;gap:10px;margin-bottom:4px}"
+ ".dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}")
+SETUP_CSS += (".sub{font-size:13px;color:#9aa1ab;margin-bottom:20px}"
+ "label{display:block;font-size:12px;color:#9aa1ab;margin:0 0 6px}"
+ "input{width:100%;background:#101216;border:1px solid #24282f;border-radius:8px;"
+ "padding:10px 12px;color:#e8eaed;font-size:14px;margin-bottom:14px;outline:none;font-family:inherit}"
+ "input:focus{border-color:#2f6fed}"
+ "input.code{font-family:Consolas,monospace;font-size:16px;letter-spacing:3px;text-transform:uppercase}"
+ ".btn{display:block;width:100%;text-align:center;font-size:14px;font-weight:600;"
+ "padding:12px;border-radius:8px;border:1px solid #24282f;color:#e8eaed;"
+ "background:#2f6fed;border-color:#2f6fed;cursor:pointer;font-family:inherit}"
+ ".btn:hover{background:#5b8def}"
+ ".btn:disabled{opacity:.5;cursor:default}"
+ ".btnrow{display:flex;gap:8px;margin-top:10px}"
+ ".btnrow .btn{background:#1b1e24;border-color:#24282f;font-size:13px;font-weight:500;padding:9px}"
+ "#msg{display:none;font-size:13px;border-radius:8px;padding:10px 13px;margin-bottom:14px}"
+ "#msg.ok{display:block;background:rgba(52,199,123,.1);border:1px solid rgba(52,199,123,.4);color:#7ddba4}"
+ "#msg.err{display:block;background:rgba(229,83,75,.1);border:1px solid rgba(229,83,75,.4);color:#f19994}"
+ ".hint{margin-top:16px;font-size:12.5px;color:#646c78;text-align:center}")
+
+
+def _setup_page():
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
+    cfg = load_config()
+    return ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta name=\"robots\" content=\"noindex,nofollow\">"
+            "<title>Omniilink Companion Setup</title><style>" + SETUP_CSS + "</style></head><body>"
+            "<main class=\"card\"><div class=\"brand\">"
+            "<span id=\"dot\" class=\"dot\" style=\"background:#d9a021\"></span>"
+            "Omniilink Companion</div>"
+            "<p class=\"sub\" id=\"sub\">Link this computer to your Omniilink server.</p>"
+            "<div id=\"msg\"></div>"
+            "<label for=\"server\">Server URL</label>"
+            "<input id=\"server\" value=\"" + esc(cfg.get("server", "")) + "\" "
+            "placeholder=\"https://your-server-address\" autocomplete=\"off\" />"
+            "<label for=\"code\">Pairing code</label>"
+            "<input id=\"code\" class=\"code\" maxlength=\"16\" placeholder=\"ABC123\" autocomplete=\"off\" />"
+            "<label for=\"name\">Computer name</label>"
+            "<input id=\"name\" value=\"" + esc(cfg.get("name", "") or socket.gethostname()) + "\" />"
+            "<label for=\"projects\">Projects folder</label>"
+            "<input id=\"projects\" value=\"" + esc(cfg.get("projects_root", "") or DEFAULT_PROJECTS) + "\" />"
+            "<button class=\"btn\" id=\"pair\">Pair this computer</button>"
+            "<div class=\"btnrow\"><button class=\"btn\" id=\"open\">Open projects folder</button></div>"
+            "<p class=\"hint\">Get a code from the web app: Admin &gt; Agents &gt; + New pairing code.<br>"
+            "Green dot = connected. This page only ever runs on your own machine.</p>"
+            "</main><script>(function(){"
+            "var dot=document.getElementById('dot'),sub=document.getElementById('sub'),"
+            "msg=document.getElementById('msg');"
+            "function show(t,ok){msg.textContent=t;msg.className=ok?'ok':'err';}"
+            "fetch('api/status').then(function(r){return r.json()}).then(function(s){"
+            "if(s.paired){dot.style.background='#34c77b';"
+            "sub.textContent='Paired'+(s.agent_id?' as agent '+s.agent_id:'')+'. '+(s.connection==='connected'?'Companion is syncing.':'Companion is not syncing right now — start the tray app.');}"
+            "}).catch(function(){});"
+            "document.getElementById('pair').addEventListener('click',function(){"
+            "var b=this;b.disabled=true;msg.className='';"
+            "fetch('api/pair',{method:'POST',headers:{'Content-Type':'application/json'},"
+            "body:JSON.stringify({server:document.getElementById('server').value,"
+            "code:document.getElementById('code').value,"
+            "name:document.getElementById('name').value,"
+            "projects:document.getElementById('projects').value})})"
+            ".then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})"
+            ".then(function(x){b.disabled=false;"
+            "if(x.ok&&x.d.ok){dot.style.background='#34c77b';"
+            "show('Paired as agent '+x.d.agent_id+' — the tray dot turns green.',1);}"
+            "else{show((x.d&&x.d.error)||'Pairing failed',0);}})"
+            ".catch(function(e){b.disabled=false;show('Pairing failed: '+e,0);});});"
+            "document.getElementById('code').addEventListener('input',function(){"
+            "this.value=this.value.toUpperCase();});"
+            "document.getElementById('open').addEventListener('click',function(){"
+            "fetch('api/open-folder',{method:'POST'}).catch(function(){});});"
+            "})();</script></body></html>")
+
+
+class _SetupHandler(_http_server.BaseHTTPRequestHandler):
+    server_version = "OmniilinkCompanion/1.0"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, obj, code=200):
+        self._send(code, json.dumps(obj), "application/json")
+
+    def _body_json(self):
         try:
-            pair_btn.configure(state="disabled" if busy else "normal")
-            root.configure(cursor="watch" if busy else "")
+            n = int(self.headers.get("Content-Length", 0))
         except Exception:
-            pass
-
-    results = _queue.Queue()
-
-    def poll():
+            n = 0
         try:
-            kind, text, color = results.get_nowait()
+            return json.loads(self.rfile.read(max(0, n)).decode("utf-8") or "{}")
         except Exception:
-            root.after(120, poll)
-            return
-        if kind == "done":
-            set_status(text, color)
-            set_busy(False)
-        else:
-            root.after(120, poll)
+            return {}
 
-    def do_pair():
-        server = normalize_server(server_var.get())
-        code = clean_code(code_var.get())
-        name = name_var.get().strip() or socket.gethostname()
-        proot = proj_var.get().strip() or DEFAULT_PROJECTS
-        if not server or not code:
-            results.put(("done", "Enter the server address and the pairing code.", "#e5534b"))
-            return
-        try:
-            aid, token = pair(server, code, name)
-        except Exception as e:
-            results.put(("done", "Pairing failed: " + str(e), "#e5534b"))
-            return
-        try:
-            c = load_config()
-            c.update({"server": server, "token": token, "agent_id": aid,
-                      "name": name, "projects_root": proot})
-            save_config(c)
-            os.makedirs(proot, exist_ok=True)
-        except Exception as e:
-            results.put(("done", "Paired, but could not save: " + str(e), "#e5534b"))
-            return
-        results.put(("done", "Paired as agent " + aid + " — the tray dot turns green.", "#34c77b"))
+    def do_GET(self):
+        from urllib.parse import urlparse
+        if urlparse(self.path).path == "/api/status":
+            cfg = load_config()
+            paired = bool(cfg.get("token") and cfg.get("server"))
+            age = _poll_age()
+            if not paired:
+                conn = "unpaired"
+            elif age is None:
+                conn = "idle"
+            elif age < 20:
+                conn = "connected"
+            else:
+                conn = "stale"
+            return self._json({"paired": paired, "agent_id": cfg.get("agent_id", ""),
+                               "server": cfg.get("server", ""), "name": cfg.get("name", ""),
+                               "projects_root": cfg.get("projects_root", ""),
+                               "connection": conn, "last_poll_seconds_ago": age})
+        return self._send(200, _setup_page())
 
-    def on_pair():
-        set_busy(True)
-        set_status("Pairing…", "#d9a021")
-        import threading as _th
-        _th.Thread(target=do_pair, daemon=True).start()
-        root.after(120, poll)
+    def do_POST(self):
+        from urllib.parse import urlparse
+        path = urlparse(self.path).path
+        if path == "/api/pair":
+            data = self._body_json()
+            server = normalize_server(data.get("server", ""))
+            code = clean_code(data.get("code", ""))
+            name = (data.get("name", "") or "").strip() or socket.gethostname()
+            proot = (data.get("projects", "") or "").strip() or DEFAULT_PROJECTS
+            if not server or not code:
+                return self._json({"ok": False,
+                                   "error": "Enter the server address and the pairing code."}, 400)
+            try:
+                aid, token = pair(server, code, name)
+            except Exception as e:
+                return self._json({"ok": False, "error": "Pairing failed: " + str(e)}, 502)
+            try:
+                c = load_config()
+                c.update({"server": server, "token": token, "agent_id": aid,
+                          "name": name, "projects_root": proot})
+                save_config(c)
+                os.makedirs(proot, exist_ok=True)
+            except Exception as e:
+                return self._json({"ok": False,
+                                   "error": "Paired, but could not save: " + str(e)}, 500)
+            return self._json({"ok": True, "agent_id": aid})
+        if path == "/api/open-folder":
+            folder = load_config()["projects_root"]
+            try:
+                os.makedirs(folder, exist_ok=True)
+                os.startfile(folder)  # noqa: S606 -- local folder by design
+                return self._json({"ok": True})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 500)
+        return self._json({"ok": False, "error": "not found"}, 404)
 
-    pair_btn.configure(command=on_pair)
-    pair_btn.grid(row=7, column=0, columnspan=4, padx=14, pady=(6, 4), sticky="we")
 
-    bottom = tk.Frame(root, bg=BG)
-    bottom.grid(row=8, column=0, columnspan=4, padx=14, pady=(0, 14), sticky="we")
+def start_setup_server(port=SETUP_PORT):
+    """Localhost-only setup panel. Tries the fixed port, falls back to an
+    ephemeral one so two copies never fight. Returns (server, thread, port)
+    with the ACTUAL bound port — open that URL, never guess from the file."""
+    import http.server as _hs
+    import socketserver as _ss
 
-    def on_open():
-        folder = proj_var.get().strip() or DEFAULT_PROJECTS
-        try:
-            os.makedirs(folder, exist_ok=True)
-            os.startfile(folder)  # noqa: S606 -- local folder by design
-        except Exception:
-            pass
+    class _Threaded(_ss.ThreadingMixIn, _hs.HTTPServer):
+        daemon_threads = True
+    try:
+        srv = _Threaded(("127.0.0.1", port), _SetupHandler)
+    except OSError:
+        srv = _Threaded(("127.0.0.1", 0), _SetupHandler)
+    actual = srv.server_address[1]
+    _write_port_file(actual)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t, actual
 
-    tk.Button(bottom, text="Open projects folder", bg="#1b1e24", fg=TEXT,
-              activebackground="#262b34", activeforeground=TEXT,
-              relief="flat", padx=10, pady=4,
-              command=on_open).pack(side="left")
-    tk.Button(bottom, text="Close", bg="#1b1e24", fg=TEXT,
-              activebackground="#262b34", activeforeground=TEXT,
-              relief="flat", padx=10, pady=4,
-              command=root.destroy).pack(side="right")
 
-    if cfg.get("token") and cfg.get("server"):
-        set_status("This computer is paired (agent " + str(cfg.get("agent_id") or "?") +
-                   "). Close this window — the tray icon handles the rest.", "#34c77b")
-    else:
-        draw_dot()
-    root.mainloop()
+def _setup_alive(port):
+    """True when OUR setup panel answers on a localhost port."""
+    import urllib.request as _url
+    try:
+        with _url.urlopen("http://127.0.0.1:%d/api/status" % int(port), timeout=3) as r:
+            if r.status != 200:
+                return False
+            body = json.loads(r.read().decode("utf-8") or "{}")
+            return isinstance(body, dict) and "paired" in body
+    except Exception:
+        return False
+
+
+def _setup_base():
+    """Base URL of a live setup panel, or None."""
+    try:
+        port = _read_port_file()
+    except Exception:
+        return None
+    if port and _setup_alive(port):
+        return "http://127.0.0.1:%d" % port
+    return None
 
 
 def cmd_pair(args):
@@ -514,6 +636,28 @@ def cmd_pair(args):
     return 0
 
 
+def _ensure_setup_page(block):
+    """Open a live setup panel, starting one if none answers. When block is
+    true, stay up serving it (Ctrl+C ends); otherwise return once opened."""
+    import webbrowser
+    base = _setup_base()
+    if not base:
+        _srv, _t, _port = start_setup_server(SETUP_PORT)
+        base = "http://127.0.0.1:%d" % _port
+    try:
+        webbrowser.open(base + "/")
+    except Exception:
+        pass
+    if block:
+        print("Setup panel serving at " + base + ". Press Ctrl+C to stop.")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=APP_NAME)
     sub = ap.add_subparsers(dest="cmd")
@@ -524,7 +668,8 @@ def main(argv=None):
     p.add_argument("--projects", default="",
                    help="projects folder (default: Documents/OmniilinkProjects)")
     sub.add_parser("tray", help="tray icon only")
-    sub.add_parser("gui", help="setup window only")
+    sub.add_parser("setup", help="browser setup panel only")
+    sub.add_parser("gui", help="browser setup panel only (alias)")
     args = ap.parse_args(argv)
     if args.cmd == "pair":
         if getattr(args, "projects", ""):
@@ -532,24 +677,24 @@ def main(argv=None):
             cfg["projects_root"] = args.projects
             save_config(cfg)
         return cmd_pair(args)
-    if args.cmd == "gui":
-        run_gui()
-        return 0
+    if args.cmd in ("gui", "setup"):
+        return _ensure_setup_page(True)
     if args.cmd == "tray":
+        if not tray_lock():
+            return 0
         run_tray()
         return 0
-    # No subcommand: tray when paired, otherwise setup window + tray behind it
-    # so the first run visibly works instead of hiding in the tray.
+    # No subcommand: another copy already running -> show its setup panel.
+    if not tray_lock():
+        return _ensure_setup_page(False)
     cfg = load_config()
     if cfg.get("token") and cfg.get("server"):
         run_tray()
         return 0
-    t = threading.Thread(target=run_tray, daemon=False)
-    t.start()
-    try:
-        run_gui()
-    finally:
-        t.join()
+    # First run: open the setup panel, then run the tray blocking so both
+    # stay alive in this process (tray picks up the pairing live).
+    _ensure_setup_page(False)
+    run_tray()
     return 0
 
 
