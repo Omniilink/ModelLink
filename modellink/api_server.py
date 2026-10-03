@@ -31,14 +31,24 @@ APP_DIR = _base_path()
 sys.path.insert(0, APP_DIR)
 
 def _build_id():
-    """Short git sha of the running checkout (shown in /api/health and the
-    app footer) so a stale deployment is obvious instead of mysterious."""
+    """Short id of the running code (shown in /api/health and the app
+    footer) so a stale deployment is obvious instead of mysterious.
+    Prefers the git sha; the Docker image has no git binary, so fall back
+    to a hash of this file's contents (changes with every backend edit)."""
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR,
                              capture_output=True, text=True, timeout=10)
         sha = (out.stdout or "").strip()
         if sha:
             return sha
+    except Exception:
+        pass
+    try:
+        h = hashlib.sha1()
+        with open(__file__, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return "code-" + h.hexdigest()[:7]
     except Exception:
         pass
     return "unknown"
@@ -600,6 +610,14 @@ class SecurityHeadersMiddleware:
         # with an opaque origin, so it cannot touch app storage). Framing
         # guards must not apply to it or the browser refuses to render it.
         is_preview = scope.get("path", "") == "/api/coding/preview"
+        try:
+            _qs = urllib.parse.parse_qs(scope.get("query_string", b"").decode("latin-1"))
+        except Exception:
+            _qs = {}
+        # ?tab=1 is the real-tab preview: it must run EXACTLY like the file
+        # opened from disk (pointer lock, keys, fullscreen), so neither the
+        # sandbox nor the app-wide framing ban may apply to it.
+        is_preview_tab = is_preview and _qs.get("tab") == ["1"]
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -614,7 +632,9 @@ class SecurityHeadersMiddleware:
                 if "permissions-policy" not in existing:
                     headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
                 if "content-security-policy" not in existing:
-                    if is_preview:
+                    if is_preview_tab:
+                        pass
+                    elif is_preview:
                         # Tight sandbox instead of the app-wide framing ban
                         headers.append((b"content-security-policy", b"sandbox allow-scripts"))
                     else:
