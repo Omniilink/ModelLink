@@ -3160,6 +3160,7 @@ function persistCodingChat(){
 function appendCodingHistoryMsg(m){
   const chat=document.getElementById('coding-chat');
   if(m.role==='user'){
+    if(isHarnessMsg(m)){appendHarnessRow(chat,m.content);return}
     const el=document.createElement('div');el.className='coding-msg user';
     el.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content"></div></div>';
     el.querySelector('.coding-msg-content').textContent=m.content;
@@ -3168,6 +3169,29 @@ function appendCodingHistoryMsg(m){
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
   el.querySelector('.coding-msg-content').innerHTML=renderContent(cleanCodingProse(m.content||''));
+  chat.appendChild(el);
+}
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos'];
+function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
+function harnessLabel(content){
+  if(content.indexOf('Tool results:')===0){
+    const ran=(content.match(/^- Ran: ([^\n]+)/m)||[])[1];
+    return 'Tool ran'+(ran?': '+ran.slice(0,80):'');
+  }
+  if(content.indexOf('You have used all ')===0)return 'Plan recount requested';
+  if(content.indexOf('Your previous reply was cut off')===0)return 'Cut-off reply: asked to re-send in smaller blocks';
+  if(content.indexOf('Your HTML references files')===0)return 'Missing-asset warning sent';
+  if(content.indexOf('Validation FAILED')===0)return 'Validation failure sent back for fixes';
+  return 'Review note sent';
+}
+function appendHarnessRow(chat,full){
+  const label=harnessLabel(full);
+  const el=document.createElement('div');el.className='coding-msg sys';
+  el.innerHTML='<div class="coding-msg-content" style="cursor:pointer" title="Click to expand"></div>';
+  const box=el.querySelector('.coding-msg-content');
+  const collapsed='⚙ '+label+' — sent to AI (click to expand)';
+  box.textContent=collapsed;
+  box.onclick=function(){if(box.dataset.open){delete box.dataset.open;box.textContent=collapsed}else{box.dataset.open='1';box.textContent=full}};
   chat.appendChild(el);
 }
 function restoreCodingChat(){
