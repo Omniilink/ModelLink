@@ -2229,9 +2229,11 @@ async function previewFileScanned(path){
   // where the new tab sends no session cookie.
   let token='';
   try{
-    const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path));
+    const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path)+'&tab=1');
     if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);try{if(tab)tab.close()}catch(e){}return}
     token=r.headers.get('X-Preview-Token')||'';
+    const csp=r.headers.get('Content-Security-Policy')||'';
+    if(csp.indexOf('sandbox')>=0){appAlert('Preview server is out of date: it still sandboxes real tabs, so games cannot capture input.\n\nRun update.bat on the server, wait for it to restart, then Preview again.');try{if(tab)tab.close()}catch(e){}return}
   }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
   const url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
   if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
