@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Omniilink Companion installer (WiX v3). Rebuild with build.bat. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Omniilink Companion" Language="1033" Version="1.0.0"
+           Manufacturer="Omniilink" UpgradeCode="12EF83D7-102A-4CE7-AC8D-2FEA1B3C89F0">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade Schedule="afterInstallExecute"
+                  DowngradeErrorMessage="A newer version of Omniilink Companion is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <UIRef Id="WixUI_Minimal" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Omniilink Companion">
+          <Component Id="CompanionExe" Guid="*" Win64="yes">
+            <File Id="OmniilinkCompanion.exe" Name="OmniilinkCompanion.exe"
+                  Source="$(var.ExeSourceDir)\OmniilinkCompanion.exe" KeyPath="yes" />
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuDir"
+                      Name="Omniilink Companion"
+                      Target="[#OmniilinkCompanion.exe]"
+                      WorkingDirectory="INSTALLDIR" />
+            <Shortcut Id="StartupShortcut" Directory="StartupDir"
+                      Name="Omniilink Companion"
+                      Target="[#OmniilinkCompanion.exe]"
+                      WorkingDirectory="INSTALLDIR" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ProgramMenuDir" Name="Omniilink Companion">
+          <Component Id="ProgramMenuComponent" Guid="*">
+            <RemoveFolder Id="ProgramMenuDir" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\Omniilink Companion"
+                           Name="installed" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="StartupFolder">
+        <Directory Id="StartupDir" />
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Title="Omniilink Companion" Level="1">
+      <ComponentRef Id="CompanionExe" />
+      <ComponentRef Id="ProgramMenuComponent" />
+    </Feature>
+  </Product>
+</Wix>

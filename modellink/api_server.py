@@ -6701,31 +6701,15 @@ async def admin_agent_client(request: Request):
 
 @app.get("/api/admin/companion-client")
 async def admin_companion_client(request: Request):
-    """Download the Windows companion app (tray icon + file access) as a zip."""
+    """Download the Windows companion installer (MSI with tray EXE)."""
     user, err = _require_superadmin(request)
     if err:
         return err
-    import zipfile
-    src = os.path.join(APP_DIR, "companion")
-    if not os.path.isdir(src):
-        return JSONResponse(status_code=404, content={"error": "Companion app not installed on server"})
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp.close()
-    try:
-        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as z:
-            for name in ("companion.py", "requirements.txt", "install.bat", "README.md"):
-                p = os.path.join(src, name)
-                if os.path.isfile(p):
-                    z.write(p, os.path.join("companion", name))
-        return FileResponse(tmp.name, media_type="application/zip",
-                            filename="omniilink-companion.zip",
-                            background=BackgroundTask(lambda: os.path.exists(tmp.name) and os.remove(tmp.name)))
-    except Exception as e:
-        try:
-            os.remove(tmp.name)
-        except OSError:
-            pass
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    p = os.path.join(APP_DIR, "companion", "OmniilinkCompanionSetup.msi")
+    if not os.path.isfile(p):
+        return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
+    return FileResponse(p, media_type="application/x-msi",
+                        filename="OmniilinkCompanionSetup.msi")
 
 
 @app.get("/api/admin/overview")

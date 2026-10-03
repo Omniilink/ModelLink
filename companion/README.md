@@ -9,17 +9,22 @@ Right-click the tray icon for: Open projects folder · Pair with server · Quit.
 
 ## Install (on the computer to link)
 
-1. Install Python 3 from https://www.python.org/downloads/
-   (tick **"Add python.exe to PATH"**).
-2. Copy this `companion` folder anywhere (e.g. `Documents`).
-3. Double-click **`install.bat`**. It installs dependencies, creates
-   `Documents\OmniilinkProjects`, starts with Windows, and asks for:
-   - the server URL (`https://…`)
-   - a pairing code from the web app: **Admin → Agents → + New pairing code**
-4. Look for the dot in the system tray (you may need to expand hidden icons).
+1. In the web app, go to **Admin → Agents** and download
+   **Companion setup (.msi)**.
+2. Run it (asks for admin once — it installs to Program Files and enables
+   start-with-Windows automatically).
+3. Get a code from **Admin → Agents → + New pairing code**, then either:
+   - right-click the tray icon → **Pair with server…**, or
+   - run `"C:\Program Files\Omniilink Companion\OmniilinkCompanion.exe" pair --server https://YOUR-SERVER --code XXXXXX`
+4. Look for the green dot in the system tray (you may need to expand hidden icons).
 
-No admin rights needed. To uninstall: Quit from the tray menu, delete this
-folder, and remove `Omniilink Companion.lnk` from the Startup folder.
+To uninstall: Windows Settings → Apps → Omniilink Companion → Uninstall.
+
+## Manual install (no admin rights)
+
+Run `install.bat` from this folder instead: it uses plain Python (no EXE),
+puts projects in `Documents\OmniilinkProjects`, and sets up autostart for
+your user only.
 
 ## What it can touch
 
@@ -31,3 +36,9 @@ the projects folder — `..` escapes and absolute paths are rejected.
 
 **Admin → Agents**: paired computers, run commands, and a file manager
 (browse, create, edit, delete). Every command is audit-logged.
+
+## Rebuilding the installer
+
+See `build/`: `build.bat` re-freezes the EXE (PyInstaller) and rebuilds the
+MSI (WiX v3 `candle`/`light`). The MSI in this folder is what the server
+hands out on Admin → Agents.
