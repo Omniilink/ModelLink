@@ -352,6 +352,13 @@ a:hover{text-decoration:underline}
 .project-card:last-child{margin-bottom:0}
 .beta-tag{font-size:8.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--accent-light);background:var(--accent-dim);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;flex-shrink:0;line-height:1.5}
 .tab-item .beta-tag{font-size:7px;padding:0 4px}
+.chip{font-size:10.5px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;color:var(--text-secondary);background:var(--bg-tertiary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.chip.ok{border-color:var(--success);color:var(--success)}
+.chip.bad{border-color:var(--error);color:var(--error)}
+.chip.warn{border-color:var(--warning);color:var(--warning)}
+.adm-kv-k{color:var(--text-muted);font-size:12px}
+.adm-kv-v{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--text-secondary)}
+#adm-env,#adm-access{display:grid;grid-template-columns:150px 1fr;gap:5px 12px}
 .project-card:hover{border-color:var(--border-light)}
 .project-card.active{border-color:var(--accent)}
 .project-card .proj-icon{width:34px;height:34px;border-radius:7px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0}
@@ -611,6 +618,7 @@ pre{max-width:100%}
 .usage-key-table{min-width:560px}
 .chat-search-bar{flex-wrap:wrap}
 .chat-search-bar input{min-width:0;flex:1}
+.report-bar{display:flex;gap:10px;align-items:center;margin-top:8px;padding:8px 12px;border:1px dashed var(--border-light);border-radius:var(--radius-xs);font-size:11.5px;color:var(--text-muted);flex-wrap:wrap}
 .tabbar{display:none}
 .tree-drawer-btn{display:none}
 @media(max-width:1024px){.sidebar{width:216px}.coding-filetree{width:184px}.message{max-width:84%}}
@@ -771,7 +779,7 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>
         <span>Help</span>
       </div>
-      <div class="nav-item" id="nav-admin" style="display:none" onclick="location.href='/admin'" title="Server admin panel">
+      <div class="nav-item" id="nav-admin" data-view="admin" style="display:none" title="Server admin panel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         <span>Admin</span>
       </div>
@@ -992,6 +1000,79 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
       <div class="view-panel" id="providers-view">
         <div class="view-header"><h2>Providers</h2><button class="btn btn-primary btn-sm" onclick="openProvidersAdd()">+ Add</button></div>
         <div class="view-body" id="providers-body"></div>
+      </div>
+      <div class="view-panel" id="admin-view">
+        <div class="view-header"><h2>Admin</h2><span class="tool-result-sub" id="adm-who"></span><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body" id="admin-body">
+          <div style="max-width:1180px;margin:0 auto">
+            <div class="modal-tabs" id="adm-tabs" style="flex-wrap:wrap">
+              <button class="modal-tab active" data-atab="overview" onclick="admShow('overview',this)">Overview</button>
+              <button class="modal-tab" data-atab="reports" onclick="admShow('reports',this)">Reports <span id="adm-rep-count"></span></button>
+              <button class="modal-tab" data-atab="users" onclick="admShow('users',this)">Users</button>
+              <button class="modal-tab" data-atab="usage" onclick="admShow('usage',this)">Usage</button>
+              <button class="modal-tab" data-atab="agents" onclick="admShow('agents',this)">Agents</button>
+              <button class="modal-tab" data-atab="terminal" onclick="admShow('terminal',this)">Terminal</button>
+              <button class="modal-tab" data-atab="docker" onclick="admShow('docker',this)">Docker</button>
+              <button class="modal-tab" data-atab="logs" onclick="admShow('logs',this)">Logs</button>
+              <button class="modal-tab" data-atab="audit" onclick="admShow('audit',this)">Audit</button>
+            </div>
+            <div data-apane="overview">
+              <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+              <div class="usage-summary" id="adm-cards" style="grid-template-columns:repeat(3,1fr)"></div>
+              <div class="usage-grid">
+                <div><div class="usage-section-title">Environment</div><div class="usage-chart-wrap"><div class="usage-chart-body" id="adm-env"></div></div></div>
+                <div><div class="usage-section-title">Admin access</div><div class="usage-chart-wrap"><div class="usage-chart-body" id="adm-access"></div></div></div>
+              </div>
+              <div id="adm-jobs"></div>
+            </div>
+            <div data-apane="reports" style="display:none">
+              <div class="tool-row"><span class="tool-result-sub">Error reports filed from failed messages and provider rows.</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admLoadReports()">Refresh</button></div>
+              <div id="adm-reports"></div>
+            </div>
+            <div data-apane="users" style="display:none">
+              <div class="tool-row"><span class="tool-result-sub" id="adm-users-meta"></span></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body" style="padding:0;overflow-x:auto"><table class="usage-key-table" id="adm-users-table"><thead><tr><th>#</th><th>Username</th><th>Name</th><th>Role</th><th>Keys</th><th>Sessions</th><th>Requests</th><th>Tokens</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div></div>
+            </div>
+            <div data-apane="usage" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Range <select id="adm-usage-range" onchange="admLoadUsage()"><option value="1h">1 hour</option><option value="24h" selected>24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option></select></label></div>
+              <div class="usage-summary" id="adm-usage-cards" style="grid-template-columns:repeat(2,1fr)"></div>
+              <div class="usage-grid">
+                <div><div class="usage-section-title">By user</div><div class="usage-chart-wrap"><div class="usage-chart-body" style="padding:0;overflow-x:auto"><table class="usage-key-table" id="adm-usage-users"><thead><tr><th>User</th><th>Requests</th><th>Prompt</th><th>Completion</th></tr></thead><tbody></tbody></table></div></div></div>
+                <div><div class="usage-section-title">By model</div><div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-bars" id="adm-usage-models"></div></div></div></div>
+              </div>
+              <div class="usage-section-title">Requests over time</div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-bars" id="adm-usage-ts"></div></div></div>
+            </div>
+            <div data-apane="agents" style="display:none">
+              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/admin/agent-client" download="omniilink-agent.py">Download agent</a><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
+              <div id="adm-pair-box"></div>
+              <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
+              <div id="adm-agents"></div>
+              <div class="usage-section-title" style="margin-top:16px">Run command</div>
+              <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-cmd-out" style="max-height:320px"></div></div></div>
+            </div>
+            <div data-apane="terminal" style="display:none">
+              <div class="tool-row"><span class="tool-result-sub">Mode</span><span class="tool-result-sub" id="adm-term-mode">…</span><span class="tool-result-sub">cwd</span><span class="tool-result-sub" id="adm-term-cwd">…</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admTermClear()">Clear</button><button class="btn btn-ghost btn-sm" onclick="admTermHist()">History</button></div>
+              <div class="terminal-body" id="adm-term-out" style="border:1px solid var(--border);border-radius:var(--radius-sm);min-height:220px;max-height:46vh;background:var(--bg-input)"></div>
+              <div class="tool-row" style="margin-top:8px"><span class="tool-result-sub">$</span><input type="text" id="adm-term-in" style="flex:1" spellcheck="false" autocomplete="off" placeholder="type a command and press Enter" onkeydown="if(event.key==='Enter')admTermRun()" /><button class="btn btn-primary btn-sm" onclick="admTermRun()">Run</button></div>
+              <p class="tool-hint">Full shell. Every command is audited · 60 commands/minute · 30s timeout · 64KB output.</p>
+            </div>
+            <div data-apane="docker" style="display:none">
+              <div class="tool-row"><button class="btn btn-ghost btn-sm" onclick="admLoadDocker()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admRestartServer()">Restart server container</button><span class="tool-result-sub" id="adm-docker-meta"></span></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body" style="padding:0;overflow-x:auto"><table class="usage-key-table" id="adm-docker-table"><thead><tr><th>Container</th><th>Image</th><th>Status</th><th>State</th><th></th></tr></thead><tbody></tbody></table></div></div>
+              <div id="adm-docker-reason" class="tool-status" style="display:none"></div>
+            </div>
+            <div data-apane="logs" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub"><input type="checkbox" id="adm-logs-auto" onchange="this.checked?admArm('logs'):admClearTimer('logs')" /> auto (2s)</label><label class="tool-result-sub">lines <input type="text" id="adm-logs-lines" value="300" style="width:70px" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadLogs()">Refresh</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><pre class="code-block" id="adm-logs-out" style="max-height:60vh">(empty)</pre></div></div>
+            </div>
+            <div data-apane="audit" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub"><input type="checkbox" id="adm-audit-auto" onchange="this.checked?admArm('audit'):admClearTimer('audit')" /> auto (3s)</label><label class="tool-result-sub">lines <input type="text" id="adm-audit-lines" value="300" style="width:70px" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadAudit()">Refresh</button></div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><pre class="code-block" id="adm-audit-out" style="max-height:60vh">(empty)</pre></div></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="view-panel" id="tutorial-view">
         <div class="view-header"><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">&larr; Back</button><span style="font-weight:600">Help &amp; Tutorial</span><span></span></div>
@@ -1216,12 +1297,13 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
-<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
+<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" allow="pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="file-edit-modal" onclick="if(event.target===this){event.stopPropagation();closeFileEditor()}"><div class="modal" style="max-width:96vw;width:1200px"><div class="modal-header"><h2 id="file-edit-title">Edit file</h2><span id="file-edit-meta" class="tool-result-sub"></span><button class="modal-close" onclick="closeFileEditor()">&times;</button></div><div class="modal-body" style="display:flex;flex-direction:column"><textarea id="file-edit-area" spellcheck="false" onkeydown="fileEditKey(event)"></textarea></div><div class="modal-actions"><span id="file-edit-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeFileEditor()">Cancel</button><button class="btn btn-primary" id="file-edit-save" onclick="saveFileEditor()">Save</button></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
 <div class="modal-overlay" id="providers-add-modal" onclick="if(event.target===this)closeProvidersAdd()"><div class="modal" style="max-width:560px"><div class="modal-header"><h2>Add provider</h2><button class="modal-close" onclick="closeProvidersAdd()">&times;</button></div><div class="modal-body" id="providers-add-body"></div></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
+<div class="modal-overlay" id="report-modal" onclick="if(event.target===this)closeReportModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2>Send error report</h2><button class="modal-close" onclick="closeReportModal()">&times;</button></div><div class="modal-body"><p id="report-summary" class="tool-result-sub" style="margin:0 0 12px"></p><div class="modal-field"><label>Note for the admin (optional)</label><input type="text" id="report-note" placeholder="What were you trying to do?" maxlength="500" onkeydown="if(event.key==='Enter')sendReport()" /></div><div class="modal-actions"><button class="btn btn-ghost" onclick="closeReportModal()">Cancel</button><button class="btn btn-primary" id="report-send-btn" onclick="sendReport()">Send report</button></div></div></div></div>
 <div class="cmd-overlay" id="cmd-overlay" onclick="if(event.target===this)closeCmdPalette()"><div class="cmd-box"><input class="cmd-input" id="cmd-input" placeholder="Search commands, models, chats..." oninput="filterCmdPalette(this.value)" onkeydown="handleCmdKey(event)" autocomplete="off" /><div class="cmd-results" id="cmd-results"></div></div></div>
 <div class="modal-overlay" id="auth-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="auth-modal-title">Sign In</h2></div><div class="modal-body"><div id="auth-form-signin"><div class="modal-field"><label>Username</label><input type="text" id="auth-username" placeholder="username" autocomplete="username" onkeydown="if(event.key==='Enter')doAuth()" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth()" /></div><div id="auth-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignup()">Create account</button><button class="btn btn-primary" onclick="doAuth()">Sign In</button></div></div><div id="auth-form-signup" style="display:none"><div class="modal-field"><label>Username</label><input type="text" id="auth-signup-username" placeholder="username (3+ chars)" autocomplete="username" onkeydown="if(event.key==='Enter')doSignup()" /></div><div class="modal-field"><label>Display Name</label><input type="text" id="auth-signup-name" placeholder="Your Name (optional)" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-signup-password" placeholder="password (6+ chars)" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSignup()" /></div><div id="auth-signup-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignin()">Back to sign in</button><button class="btn btn-primary" onclick="doSignup()">Create Account</button></div></div></div></div></div>
 <div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
@@ -1415,6 +1497,7 @@ function applyTerminalFilters(){
 function toggleAutoScroll(){const btn=document.getElementById('terminal-autoscroll');btn.classList.toggle('on');if(btn.classList.contains('on')){const el=document.getElementById('terminal-body');el.scrollTop=el.scrollHeight}}
 
 function switchView(view){
+  if(view==='admin'&&!(window.__user&&window.__user.is_admin))view='chat';
   currentView=view;
   document.getElementById('chat-area').style.display=view==='chat'?'flex':'none';
   document.getElementById('input-area').style.display=view==='chat'?'block':'none';
@@ -1428,16 +1511,18 @@ function switchView(view){
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
+  document.getElementById('admin-view').classList.toggle('open',view==='admin');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();
+  if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -1590,6 +1675,19 @@ function handleKey(e){if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();sendMess
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,160)+'px'}
 function useQuickAction(prompt){const input=document.getElementById('chat-input');input.value=prompt+' ';input.focus();autoResize(input)}
 
+let _reportInfo=null;
+function splitProvModel(m){m=String(m||'');const i=m.indexOf('/');return i<0?{provider:'',model:m}:{provider:m.slice(0,i),model:m.slice(i+1)}}
+function openReportModal(info){_reportInfo=Object.assign({context:'chat',provider:'',model:'',error:''},info||{});const pm=splitProvModel(_reportInfo.model||'');if(!_reportInfo.provider)_reportInfo.provider=pm.provider;
+  document.getElementById('report-summary').textContent=(_reportInfo.provider?_reportInfo.provider+' · ':'')+(_reportInfo.model||'no model')+(_reportInfo.error?' — '+String(_reportInfo.error).slice(0,180):'');
+  document.getElementById('report-note').value='';document.getElementById('report-modal').classList.add('open');setTimeout(()=>{try{document.getElementById('report-note').focus()}catch(e){}},60)}
+function closeReportModal(){document.getElementById('report-modal').classList.remove('open');_reportInfo=null}
+async function sendReport(){const note=document.getElementById('report-note').value.trim();const btn=document.getElementById('report-send-btn');btn.disabled=true;
+  try{const r=await authFetch(API+'/api/error-reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context:(_reportInfo&&_reportInfo.context)||'chat',provider:(_reportInfo&&_reportInfo.provider)||'',model:(_reportInfo&&_reportInfo.model)||'',error:String((_reportInfo&&_reportInfo.error)||'').slice(0,2000),note})});
+    if(!r.ok)throw new Error('HTTP '+r.status);closeReportModal();showToast('Error report sent — an admin will take a look','success')}
+  catch(e){showToast('Could not send report: '+e.message,'error')}
+  btn.disabled=false}
+function reportBar(info){const bar=document.createElement('div');bar.className='report-bar';const t=document.createElement('span');t.textContent='Request failed. Flag this for the admin?';bar.appendChild(t);const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Send error report';b.onclick=()=>openReportModal(info);bar.appendChild(b);return bar}
+function maybeAttachReport(msgEl,text,model,context){try{if(!msgEl||msgEl.querySelector('.report-bar'))return;if(String(text||'').indexOf('all providers are currently unavailable')<0)return;msgEl.appendChild(reportBar({context:context,model:model||selectedModel,error:String(text||'').slice(0,2000)}))}catch(e){}}
 async function sendMessage(){
   if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();if(!text)return;
   if(!currentChatId)currentChatId='chat_'+Date.now();
@@ -1600,14 +1698,14 @@ async function sendMessage(){
   const startTime=Date.now();
   try{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
-    if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
+    if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=selectedModel;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
-    chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();
-  }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
+    chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat');
+  }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   settleSpinners(assistantEl);
   if(!assistantEl.textContent.trim()&&!assistantEl.querySelector('.message-content'))assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';
   isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();
@@ -1796,22 +1894,25 @@ async function renderProvidersPage(){
   PROVIDER_META.forEach(meta=>{
     const k=byProv[meta.id];
     if(!k)return;
-    grid.appendChild(providerCard(meta.id,meta.name,'Preset key · '+(k.api_key_preview||'saved'),null,()=>deleteProviderEntry('preset',k.id,meta.name)));
+    grid.appendChild(providerCard(meta.id,meta.name,'Preset key · '+(k.api_key_preview||'saved'),null,()=>deleteProviderEntry('preset',k.id,meta.name),null,meta.id));
   });
   customs.forEach(c=>{
-    grid.appendChild(providerCard('custom',c.name,'Custom · '+(c.model||'model')+(c.api_key_preview?' · '+c.api_key_preview:''),null,()=>deleteProviderEntry('custom',c.id,c.name),c.base_url));
+    grid.appendChild(providerCard('custom',c.name,'Custom · '+(c.model||'model')+(c.api_key_preview?' · '+c.api_key_preview:''),null,()=>deleteProviderEntry('custom',c.id,c.name),c.base_url,'custom'));
   });
   body.appendChild(grid);
 }
-function providerCard(iconId,title,sub,guideFn,delFn,extra){
+function providerCard(iconId,title,sub,guideFn,delFn,extra,provKey){
   const card=document.createElement('div');card.className='provider-card';
   card.innerHTML=providerIcon(iconId);
   const info=document.createElement('div');info.className='prov-info';
   const t=document.createElement('div');t.className='prov-name';t.textContent=title;info.appendChild(t);
-  const s=document.createElement('div');s.className='prov-status on';s.textContent=sub;info.appendChild(s);
+  const s=document.createElement('div');s.className='prov-status on';
+  if(provKey){const dot=document.createElement('span');dot.className='status-dot '+(typeof healthDotClass==='function'?healthDotClass(provKey,true):'online');dot.style.cssText='display:inline-block;margin-right:6px;vertical-align:1px';s.appendChild(dot);if(typeof healthTitle==='function'){const ht=healthTitle(provKey);if(ht)card.title=ht}}
+  s.appendChild(document.createTextNode(sub));info.appendChild(s);
   if(extra){const x=document.createElement('div');x.className='prov-status';x.style.wordBreak='break-all';x.textContent=extra;info.appendChild(x)}
   card.appendChild(info);
-  const col=document.createElement('div');col.style.cssText='display:flex;gap:6px;flex-shrink:0';
+  const col=document.createElement('div');col.style.cssText='display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end';
+  if(provKey){let h=null;try{h=(typeof providerHealth!=='undefined'&&providerHealth[provKey])||null}catch(e){h=null}if(h&&(h.state==='fail'||h.state==='warn')){const rep=document.createElement('button');rep.className='btn btn-ghost btn-sm';rep.textContent='Report';rep.title='Send an error report about this provider to the admin';rep.onclick=()=>openReportModal({context:'providers',provider:provKey,model:'',error:(h.detail||'')+' ('+(h.fail||0)+'/'+(h.tried||0)+' failed)'});col.appendChild(rep)}}
   if(guideFn){const g=document.createElement('button');g.className='btn btn-ghost btn-sm';g.textContent='How to set up';g.onclick=guideFn;col.appendChild(g)}
   const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=delFn;col.appendChild(del);
   card.appendChild(col);
@@ -2120,6 +2221,7 @@ async function previewFileScanned(path){
     frame.src=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'');
   }
   document.getElementById('file-preview-modal').classList.add('open');
+  try{frame.focus();if(frame.contentWindow)frame.contentWindow.focus()}catch(e){}
 }
 function closeFilePreview(){const f=document.getElementById('file-preview-frame');try{f.removeAttribute('src');f.removeAttribute('srcdoc');f.src='about:blank'}catch(e){}document.getElementById('file-preview-modal').classList.remove('open')}
 
@@ -2158,6 +2260,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
   // for identical output. Only add it when it is genuinely missing.
   if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block. Split it SMALL: one file, one feature, or one check per item — one giant item covering the whole task is wrong, break it into its parts so progress is verifiable step by step.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- PACK every round: emit all independent actions in ONE reply — several FILE_CREATE/FILE_EDIT blocks and several RUN_COMMANDs together. Spending a whole round on one action wastes the budget you declared.\n- Never end a round with prose only while steps remain and any [ ] todo is open: either send the next tool blocks or say plainly what blocks you.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
+  if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -2449,15 +2552,15 @@ async function sendCodingMessage(){
   let aborted=false;
   let next={blocks:false,actionable:false};
   try{let actualModel=selectedModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
-    if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
+    if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;maybeAttachReport(assistantEl,errMsg,selectedModel,'coding');codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
-  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message)}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -5429,6 +5532,83 @@ document.addEventListener('keydown',e=>{
     if(++tries<60)setTimeout(waitTree,100);
   })();
 })();
+</script>
+<script>
+// ---- In-app Admin (overview, reports, users, usage, agents, terminal, docker, logs, audit) ----
+let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
+function admGuard(){return window.__user&&window.__user.is_admin}
+function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='agents')admLoadAgents();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}}
+function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
+function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
+function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
+function admBytes(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB'}
+function admDur(s){s=Math.max(0,Math.floor(s||0));var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);if(d)return d+'d '+h+'h';if(h)return h+'h '+m+'m';if(m)return m+'m '+(s%60)+'s';return s+'s'}
+function admCard(k,v,sub){const c=document.createElement('div');c.className='usage-card';c.innerHTML='<div class="card-label">'+escapeHtml(k)+'</div><div class="card-value">'+escapeHtml(String(v))+'</div>'+(sub?'<div class="card-sub">'+escapeHtml(sub)+'</div>':'');return c}
+function admChip(t,cls){const s=document.createElement('span');s.className='chip'+(cls?' '+cls:'');s.textContent=t;return s}
+async function admLoadOverview(){try{const r=await authFetch(API+'/api/admin/overview');if(!r.ok)return;const d=await r.json();const caps=d.capabilities||{};
+  const box=document.getElementById('adm-chips');box.innerHTML='';const items=[[caps.shell_mode==='none'?'shell: unavailable':'shell: '+caps.shell_mode,caps.shell_mode==='none'?'bad':'ok'],[(caps.docker_daemon?'docker ok':'docker missing'),caps.docker_daemon?'ok':'bad'],[(caps.docker_compose?'compose ok':'compose missing'),caps.docker_compose?'ok':'warn'],[(caps.git?'git ok':'git missing'),caps.git?'ok':'warn'],[(caps.in_container?'container':'native'),''],['python '+caps.python,'']];
+  items.forEach(i=>box.appendChild(admChip(i[0],i[1])));
+  const c=d.counts||{};const cards=document.getElementById('adm-cards');cards.innerHTML='';cards.appendChild(admCard('Users',admFmt(c.users),admFmt(c.admins)+' admin'));cards.appendChild(admCard('Requests 24h',admFmt(c.requests_24h),admFmt(c.errors_24h)+' failed'));cards.appendChild(admCard('Tokens 24h',admFmt(c.tokens_24h),d.model||''));cards.appendChild(admCard('Sessions',admFmt(c.sessions),'active now'));cards.appendChild(admCard('Uptime',admDur(caps.uptime_seconds),'since boot'));cards.appendChild(admCard('Server time',d.server_time||'',''));
+  const kv=(el,pairs)=>{el.innerHTML=pairs.map(p=>'<div class="adm-kv-k">'+escapeHtml(p[0])+'</div><div class="adm-kv-v">'+escapeHtml(p[1]==null?'—':String(p[1]))+'</div>').join('')};
+  kv(document.getElementById('adm-env'),[['App directory',caps.app_dir],['Platform',caps.platform],['Python',caps.python],['Execution mode',caps.shell_mode],['Shell reason',caps.shell_reason],['Host volume',caps.host_root||'—'],['Docker CLI',caps.docker_version||'not installed'],['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed'],['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—'],['git token',caps.git_token?'configured':'not set']]);
+  kv(document.getElementById('adm-access'),[['Allowlist',(caps.admin_users||[]).join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']]);
+  const jb=document.getElementById('adm-jobs');jb.innerHTML='';(d.jobs||[]).forEach(j=>{const p=document.createElement('div');p.className='usage-chart-wrap';p.innerHTML='<div class="usage-chart-header">Job '+escapeHtml(j.kind)+' — '+escapeHtml(j.status)+'</div><div class="usage-chart-body"><pre class="code-block">'+escapeHtml((j.lines||[]).join('\n'))+'</pre></div>';jb.appendChild(p)});
+}catch(e){}}
+async function admLoadReports(){const box=document.getElementById('adm-reports');try{const r=await authFetch(API+'/api/admin/error-reports?status=all');if(!r.ok){box.innerHTML='<div class="tool-status">Could not load reports.</div>';return}const d=await r.json();const reps=d.reports||[];
+  const cnt=document.getElementById('adm-rep-count');if(cnt)cnt.textContent=(d.open_count||0)?'('+d.open_count+')':'';
+  box.innerHTML='';if(!reps.length){box.innerHTML='<div class="tool-status">No error reports. Nice.</div>';return}
+  reps.forEach(rep=>{const card=document.createElement('div');card.className='prompt-card';const open=rep.status!=='resolved';
+    card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(rep.username||('user '+rep.user_id))+' · '+escapeHtml(rep.created_at||'')+'</span><span class="act-status-'+(open?'error':'success')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(rep.status||'open')+'</span></div><div class="prompt-content">'+escapeHtml([rep.context,rep.provider,rep.model].filter(Boolean).join(' · '))+(rep.error?'\n'+rep.error:'')+(rep.note?'\nNote: '+rep.note:'')+'</div>';
+    const row=document.createElement('div');row.className='prompt-actions';const b=document.createElement('button');b.textContent=open?'Resolve':'Reopen';b.onclick=async()=>{try{const rr=await authFetch(API+'/api/admin/error-reports/'+rep.id+'/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:open})});if(!rr.ok)throw new Error('HTTP '+rr.status);admLoadReports()}catch(e){showToast('Could not update report: '+e.message,'error')}};row.appendChild(b);card.appendChild(row);box.appendChild(card)});
+}catch(e){box.innerHTML='<div class="tool-status">Could not load reports.</div>'}}
+async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
+  const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}
+  d.users.forEach(u=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+u.id+'</td><td class="tool-result-sub" style="font-family:var(--mono)">'+escapeHtml(u.username)+'</td><td>'+escapeHtml(u.name||'—')+'</td><td>'+(u.is_admin?'admin':'user')+'</td><td>'+admFmt(u.api_keys)+'</td><td>'+admFmt(u.sessions)+'</td><td>'+admFmt(u.requests)+'</td><td>'+admFmt(u.tokens)+'</td><td class="tool-result-sub">'+escapeHtml(String(u.created_at||'—'))+'</td>';
+    const acts=document.createElement('td');const b1=document.createElement('button');b1.className='btn btn-ghost btn-sm';b1.textContent=u.is_admin?'Demote':'Promote';b1.onclick=()=>admSetAdmin(u,!u.is_admin);const b2=document.createElement('button');b2.className='btn btn-ghost btn-sm';b2.textContent='Revoke sessions';b2.onclick=()=>admRevokeSessions(u);acts.appendChild(b1);acts.appendChild(document.createTextNode(' '));acts.appendChild(b2);tr.appendChild(acts);tb.appendChild(tr)});
+}catch(e){}}
+async function admSetAdmin(u,want){try{const r=await authFetch(API+'/api/admin/users/'+u.id+'/admin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_admin:want})});if(!r.ok)throw new Error('HTTP '+r.status);showToast(u.username+(want?' promoted':' demoted'),'success');admLoadUsers()}catch(e){showToast(e.message,'error')}}
+async function admRevokeSessions(u){if(!(await appConfirm('Revoke all sessions for '+u.username+'?')))return;try{const r=await authFetch(API+'/api/admin/users/'+u.id+'/revoke-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Sessions revoked for '+u.username,'success');admLoadUsers()}catch(e){showToast(e.message,'error')}}
+async function admLoadUsage(){try{const range=document.getElementById('adm-usage-range').value;const r=await authFetch(API+'/api/admin/usage?range='+encodeURIComponent(range));if(!r.ok)return;const d=await r.json();const s=d.summary||{};
+  const cards=document.getElementById('adm-usage-cards');cards.innerHTML='';cards.appendChild(admCard('Requests',admFmt(s.requests),range));cards.appendChild(admCard('Prompt tokens',admFmt(s.prompt_tokens),''));cards.appendChild(admCard('Completion tokens',admFmt(s.completion_tokens),''));cards.appendChild(admCard('Avg latency',Math.round(Number(s.avg_duration)||0)+' ms','max '+Math.round(Number(s.max_duration)||0)+' ms'));
+  const tb=document.querySelector('#adm-usage-users tbody');tb.innerHTML='';(d.by_user||[]).forEach(x=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+escapeHtml(x.username)+'</td><td>'+admFmt(x.requests)+'</td><td>'+admFmt(x.prompt_tokens)+'</td><td>'+admFmt(x.completion_tokens)+'</td>';tb.appendChild(tr)});
+  const bars=(id,rows)=>{const box=document.getElementById(id);box.innerHTML='';if(!rows.length){box.innerHTML='<div class="tool-status">No data.</div>';return}const max=rows.reduce((a,x)=>Math.max(a,x.value),1);rows.forEach(x=>{const row=document.createElement('div');row.className='usage-bar-row';row.innerHTML='<div class="usage-bar-label">'+escapeHtml(x.label)+'</div><div class="usage-bar-track"><div class="usage-bar-fill" style="width:'+Math.max(1,Math.round(x.value/max*100))+'%"></div></div><div class="usage-bar-val">'+escapeHtml(x.extra)+'</div>';box.appendChild(row)})};
+  bars('adm-usage-models',(d.by_model||[]).map(m=>({label:m.model||'(none)',value:Number(m.requests)||0,extra:admFmt((m.prompt_tokens||0)+(m.completion_tokens||0))+' tok'})));
+  bars('adm-usage-ts',(d.timeseries||[]).map(t=>({label:t.bucket,value:Number(t.requests)||0,extra:admFmt((t.prompt_tokens||0)+(t.completion_tokens||0))+' tok'})));
+}catch(e){}}
+function admTermLine(cls,text){const out=document.getElementById('adm-term-out');const d=document.createElement('div');d.style.cssText='white-space:pre-wrap;word-break:break-word';if(cls==='cmd')d.style.color='#7dd3fc';else if(cls==='bad')d.style.color='#f19994';else if(cls==='good')d.style.color='#7ddba4';else d.style.color='var(--text-muted)';d.textContent=text;out.appendChild(d);out.scrollTop=out.scrollHeight}
+async function admInitTerminal(){try{const r=await authFetch(API+'/api/admin/terminal/cwd');if(!r.ok)return;const d=await r.json();admTermCwd=d.cwd;document.getElementById('adm-term-cwd').textContent=admTermCwd;document.getElementById('adm-term-mode').textContent=d.mode;
+  if(!document.getElementById('adm-term-out').childNodes.length){admTermLine('sys','Omniilink admin shell — mode: '+d.mode);admTermLine('sys','cwd: '+admTermCwd);admTermLine('sys','Every command is audited. 60/min, 30s timeout, 64KB output')}}catch(e){}}
+async function admTermRun(){const input=document.getElementById('adm-term-in');const cmd=input.value.trim();if(!cmd)return;input.value='';admTermLog.unshift(cmd);admTermIdx=-1;admTermLine('cwd',admTermCwd+' $ '+cmd);admTermLine('sys','…');
+  try{const r=await authFetch(API+'/api/admin/terminal/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd,cwd:admTermCwd||null})});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const out=document.getElementById('adm-term-out');if(out.lastChild)out.removeChild(out.lastChild);
+    if(d.stdout)admTermLine(null,d.stdout);if(d.stderr)admTermLine('bad',d.stderr);if(d.cwd){admTermCwd=d.cwd;document.getElementById('adm-term-cwd').textContent=admTermCwd}if(d.timeout)admTermLine('bad','command timed out');admTermLine(d.exit_code===0?'good':'bad','exit '+d.exit_code);
+  }catch(e){const out=document.getElementById('adm-term-out');if(out.lastChild&&out.lastChild.textContent==='…')out.removeChild(out.lastChild);admTermLine('bad',e.message)}}
+function admTermClear(){document.getElementById('adm-term-out').innerHTML=''}
+async function admTermHist(){try{const r=await authFetch(API+'/api/admin/terminal/history?lines=100');if(!r.ok)return;const d=await r.json();(d.history||[]).forEach(l=>admTermLine('cwd',l));if(!(d.history||[]).length)admTermLine('sys','No terminal commands recorded yet.')}catch(e){showToast(e.message,'error')}}
+async function admLoadDocker(){try{const r=await authFetch(API+'/api/admin/docker/status');if(!r.ok)return;const d=await r.json();const tb=document.querySelector('#adm-docker-table tbody');tb.innerHTML='';
+  if(!d.available){document.getElementById('adm-docker-reason').style.display='';document.getElementById('adm-docker-reason').textContent=d.reason||'Docker unavailable.';document.getElementById('adm-docker-meta').textContent='';return}
+  document.getElementById('adm-docker-reason').style.display='none';document.getElementById('adm-docker-meta').textContent=d.containers.length+' container'+(d.containers.length===1?'':'s');
+  if(!d.containers.length){tb.innerHTML='<tr><td colspan="5" class="tool-result-sub">No containers.</td></tr>';return}
+  d.containers.forEach(c=>{const tr=document.createElement('tr');tr.innerHTML='<td style="font-family:var(--mono)">'+escapeHtml(c.name)+'</td><td style="font-family:var(--mono)">'+escapeHtml(c.image)+'</td><td>'+escapeHtml(c.status)+'</td><td>'+escapeHtml(c.state||'—')+'</td>';const td=document.createElement('td');const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Restart';b.onclick=()=>admRestartContainer(c.name,b);td.appendChild(b);tr.appendChild(td);tb.appendChild(tr)});
+}catch(e){}}
+async function admRestartContainer(name,btn){if(!(await appConfirm('Restart container "'+name+'"?')))return;btn.disabled=true;try{const r=await authFetch(API+'/api/admin/docker/restart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})});const d=await r.json();if(!r.ok)throw new Error(d.error||('HTTP '+r.status));showToast('Restarted '+name,'success');admLoadDocker()}catch(e){showToast(e.message,'error')}btn.disabled=false}
+async function admRestartServer(){if(!(await appConfirm('Restart the API server container? This drops every connection.')))return;try{const r=await authFetch(API+'/api/admin/server/restart',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await r.json();if(!r.ok)throw new Error((d&&(d.error||d.detail))||('HTTP '+r.status));showToast('Restarting — reconnecting…','success');setTimeout(()=>location.reload(),6000)}catch(e){showToast((e.data&&e.data.error)||e.message,'error')}}
+async function admLoadLogs(){try{const r=await authFetch(API+'/api/admin/logs?lines='+encodeURIComponent(document.getElementById('adm-logs-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-logs-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
+async function admLoadAudit(){try{const r=await authFetch(API+'/api/admin/audit?lines='+encodeURIComponent(document.getElementById('adm-audit-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-audit-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
+async function admGenPairing(){try{const r=await authFetch(API+'/api/admin/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
+  document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">On the client computer, run: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admLoadAgents(){try{const r=await authFetch(API+'/api/admin/agents');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-agents');box.innerHTML='';const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
+  if(!(d.agents||[]).length){box.innerHTML='<div class="tool-status">No computers paired yet. Generate a pairing code above, then run the agent on the client.</div>';return}
+  d.agents.forEach(a=>{const item=document.createElement('div');item.className='usage-activity-item';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span><span class="act-time">'+escapeHtml(a.last_seen||'')+'</span>';box.appendChild(item);
+    const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
+    const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
+  admLoadAgentOut()}catch(e){}}
+async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired computer? Its queued commands will be dropped.')))return;try{const r=await authFetch(API+'/api/admin/agents/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Agent removed','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admRunAgentCmd(){const sel=document.getElementById('adm-cmd-agent');const inp=document.getElementById('adm-cmd-input');const cmd=inp.value.trim();if(!sel.value||!cmd){showToast('Pick a computer and type a command','error');return}inp.value='';
+  try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Command queued — the agent picks it up within seconds','success');setTimeout(admLoadAgentOut,4000)}catch(e){showToast(e.message,'error')}}
+async function admLoadAgentOut(){const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)return;try{const r=await authFetch(API+'/api/admin/agents/'+sel.value+'/commands?limit=10');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-cmd-out');box.innerHTML='';
+  (d.commands||[]).forEach(c=>{const item=document.createElement('div');item.className='usage-activity-item';item.style.alignItems='flex-start';item.innerHTML='<span class="act-time">'+escapeHtml((c.created_at||'').slice(5,16))+'</span><div style="min-width:0"><div style="font-family:var(--mono);font-size:11px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word">$ '+escapeHtml(c.command||'')+'</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;max-height:160px;overflow:auto">'+escapeHtml((c.output||('['+(c.status||'queued')+']')).slice(0,4000))+'</div></div>';box.appendChild(item)});
+  if(!(d.commands||[]).length)box.innerHTML='<div class="tool-status">No commands yet.</div>'}catch(e){}}
 </script>
 </body>
 </html>

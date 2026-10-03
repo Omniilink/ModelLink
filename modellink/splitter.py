@@ -166,7 +166,7 @@ PROVIDERS = {
     "groq": {
         "env_prefix": "GROQ_API_KEY",
         "api_base": "https://api.groq.com/openai/v1",
-        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"],
+        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b"],
         "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: {
             "model": model,
@@ -821,6 +821,13 @@ class MultiProviderBalancer:
                     return (result, used_model)
 
         fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
+        return self._fallback_generate(messages, fallback_order, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
+
+    def _fallback_generate(self, messages, fallback_order, temperature, max_tokens, stream, user_keys=None, opts=None):
+        """Try every model of every listed provider in order. Shared by the
+        smart router and direct-model requests, so picking one model that
+        happens to be down no longer reports every provider unavailable
+        while other providers hold working keys."""
         for provider_name in fallback_order:
             provider_cfg = PROVIDERS.get(provider_name)
             if not provider_cfg:
@@ -852,8 +859,12 @@ class MultiProviderBalancer:
                         result = resp.json()
                         result["model"] = used_model
                         return (result, used_model)
+                # The picked model failed: fall through to the other
+                # providers instead of giving up while working keys exist.
+                break
 
-        return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
+        fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
+        return self._fallback_generate(messages, fallback_order, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
 
     def generate_custom(self, messages, name, base_url, api_key, endpoint_model, temperature=0.7, max_tokens=4000, stream=True, opts=None):
         """One-shot request against a caller-supplied OpenAI-compatible endpoint.

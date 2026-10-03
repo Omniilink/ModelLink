@@ -122,6 +122,21 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_custom_providers_user ON custom_providers(user_id);
         CREATE INDEX IF NOT EXISTS idx_usage_user_ts ON usage_events(user_id, ts);
         CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts);
+
+        CREATE TABLE IF NOT EXISTS error_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            context TEXT DEFAULT 'chat',
+            provider TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            status TEXT DEFAULT 'open',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, created_at);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

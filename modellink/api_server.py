@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("Omniilink")
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, RedirectResponse, PlainTextResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -1841,6 +1841,33 @@ async def ollama_models(request: Request):
     models = scan_ollama_models()
     return {"models": models, "available": len(models) > 0, "base_url": OLLAMA_BASE_URL}
 
+
+@app.post("/api/error-reports")
+async def create_error_report(request: Request):
+    """File an error report for admins (failed model, dead provider, ...)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO error_reports (user_id, username, context, provider, model, error, note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], user.get("username", ""),
+             str(data.get("context", "chat"))[:32],
+             str(data.get("provider", ""))[:64],
+             str(data.get("model", ""))[:128],
+             str(data.get("error", ""))[:2000],
+             str(data.get("note", ""))[:2000]))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
 @app.get("/api/settings")
 async def get_settings(request: Request):
     user, err = _require_auth(request)
@@ -2460,6 +2487,31 @@ OPTION:A warm cream (#F5EFE6)
 OPTION:Deep charcoal (#141414)
 END_QUESTION
 - You are an expert in Python, JavaScript, TypeScript, HTML, CSS, Java, C, C++, Go, Rust, Ruby, PHP, and all other programming languages.
+
+INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
+- Every control the user asked for MUST exist and be wired on first
+  delivery: keyboard (WASD/arrows/space via keydown/keyup state maps),
+  mouse look (pointer lock requested on canvas click), touch buttons on
+  mobile, and a working START/PLAY button that actually begins the
+  experience. A start button that does nothing is a failed delivery —
+  wire every button to a real handler with a visible effect.
+- Prefer battle-tested patterns over invention: browser games get a
+  <canvas> render loop with requestAnimationFrame, pointer-lock mouse
+  look, key state maps, and resize handling. 3D via three.js from CDN
+  with a pinned version (confirm the version exists with WEB_FETCH if
+  unsure); 2D via plain canvas. No build step, no modules the preview
+  cannot load.
+- Textures/models: procedural canvas textures and low-poly geometry
+  beat hotlinked assets (which often 404). If you reference an external
+  asset, WEB_FETCH the URL first to confirm it exists; otherwise
+  generate it in code.
+- ENTRY POINT: the main file (index.html) must run standalone when
+  opened or previewed. If there are multiple pages, index.html links
+  them all and every link target exists (verify with dir /b).
+- VERIFY INTERACTIVITY: after writing, re-read the file and trace every
+  user-facing control end to end (button -> handler -> visible effect).
+  If a control cannot work (missing API, dead URL), say so plainly and
+  offer the closest working alternative instead of shipping it broken.
 """
 
 # Per-user coding states handled by _get_coding_state()
@@ -5953,6 +6005,375 @@ def _public_job(job: dict) -> dict:
 def _safe_job(job_id: str) -> Optional[dict]:
     with _ADMIN_JOBS_LOCK:
         return _ADMIN_JOBS.get(job_id)
+
+
+@app.get("/api/admin/error-reports")
+async def admin_error_reports(request: Request, status: str = "open"):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    status = (status or "open").strip().lower()
+    conn = get_db()
+    try:
+        if status in ("open", "resolved"):
+            rows = conn.execute(
+                "SELECT id, user_id, username, context, provider, model, error, note, status, created_at"
+                " FROM error_reports WHERE status = ? ORDER BY id DESC LIMIT 200",
+                (status,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, username, context, provider, model, error, note, status, created_at"
+                " FROM error_reports ORDER BY id DESC LIMIT 200").fetchall()
+        open_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM error_reports WHERE status = 'open'").fetchone()["c"]
+        return {"reports": [dict(r) for r in rows], "open_count": open_count}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/error-reports/{report_id}/resolve")
+async def admin_error_report_resolve(request: Request, report_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    want = "resolved" if bool((data or {}).get("resolved", True)) else "open"
+    conn = get_db()
+    try:
+        cur = conn.execute("UPDATE error_reports SET status = ? WHERE id = ?", (want, report_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "Report not found"})
+        return {"status": "ok", "id": report_id, "new_status": want}
+    finally:
+        conn.close()
+
+
+# ==========================================
+# Remote pairing agents: run commands on a client computer
+# ==========================================
+_AGENTS_PATH = os.path.join(APP_DIR, "user_data", "agents.json")
+_AGENT_LOCK = threading.Lock()
+_AGENT_CMD_TIMEOUT = 300
+_AGENT_OUT_MAX = 65536
+
+
+def _agents_blank():
+    return {"agents": {}, "pairing": {}, "commands": {}, "next_agent": 1, "next_command": 1}
+
+
+def _agents_load():
+    try:
+        with open(_AGENTS_PATH, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if not isinstance(st, dict):
+            return _agents_blank()
+        for k in ("agents", "pairing", "commands"):
+            if not isinstance(st.get(k), dict):
+                st[k] = {}
+        st.setdefault("next_agent", 1)
+        st.setdefault("next_command", 1)
+        return st
+    except (OSError, ValueError):
+        return _agents_blank()
+
+
+def _agents_save(st):
+    try:
+        os.makedirs(os.path.dirname(_AGENTS_PATH), exist_ok=True)
+        tmp = _AGENTS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+        os.replace(tmp, _AGENTS_PATH)
+    except OSError:
+        pass
+
+
+def _agent_public(a):
+    now = time.time()
+    try:
+        seen = float(a.get("last_seen") or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    return {"id": a.get("id", ""), "name": a.get("name", ""), "hostname": a.get("hostname", ""),
+            "platform": a.get("platform", ""), "created_at": a.get("created_at", ""),
+            "last_seen": a.get("last_seen", 0), "online": bool(seen and now - seen < 75)}
+
+
+def _agent_from_token(request):
+    auth = request.headers.get("authorization", "") or ""
+    parts = auth.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
+        return None
+    h = hashlib.sha256(parts[1].encode()).hexdigest()
+    with _AGENT_LOCK:
+        st = _agents_load()
+        for a in st["agents"].values():
+            if a.get("token_hash") == h:
+                return dict(a)
+    return None
+
+
+@app.post("/api/admin/agents/pairing")
+async def admin_agent_pairing(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    code = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(6))
+    now = time.time()
+    with _AGENT_LOCK:
+        st = _agents_load()
+        st["pairing"][code] = {"code": code, "created": now, "expires": now + 600, "claimed": False}
+        _agents_save(st)
+    base = str(request.base_url or "").strip().rstrip("/")
+    return {"code": code, "expires_in": 600, "server_hint": base}
+
+
+@app.get("/api/admin/agents")
+async def admin_agents(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st = _agents_load()
+        agents = [_agent_public(a) for a in st["agents"].values()]
+    agents.sort(key=lambda a: str(a["id"]))
+    return {"agents": agents}
+
+
+@app.post("/api/admin/agents/{agent_id}/exec")
+async def admin_agent_exec(request: Request, agent_id: str):
+    actor, err = _require_superadmin(request)
+    if err:
+        return err
+    if not _admin_rate_ok(actor["username"], 60, 60):
+        return JSONResponse(status_code=429, content={"error": "Rate limit"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    command = str((data or {}).get("command", "") or "").strip()
+    if not command or len(command) > 8000:
+        return JSONResponse(status_code=400, content={"error": "Empty or oversized command"})
+    with _AGENT_LOCK:
+        st = _agents_load()
+        if agent_id not in st["agents"]:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        cid = str(st.get("next_command", 1))
+        st["next_command"] = int(cid) + 1
+        st["commands"][cid] = {"id": cid, "agent_id": agent_id, "command": command,
+                               "status": "queued", "exit_code": None, "output": "",
+                               "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": ""}
+        _agents_save(st)
+    _audit("agent.exec", actor["username"], f"agent={agent_id} cmd={command[:120]}")
+    return {"status": "ok", "command_id": cid}
+
+
+@app.get("/api/admin/agents/{agent_id}/commands")
+async def admin_agent_commands(request: Request, agent_id: str, limit: int = 20):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(limit or 20), 50))
+    except (TypeError, ValueError):
+        limit = 20
+    with _AGENT_LOCK:
+        st = _agents_load()
+        rows = [c for c in st["commands"].values() if str(c.get("agent_id")) == str(agent_id)]
+    rows.sort(key=lambda c: int(c.get("id", 0)), reverse=True)
+    return {"commands": rows[:limit]}
+
+
+@app.delete("/api/admin/agents/{agent_id}")
+async def admin_agent_delete(request: Request, agent_id: str):
+    actor, err = _require_superadmin(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st = _agents_load()
+        if agent_id not in st["agents"]:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        del st["agents"][agent_id]
+        st["commands"] = {k: c for k, c in st["commands"].items() if str(c.get("agent_id")) != str(agent_id)}
+        _agents_save(st)
+    _audit("agent.remove", actor["username"], f"agent={agent_id}")
+    return {"status": "ok"}
+
+
+@app.post("/api/agent/claim")
+async def agent_claim(request: Request):
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    code = str(data.get("code", "") or "").strip().upper()
+    name = str(data.get("name", "") or "").strip()[:64] or "client"
+    hostname = str(data.get("hostname", "") or "").strip()[:128]
+    platform_name = str(data.get("platform", "") or "").strip()[:128]
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Missing pairing code"})
+    now = time.time()
+    with _AGENT_LOCK:
+        st = _agents_load()
+        p = st["pairing"].get(code)
+        if not p or p.get("claimed") or float(p.get("expires", 0)) < now:
+            return JSONResponse(status_code=404, content={"error": "Invalid or expired pairing code"})
+        p["claimed"] = True
+        token = secrets.token_hex(32)
+        aid = str(st.get("next_agent", 1))
+        st["next_agent"] = int(aid) + 1
+        st["agents"][aid] = {"id": aid, "name": name, "hostname": hostname, "platform": platform_name,
+                             "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "last_seen": 0}
+        _agents_save(st)
+    _audit("agent.pair", "-", f"agent={aid} host={hostname}")
+    return {"status": "ok", "agent_id": aid, "token": token}
+
+
+@app.get("/api/agent/pending")
+async def agent_pending(request: Request):
+    a = _agent_from_token(request)
+    if not a:
+        return JSONResponse(status_code=401, content={"error": "Bad agent token"})
+    now = time.time()
+    with _AGENT_LOCK:
+        st = _agents_load()
+        cur = st["agents"].get(a["id"])
+        if not cur:
+            return JSONResponse(status_code=401, content={"error": "Unknown agent"})
+        cur["last_seen"] = now
+        nxt = None
+        for c in st["commands"].values():
+            if str(c.get("agent_id")) == str(a["id"]) and c.get("status") == "queued":
+                if nxt is None or int(c.get("id", 0)) < int(nxt.get("id", 0)):
+                    nxt = c
+        if nxt is not None:
+            nxt["status"] = "running"
+        _agents_save(st)
+    if nxt is None:
+        return {"command": None}
+    return {"command": {"id": nxt["id"], "command": nxt["command"], "timeout": _AGENT_CMD_TIMEOUT}}
+
+
+@app.post("/api/agent/result")
+async def agent_result(request: Request):
+    a = _agent_from_token(request)
+    if not a:
+        return JSONResponse(status_code=401, content={"error": "Bad agent token"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    cid = str(data.get("command_id", "") or "")
+    with _AGENT_LOCK:
+        st = _agents_load()
+        c = st["commands"].get(cid)
+        if not c or str(c.get("agent_id")) != str(a["id"]):
+            return JSONResponse(status_code=404, content={"error": "Unknown command"})
+        try:
+            c["exit_code"] = int(data.get("exit_code", 0))
+        except (TypeError, ValueError):
+            c["exit_code"] = 0
+        c["output"] = str(data.get("output", "") or "")[:_AGENT_OUT_MAX]
+        c["status"] = "done"
+        c["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if a["id"] in st["agents"]:
+            st["agents"][a["id"]]["last_seen"] = time.time()
+        _agents_save(st)
+    return {"status": "ok"}
+
+
+AGENT_CLIENT_PY = '''#!/usr/bin/env python3
+"""Omniilink pairing agent: runs shell commands from your Omniilink server.
+Usage: python omniilink-agent.py --server https://YOUR-SERVER --code ABC123 [--name my-pc]
+Needs only the Python standard library. Polls every few seconds; press Ctrl+C to stop.
+"""
+import argparse
+import json
+import platform
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+
+SERVER = "__SERVER__"
+
+
+def api(method, path, token=None, payload=None):
+    req = urllib.request.Request(SERVER + path, method=method,
+                                 headers={"Content-Type": "application/json"})
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    body = json.dumps(payload).encode() if payload is not None else None
+    with urllib.request.urlopen(req, data=body, timeout=30) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Omniilink pairing agent")
+    ap.add_argument("--server", default=SERVER, help="Omniilink server URL")
+    ap.add_argument("--code", required=True, help="6-character pairing code from Admin > Agents")
+    ap.add_argument("--name", default=socket.gethostname(), help="Display name for this computer")
+    args = ap.parse_args()
+    global SERVER
+    SERVER = args.server.rstrip("/")
+    hostname = socket.gethostname()
+    plat = platform.system() + " " + platform.release()
+    print("pairing with " + SERVER + " ...")
+    try:
+        d = api("POST", "/api/agent/claim", None,
+                {"code": args.code, "name": args.name, "hostname": hostname, "platform": plat})
+    except Exception as e:
+        print("pairing failed: " + str(e))
+        return 1
+    token = d["token"]
+    print("paired as agent " + str(d["agent_id"]) + " - polling for commands (Ctrl+C to stop)")
+    while True:
+        try:
+            p = api("GET", "/api/agent/pending", token)
+            cmd = p.get("command")
+            if cmd:
+                print("$ " + cmd["command"])
+                try:
+                    proc = subprocess.run(cmd["command"], shell=True, capture_output=True,
+                                          text=True, timeout=int(cmd.get("timeout") or 300))
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": proc.returncode,
+                         "output": out[-65536:]})
+                    print("exit " + str(proc.returncode))
+                except subprocess.TimeoutExpired:
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": 124, "output": "[timed out]"})
+                except Exception as e:
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": 1, "output": "agent error: " + str(e)})
+            else:
+                time.sleep(5)
+        except KeyboardInterrupt:
+            print("stopped")
+            return 0
+        except Exception as e:
+            print("poll error: " + str(e))
+            time.sleep(10)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+@app.get("/api/admin/agent-client")
+async def admin_agent_client(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    base = str(request.base_url or "").strip().rstrip("/")
+    script = AGENT_CLIENT_PY.replace("__SERVER__", base or "https://YOUR-SERVER")
+    return PlainTextResponse(script, headers={"Content-Disposition": "attachment; filename=omniilink-agent.py"})
 
 
 @app.get("/api/admin/overview")
