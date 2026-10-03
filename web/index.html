@@ -66,6 +66,7 @@ a:hover{text-decoration:underline}
 .nav-cap:first-child{padding-top:6px}
 .ws-foot{padding:10px 12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;min-height:48px;flex-shrink:0}
 .ws-bw{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.version{font-size:10px;color:var(--text-muted);font-variant-numeric:tabular-nums;flex-shrink:0;font-family:var(--mono)}
 .chat-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);font-size:12.5px;margin-bottom:1px;position:relative}
 .chat-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .chat-item.active{background:var(--bg-active);color:var(--text-primary)}
@@ -788,6 +789,7 @@ pre{max-width:100%}
     </nav>
     <div class="ws-foot">
       <span class="ws-bw" id="bw-indicator" title="Bandwidth used in the last 6 hours">&#8595; ...</span>
+      <span class="version" id="server-build" title="Server build">…</span>
       <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">
         <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
         <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -1641,7 +1643,7 @@ async function refreshProviderHealth(){
     });
   }catch(e){}
 }
-async function loadProviderStatus(){try{const r=await fetch(API+'/api/health');const data=await r.json();if(data.status==='ok'){document.getElementById('status-dot').className='status-dot online';document.getElementById('status-text').textContent='Connected'}else{document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}
+async function loadProviderStatus(){try{const r=await fetch(API+'/api/health');const data=await r.json();if(data.status==='ok'){document.getElementById('status-dot').className='status-dot online';document.getElementById('status-text').textContent='Connected'}else{document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}const b=document.getElementById('server-build');if(b)b.textContent=data.build||'?';if(data.build&&window.__serverBuild&&window.__serverBuild!==data.build)showToast('Server restarted on a new build ('+data.build+') — hard-refresh with Ctrl+Shift+R','info');window.__serverBuild=data.build||null}catch(e){document.getElementById('status-dot').className='status-dot offline';document.getElementById('status-text').textContent='Disconnected'}}
 
 // ---- Bandwidth usage indicator (sidebar footer) ----
 function formatBandwidth(bytes){

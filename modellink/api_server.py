@@ -30,6 +30,21 @@ def _base_path():
 APP_DIR = _base_path()
 sys.path.insert(0, APP_DIR)
 
+def _build_id():
+    """Short git sha of the running checkout (shown in /api/health and the
+    app footer) so a stale deployment is obvious instead of mysterious."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR,
+                             capture_output=True, text=True, timeout=10)
+        sha = (out.stdout or "").strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "unknown"
+
+BUILD = _build_id()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("Omniilink")
 
@@ -1401,7 +1416,7 @@ async def clear_logs(request: Request):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "3.0.0", "model": MODEL_NAME}
+    return {"status": "ok", "version": "3.0.0", "model": MODEL_NAME, "build": BUILD}
 
 # ==========================================
 # Authentication Endpoints
