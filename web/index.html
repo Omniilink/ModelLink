@@ -1021,7 +1021,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             </div>
           </div>
         </div>
-      </div>
       <div class="view-panel" id="providers-view">
         <div class="view-header"><h2>Providers</h2><button class="btn btn-primary btn-sm" onclick="openProvidersAdd()">+ Add</button></div>
         <div class="view-body" id="providers-body"></div>
@@ -4131,6 +4130,8 @@ async function loadProjectsPage(){
     const pct=Math.min(100,limit>0?used/limit*100:0);
     const bar=document.createElement('div');bar.className='storage-bar';bar.innerHTML='<div class="storage-info"><span>Storage</span><span>'+formatBandwidth(used)+' / '+formatBandwidth(limit)+' ('+Math.round(pct)+'%)</span></div><div class="storage-track"><div class="storage-fill" style="width:'+pct+'%"></div></div>';body.appendChild(bar);
     const actions=document.createElement('div');actions.style.cssText='display:flex;gap:8px;margin-bottom:16px';actions.innerHTML='<button class="btn btn-primary btn-sm" onclick="openProjectsModal();showProjectTab(\'create\',document.querySelector(\'.modal-tab:nth-child(2)\'))">+ New Project</button><button class="btn btn-ghost btn-sm" onclick="openProjectsModal();showProjectTab(\'import\',document.querySelector(\'.modal-tab:nth-child(3)\'))">Import Folder</button>';body.appendChild(actions);
+    const remoteBox=document.createElement('div');body.appendChild(remoteBox);
+    if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
     if(projects.length===0){body.innerHTML+='<div style="text-align:center;padding:40px;color:var(--text-muted)"><p style="font-size:14px;margin-bottom:8px">No projects yet</p><p style="font-size:12px">Create a new project or import an existing folder</p></div>';return}
     for(const p of projects){const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
       card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+formatBandwidth(p.size_bytes||0)+'</div></div><button class="proj-del" title="Delete project">&times;</button>';
@@ -5699,11 +5700,12 @@ async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired comp
 let admFmPath='',admFmMode='',admFmName='',admAgentsCache=[];
 function admFmJoin(name){return admFmPath?admFmPath+'/'+name:name}
 function admFmParent(){const i=admFmPath.lastIndexOf('/');return i<0?'':admFmPath.slice(0,i)}
-async function admAgentFile(payload){
-  const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)throw new Error('Pick a computer first');
-  const aid=sel.value;
-  const known=(admAgentsCache||[]).find(a=>String(a.id)===String(aid));
-  if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start Omniilink Server on it first');
+async function agentFileOp(aid, payload, skipOnlineCheck){
+  if(!aid)throw new Error('Pick a computer first');
+  if(!skipOnlineCheck){
+    const known=(admAgentsCache||[]).find(a=>String(a.id)===String(aid));
+    if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start Omniilink Server on it first');
+  }
   const r=await authFetch(API+'/api/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
@@ -5718,6 +5720,60 @@ async function admAgentFile(payload){
     }
   }
   throw new Error('Timed out waiting for the computer (is Omniilink Server running?)');
+}
+async function admAgentFile(payload){
+  const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)throw new Error('Pick a computer first');
+  return agentFileOp(sel.value, payload);
+}
+async function openRemoteProject(agentId, path){
+  navigate('agents');
+  try{await admLoadAgents()}catch(e){}
+  const sel=document.getElementById('adm-cmd-agent');
+  if(sel){sel.value=String(agentId);admFmPath=path||'';admFmLoad()}
+}
+function remoteDeviceSection(a){
+  const sec=document.createElement('div');
+  sec.style.cssText='margin:18px 0 6px;display:flex;align-items:center;gap:8px';
+  sec.innerHTML='<span class="status-dot '+((a&&a.online)?'online':'offline')+'"></span><span style="font-size:12.5px;font-weight:650;color:var(--text-primary)"></span><span class="tool-result-sub"></span>';
+  const spans=sec.querySelectorAll('span');
+  if(spans[1])spans[1].textContent=(a&&a.name)||('agent '+((a&&a.id)||'?'));
+  if(spans[2])spans[2].textContent=((a&&a.online)?'online':'offline')+((a&&a.hostname)?' · '+a.hostname:'');
+  return sec;
+}
+async function loadRemoteEntry(a, box){
+  let entries=[];
+  try{
+    const out=await agentFileOp(String(a.id), {op:'list', path:''});
+    entries=(out.entries||[]).filter(e=>e&&e.type==='dir');
+  }catch(e){
+    const note=document.createElement('div');note.className='tool-status';
+    note.textContent='Could not reach '+((a&&a.name)||'this computer')+': '+e.message;
+    box.appendChild(note);return;
+  }
+  if(!entries.length){const note=document.createElement('div');note.className='tool-status';note.textContent='No projects on this computer yet.';box.appendChild(note);return}
+  entries.forEach(e=>{
+    const card=document.createElement('div');card.className='project-card';
+    card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name"></div><div class="proj-meta">on '+(escapeHtml((a&&a.name)||'computer'))+'</div></div>';
+    card.querySelector('.proj-name').textContent=e.name;
+    card.addEventListener('click',()=>openRemoteProject(String(a.id), e.name));
+    box.appendChild(card);
+  });
+}
+async function loadRemoteProjectsInto(box){
+  let agents=[];
+  try{
+    const r=await authFetch(API+'/api/agents');if(!r.ok)return;
+    const d=await r.json();agents=d.agents||[];
+  }catch(e){return}
+  if(!agents.length)return;
+  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.textContent='On your computers';box.appendChild(title);
+  for(const a of agents){
+    try{
+      box.appendChild(remoteDeviceSection(a));
+      if(a.online)loadRemoteEntry(a, box);
+      else{const note=document.createElement('div');note.className='tool-status';note.textContent='Offline — start Omniilink Server on this computer to browse its projects.';box.appendChild(note)}
+    }catch(e){}
+  }
 }
 function admFmFmtSize(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
 async function admFmLoad(){const box=document.getElementById('adm-fm-list');if(!box)return;box.innerHTML='<div class="tool-status">Loading…</div>';
