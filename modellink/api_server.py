@@ -6564,15 +6564,31 @@ async def agents_client(request: Request):
 
 @app.get("/api/agents/companion")
 async def agents_companion(request: Request):
-    """Windows companion installer (MSI with tray EXE). Any signed-in user."""
+    """Windows companion installer (MSI with tray EXE). Any signed-in user,
+    or a paired agent bearer token (self-update)."""
     user, err = _require_auth(request)
     if err:
-        return err
+        agent = _agent_from_token(request)
+        if agent is None:
+            return err
     p = os.path.join(APP_DIR, "companion", "OmniilinkServerSetup.msi")
     if not os.path.isfile(p):
         return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
     return FileResponse(p, media_type="application/x-msi",
                         filename="OmniilinkServerSetup.msi")
+
+
+@app.get("/api/agents/companion-version")
+async def agents_companion_version(request: Request):
+    """Published companion version. Public: the tray polls it to offer
+    in-place updates without a reinstall."""
+    ver = ""
+    try:
+        with open(os.path.join(APP_DIR, "companion", "VERSION"), "r", encoding="utf-8") as f:
+            ver = (f.read() or "").strip()
+    except OSError:
+        pass
+    return {"version": ver or "0.0.0"}
 @app.post("/api/agent/claim")
 async def agent_claim(request: Request):
     data, bad = await _safe_json(request)

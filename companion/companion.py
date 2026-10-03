@@ -22,12 +22,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
-
 APP_NAME = "Omniilink Server"
+COMPANION_VERSION = "1.0.6"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -145,7 +146,7 @@ def do_file_op(root, payload):
                     except OSError:
                         continue
             entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
-            return {"ok": True, "entries": entries}
+            return {"ok": True, "root": os.path.realpath(root), "entries": entries}
         if op == "read":
             full = safe_join(root, payload.get("path", ""))
             if not os.path.isfile(full):
@@ -272,6 +273,74 @@ def _dot_icon(color):
     return img
 
 
+# ---------------- self-update ----------------
+_UPDATE = {"latest": "", "msi": ""}
+
+
+def _ver_tuple(v):
+    parts = []
+    for bit in str(v or "").strip().split("."):
+        digits = "".join(ch for ch in bit if ch.isdigit())
+        try:
+            parts.append(int(digits or 0))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) or (0,)
+
+
+def newer_available(current, latest):
+    try:
+        return _ver_tuple(latest) > _ver_tuple(current)
+    except Exception:
+        return False
+
+
+def _download_file(server, token, path, dest):
+    req = urllib.request.Request(server.rstrip("/") + path, method="GET",
+                                 headers={"User-Agent": COMPANION_UA})
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+        shutil.copyfileobj(r, f, length=65536)
+    return dest
+
+
+def fetch_update(server, token):
+    """Check for a newer build; download its MSI. Returns (latest, msi_path
+    or 'error: ...' or ''). Never raises."""
+    try:
+        info = api(server, "GET", "/api/agents/companion-version", token)
+    except Exception as e:
+        return "", "error: " + str(e)
+    latest = str((info or {}).get("version") or "")
+    if not latest:
+        return "", "error: empty version"
+    if not newer_available(COMPANION_VERSION, latest):
+        return latest, ""
+    safe = "".join(ch for ch in latest if ch.isalnum() or ch in ".-_")[:32] or "latest"
+    dest = os.path.join(tempfile.gettempdir(), "OmniilinkServerSetup-%s.msi" % safe)
+    try:
+        _download_file(server, token, "/api/agents/companion", dest)
+    except Exception as e:
+        return latest, "error: " + str(e)
+    return latest, dest
+
+
+def install_update_and_quit(msi_path, quit_fn):
+    """Launch the MSI upgrade (in place, config preserved) and get out of
+    the way so no files are locked. Returns False only if msiexec itself
+    could not start."""
+    try:
+        subprocess.Popen(["msiexec", "/i", msi_path])
+    except Exception:
+        return False
+    try:
+        quit_fn()
+    except Exception:
+        pass
+    return True
+
+
 def run_tray():
     """System-tray icon with green/red/amber connection indicator."""
     import pystray
@@ -327,18 +396,75 @@ def run_tray():
     def on_setup(icon, item):
         _ensure_setup_page(False)
 
-    def on_quit(icon, item):
+    def do_quit():
         state["stop"].set()
-        icon.stop()
+        try:
+            if state["icon"] is not None:
+                state["icon"].stop()
+        except Exception:
+            pass
+
+    def on_update(icon, item):
+        c = load_config()
+        if not c["token"] or not c["server"]:
+            state["msg"] = "pair this computer first, then check for updates"
+            redraw()
+            return
+        msi = _UPDATE.get("msi")
+        if msi and os.path.isfile(msi):
+            state["msg"] = "installing update " + _UPDATE.get("latest", "")
+            redraw()
+            install_update_and_quit(msi, do_quit)
+            return
+        state["msg"] = "checking for updates…"
+        redraw()
+
+        def _go():
+            latest, got = fetch_update(c["server"], c["token"])
+            if got.startswith("error:"):
+                state["msg"] = "update check failed"
+            elif got:
+                _UPDATE["latest"] = latest
+                _UPDATE["msi"] = got
+                state["msg"] = "update " + latest + " ready — click again to install"
+            else:
+                state["msg"] = "up to date (" + COMPANION_VERSION + ")"
+            redraw()
+
+        threading.Thread(target=_go, daemon=True).start()
+
+    def update_label(item):
+        if _UPDATE.get("msi"):
+            return "Install update (%s)…" % _UPDATE.get("latest", "")
+        return "Check for updates…"
+
+    def on_quit(icon, item):
+        do_quit()
+
+    def auto_update():
+        try:
+            c = load_config()
+            if not c["token"] or not c["server"]:
+                return
+            latest, got = fetch_update(c["server"], c["token"])
+            if got and not got.startswith("error:"):
+                _UPDATE["latest"] = latest
+                _UPDATE["msi"] = got
+                state["msg"] = "update " + latest + " ready — right-click > Install"
+                redraw()
+        except Exception:
+            pass
 
     menu = pystray.Menu(
         pystray.MenuItem("Open projects folder", on_open),
         pystray.MenuItem("Setup…", on_setup),
+        pystray.MenuItem(update_label, on_update),
         pystray.MenuItem("Quit", on_quit),
     )
     icon = pystray.Icon(APP_NAME, _dot_icon((217, 160, 33)), APP_NAME + " — starting…", menu)
     state["icon"] = icon
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=auto_update, daemon=True).start()
     icon.run()
 
 
@@ -519,8 +645,8 @@ def _setup_page():
             "projects:document.getElementById('projects').value})})"
             ".then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})"
             ".then(function(x){b.disabled=false;"
-            "if(x.ok&&x.d.ok){dot.style.background='#34c77b';"
-            "show('Paired as agent '+x.d.agent_id+' — the tray dot turns green.',1);}"
+            "if(x.ok&&x.d.ok){dot.style.background='#34c77b';msg.className='';"
+            "sub.textContent='Paired as agent '+x.d.agent_id+'. Close this window — the tray icon handles the rest.';}"
             "else{show((x.d&&x.d.error)||'Pairing failed',0);}})"
             ".catch(function(e){b.disabled=false;show('Pairing failed: '+e,0);});});"
             "document.getElementById('code').addEventListener('input',function(){"
