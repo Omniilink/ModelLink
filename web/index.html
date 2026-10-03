@@ -2192,34 +2192,50 @@ async function runFileScanned(path,execCmd){
   runCodingFile(path,execCmd);
 }
 async function previewFileScanned(path){
-  if(!(await scanPathForAction(path,'preview')))return;
+  // Previews open in a REAL browser tab so games capture input (pointer
+  // lock, keys, fullscreen) exactly like the downloaded file. The tab is
+  // opened synchronously to keep the click gesture (popup blockers), then
+  // navigated once the async scan/token work finishes. Blocked popups fall
+  // back to the in-app modal frame (limited input capture).
+  let tab=null;
+  try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
+  if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
   document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
   const frame=document.getElementById('file-preview-frame');
   if(fsHandle){
-    // Browser-local files render via srcdoc: same sandbox, no server roundtrip.
-    // Refs are inlined as data: URLs so CSS/JS/images load in the opaque frame.
+    // Browser-local files render via blob URL: a real top-level document,
+    // so input behaves like a browser tab. Refs are inlined as data: URLs
+    // so CSS/JS/images load with no server roundtrip.
     try{
       const content=await fsReadFile(path);
       const rewritten=await fsBuildPreviewSrcdoc(path,content);
-      frame.removeAttribute('src');
-      frame.srcdoc=rewritten;
-    }catch(e){appAlert('Cannot read file: '+e.message);return}
-  }else{
-    // Preflight so failures show a real message instead of a black box, and
-    // to grab the signed navigation token. The document is then loaded via
-    // frame.src (NOT srcdoc): srcdoc documents inherit the app's CSP
-    // (img-src 'self'), which would block the previewed page's external
-    // CDN images/scripts. The response CSP is just "sandbox allow-scripts",
-    // so outside resources load while the frame stays opaque-origin.
-    let token='';
-    try{
-      const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path));
-      if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);return}
-      token=r.headers.get('X-Preview-Token')||'';
-    }catch(e){appAlert('Preview failed: '+e.message);return}
-    frame.removeAttribute('srcdoc');
-    frame.src=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'');
+      if(tab){
+        const url=URL.createObjectURL(new Blob([rewritten],{type:'text/html'}));
+        setTimeout(()=>{try{URL.revokeObjectURL(url)}catch(e){}},120000);
+        tab.location.href=url;
+      }else{
+        frame.removeAttribute('src');
+        frame.srcdoc=rewritten;
+        document.getElementById('file-preview-modal').classList.add('open');
+        try{frame.focus();if(frame.contentWindow)frame.contentWindow.focus()}catch(e){}
+      }
+    }catch(e){appAlert('Cannot read file: '+e.message);try{if(tab)tab.close()}catch(e2){}}
+    return;
   }
+  // Server files: preflight so failures show a real message instead of a
+  // blank tab, and grab the signed navigation token. ?tab=1 serves without
+  // the sandbox CSP (token-bound to this exact file), ?t= covers the case
+  // where the new tab sends no session cookie.
+  let token='';
+  try{
+    const r=await authFetch(API+'/api/coding/preview?path='+encodeURIComponent(path));
+    if(!r.ok){let msg='Preview failed (HTTP '+r.status+')';try{const d=await r.json();if(d&&d.error)msg='Preview failed: '+d.error}catch(e){}appAlert(msg);try{if(tab)tab.close()}catch(e){}return}
+    token=r.headers.get('X-Preview-Token')||'';
+  }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
+  const url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
+  if(tab){tab.location.href=url;return}
+  frame.removeAttribute('srcdoc');
+  frame.src=url;
   document.getElementById('file-preview-modal').classList.add('open');
   try{frame.focus();if(frame.contentWindow)frame.contentWindow.focus()}catch(e){}
 }

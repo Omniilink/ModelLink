@@ -2710,12 +2710,18 @@ async def coding_download_project(request: Request, format: str = "zip"):
 
 @app.get("/api/coding/preview")
 async def coding_preview(request: Request, path: str):
-    """Serve a project HTML file for sandboxed iframe preview.
+    """Serve a project HTML file for preview.
 
-    The page runs in an opaque origin (CSP sandbox + iframe sandbox attr,
-    no allow-same-origin), so scripts inside cannot touch app cookies,
-    localStorage, or the parent page. Only .html/.htm, size-capped.
-    Scan via /api/coding/scan before previewing untrusted content.
+    Two modes, same file:
+    - iframe (?tab absent): opaque origin (CSP sandbox + iframe sandbox
+      attr, no allow-same-origin), so scripts inside cannot touch app
+      cookies, localStorage, or the parent page.
+    - real tab (?tab=1): NO sandbox directive, so the page runs EXACTLY
+      like the same file opened from disk — pointer lock, keyboard,
+      fullscreen all work. Only the user's own project files, gated by
+      session or a short-lived HMAC token bound to one user + one path.
+    Only .html/.htm, size-capped. Scan via /api/coding/scan before
+    previewing untrusted content.
     """
     from fastapi.responses import Response as _Response
     user, err = _require_auth(request)
@@ -2751,10 +2757,14 @@ async def coding_preview(request: Request, path: str):
             content=content,
             media_type="text/html",
             headers={
-                # Navigation token: lets the iframe load this document even
-                # when the browser withholds cookies from the sandboxed frame.
+                # Navigation token: lets the frame/tab load this document even
+                # when the browser withholds cookies (sandboxed frame) or the
+                # tab was opened without a session context.
                 "X-Preview-Token": _mint_preview_token(user["id"], path),
-                "Content-Security-Policy": "sandbox allow-scripts",
+                # Real-tab mode drops the sandbox entirely (see docstring);
+                # the iframe keeps "sandbox allow-scripts".
+                **({} if request.query_params.get("tab") == "1"
+                   else {"Content-Security-Policy": "sandbox allow-scripts"}),
                 "X-Content-Type-Options": "nosniff",
                 "Cache-Control": "no-store",
             },
