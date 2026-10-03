@@ -60,7 +60,7 @@ a:hover{text-decoration:underline}
 .nav-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .nav-item.active{background:var(--bg-active);color:var(--text-primary);border-color:var(--border)}
 .nav-item svg{width:15px;height:15px;flex-shrink:0;opacity:.75}
-.nav-item[data-view]>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-item[data-view]>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nav-item.active svg{opacity:1}
 .nav-cap{padding:14px 10px 5px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);font-weight:700}
 .nav-cap:first-child{padding-top:6px}
@@ -348,8 +348,10 @@ a:hover{text-decoration:underline}
 .storage-bar .storage-info{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);margin-bottom:8px}
 .storage-bar .storage-track{height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden}
 .storage-bar .storage-fill{height:100%;background:var(--accent);border-radius:3px}
-.project-card{padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;display:flex;align-items:center;gap:12px;margin-bottom:8px;background:var(--bg-secondary)}
+.project-card{padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;display:flex;align-items:center;gap:12px;margin:0 0 10px;background:var(--bg-secondary)}
 .project-card:last-child{margin-bottom:0}
+.beta-tag{font-size:8.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--accent-light);background:var(--accent-dim);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;flex-shrink:0;line-height:1.5}
+.tab-item .beta-tag{font-size:7px;padding:0 4px}
 .project-card:hover{border-color:var(--border-light)}
 .project-card.active{border-color:var(--accent)}
 .project-card .proj-icon{width:34px;height:34px;border-radius:7px;background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0}
@@ -729,11 +731,11 @@ pre{max-width:100%}
       <div class="chat-list" id="chat-list"></div>
       <div class="nav-item" data-view="coding">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-        <span>Coding</span>
+        <span>Coding</span><span class="beta-tag">Beta</span>
       </div>
       <div class="nav-item" data-view="projects">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-        <span>Projects</span>
+        <span>Projects</span><span class="beta-tag">Beta</span>
       </div>
       <div class="nav-cap">Tools</div>
       <div class="nav-item" data-view="more">
@@ -1020,7 +1022,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         </div>
       </div>
       <div class="view-panel" id="projects-view">
-        <div class="view-header"><h2>Projects</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-header"><h2>Projects <span class="beta-tag">Beta</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="projects-body"></div>
       </div>
       <div class="view-panel" id="more-view">
@@ -1205,7 +1207,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()">
 <nav class="tabbar" id="tabbar" aria-label="Primary">
 <button class="tab-item active" data-tab="chat" onclick="navigate('chat')" aria-label="Chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Chat</button>
-<button class="tab-item" data-tab="coding" onclick="navigate('coding')" aria-label="Code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Code</button>
+<button class="tab-item" data-tab="coding" onclick="navigate('coding')" aria-label="Code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Code<span class="beta-tag">Beta</span></button>
 <button class="tab-item" data-tab="more" onclick="navigate('more')" aria-label="Tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Tools</button>
 <button class="tab-item" data-tab="usage" onclick="navigate('usage')" aria-label="Usage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Usage</button>
 <button class="tab-item" data-tab="menu" onclick="toggleSidebar()" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
@@ -3961,7 +3963,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal()}catch(e){appAlert('Error: '+e.message)}}
+  codingFolder=data.folder;fsHandle=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}try{const r=await authFetch(API+'/api/projects/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to create project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
 function browseImportFolder(){if(window.showDirectoryPicker){window.showDirectoryPicker().then(handle=>{document.getElementById('import-project-path').value=handle.name;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=handle.name}).catch(()=>{})}else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.addEventListener('change',()=>{if(inp.files.length>0){const path=inp.files[0].webkitRelativePath.split('/')[0];document.getElementById('import-project-path').value=path;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=path}});inp.click()}}
 async function importProject(){const name=document.getElementById('import-project-name').value.trim();const path=document.getElementById('import-project-path').value.trim();if(!name){appAlert('Enter a project name');return}if(!path){appAlert('Enter or browse for a source folder');return}try{const r=await authFetch(API+'/api/projects/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,source_path:path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to import project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
