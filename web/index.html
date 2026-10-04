@@ -2067,7 +2067,7 @@ async function loadProjectsSidebar(){
       item.addEventListener('mouseleave',()=>{if(!isActive)item.style.background='';delBtn.style.display='none'});
       item.addEventListener('click',()=>openProject(p.name));list.appendChild(item)}
     container.appendChild(list);
-    if(gen===projectsSidebarGen&&typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(container)}catch(e){}}
+    if(gen===projectsSidebarGen&&typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(container,'ft')}catch(e){}}
   }catch(e){if(gen!==projectsSidebarGen)return;const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
 }
 async function openCodingFolderPicker(){
@@ -4230,7 +4230,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
       item.querySelector('.name').parentElement.addEventListener('click',async e=>{if(e.target.closest('.del'))return;await openProject(p.name)});
       item.querySelector('.del').addEventListener('click',async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)});
       list.appendChild(item)}}
-    if(typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(list)}catch(e){}}
+    if(typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(list,'item')}catch(e){}}
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
@@ -5847,7 +5847,7 @@ function remoteDeviceSection(a){
   if(spans[2])spans[2].textContent=((a&&a.online)?'online':'offline')+((a&&a.hostname)?' · '+a.hostname:'');
   return sec;
 }
-async function loadRemoteEntry(a, wrap, loading){
+async function loadRemoteEntry(a, wrap, loading, mode){
   const name=((a&&a.name)||'this computer');
   let entries=[], root='';
   try{
@@ -5862,6 +5862,8 @@ async function loadRemoteEntry(a, wrap, loading){
   if(root){const pnote=document.createElement('div');pnote.className='tool-result-sub';pnote.style.cssText='font-family:var(--mono);font-size:10.5px;margin:2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';pnote.textContent='Projects live in '+root;pnote.title=root;wrap.appendChild(pnote)}
   if(!entries.length){const note=document.createElement('div');note.className='tool-status';note.textContent='No projects on this computer yet.';wrap.appendChild(note);return}
   entries.forEach(e=>{
+    if(mode==='ft'){wrap.appendChild(remoteRowFt(e,a,name));return}
+    if(mode==='item'){wrap.appendChild(remoteRowItem(e,a,name));return}
     const card=document.createElement('div');card.className='project-card';
     card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name"></div><div class="proj-meta">on '+escapeHtml(name)+'</div></div>';
     card.querySelector('.proj-name').textContent=e.name;
@@ -5869,7 +5871,7 @@ async function loadRemoteEntry(a, wrap, loading){
     wrap.appendChild(card);
   });
 }
-async function loadRemoteProjectsInto(box){
+async function loadRemoteProjectsInto(box, mode){
   let agents=[];
   try{
     const r=await authFetch(API+'/api/agents');if(!r.ok)return;
@@ -5883,9 +5885,27 @@ async function loadRemoteProjectsInto(box){
       wrap.appendChild(remoteDeviceSection(a));
       if(!a.online){const note=document.createElement('div');note.className='tool-status';note.textContent='Offline — start Omniilink Server on this computer to browse its projects.';wrap.appendChild(note);continue}
       const loading=document.createElement('div');loading.className='tool-status';loading.textContent='Loading projects from '+((a&&a.name)||'this computer')+'…';wrap.appendChild(loading);
-      loadRemoteEntry(a, wrap, loading);
+      loadRemoteEntry(a, wrap, loading, mode);
     }catch(e){}
   }
+}
+function refreshRemoteLists(){try{if(typeof loadProjectsSidebar==='function')loadProjectsSidebar()}catch(e){}try{if(typeof loadProjectList==='function')loadProjectList()}catch(e){}try{if(document.getElementById('projects-view').classList.contains('open')&&typeof loadProjectsPage==='function')loadProjectsPage()}catch(e){}}
+function remoteRowFt(e,a,devName){
+  const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
+  item.innerHTML='<span style="font-size:12px">📁</span><div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px"><div style="font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+escapeHtml(e.name)+'</div><button class="del" style="width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:none;align-items:center;justify-content:center;font-size:11px;padding:0;flex-shrink:0" title="Delete folder">&times;</button><span style="font-size:10px;color:var(--text-muted)">'+escapeHtml(devName)+'</span></div>';
+  const delBtn=item.querySelector('.del');
+  item.addEventListener('mouseenter',()=>{item.style.background='var(--bg-hover)';if(delBtn)delBtn.style.display='flex'});
+  item.addEventListener('mouseleave',()=>{item.style.background='';if(delBtn)delBtn.style.display='none'});
+  item.addEventListener('click',()=>openRemoteProject(String(a.id),e.name,true));
+  if(delBtn)delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? It must be empty.')))return;try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}};
+  return item;
+}
+function remoteRowItem(e,a,devName){
+  const item=document.createElement('div');item.className='project-item';
+  item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(e.name)+'</span><span class="meta">on '+escapeHtml(devName)+'</span><button class="del" title="Delete folder">&times;</button>';
+  item.querySelector('.name').parentElement.addEventListener('click',async ev=>{if(ev.target.closest('.del'))return;await openRemoteProject(String(a.id),e.name,true)});
+  item.querySelector('.del').addEventListener('click',async ev=>{ev.stopPropagation();if(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? It must be empty.')){try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}}});
+  return item;
 }
 function admFmFmtSize(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
 async function admFmLoad(){const box=document.getElementById('adm-fm-list');if(!box)return;box.innerHTML='<div class="tool-status">Loading…</div>';
