@@ -3107,11 +3107,11 @@ async function processCodingActions(text,msgEl){
   const contentEl=msgEl.querySelector('.coding-msg-content');
   if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
-    if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
-    if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
@@ -3838,7 +3838,13 @@ async function codingAutoContinue(){
 function isRemote(){return !!(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.id)}
 // Coding paths are project-relative; the agent jail is rooted at the
 // projects folder, so every remote op is prefixed with the open project.
-function remoteRel(path){path=String(path||'');const base=(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.path)||'';return base?base+'/'+path:path}
+function remoteRel(path){
+  let p=String(path||'').replace(/\\/g,'/').replace(/^\/+/,'');
+  const base=String((typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.path)||'').replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
+  if(!base)return p;
+  if(p===base||p.indexOf(base+'/')===0)return p;
+  return base+'/'+p;
+}
 async function codingReadFile(path){
   if(fsHandle)return fsReadFile(path);
   if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});if(!out||!out.ok)throw new Error((out&&out.error)||'Read failed');return out.content||''}
@@ -3880,7 +3886,7 @@ async function agentBuildTree(aid,base,depth){
 }
 async function codingWriteFile(path,content){
   try{
-    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);return{ok:true,added:lines,removed:0}}
+    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);return{ok:true,added:lines,removed:0,path:(out.path||remoteRel(path))}}
     if(fsHandle){
       let existed=false;try{existed=await fsFileExists(path)}catch(e){}
       await fsWriteFile(path,content);
@@ -5942,7 +5948,7 @@ async function openRemoteProjectInCode(agentId, path){
   try{await refreshCodingTree()}catch(e){}
   codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];
   restoreCodingChat();
-  addCodingSystemMsg('Opened remote folder "'+(path||'/')+'" on '+name+'. Files, edits and commands run on that computer.');
+  addCodingSystemMsg('Opened remote folder "'+(path||'/')+'" on '+name+'. New files land inside '+(path?('"'+path+'"'):'the projects root')+' on that computer; commands run there too.');
   updateProjectBadge(name+(path?' / '+path:''));updateProjectBadgeAgent(name);
   closeProjectsModal();navigate('coding');
 }

@@ -170,12 +170,14 @@ def do_file_op(root, payload):
             os.makedirs(os.path.dirname(full) or root, exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
-            return {"ok": True, "bytes": len(content.encode("utf-8"))}
+            return {"ok": True, "bytes": len(content.encode("utf-8")),
+                    "path": os.path.relpath(full, root).replace("\\", "/")}
         if op == "mkdir":
             if not payload.get("path"):
                 return {"ok": False, "error": "missing path"}
-            os.makedirs(safe_join(root, payload.get("path", "")), exist_ok=True)
-            return {"ok": True}
+            full = safe_join(root, payload.get("path", ""))
+            os.makedirs(full, exist_ok=True)
+            return {"ok": True, "path": os.path.relpath(full, root).replace("\\", "/")}
         if op == "delete":
             full = safe_join(root, payload.get("path", ""))
             if not payload.get("path") or full == os.path.realpath(root):
@@ -386,10 +388,26 @@ def run_tray():
                 continue
             res = sync_loop(c["server"], c["token"], c["projects_root"], state["stop"], status_cb)
             if res == "unauthorized" and not state["stop"].is_set():
-                # Dead token (agent removed, or re-paired elsewhere): back off
-                # so we don't hammer, then reload config — a fresh pairing
-                # heals automatically without restarting.
-                state["stop"].wait(30)
+                # The server rejected our token: the agent was removed or the
+                # machine got a NEW agent (fresh pairing) while this process
+                # held the old one. Clear it so Setup shows "not paired" and
+                # open the Setup page once — retrying a dead token forever is
+                # what left the tray red with no way out.
+                c["token"] = ""
+                c["agent_id"] = ""
+                save_config(c)
+                state["ok"] = None
+                state["msg"] = "not paired — token rejected, re-pair"
+                redraw()
+                if not state.get("reopened_setup"):
+                    state["reopened_setup"] = True
+                    try:
+                        _ensure_setup_page(False)
+                    except Exception:
+                        pass
+                state["stop"].wait(5)
+                continue
+            state["reopened_setup"] = False
 
     def on_open(icon, item):
         folder = load_config()["projects_root"]
