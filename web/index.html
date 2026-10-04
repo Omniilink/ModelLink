@@ -765,6 +765,18 @@ pre{max-width:100%}
 .mpg-empty{padding:32px 16px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:var(--radius-sm)}
 .mpg-empty-title{font-size:14px;color:var(--text-primary);margin-bottom:4px}
 .mpg-empty-sub{font-size:12px;margin-bottom:12px}
+/* chat bar */
+.mpg-composer{display:flex;gap:8px;align-items:flex-end;padding:10px 12px;border:1px solid var(--border-light);border-radius:var(--radius-sm);background:var(--bg-secondary);box-shadow:0 6px 22px rgba(0,0,0,.35)}
+.mpg-composer[hidden]{display:none}
+.mpg-composer-input{flex:1;min-height:44px;max-height:140px;resize:vertical;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 11px;color:var(--text-primary);font-size:13.5px;font-family:var(--font);line-height:1.45;outline:none}
+.mpg-composer-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.mpg-composer-input:disabled{opacity:.6}
+.mpg-composer-send{height:38px;padding:0 18px;white-space:nowrap}
+.mpg-composer-send:disabled{opacity:.6}
+.mpg-composer-close{height:38px;width:34px;border:1px solid transparent;border-radius:var(--radius-xs);background:transparent;color:var(--text-muted);font-size:20px;line-height:1;cursor:pointer}
+.mpg-composer-close:hover{color:var(--text-primary);background:var(--bg-active)}
+.mpg-del{color:var(--error) !important}
+.mpg-del:hover{border-color:var(--error) !important}
 @media(max-width:900px){.mpg-cols{grid-template-columns:1fr}.mpg-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));max-height:none}.mpg-viewport{min-height:320px}.mpg-canvas{min-height:320px}}
 </style>
 </head>
@@ -6218,13 +6230,13 @@ function modifyModelWithAI(model){
   try{var inp=document.getElementById('coding-input');if(inp){inp.value=line;inp.style.height='auto';inp.focus()}}catch(e){}
   showToast('Describe the change in the coding chat and send','info');
 }
-function createModelWithAI(){
+function createModelWithAI(prompt){
   ensureModelsLibs(function(){
-    if(!modelsGallery){openModelsView();setTimeout(createModelWithAI,400);return}
-    var kind=(typeof window.__modelKind==='string')?window.__modelKind:'crate';
-    modelsGallery.generate(kind,'Procedurally generated '+kind,'MEDIUM')
+    if(!modelsGallery){openModelsView();setTimeout(function(){createModelWithAI(prompt)},400);return}
+    var kind=(typeof window.__modelKind==='string')?window.__modelKind:null;
+    modelsGallery.generate(kind,prompt||'','MEDIUM')
       .then(function(){showToast('Generated a new 3D model','success')})
-      .catch(function(e){showToast('Generation failed: '+e.message,'error')});
+      .catch(function(e){showToast('Generation failed: '+e.message,'error');throw e});
   });
 }
 </script>

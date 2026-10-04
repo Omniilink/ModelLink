@@ -183,6 +183,22 @@
     }
   };
 
+  // Map a natural-language prompt onto an available generator.
+  function pickKind(prompt) {
+    var p = String(prompt || '').toLowerCase();
+    if (/barrel|drum|cylinder|canister|tank|pipe|tube|pail|bin\b/.test(p)) return 'barrel';
+    if (/crate|box|chest|case|block|package|cube/.test(p)) return 'crate';
+    return 'crate';
+  }
+  // Turn a prompt into a readable model name.
+  function nameFromPrompt(prompt) {
+    var p = String(prompt || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!p) return '';
+    p = p.replace(/^(a|an|the)\s+/i, '');
+    if (p.length > 46) p = p.slice(0, 46).replace(/\s+\S*$/, '');
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }
+
   function ModelPreviewGallery(root, opts) {
     if (!(this instanceof ModelPreviewGallery)) return new ModelPreviewGallery(root, opts);
     opts = opts || {};
@@ -222,13 +238,33 @@
     var spacer = h('span'); spacer.style.flex = '1'; bar.appendChild(spacer);
     if (this.onGenerate) {
       var gen = h('button', 'btn btn-primary btn-sm', '+ Create 3D model');
-      gen.onclick = function () { self.onGenerate(); };
+      gen.onclick = function () { self.openComposer(); };
       bar.appendChild(gen);
     }
     var refresh = h('button', 'btn btn-ghost btn-sm', 'Refresh');
     refresh.onclick = function () { self.load(); };
     bar.appendChild(refresh);
     wrap.appendChild(bar);
+
+    // chat bar: describe the model, then generate
+    this.composer = h('div', 'mpg-composer');
+    this.composer.hidden = true;
+    this.composerInput = h('textarea', 'mpg-composer-input');
+    this.composerInput.rows = 2;
+    this.composerInput.placeholder = 'Describe the 3D model you want… e.g. "a weathered wooden shipping crate with iron corners"';
+    this.composerInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); self._submitPrompt(); }
+    });
+    var send = h('button', 'btn btn-primary mpg-composer-send', 'Generate');
+    send.onclick = function () { self._submitPrompt(); };
+    var close = h('button', 'mpg-composer-close', '×');
+    close.setAttribute('aria-label', 'Close');
+    close.onclick = function () { self.closeComposer(); };
+    this.composerSend = send;
+    this.composer.appendChild(this.composerInput);
+    this.composer.appendChild(send);
+    this.composer.appendChild(close);
+    wrap.appendChild(this.composer);
 
     var cols = h('div', 'mpg-cols');
     this.gridEl = h('div', 'mpg-grid');
@@ -383,6 +419,9 @@
       var mod = h('button', 'btn btn-ghost btn-sm', 'Modify');
       mod.onclick = function (ev) { ev.stopPropagation(); self.onModifyModel(m); };
       actions.appendChild(mod);
+      var del = h('button', 'btn btn-ghost btn-sm mpg-del', 'Delete');
+      del.onclick = function (ev) { ev.stopPropagation(); self.remove(m); };
+      actions.appendChild(del);
       body.appendChild(actions);
       card.appendChild(body);
       card.onclick = function () { self.select(m.id); };
@@ -391,13 +430,14 @@
   };
 
   ModelPreviewGallery.prototype._showEmpty = function () {
+    var self = this;
     this.gridEl.innerHTML = '';
     var empty = h('div', 'mpg-empty');
     empty.appendChild(h('div', 'mpg-empty-title', 'No 3D models yet'));
     empty.appendChild(h('div', 'mpg-empty-sub', 'Generate your first model with Omniilink AI.'));
     if (this.onGenerate) {
       var b = h('button', 'btn btn-primary btn-sm', 'Create 3D model');
-      b.onclick = this.onGenerate;
+      b.onclick = function () { self.openComposer(); };
       empty.appendChild(b);
     }
     this.gridEl.appendChild(empty);
@@ -476,6 +516,66 @@
     } catch (e) { fail(e); }
   };
 
+  ModelPreviewGallery.prototype.openComposer = function () {
+    if (!this.composer) return;
+    this.composer.hidden = false;
+    this.composerInput.value = '';
+    this.composerInput.focus();
+    this.composer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+
+  ModelPreviewGallery.prototype.closeComposer = function () {
+    if (!this.composer) return;
+    this.composer.hidden = true;
+  };
+
+  // Send the chat-bar prompt to the app's AI handler (or generate locally).
+  ModelPreviewGallery.prototype._submitPrompt = async function () {
+    var prompt = (this.composerInput.value || '').trim();
+    if (!prompt) { this.composerInput.focus(); this.setStatus('Describe what you want to create.', 'error'); return; }
+    this.composerInput.disabled = true;
+    this.composerSend.disabled = true;
+    this.setStatus('Creating "' + prompt.slice(0, 80) + '"...');
+    try {
+      if (this.onGenerate) { await this.onGenerate(prompt); }
+      else { await this.generate(null, prompt, 'MEDIUM'); }
+      this.composerInput.value = '';
+      this.closeComposer();
+      this.setStatus('');
+    } catch (e) {
+      this.setStatus('Generation failed: ' + (e && e.message ? e.message : e), 'error');
+    } finally {
+      this.composerInput.disabled = false;
+      this.composerSend.disabled = false;
+      this.composerInput.focus();
+    }
+  };
+
+  // Delete a model from the workspace (with confirmation).
+  ModelPreviewGallery.prototype.remove = async function (m) {
+    if (!m || !m.id) return false;
+    var label = m.name || m.id;
+    var ask = global.appConfirm ? await global.appConfirm('Delete "' + label + '" from your workspace? This cannot be undone.')
+      : (global.confirm ? global.confirm('Delete "' + label + '" from your workspace?') : true);
+    if (!ask) return false;
+    this.setStatus('Deleting ' + label + '...');
+    try {
+      var r = await this._fetch(this.apiBase + '/api/models/' + encodeURIComponent(m.id), { method: 'DELETE' });
+      if (!r.ok) { var e = await r.json().catch(function () { return {}; }); throw new Error((e && e.error) || ('HTTP ' + r.status)); }
+      if (this.selected && this.selected.id === m.id) {
+        this.selected = null;
+        this._clearViewport();
+        if (this.infoEl) this.infoEl.textContent = '';
+      }
+      await this.load();
+      this.setStatus('');
+      return true;
+    } catch (e) {
+      this.setStatus('Delete failed: ' + (e && e.message ? e.message : e), 'error');
+      return false;
+    }
+  };
+
   ModelPreviewGallery.prototype.download = function (m) {
     var url = this.apiBase + '/api/models/' + encodeURIComponent(m.id) + '/asset';
     var a = document.createElement('a');
@@ -486,10 +586,13 @@
   // Build a procedural model client-side and register it to the workspace.
   ModelPreviewGallery.prototype.generate = async function (kind, promptText, quality) {
     var THREE = global.THREE; if (!THREE) throw new Error('Three.js not loaded');
+    var prompt = String(promptText || '').trim();
+    if (!kind) kind = pickKind(prompt);
     var make = Generators[kind] || Generators.crate;
     var group = make();
-    var name = (group.userData && group.userData.suggestedName) || ('Procedural ' + kind);
-    return await this._exportAndRegister(group, name, promptText || name, quality || 'MEDIUM');
+    var suggested = (group.userData && group.userData.suggestedName) || ('Procedural ' + kind);
+    var name = nameFromPrompt(prompt) || suggested;
+    return await this._exportAndRegister(group, name, prompt || suggested, quality || 'MEDIUM');
   };
 
   ModelPreviewGallery.prototype._exportAndRegister = function (group, name, promptText, quality) {
@@ -548,6 +651,8 @@
 
   ModelPreviewGallery.Procedural = Procedural;
   ModelPreviewGallery.Generators = Generators;
+  ModelPreviewGallery.pickKind = pickKind;
+  ModelPreviewGallery.nameFromPrompt = nameFromPrompt;
 
   global.ModelPreviewGallery = ModelPreviewGallery;
   if (typeof module !== 'undefined' && module.exports) module.exports = ModelPreviewGallery;
