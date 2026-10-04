@@ -2792,7 +2792,16 @@ async def coding_preview(request: Request, path: str):
     try:
         with open(full, "rb") as f:
             content = f.read()
-        content = _rewrite_preview_assets(content, path, user["id"])
+        from urllib.parse import quote as _quote
+        _tab = request.query_params.get("tab") == "1"
+        def _page_url(rel):
+            url = "/api/coding/preview?path=" + _quote(rel, safe="/")
+            url += "&t=" + _mint_preview_token(user["id"], rel)
+            if _tab:
+                url += "&tab=1"
+            return url
+        content = _rewrite_preview_assets(content, path, user["id"],
+                                          page_url_for=_page_url)
         return _Response(
             content=content,
             media_type="text/html",
@@ -2944,9 +2953,12 @@ _SRCSET_RE = re.compile(
     re.IGNORECASE | re.DOTALL)
 _STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)",
                              re.IGNORECASE | re.DOTALL)
+_PAGE_LINK_RE = re.compile(
+    r"(<a\b[^>]*?\bhref\s*=\s*)([\"'])(.*?)\2",
+    re.IGNORECASE | re.DOTALL)
 
 
-def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None) -> bytes:
+def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None, page_url_for=None) -> bytes:
     """Rewrite relative asset URLs in a previewed HTML page to absolute
     preview-asset URLs (with a signed token), so linked CSS/JS/images actually
     load inside the opaque-origin iframe. Covers quoted, unquoted and srcset
@@ -3015,10 +3027,30 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
                 + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for)
                 + m.group(3))
 
+    def repl_page(m):
+        # In-page navigation: <a href="other.html"> keeps working inside
+        # previews by pointing at the preview endpoint (own signed token).
+        # Anything else (external, fragments, non-HTML) is left untouched.
+        if page_url_for is None:
+            return m.group(0)
+        ref = (m.group(3) or "").strip()
+        if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:|javascript:)", ref, re.IGNORECASE):
+            return m.group(0)
+        clean = ref.split("#", 1)[0].split("?", 1)[0].strip()
+        if not clean:
+            return m.group(0)
+        if os.path.splitext(clean)[1].lower() not in (".html", ".htm"):
+            return m.group(0)
+        norm = posixpath.normpath(posixpath.join("/" + page_dir, clean)).lstrip("/")
+        if not norm or norm == ".":
+            return m.group(0)
+        return m.group(1) + m.group(2) + page_url_for(norm) + m.group(2)
+
     text = _QUOTED_ASSET_RE.sub(repl_quoted, text)
     text = _UNQUOTED_ASSET_RE.sub(repl_unquoted, text)
     text = _SRCSET_RE.sub(repl_srcset, text)
     text = _STYLE_BLOCK_RE.sub(repl_style, text)
+    text = _PAGE_LINK_RE.sub(repl_page, text)
     return text.encode("utf-8")
 
 
@@ -6575,7 +6607,9 @@ async def agents_companion(request: Request):
     if not os.path.isfile(p):
         return JSONResponse(status_code=404, content={"error": "Companion installer not built yet"})
     return FileResponse(p, media_type="application/x-msi",
-                        filename="OmniilinkServerSetup.msi")
+                        filename="OmniilinkServerSetup.msi",
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate",
+                                 "Pragma": "no-cache"})
 
 
 @app.get("/api/agents/companion-version")

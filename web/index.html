@@ -102,14 +102,22 @@ a:hover{text-decoration:underline}
 .level-sel:focus{border-color:var(--accent)}
 .chatbar-tools{display:flex;gap:8px;align-items:center;padding:0 2px 8px;flex-wrap:wrap}
 .chatbar-tools .model-menu{top:auto;bottom:calc(100% + 6px)}
-.model-menu{position:absolute;top:calc(100% + 6px);left:0;min-width:280px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);box-shadow:0 12px 32px rgba(0,0,0,.45);z-index:50;display:none;max-height:320px;overflow-y:auto;padding:4px}
+.model-menu{position:absolute;top:calc(100% + 6px);left:0;min-width:300px;max-width:340px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius);box-shadow:0 16px 48px rgba(0,0,0,.5);z-index:50;display:none;max-height:360px;overflow-y:auto;padding:6px}
 .model-menu.open{display:block}
-.model-option{padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:8px}
-.model-option:hover{background:var(--bg-hover);color:var(--text-primary)}
-.model-option.selected{background:var(--accent-dim);color:var(--text-primary)}
-.model-option .prov{font-size:10px;color:var(--text-muted);margin-left:auto}
+.model-search-wrap{padding:4px 4px 6px;position:sticky;top:0;background:var(--bg-secondary);z-index:2}
+.model-search{width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none}
+.model-search:focus{border-color:var(--accent)}
+.model-search::placeholder{color:var(--text-muted)}
+.model-option{padding:8px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;border:1px solid transparent}
+.model-option:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border)}
+.model-option.selected{background:var(--accent-dim);color:var(--text-primary);border-color:var(--accent)}
+.model-option .prov{font-size:10px;color:var(--text-muted);margin-left:auto;background:var(--bg-tertiary);border:1px solid var(--border);padding:1px 7px;border-radius:10px;white-space:nowrap}
 .model-option.selected .prov{color:var(--text-secondary)}
-.model-group-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:8px 10px 4px;font-weight:650}
+.model-option .pick{width:16px;height:16px;flex-shrink:0;color:transparent;font-size:12px;line-height:16px;text-align:center}
+.model-option.selected .pick{color:var(--accent-light)}
+.model-option .mname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-group-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:10px 10px 4px;font-weight:650;position:sticky;top:44px;background:var(--bg-secondary);z-index:1}
+.model-empty{padding:14px;text-align:center;color:var(--text-muted);font-size:12px}
 .content{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0}
 .chat-area{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;min-height:0}
 .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px}
@@ -421,6 +429,8 @@ a:hover{text-decoration:underline}
 .modal-field label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:5px;font-weight:600}
 .modal-field input{width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)}
 .modal-field input:focus{border-color:var(--accent)}
+.modal-field select{width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)}
+.modal-field select:focus{border-color:var(--accent)}
 .modal-field .hint{font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap}
 .project-list{display:flex;flex-direction:column;gap:6px;margin-top:12px}
@@ -863,10 +873,10 @@ pre{max-width:100%}
             <div class="model-menu" id="model-menu"></div>
           </div>
           <div class="level-group" title="Reasoning effort and thinking budget">
-            <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" onchange="setLevelCtl('effort',this.value)">
+            <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" title="Effort: reasoning work per answer (minimum = instant, max = deepest). See Help for details." onchange="setLevelCtl('effort',this.value)">
               <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
             </select>
-            <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" onchange="setLevelCtl('thinking',this.value)">
+            <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" title="Think: thinking-token budget (minimum = direct answer, max = longest deliberation). See Help for details." onchange="setLevelCtl('thinking',this.value)">
               <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
             </select>
           </div>
@@ -1096,6 +1106,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Getting Started</h3>
           <ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li style="margin-bottom:8px"><strong>Add API Keys</strong> &mdash; Go to Providers and add at least one key (Groq is free and fast — each provider card has a setup guide)</li><li style="margin-bottom:8px"><strong>Start Chatting</strong> &mdash; Type a message and press Enter. Omniilink auto-routes to the best model.</li><li style="margin-bottom:8px"><strong>Choose a Model</strong> &mdash; Click the model button to pick a specific provider, or leave it on "omniilink" for auto-routing.</li></ol>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Smart Routing</h3><p style="color:var(--text-secondary);margin-bottom:20px">When set to "omniilink", the system classifies your message as simple, medium, or complex, then picks the best model for the task.</p>
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Reasoning controls: Effort &amp; Think</h3><p style="color:var(--text-secondary);margin-bottom:10px">The two dropdowns next to the model button control how hard the AI thinks before answering. They apply per message, are remembered between visits, and are mirrored in Coding mode.</p><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:10px"><li style="margin-bottom:8px"><strong>Effort</strong> &mdash; how much reasoning work to spend: <code>minimum</code> answers instantly with almost no deliberation, <code>low</code>/<code>medium</code> suit everyday questions, <code>high</code> and above dig into hard problems step by step. Higher effort is slower and uses more tokens.</li><li style="margin-bottom:8px"><strong>Think</strong> &mdash; the thinking budget: how many intermediate reasoning tokens the model may use. <code>minimum</code> forces a direct answer, larger budgets let it work through complex chains. Where a provider supports only one knob, thinking wins.</li><li style="margin-bottom:8px"><strong>Auto</strong> &mdash; lets the router pick a sensible level for the task. Start here; raise a level only when answers feel shallow, lower one when they feel slow.</li></ul><p style="color:var(--text-secondary);margin-bottom:20px">Rule of thumb: easy chat stays on auto/low, code and math go medium/high, and only genuinely hard debugging earns xhigh or max.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Coding Mode</h3><p style="color:var(--text-secondary);margin-bottom:20px">Click the code icon in the sidebar to switch to Coding Mode. This provides a file tree, project management, and a terminal panel.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Prompts Library</h3><p style="color:var(--text-secondary);margin-bottom:20px">Save and reuse prompt templates. Organize by category: Coding, Writing, Analysis, or Custom.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Keyboard Shortcuts</h3><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li><strong>Ctrl+Enter</strong> &mdash; Send message</li><li><strong>Ctrl+N</strong> &mdash; New chat</li><li><strong>Ctrl+/</strong> &mdash; Open help</li><li><strong>Escape</strong> &mdash; Close menus</li></ul>
@@ -1313,7 +1324,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
 <div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="btn btn-ghost btn-sm" id="preview-share-btn" onclick="sharePreview()" title="Copy a share link (live until 10 minutes after first open)">Share</button><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" allow="pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="file-edit-modal" onclick="if(event.target===this){event.stopPropagation();closeFileEditor()}"><div class="modal" style="max-width:96vw;width:1200px"><div class="modal-header"><h2 id="file-edit-title">Edit file</h2><span id="file-edit-meta" class="tool-result-sub"></span><button class="modal-close" onclick="closeFileEditor()">&times;</button></div><div class="modal-body" style="display:flex;flex-direction:column"><textarea id="file-edit-area" spellcheck="false" onkeydown="fileEditKey(event)"></textarea></div><div class="modal-actions"><span id="file-edit-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeFileEditor()">Cancel</button><button class="btn btn-primary" id="file-edit-save" onclick="saveFileEditor()">Save</button></div></div></div>
-<div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
+<div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-field"><label>Create On</label><select id="new-project-target" style="width:100%"><option value="cloud">Omniilink cloud</option></select><div class="hint">Pick one of your paired computers to create it there instead</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
 <div class="modal-overlay" id="providers-add-modal" onclick="if(event.target===this)closeProvidersAdd()"><div class="modal" style="max-width:560px"><div class="modal-header"><h2>Add provider</h2><button class="modal-close" onclick="closeProvidersAdd()">&times;</button></div><div class="modal-body" id="providers-add-body"></div></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
@@ -1582,7 +1593,7 @@ if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener(
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
-    function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));const cm=document.getElementById('coding-model');if(cm&&cm.value!==id)cm.value=id}
+    function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));const cm=document.getElementById('coding-model');if(cm&&cm.value!==id)cm.value=id;try{localStorage.setItem('omniilink_model',id)}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
 const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
@@ -1607,20 +1618,32 @@ function syncLevelControls(){
 function requestLevels(){return{effort:getLevel('effort'),thinking:getLevel('thinking')}}
 
 async function loadModels(){
-  try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth)}
+  try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth);
+    try{const saved=localStorage.getItem('omniilink_model');if(saved&&(saved==='omniilink'||(data.models||[]).some(m=>m.id===saved)))selectModel(saved)}catch(e){}
+  }
   catch(e){console.error('Failed to load models:',e)}
+}
+function modelMenuFilter(menu,q){
+  q=(q||'').trim().toLowerCase();let shown=0;const sub=menu.querySelectorAll('.model-option');
+  sub.forEach(o=>{const hit=!q||(o.dataset.id||'').toLowerCase().indexOf(q)>-1;o.style.display=hit?'':'none';if(hit)shown++});
+  menu.querySelectorAll('.model-group-label').forEach(l=>{let n=l.nextElementSibling,vis=false;while(n&&!n.classList.contains('model-group-label')){if(n.classList&&n.classList.contains('model-option')&&n.style.display!=='none'){vis=true;break}n=n.nextElementSibling}l.style.display=vis?'':'none'});
+  const empty=menu.querySelector('.model-empty');if(empty)empty.style.display=shown?'none':'';
 }
 function renderModelMenu(models,backupModel){
   const menu=document.getElementById('model-menu');menu.innerHTML='';
+  const wrap=document.createElement('div');wrap.className='model-search-wrap';
+  const si=document.createElement('input');si.className='model-search';si.placeholder='Search models…';si.autocomplete='off';
+  si.oninput=()=>modelMenuFilter(menu,si.value);wrap.appendChild(si);menu.appendChild(wrap);
   const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omniilink';
-  opt.innerHTML='<span>omniilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omniilink');menu.appendChild(opt);
+  opt.innerHTML='<span class="pick">✓</span><span class="mname">omniilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omniilink');menu.appendChild(opt);
   const grouped={};models.filter(m=>m.id!=='omniilink').forEach(m=>{const p=m.provider||'other';if(!grouped[p])grouped[p]=[];grouped[p].push(m)});
   const providerOrder=['ollama','opencode','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[0]);const bi=providerOrder.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[provider,pm]of sorted){
     const label=document.createElement('div');label.className='model-group-label';label.textContent=provider==='ollama'?'Ollama (local)':provider;menu.appendChild(label);
-    pm.forEach(m=>{const item=document.createElement('div');item.className='model-option';item.dataset.id=m.id;const tag=provider==='ollama'?'local':provider;item.innerHTML='<span>'+m.id+'</span><span class="prov">'+tag+'</span>';item.onclick=()=>selectModel(m.id);menu.appendChild(item)});
+    pm.forEach(m=>{const item=document.createElement('div');item.className='model-option';item.dataset.id=m.id;const tag=provider==='ollama'?'local':provider;item.innerHTML='<span class="pick">✓</span><span class="mname">'+m.id+'</span><span class="prov">'+tag+'</span>';item.onclick=()=>selectModel(m.id);menu.appendChild(item)});
   }
+  const nohit=document.createElement('div');nohit.className='model-empty';nohit.style.display='none';nohit.textContent='No models match';menu.appendChild(nohit);
 }
 let providerHealth={};
 function healthDotClass(name,hasModels){
@@ -4141,7 +4164,12 @@ async function loadProjectsPage(){
     if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
   }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load projects</p></div>'}
 }
-function openProjectsModal(){document.getElementById('projects-modal').classList.add('open');loadProjectList()}
+function openProjectsModal(){document.getElementById('projects-modal').classList.add('open');loadProjectList();loadCreateTargets()}
+async function loadCreateTargets(){const sel=document.getElementById('new-project-target');if(!sel)return;const keep=sel.value||'cloud';sel.innerHTML='';const c0=document.createElement('option');c0.value='cloud';c0.textContent='Omniilink cloud';sel.appendChild(c0);
+  try{const r=await authFetch(API+'/api/agents');if(!r.ok)return;const d=await r.json();
+    (d.agents||[]).forEach(a=>{if(!a.online)return;const o=document.createElement('option');o.value='agent:'+a.id;o.textContent=(a.name||('agent '+a.id))+(a.hostname?' — '+a.hostname:'');sel.appendChild(o)});
+    if([...sel.options].some(o=>o.value===keep))sel.value=keep;
+  }catch(e){}}
 function closeProjectsModal(){document.getElementById('projects-modal').classList.remove('open')}
 function openNewFileModal(){document.getElementById('newfile-modal').classList.add('open');const inp=document.getElementById('new-file-name');inp.value='';setTimeout(()=>inp.focus(),50)}
 function closeNewFileModal(){document.getElementById('newfile-modal').classList.remove('open')}
@@ -4159,7 +4187,11 @@ async function loadProjectList(){const list=document.getElementById('project-lis
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
   codingFolder=data.folder;fsHandle=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
-async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}try{const r=await authFetch(API+'/api/projects/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to create project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
+async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
+const target=(document.getElementById('new-project-target')||{}).value||'cloud';
+if(target.indexOf('agent:')===0){const aid=target.slice(6);
+  try{await agentFileOp(aid,{op:'mkdir',path:name});closeProjectsModal();showToast('Project "'+name+'" created on the computer','success');await openRemoteProject(aid,name)}catch(e){appAlert('Could not create it there: '+e.message)}return}
+try{const r=await authFetch(API+'/api/projects/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to create project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
 function browseImportFolder(){if(window.showDirectoryPicker){window.showDirectoryPicker().then(handle=>{document.getElementById('import-project-path').value=handle.name;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=handle.name}).catch(()=>{})}else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.addEventListener('change',()=>{if(inp.files.length>0){const path=inp.files[0].webkitRelativePath.split('/')[0];document.getElementById('import-project-path').value=path;if(!document.getElementById('import-project-name').value.trim())document.getElementById('import-project-name').value=path}});inp.click()}}
 async function importProject(){const name=document.getElementById('import-project-name').value.trim();const path=document.getElementById('import-project-path').value.trim();if(!name){appAlert('Enter a project name');return}if(!path){appAlert('Enter or browse for a source folder');return}try{const r=await authFetch(API+'/api/projects/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,source_path:path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to import project');return}await openProject(name)}catch(e){appAlert('Error: '+e.message)}}
 function forgetCodingChatForFolder(folderPath){
