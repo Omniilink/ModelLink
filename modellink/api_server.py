@@ -621,7 +621,7 @@ class SecurityHeadersMiddleware:
         # The HTML preview endpoint is MEANT to be framed (sandboxed iframe
         # with an opaque origin, so it cannot touch app storage). Framing
         # guards must not apply to it or the browser refuses to render it.
-        is_preview = scope.get("path", "") == "/api/coding/preview"
+        is_preview = scope.get("path", "") in ("/api/coding/preview", "/api/coding/remote-preview")
         try:
             _qs = urllib.parse.parse_qs(scope.get("query_string", b"").decode("latin-1"))
         except Exception:
@@ -2463,6 +2463,12 @@ END_FILE_PATCH
 
 WORKFLOW:
 1. First inspect: RUN_COMMAND:dir /b (so you know what exists).
+   READING FILES: do NOT read project files with `type`, `cat`, or Python
+   one-liners in RUN_COMMAND — command output is TRUNCATED and you will burn
+   your whole budget re-reading in chunks. The files the user attached (or
+   the project's source) are already provided to you. If you truly need a
+   file that is not attached, ask the user once to attach it with @name.
+   Then go straight to the edits.
 2. For any task with 2+ steps, start with a TODO_LIST block and mark items done as you go.
    Split the work into SMALL steps: one file, one feature, or one check per
    item. NEVER write one giant item covering the whole task — "Create a 3D
@@ -3373,6 +3379,133 @@ async def shared_preview_asset(request: Request, token: str, path: str):
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+# ==========================================
+# Remote preview: serve a project file from a paired computer. The server
+# reads it through the agent (read/readb64), rewrites its relative asset and
+# page links to tokenised remote endpoints, and serves it exactly like a
+# server-side preview (real tab or sandboxed frame).
+# ==========================================
+async def _agent_run_file_op(user, agent_id, payload, timeout=25.0):
+    """Queue a file op and wait for the laptop's reply. Returns (parsed, None)
+    or (None, JSONResponse error)."""
+    cid, err = _queue_agent_command(user, agent_id, "", "file", payload)
+    if err:
+        return None, err
+    try:
+        _agent_notify(agent_id)
+    except Exception:
+        pass
+    cid = str(cid)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await asyncio.sleep(0.15)
+        with _AGENT_LOCK:
+            st = _agents_load()
+            c = st["commands"].get(cid)
+        if c and c.get("status") == "done":
+            try:
+                return json.loads(c.get("output") or "null"), None
+            except Exception:
+                return None, JSONResponse(status_code=500, content={"error": "Bad reply from computer"})
+        if c is None:
+            return None, JSONResponse(status_code=404, content={"error": "Command vanished"})
+    return None, JSONResponse(status_code=504, content={"error": "Timed out waiting for the computer"})
+
+
+def _remote_tokkey(agent, rel):
+    return f"r{agent}:{rel}"
+
+
+@app.get("/api/coding/remote-preview")
+async def coding_remote_preview(request: Request, agent: str = "", path: str = ""):
+    from fastapi.responses import Response as _Response
+    from urllib.parse import quote as _quote
+    tab = request.query_params.get("tab") == "1"
+    tokkey = _remote_tokkey(agent, path)
+    user, err = _require_auth(request)
+    if err:
+        user = _user_from_preview_token(request.query_params.get("t"), tokkey)
+        if user is None:
+            return err
+        request.state.user = user
+    if not agent:
+        return JSONResponse(status_code=400, content={"error": "Missing computer"})
+    if _bad_path(path) or os.path.splitext(path)[1].lower() not in (".html", ".htm"):
+        return JSONResponse(status_code=400, content={"error": "Preview supports HTML files only"})
+    out, err2 = await _agent_run_file_op(user, agent, {"op": "read", "path": path})
+    if err2:
+        return err2
+    if not out or not out.get("ok"):
+        return JSONResponse(status_code=400, content={"error": (out or {}).get("error", "Could not read file")})
+    content = str(out.get("content") or "").encode("utf-8")
+    uid = user["id"]
+
+    def url_for(rel):
+        return ("/api/coding/remote-asset?agent=" + _quote(agent, safe="") +
+                "&path=" + _quote(rel, safe="/") +
+                "&t=" + _mint_preview_token(uid, _remote_tokkey(agent, rel)))
+
+    def page_url_for(rel):
+        u = ("/api/coding/remote-preview?agent=" + _quote(agent, safe="") +
+             "&path=" + _quote(rel, safe="/") +
+             "&t=" + _mint_preview_token(uid, _remote_tokkey(agent, rel)))
+        return u + ("&tab=1" if tab else "")
+
+    content = _rewrite_preview_assets(content, path, user_id=uid, url_for=url_for,
+                                      page_url_for=page_url_for)
+    return _Response(
+        content=content,
+        media_type="text/html",
+        headers={
+            "X-Preview-Token": _mint_preview_token(uid, tokkey),
+            **({} if tab else {"Content-Security-Policy": "sandbox allow-scripts"}),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/coding/remote-asset")
+async def coding_remote_asset(request: Request, agent: str = "", path: str = ""):
+    from fastapi.responses import Response as _Response
+    from urllib.parse import quote as _quote
+    import base64 as _b64
+    import mimetypes
+    tokkey = _remote_tokkey(agent, path)
+    user, err = _require_auth(request)
+    if err:
+        user = _user_from_preview_token(request.query_params.get("t"), tokkey)
+        if user is None:
+            return err
+    if not agent or _bad_path(path):
+        return JSONResponse(status_code=400, content={"error": "Invalid request"})
+    out, err2 = await _agent_run_file_op(user, agent, {"op": "readb64", "path": path})
+    if err2:
+        return err2
+    if not out or not out.get("ok"):
+        return JSONResponse(status_code=404, content={"error": (out or {}).get("error", "Not found")})
+    try:
+        data = _b64.b64decode(out.get("content") or "")
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "Bad file data"})
+    ext = os.path.splitext(path)[1].lower()
+    media = _ASSET_MIME_OVERRIDES.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
+    if ext == ".css":
+        import posixpath
+        css_dir = posixpath.dirname(path.replace("\\", "/"))
+
+        def url_for(rel):
+            return ("/api/coding/remote-asset?agent=" + _quote(agent, safe="") +
+                    "&path=" + _quote(rel, safe="/") +
+                    "&t=" + _mint_preview_token(user["id"], _remote_tokkey(agent, rel)))
+        try:
+            data = _rewrite_css_urls(data.decode("utf-8"), css_dir, url_for=url_for).encode("utf-8")
+        except Exception:
+            pass
+    return _Response(content=data, media_type=media,
+                     headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
 async def _drain_request_body(request: Request):
     """Read and discard the request body. Rejecting a request whose body was
     never read makes the server close the connection with unread data, which

@@ -1299,6 +1299,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
            <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
+<button onclick="copyCodingChatLog()" title="Copy the entire chat log as Markdown for sharing">Copy log</button>
            <button onclick="toggleCodingNotify()" id="coding-notify-btn" title="Notify when a coding task finishes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg></button>
           <button onclick="openCodingFolderPicker()" title="Re-grant filesystem access" id="coding-reconnect-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent-light);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font);white-space:nowrap">Reconnect</button>
           <button onclick="closeCodingFolder()" title="Close folder" id="coding-close-btn" style="display:none;padding:5px 8px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:11px;cursor:pointer;transition:all .12s;font-family:var(--font)">&times;</button>
@@ -2138,13 +2139,14 @@ async function openCodingFolderPicker(){
   async function openCodingFolder(){await openCodingFolderPicker()}
   async function openCodingFolderDirect(path){
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
-           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
+           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
 }
 async function refreshCodingTree(){if(!codingFolder&&!isRemote())return;try{if(isRemote()){const tree=await agentBuildTree(remoteCtx.id,remoteCtx.path||'',0);renderFileTree(tree);return}if(fsHandle){const tree=await fsBuildTree(fsHandle);renderFileTree(tree)}else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(r.ok)renderFileTree(data.tree)}}catch(e){}}
 </script>
 
 <script>
 function renderFileTree(tree){
+  try{if(typeof window!=='undefined')window.lastCodingTree=tree||[]}catch(e){}
   const container=document.getElementById('coding-filetree');container.innerHTML='';
     const header=document.createElement('div');header.className='ft-header';header.style.cssText='padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)';header.innerHTML='<span style="flex:1">Files</span>';
     const treeChev=document.createElement('button');treeChev.id='coding-tree-toggle';treeChev.textContent=codingTreeCollapsed?'\u25B8':'\u25BE';treeChev.title='Toggle file tree';treeChev.style.cssText='padding:1px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';treeChev.onclick=()=>toggleCodingTree();header.appendChild(treeChev);
@@ -2321,7 +2323,27 @@ async function sharePreview(){
   if(btn)btn.disabled=false;
 }
 async function previewFileScanned(path){
-  if(isRemote()){showToast('Preview is not available for remote folders yet','error');return}
+  if(isRemote()){
+    // Remote preview: the server reads the file through the paired computer
+    // and serves a tokenised page; open it in a real tab like any preview.
+    let tab=null;try{tab=window.open('about:blank','_blank')}catch(e){}
+    if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
+    _previewPath=remoteRel(path);_previewLocal=false;
+    const rel=remoteRel(path);
+    try{
+      const pre=await authFetch(API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+'&tab=1');
+      if(!pre.ok){let m='Remote preview failed';try{const d=await pre.json();if(d&&d.error)m='Remote preview: '+d.error}catch(e){};appAlert(m);try{if(tab)tab.close()}catch(e){}return}
+      const token=pre.headers.get('X-Preview-Token')||'';
+      const url=API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
+      document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
+      if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
+      showToast('Popup blocked — allow popups for full preview','error');
+      const frame=document.getElementById('file-preview-frame');
+      frame.removeAttribute('srcdoc');frame.src=url;
+      document.getElementById('file-preview-modal').classList.add('open');
+    }catch(e){appAlert('Remote preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}}
+    return
+  }
   // Previews open in a REAL browser tab so games capture input (pointer
   // lock, keys, fullscreen) exactly like the downloaded file. The tab is
   // opened synchronously to keep the click gesture (popup blockers), then
@@ -2380,6 +2402,27 @@ function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(na
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
 function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
 function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
+function autoAttachProjectFiles(){
+  // Hand the model the project source up front so it never burns rounds
+  // re-reading files via shell (whose output the harness truncates).
+  try{
+    const tree=(typeof window!=='undefined'&&window.lastCodingTree)||[];
+    const exts=/\.(html?|css|js|mjs|cjs|jsx|tsx?|json|py|md|txt|yml|yaml|toml|sh|ps1|sql|java|c|cpp|go|rs|rb|php)$/i;
+    const files=[];
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path&&exts.test(n.name))files.push(n)}})(tree);
+    files.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
+    const chosen=[];let budget=110000;
+    for(const f of files){
+      if(chosen.length>=8)break;
+      const sz=(typeof allCodingFileSizes!=='undefined'&&allCodingFileSizes)?allCodingFileSizes[f.path]:undefined;
+      if(typeof sz==='number'&&sz>50000)continue;
+      if(chosen.indexOf(f.path)===-1)chosen.push(f.path);
+      if(typeof sz==='number')budget-=sz;
+      if(budget<=0)break;
+    }
+    if(chosen.length){codingAtFiles=chosen;updateAtIndicator()}
+  }catch(e){}
+}
 
 function handleCodingKey(e){const dd=document.getElementById('at-dropdown');const isOpen=dd&&dd.classList.contains('open');
   if(isOpen){const items=dd.querySelectorAll('.at-dropdown-item');const sel=dd.querySelector('.at-dropdown-item.selected');let idx=Array.from(items).indexOf(sel);
@@ -3836,8 +3879,9 @@ async function codingAutoContinue(){
 // ---- Remote folders (paired computers): route file/shell ops through the
 // agent instead of the server project dir. remoteCtx={id,name,path}.
 function isRemote(){return !!(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.id)}
-// Coding paths are project-relative; the agent jail is rooted at the
-// projects folder, so every remote op is prefixed with the open project.
+  // Coding paths are project-relative; the agent jail is rooted at the
+  // projects folder, so every remote op is prefixed with the open project.
+  // (No apostrophes in this comment: test extractors treat them as strings.)
 function remoteRel(path){
   let p=String(path||'').replace(/\\/g,'/').replace(/^\/+/,'');
   const base=String((typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.path)||'').replace(/\\/g,'/').replace(/^\/+|\/+$/g,'');
@@ -4351,7 +4395,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
 if(target.indexOf('agent:')===0){const aid=target.slice(6);
@@ -5719,6 +5763,18 @@ function exportCodingChat(){
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   showToast('Chat exported as Markdown','success');
 }
+async function copyCodingChatLog(){
+  if(!codingHistory||!codingHistory.length){showToast('Nothing to copy yet','error');return}
+  const text=codingChatToMarkdown(codingHistory);
+  let ok=false;
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(text);ok=true}}catch(e){}
+  if(!ok){
+    const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;opacity:0';
+    document.body.appendChild(ta);ta.select();try{ok=document.execCommand('copy')}catch(e){}ta.remove();
+  }
+  showToast(ok?'Full chat log copied — paste it anywhere':('Copy failed; downloading instead'),ok?'success':'error');
+  if(!ok)exportCodingChat();
+}
 
 // ---- Run the project's test suite ----
 async function runProjectTests(){
@@ -5946,6 +6002,7 @@ async function openRemoteProjectInCode(agentId, path){
   document.getElementById('coding-reconnect-btn').style.display='none';
   try{await admLoadAgents()}catch(e){}
   try{await refreshCodingTree()}catch(e){}
+  try{autoAttachProjectFiles()}catch(e){}
   codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];
   restoreCodingChat();
   addCodingSystemMsg('Opened remote folder "'+(path||'/')+'" on '+name+'. New files land inside '+(path?('"'+path+'"'):'the projects root')+' on that computer; commands run there too.');

@@ -158,6 +158,17 @@ def do_file_op(root, payload):
                     return {"ok": True, "content": f.read()}
             except UnicodeDecodeError:
                 return {"ok": False, "error": "binary file cannot be edited as text"}
+        if op == "readb64":
+            import base64 as _b64
+            full = safe_join(root, payload.get("path", ""))
+            if not os.path.isfile(full):
+                return {"ok": False, "error": "not a file"}
+            if os.path.getsize(full) > 8 * 1024 * 1024:
+                return {"ok": False, "error": "file too large"}
+            with open(full, "rb") as f:
+                data = f.read()
+            return {"ok": True, "content": _b64.b64encode(data).decode("ascii"),
+                    "bytes": len(data)}
         if op == "write":
             content = payload.get("content", "")
             if not isinstance(content, str):
