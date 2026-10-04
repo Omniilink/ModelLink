@@ -290,10 +290,17 @@ PROVIDERS = {
     "opencode-go": {
         "env_prefix": "OPENCODE_API_KEY",
         "api_base": "https://opencode.ai/zen/go/v1",
-        "models": ["opencode-default"],
+        "models": [
+            "Ling 3.0 Flash Fin Free", "Ling 3.1 Flash Free", "LongCat 2.5 Preview Free",
+            "MiMo-V2.6-Flash Free", "Muse Spark 1.3 Free", "Nemotron 3.5 Lightning Free",
+            "DeepSeek V4 Pro (New)", "DeepSeek V4.1 Flash", "GLM-5.3", "GLM-5.3-Flash",
+            "GPT-6 Luna", "Grok 4.7", "Hy4 preview", "Kimi K2.7 Code", "Kimi K3",
+            "MiMo V2.5", "MiMo V2.5 Pro", "MiMo-V2.6-Pro", "MiniMax-M3",
+            "Muse Spark 1.3 Contributor", "Qwen3.7 Plus", "Qwen3.8 Flash", "Qwen3.8 Max",
+        ],
         "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: {
-            "model": "opencode-default",
+            "model": model,
             "messages": msgs,
             "temperature": 0.7,
             "max_tokens": 4000
