@@ -463,12 +463,13 @@ def _execute_tool_call(name, args):
 
 
 def run_tool_loop(messages, model="modellink", temperature=0.7, max_tokens=4000,
-                  user_keys=None, opts=None, max_iters=4):
+                  user_keys=None, opts=None, max_iters=2):
     """Run a tool-use loop: call the model, execute any tool calls, feed back.
 
     Tool results are fed back as a user message so every provider understands
-    them (gemini/anthropic don't accept OpenAI-style tool messages). Returns
-    (response, used_model) with the same contract as generate().
+    them (gemini/anthropic don't accept OpenAI-style tool messages). If the
+    loop exhausts without a text answer, fall back to a direct generation
+    (no tools) so the model still replies. Returns (response, used_model).
     """
     msgs = list(messages)
     last_response = None
@@ -488,7 +489,23 @@ def run_tool_loop(messages, model="modellink", temperature=0.7, max_tokens=4000,
         for call in calls:
             result = _execute_tool_call(call["name"], call["args"])
             result_texts.append(result)
+        # Keep the conversation alternating (user/assistant) — consecutive user
+        # messages make the model re-call the tool until the loop exhausts.
+        msgs.append({"role": "assistant", "content": ""})
         msgs.append({"role": "user", "content": "Web search results:\n" + "\n\n".join(result_texts)})
+    # The loop exhausted without a text answer — reply directly (no tools).
+    content = ""
+    try:
+        content = last_response["choices"][0]["message"].get("content") or ""
+    except Exception:
+        pass
+    if not content.strip():
+        clean_opts = {k: v for k, v in (opts or {}).items() if k != "tools"}
+        response, used_model = generate(
+            messages=msgs, model=model, temperature=temperature,
+            max_tokens=max_tokens, stream=False, user_keys=user_keys, opts=clean_opts,
+        )
+        return response, used_model
     return last_response, last_used
 
 
