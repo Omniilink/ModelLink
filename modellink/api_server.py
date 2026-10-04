@@ -3494,14 +3494,22 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
     if not agent or _bad_path(path):
         return JSONResponse(status_code=400, content={"error": "Invalid request"})
     out, err2 = await _agent_run_file_op(user, agent, {"op": "readb64", "path": path})
-    if err2:
-        return err2
-    if not out or not out.get("ok"):
-        return JSONResponse(status_code=404, content={"error": (out or {}).get("error", "Not found")})
-    try:
-        data = _b64.b64decode(out.get("content") or "")
-    except Exception:
-        return JSONResponse(status_code=500, content={"error": "Bad file data"})
+    data = None
+    if not err2 and out and out.get("ok"):
+        try:
+            data = _b64.b64decode(out.get("content") or "")
+        except Exception:
+            data = None
+    if data is None:
+        # Older companion without readb64: CSS/JS/etc are text, so the normal
+        # read op still delivers them (this is why a page could render its
+        # HTML but look unstyled until the agent was updated).
+        out2, err3 = await _agent_run_file_op(user, agent, {"op": "read", "path": path})
+        if err3:
+            return err3
+        if not out2 or not out2.get("ok"):
+            return JSONResponse(status_code=404, content={"error": (out2 or {}).get("error", "Not found")})
+        data = str(out2.get("content") or "").encode("utf-8")
     ext = os.path.splitext(path)[1].lower()
     media = _ASSET_MIME_OVERRIDES.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
     proj = (request.query_params.get("proj", "") or "").replace("\\", "/").strip("/")
