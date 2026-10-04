@@ -730,6 +730,42 @@ pre{max-width:100%}
 @supports(padding:env(safe-area-inset-bottom)){.input-area{padding-bottom:calc(14px + env(safe-area-inset-bottom))}.coding-input-area{padding-bottom:calc(12px + env(safe-area-inset-bottom))}}
 @media(prefers-reduced-motion:reduce){.view-panel.open,#chat-area,.provider-card,.tier-card,.api-key-row,.message,.coding-msg{animation:none !important}.typing-indicator span{animation:none}.modal,.cmd-box{animation:none}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+/* ---- Models gallery ---- */
+.mpg{display:flex;flex-direction:column;gap:14px;max-width:1180px;margin:0 auto;width:100%}
+.mpg-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mpg-search{flex:1;min-width:160px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12.5px;font-family:var(--font);outline:none}
+.mpg-search:focus{border-color:var(--accent)}
+.mpg-filters{display:flex;gap:6px;flex-wrap:wrap}
+.mpg-filter{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);font-size:11px;cursor:pointer;font-family:var(--font)}
+.mpg-filter:hover{color:var(--text-primary);border-color:var(--border-light)}
+.mpg-filter.active{background:var(--bg-active);color:var(--text-primary);border-color:var(--border-light)}
+.mpg-cols{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:16px;align-items:start}
+.mpg-grid{display:grid;grid-template-columns:1fr;gap:10px;max-height:70vh;overflow-y:auto;padding-right:2px}
+.mpg-card{display:flex;gap:10px;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);cursor:pointer}
+.mpg-card:hover{border-color:var(--border-light)}
+.mpg-card.active{border-color:var(--accent);background:var(--accent-glow)}
+.mpg-thumb{width:64px;height:64px;border-radius:var(--radius-xs);background:var(--bg-tertiary);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden}
+.mpg-thumb img{width:100%;height:100%;object-fit:cover}
+.mpg-thumb-ico{font-size:14px;font-weight:700;color:var(--text-muted)}
+.mpg-card-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.mpg-card-name{font-size:13px;font-weight:650;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mpg-card-meta{font-size:10.5px;color:var(--text-muted);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mpg-card-prompt{font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mpg-card-status{font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;color:var(--text-muted)}
+.mpg-card-status.ready{color:var(--success)}
+.mpg-card-status.generating{color:var(--warning)}
+.mpg-card-status.failed{color:var(--error)}
+.mpg-card-actions{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+.mpg-viewport{position:relative;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary);overflow:hidden;min-height:420px;display:flex;flex-direction:column}
+.mpg-canvas{flex:1;min-height:420px}
+.mpg-canvas canvas{width:100%;height:100%;display:block}
+.mpg-status{position:absolute;left:12px;top:12px;padding:5px 10px;border-radius:var(--radius-xs);font-size:11.5px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);max-width:80%}
+.mpg-status.error{border-color:var(--error);color:var(--error)}
+.mpg-info{position:absolute;left:12px;bottom:12px;padding:4px 10px;border-radius:var(--radius-xs);font-size:11px;font-family:var(--mono);background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);max-width:90%}
+.mpg-empty{padding:32px 16px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:var(--radius-sm)}
+.mpg-empty-title{font-size:14px;color:var(--text-primary);margin-bottom:4px}
+.mpg-empty-sub{font-size:12px;margin-bottom:12px}
+@media(max-width:900px){.mpg-cols{grid-template-columns:1fr}.mpg-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));max-height:none}.mpg-viewport{min-height:320px}.mpg-canvas{min-height:320px}}
 </style>
 </head>
 
@@ -791,6 +827,10 @@ pre{max-width:100%}
       <div class="nav-item" data-view="agents">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         <span>Agents</span>
+      </div>
+      <div class="nav-item" data-view="models">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12"/><path d="M21 7l-9 5-9-5"/></svg>
+        <span>Models</span>
       </div>
       <div class="nav-item" data-view="providers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L21 2"/><path d="M15 8l3 3"/></svg>
@@ -1050,6 +1090,10 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             </div>
           </div>
         </div>
+      <div class="view-panel" id="models-view">
+        <div class="view-header"><h2>Models</h2><span class="tool-result-sub">View, inspect, manage, and modify 3D models generated by Omniilink.</span><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body" id="models-body"></div>
+      </div>
       <div class="view-panel" id="providers-view">
         <div class="view-header"><h2>Providers</h2><button class="btn btn-primary btn-sm" onclick="openProvidersAdd()">+ Add</button></div>
         <div class="view-body" id="providers-body"></div>
@@ -1562,17 +1606,18 @@ function switchView(view){
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
   document.getElementById('agents-view').classList.toggle('open',view==='agents');
+  document.getElementById('models-view').classList.toggle('open',view==='models');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='models')openModelsView();
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',models:'/models',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',models:'Models',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -6142,6 +6187,46 @@ async function admRunAgentCmd(){const sel=document.getElementById('adm-cmd-agent
 async function admLoadAgentOut(){const sel=document.getElementById('adm-cmd-agent');if(!sel||!sel.value)return;try{const r=await authFetch(API+'/api/agents/'+sel.value+'/commands?limit=10');if(!r.ok)return;const d=await r.json();const box=document.getElementById('adm-cmd-out');box.innerHTML='';
   (d.commands||[]).forEach(c=>{const item=document.createElement('div');item.className='usage-activity-item';item.style.alignItems='flex-start';item.innerHTML='<span class="act-time">'+escapeHtml((c.created_at||'').slice(5,16))+'</span><div style="min-width:0"><div style="font-family:var(--mono);font-size:11px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word">$ '+escapeHtml(c.command||'')+'</div><div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;max-height:160px;overflow:auto">'+escapeHtml((c.output||('['+(c.status||'queued')+']')).slice(0,4000))+'</div></div>';box.appendChild(item)});
   if(!(d.commands||[]).length)box.innerHTML='<div class="tool-status">No commands yet.</div>'}catch(e){}}
+</script>
+<script>
+// ---- Models section: native procedural 3D (self-hosted Three.js) ----
+function ensureModelsLibs(cb){
+  if(window.THREE&&window.ModelPreviewGallery){cb();return}
+  if(window.__modelsLibsLoading){window.__modelsLibsQueue.push(cb);return}
+  window.__modelsLibsLoading=true;window.__modelsLibsQueue=[cb];
+  var srcs=['/static/vendor/three/three.min.js','/static/vendor/three/OrbitControls.js',
+    '/static/vendor/three/GLTFLoader.js','/static/vendor/three/GLTFExporter.js',
+    '/static/vendor/three/OBJLoader.js','/static/vendor/three/STLLoader.js',
+    '/static/components/ModelPreviewGallery.js'];
+  var i=0;
+  (function next(){
+    if(i>=srcs.length){var q=window.__modelsLibsQueue.slice();window.__modelsLibsQueue=[];q.forEach(function(f){try{f()}catch(e){}});return}
+    var s=document.createElement('script');s.src=srcs[i++];s.onload=next;s.onerror=next;document.body.appendChild(s);
+  })();
+}
+var modelsGallery=null;
+function openModelsView(){
+  ensureModelsLibs(function(){
+    var host=document.getElementById('models-body');if(!host)return;
+    if(!modelsGallery){modelsGallery=new ModelPreviewGallery(host,{apiBase:API,fetch:authFetch,onModifyModel:modifyModelWithAI,onGenerate:createModelWithAI})}
+    modelsGallery.load();
+  });
+}
+function modifyModelWithAI(model){
+  navigate('coding');
+  var line='Modify the 3D model "'+(model.name||'model')+'" ('+(model.format||'glb')+', '+((model.polygonCount||0).toLocaleString())+' triangles). Original prompt: '+(model.prompt||'')+'\\nUse the 3d-generation skill. Describe the exact change you want.';
+  try{var inp=document.getElementById('coding-input');if(inp){inp.value=line;inp.style.height='auto';inp.focus()}}catch(e){}
+  showToast('Describe the change in the coding chat and send','info');
+}
+function createModelWithAI(){
+  ensureModelsLibs(function(){
+    if(!modelsGallery){openModelsView();setTimeout(createModelWithAI,400);return}
+    var kind=(typeof window.__modelKind==='string')?window.__modelKind:'crate';
+    modelsGallery.generate(kind,'Procedurally generated '+kind,'MEDIUM')
+      .then(function(){showToast('Generated a new 3D model','success')})
+      .catch(function(e){showToast('Generation failed: '+e.message,'error')});
+  });
+}
 </script>
 </body>
 </html>

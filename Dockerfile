@@ -21,6 +21,7 @@ COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY modellink/ ./modellink/
 COPY web/ ./web/
+COPY components/ ./components/
 COPY companion/ ./companion/
 COPY run-server.py ./
 

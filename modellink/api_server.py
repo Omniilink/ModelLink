@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import base64
 import logging
 import asyncio
 import hmac
@@ -3529,6 +3530,174 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
             pass
     return _Response(content=data, media_type=media,
                      headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
+# ==========================================
+# Generated 3D models: metadata + asset store per user.
+# Assets live under user_data/<user>/models/ with a models.json index, so a
+# generated model survives restarts and is fetched by the Model Gallery.
+# ==========================================
+_MODEL_MIME = {
+    ".glb": "model/gltf-binary",
+    ".gltf": "model/gltf+json",
+    ".obj": "text/plain",
+    ".mtl": "text/plain",
+    ".stl": "model/stl",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+_MODEL_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _models_dir(user):
+    d = os.path.join(_user_data_dir(_safe_username(user["username"])), "models")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _models_index_path(user):
+    return os.path.join(_models_dir(user), "models.json")
+
+
+def _models_load(user):
+    try:
+        with open(_models_index_path(user), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("models"), list):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"models": []}
+
+
+def _models_save(user, data):
+    p = _models_index_path(user)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, p)
+
+
+def _model_public(m):
+    return {k: m.get(k) for k in
+            ("id", "name", "prompt", "format", "generationMethod", "quality",
+             "polygonCount", "materialCount", "textureCount", "fileSize",
+             "dimensions", "createdAt", "status", "thumbnail")}
+
+
+@app.get("/api/models")
+async def models_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data = _models_load(user)
+    models = [_model_public(m) for m in data["models"]]
+    models.sort(key=lambda m: str(m.get("createdAt") or ""), reverse=True)
+    return {"models": models}
+
+
+@app.post("/api/models")
+async def models_create(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    fmt = str(data.get("format", "") or "").lower().lstrip(".")
+    if fmt not in ("glb", "gltf", "obj", "stl"):
+        return JSONResponse(status_code=400, content={"error": "Unsupported model format"})
+    mid = "m" + secrets.token_hex(8)
+    store = _models_load(user)
+    rel = os.path.join("models", mid + "." + fmt).replace("\\", "/")
+    full = os.path.join(_user_data_dir(_safe_username(user["username"])), rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    try:
+        b64 = data.get("asset_b64")
+        if b64:
+            raw = base64.b64decode(b64)
+            if len(raw) > _MODEL_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": "Model too large (max 64MB)"})
+            with open(full, "wb") as f:
+                f.write(raw)
+        else:
+            return JSONResponse(status_code=400, content={"error": "No asset data"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    entry = {
+        "id": mid,
+        "name": str(data.get("name", "") or "Untitled model")[:128],
+        "prompt": str(data.get("prompt", "") or "")[:2000],
+        "format": fmt,
+        "path": rel,
+        "generationMethod": str(data.get("generationMethod", "") or "procedural")[:64],
+        "quality": str(data.get("quality", "") or "")[:32],
+        "polygonCount": int(data.get("polygonCount") or 0),
+        "materialCount": int(data.get("materialCount") or 0),
+        "textureCount": int(data.get("textureCount") or 0),
+        "fileSize": os.path.getsize(full),
+        "dimensions": data.get("dimensions") or None,
+        "thumbnail": data.get("thumbnail") or None,
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "status": "ready",
+    }
+    store["models"].append(entry)
+    _models_save(user, store)
+    _audit("model.create", user["username"], f"{mid} {entry['format']} {entry['polygonCount']} tris")
+    return {"status": "ok", "model": _model_public(entry)}
+
+
+@app.get("/api/models/{model_id}/asset")
+async def models_asset(request: Request, model_id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    store = _models_load(user)
+    entry = None
+    for m in store["models"]:
+        if m.get("id") == model_id:
+            entry = m
+            break
+    if entry is None:
+        return JSONResponse(status_code=404, content={"error": "Model not found"})
+    base = _user_data_dir(_safe_username(user["username"]))
+    full = os.path.join(base, str(entry.get("path", "")))
+    if not _is_within(base, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "Asset missing"})
+    ext = os.path.splitext(full)[1].lower()
+    return FileResponse(full, media_type=_MODEL_MIME.get(ext, "application/octet-stream"),
+                        filename=entry.get("name", "model") + ext,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/models/{model_id}")
+async def models_delete(request: Request, model_id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    store = _models_load(user)
+    keep, gone = [], None
+    for m in store["models"]:
+        if m.get("id") == model_id:
+            gone = m
+        else:
+            keep.append(m)
+    if gone is None:
+        return JSONResponse(status_code=404, content={"error": "Model not found"})
+    store["models"] = keep
+    _models_save(user, store)
+    try:
+        base = _user_data_dir(_safe_username(user["username"]))
+        full = os.path.join(base, str(gone.get("path", "")))
+        if _is_within(base, full) and os.path.isfile(full):
+            os.remove(full)
+    except OSError:
+        pass
+    _audit("model.delete", user["username"], model_id)
+    return {"status": "ok"}
 
 
 async def _drain_request_body(request: Request):
@@ -7360,6 +7529,18 @@ def _admin_page(request: Request):
 @app.get("/static/admin.html")
 async def serve_admin_static(request: Request):
     return _admin_page(request)
+
+
+@app.get("/static/components/ModelPreviewGallery.js")
+async def serve_model_gallery():
+    """The Models gallery component lives at the repo root (components/), so
+    it is not inside web/ and the /static mount cannot reach it. Serve it
+    explicitly. Registered before the mount below."""
+    p = os.path.join(APP_DIR, "components", "ModelPreviewGallery.js")
+    if not os.path.isfile(p):
+        return JSONResponse(status_code=404, content={"error": "Component not installed"})
+    return FileResponse(p, media_type="application/javascript",
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/admin")
