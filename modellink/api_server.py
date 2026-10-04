@@ -6453,6 +6453,46 @@ def _agent_visible(user, agent):
         return False
 
 
+_AGENT_POLL_SECONDS = 25
+_AGENT_WAITERS = {}
+
+
+def _agent_take_queued(agent_id):
+    """Oldest queued command for the agent, marked running.
+    Returns (command_dict_or_None, agent_known_bool)."""
+    with _AGENT_LOCK:
+        st = _agents_load()
+        cur = st["agents"].get(str(agent_id))
+        if not cur:
+            return None, False
+        cur["last_seen"] = time.time()
+        nxt = None
+        for c in st["commands"].values():
+            if str(c.get("agent_id")) == str(agent_id) and c.get("status") == "queued":
+                if nxt is None or int(c.get("id", 0)) < int(nxt.get("id", 0)):
+                    nxt = c
+        if nxt is not None:
+            nxt["status"] = "running"
+        _agents_save(st)
+        if nxt is None:
+            return None, True
+        out = {"id": nxt["id"], "kind": nxt.get("kind") or "shell",
+               "command": nxt.get("command") or "", "timeout": _AGENT_CMD_TIMEOUT}
+        if isinstance(nxt.get("payload"), dict):
+            out["payload"] = nxt["payload"]
+        return out, True
+
+
+def _agent_notify(agent_id):
+    """Wake long-polling agents the moment a command is queued (single
+    uvicorn worker, so in-process events are enough)."""
+    for ev in list(_AGENT_WAITERS.get(str(agent_id), ())):
+        try:
+            ev.set()
+        except Exception:
+            pass
+
+
 @app.post("/api/agents/pairing")
 async def agents_pairing(request: Request):
     user, err = _require_auth(request)
@@ -6667,28 +6707,35 @@ async def agent_pending(request: Request):
     a = _agent_from_token(request)
     if not a:
         return JSONResponse(status_code=401, content={"error": "Bad agent token"})
-    now = time.time()
-    with _AGENT_LOCK:
-        st = _agents_load()
-        cur = st["agents"].get(a["id"])
-        if not cur:
-            return JSONResponse(status_code=401, content={"error": "Unknown agent"})
-        cur["last_seen"] = now
-        nxt = None
-        for c in st["commands"].values():
-            if str(c.get("agent_id")) == str(a["id"]) and c.get("status") == "queued":
-                if nxt is None or int(c.get("id", 0)) < int(nxt.get("id", 0)):
-                    nxt = c
-        if nxt is not None:
-            nxt["status"] = "running"
-        _agents_save(st)
+    nxt, known = _agent_take_queued(a["id"])
+    if not known:
+        return JSONResponse(status_code=401, content={"error": "Unknown agent"})
+    if nxt is not None:
+        return {"command": nxt}
+    # Long-poll: hold the request until a command lands (or timeout) so
+    # pickup is instant instead of one poll interval late.
+    ev = asyncio.Event()
+    key = str(a["id"])
+    _AGENT_WAITERS.setdefault(key, set()).add(ev)
+    try:
+        nxt, known = _agent_take_queued(a["id"])
+        if nxt is None and known:
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=_AGENT_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            nxt, known = _agent_take_queued(a["id"])
+    finally:
+        waiters = _AGENT_WAITERS.get(key)
+        if waiters is not None:
+            waiters.discard(ev)
+            if not waiters:
+                _AGENT_WAITERS.pop(key, None)
+    if not known:
+        return JSONResponse(status_code=401, content={"error": "Unknown agent"})
     if nxt is None:
         return {"command": None}
-    out = {"id": nxt["id"], "kind": nxt.get("kind") or "shell",
-           "command": nxt.get("command") or "", "timeout": _AGENT_CMD_TIMEOUT}
-    if isinstance(nxt.get("payload"), dict):
-        out["payload"] = nxt["payload"]
-    return {"command": out}
+    return {"command": nxt}
 
 
 @app.post("/api/agent/result")

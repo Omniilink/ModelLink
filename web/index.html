@@ -2343,7 +2343,7 @@ function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(c
 
 async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';sandboxOn=!!cs.sandbox}catch(e){}
   if(!basePrompt)basePrompt='You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nFILE_PATCH:path\nOLD:\nexact lines to replace\nNEW:\nfixed lines\nEND_FILE_PATCH\nTo ask the user a blocking question (max 3 per turn):\nQUESTION:What background color?\nOPTION:Warm cream\nOPTION:Deep charcoal\nEND_QUESTION\nPrefer FILE_PATCH for small fixes (never rewrite whole files to fix a few lines). Useful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always explain what you are doing.';
-  let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';if(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.id)sysPrompt+='REMOTE: files live on the paired computer "'+remoteCtx.name+'" — never invent server paths. Shell commands run there in its own shell; use plain relative paths, never cd elsewhere.\n';if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
+  let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';{const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
@@ -3742,7 +3742,7 @@ async function agentExecSync(aid,command,timeoutMs){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<timeoutMs){
-    await new Promise(res=>setTimeout(res,2000));
+    await new Promise(res=>setTimeout(res,1000));
     const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=25');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
     if(c&&c.status==='done')return{stdout:c.output||'',stderr:'',exit_code:(c.exit_code==null?0:c.exit_code)};
@@ -3755,16 +3755,18 @@ async function agentBuildTree(aid,base,depth){
   const out=await agentFileOp(aid,{op:'list',path:base});
   const rows=(out&&out.entries)||[];
   const tree=[];
+  const subs=[];
   for(const e of rows){
     if(!e||!e.name)continue;
     const rel=base?base+'/'+e.name:e.name;
     if(e.type==='dir'){
       if(depth>=4||REMOTE_SKIP_DIRS.indexOf(e.name)>-1)continue;
-      let kids=[];
-      try{const sub=await agentBuildTree(aid,rel,depth+1);kids=sub}catch(err){}
-      tree.push({name:e.name,type:'dir',path:rel,children:kids});
+      const node={name:e.name,type:'dir',path:rel,children:[]};
+      tree.push(node);
+      subs.push(agentBuildTree(aid,rel,depth+1).then(kids=>{node.children=kids}).catch(()=>{}));
     }else tree.push({name:e.name,type:'file',path:rel});
   }
+  if(subs.length)await Promise.all(subs);
   return tree;
 }
 async function codingWriteFile(path,content){
@@ -4190,7 +4192,7 @@ async function revokeApiKey(key){if(await appConfirm('Revoke this API key?')){tr
 
 function updateProjectBadge(name){currentProjectName=name;const badge=document.getElementById('coding-project-badge');const nameEl=document.getElementById('coding-project-name');if(name){badge.style.display='flex';nameEl.textContent=name}else{badge.style.display='none';nameEl.textContent=''}}
 function switchProject(){openProjectsModal()}
-async function deleteCurrentProject(){if(!currentProjectName)return;if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Files must already be removed.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
+async function deleteCurrentProject(){if(!currentProjectName)return;if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
 
 async function loadProjectsPage(){
   const body=document.getElementById('projects-body');body.innerHTML='';
@@ -5793,7 +5795,7 @@ async function agentFileOp(aid, payload, skipOnlineCheck){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<30000){
-    await new Promise(res=>setTimeout(res,1500));
+    await new Promise(res=>setTimeout(res,750));
     const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
     if(c&&c.status==='done'){
@@ -5816,14 +5818,14 @@ async function openRemoteProject(agentId, path, inCode){
   if(sel){sel.value=String(agentId);admFmPath=path||'';admFmLoad()}
 }
 async function openRemoteProjectInCode(agentId, path){
-  let name='remote', online=true;
+  let name='remote', platform='', online=true;
   try{
     const r=await authFetch(API+'/api/agents');const d=r.ok?await r.json():{};
     const a=(d.agents||[]).find(x=>String(x.id)===String(agentId));
-    if(a){name=a.name||('agent '+agentId);online=!!a.online}
+    if(a){name=a.name||('agent '+agentId);platform=a.platform||'';online=!!a.online}
   }catch(e){}
   if(!online){appAlert('That computer is offline — start Omniilink Server on it first.');return}
-  remoteCtx={id:String(agentId),name,path:path||''};
+  remoteCtx={id:String(agentId),name,path:path||'',platform};
   fsHandle=null;codingFolder=name+(path?' / '+path:'');
   document.getElementById('coding-close-btn').style.display='';
   document.getElementById('coding-reconnect-btn').style.display='none';
@@ -5834,6 +5836,17 @@ async function openRemoteProjectInCode(agentId, path){
   addCodingSystemMsg('Opened remote folder "'+(path||'/')+'" on '+name+'. Files, edits and commands run on that computer.');
   updateProjectBadge(name+(path?' / '+path:''));updateProjectBadgeAgent(name);
   closeProjectsModal();navigate('coding');
+}
+function remoteOsKind(){const p=String((typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.platform)||'').toLowerCase();if(/win/.test(p))return'windows';if(/darwin|mac/.test(p))return'macos';if(/linux|android|ubuntu|debian|fedora|rhel|centos|arch|alpine|nixos/.test(p))return'linux';return''}
+function remotePromptLine(){
+  if(typeof remoteCtx==='undefined'||!remoteCtx||!remoteCtx.id)return '';
+  const os=remoteOsKind();
+  const shell=os==='windows'
+    ?'cmd.exe syntax (dir, type, del, mkdir) — NEVER sh/bash syntax, NEVER prefix with cmd /c, NEVER quote the whole command'
+    :'sh syntax (ls, cat, rm, mkdir) — NEVER cmd.exe syntax';
+  return 'REMOTE: files live on the paired computer "'+remoteCtx.name+'"'+(os?' running '+os:'')+
+    ' — never invent server paths. Shell commands run there in its own shell: use '+shell+'. '+
+    'Do NOT assume docker, git, python, or node exist there — check first (e.g. `python --version`) before relying on them.';
 }
 function updateProjectBadgeAgent(name){
   try{const badge=document.getElementById('coding-project-badge');if(badge)badge.title='Remote folder on '+name}catch(e){}
@@ -5897,14 +5910,14 @@ function remoteRowFt(e,a,devName){
   item.addEventListener('mouseenter',()=>{item.style.background='var(--bg-hover)';if(delBtn)delBtn.style.display='flex'});
   item.addEventListener('mouseleave',()=>{item.style.background='';if(delBtn)delBtn.style.display='none'});
   item.addEventListener('click',()=>openRemoteProject(String(a.id),e.name,true));
-  if(delBtn)delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? It must be empty.')))return;try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}};
+  if(delBtn)delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? Everything inside will be removed too.')))return;try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}};
   return item;
 }
 function remoteRowItem(e,a,devName){
   const item=document.createElement('div');item.className='project-item';
   item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(e.name)+'</span><span class="meta">on '+escapeHtml(devName)+'</span><button class="del" title="Delete folder">&times;</button>';
   item.querySelector('.name').parentElement.addEventListener('click',async ev=>{if(ev.target.closest('.del'))return;await openRemoteProject(String(a.id),e.name,true)});
-  item.querySelector('.del').addEventListener('click',async ev=>{ev.stopPropagation();if(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? It must be empty.')){try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}}});
+  item.querySelector('.del').addEventListener('click',async ev=>{ev.stopPropagation();if(await appConfirm('Delete folder "'+e.name+'" on '+devName+'? Everything inside will be removed too.')){try{await agentFileOp(String(a.id),{op:'delete',path:e.name});refreshRemoteLists()}catch(err){appAlert('Delete failed: '+err.message)}}});
   return item;
 }
 function admFmFmtSize(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
@@ -5948,7 +5961,7 @@ async function admFmSave(){const st=document.getElementById('adm-file-status');s
     if(admFmMode==='edit'){await admAgentFile({op:'write',path:admFmName,content:document.getElementById('adm-file-area').value});st.textContent='Saved.';admFmLoad();return}
     throw new Error('Nothing to save');
   }catch(e){st.textContent='Error: '+e.message}}
-async function admFmDelete(e){if(!(await appConfirm('Delete "'+e.name+'"?'+(e.type==='dir'?' (must be empty)':''))))return;
+async function admFmDelete(e){if(!(await appConfirm('Delete "'+e.name+'"'+(e.type==='dir'?' and everything inside it?':''))))return;
   try{await admAgentFile({op:'delete',path:admFmJoin(e.name)});showToast('Deleted','success');admFmLoad()}catch(err){showToast(err.message,'error')}}
 async function admRunAgentCmd(){const sel=document.getElementById('adm-cmd-agent');const inp=document.getElementById('adm-cmd-input');const cmd=inp.value.trim();if(!sel.value||!cmd){showToast('Pick a computer and type a command','error');return}inp.value='';
   try{const r=await authFetch(API+'/api/agents/'+sel.value+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Command queued — the agent picks it up within seconds','success');setTimeout(admLoadAgentOut,4000)}catch(e){showToast(e.message,'error')}}

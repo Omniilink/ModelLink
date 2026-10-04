@@ -33,7 +33,7 @@ CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 DEFAULT_PROJECTS = os.path.join(os.path.expanduser("~"), "Documents", "OmniilinkProjects")
-POLL_SECONDS = 5
+POLL_SECONDS = 1
 CMD_TIMEOUT = 300
 READ_MAX = 256 * 1024
 WRITE_MAX = 1024 * 1024
@@ -181,12 +181,12 @@ def do_file_op(root, payload):
             if not payload.get("path") or full == os.path.realpath(root):
                 return {"ok": False, "error": "refusing to delete the projects folder"}
             if os.path.isdir(full) and not os.path.islink(full):
-                os.rmdir(full)  # only empty folders, by design
+                shutil.rmtree(full, ignore_errors=False)
             elif os.path.isfile(full) or os.path.islink(full):
                 os.remove(full)
             else:
                 return {"ok": False, "error": "not found"}
-            return {"ok": True}
+            return {"ok": True, "recursive": True}
         return {"ok": False, "error": "unknown file op"}
     except (OSError, ValueError) as e:
         return {"ok": False, "error": str(e)}
