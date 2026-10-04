@@ -165,6 +165,9 @@ a:hover{text-decoration:underline}
 .send-btn:disabled{opacity:.35;cursor:not-allowed}
 .send-btn svg{width:15px;height:15px}
 .img-btn{width:32px;height:32px;border-radius:var(--radius-sm);background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0}
+.attach-all-btn{transition:all .12s}
+.attach-all-btn.on{background:var(--accent-dim);color:var(--accent-light)}
+.omniiignore{width:100%;min-height:100px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6}
 .img-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
 .img-btn svg{width:16px;height:16px}
 .chat-code-note{font-size:12px;color:var(--text-muted);font-style:italic}
@@ -379,6 +382,7 @@ a:hover{text-decoration:underline}
 .api-key-row button.danger{border-color:var(--error);color:var(--error)}
 .api-key-row button.danger:hover{background:var(--error);color:#fff}
 .ft-item{display:flex;align-items:center;gap:6px;padding:4px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ft-ignore-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
 .ft-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .ft-item.dir{color:var(--accent-light);font-weight:600}
 .ft-children{display:none}
@@ -986,7 +990,7 @@ pre{max-width:100%}
           <button class="img-btn" id="img-btn" onclick="document.getElementById('img-file').click()" title="Attach images (vision models only)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           </button>
-          <button class="img-btn" id="attach-all-btn" onclick="attachAllFiles()" title="Attach all project files as context">
+          <button class="img-btn attach-all-btn" id="attach-all-btn" onclick="attachAllFiles()" title="Attach all project files as context">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleImageFiles(this.files);this.value=''" />
@@ -1419,7 +1423,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               </div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
-                <button class="img-btn" id="coding-attach-all-btn" onclick="attachAllFiles()" title="Attach all project files as context">
+                <button class="img-btn attach-all-btn" id="coding-attach-all-btn" onclick="attachAllFiles()" title="Attach all project files as context">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
                 </button>
                 <textarea id="coding-input" placeholder="Message (type @ to attach files)..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)"></textarea>
@@ -1484,7 +1488,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null;
+let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null,codingIgnoredFolders=[];
 
 // Chat stores are namespaced per signed-in account so two people sharing a
 // browser never read or overwrite each other's conversations. Before the
@@ -2023,7 +2027,7 @@ function renderSettings(){
   // Coding Mode
   const cs=document.createElement('div');cs.className='settings-section';cs.innerHTML='<h3>Coding Mode</h3>';
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cod=>{
-     [{key:'auto_create',label:'Auto-Create Files',desc:'Automatically create new files without asking first'},{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'},{key:'auto_attach_all',label:'Auto-Attach All Files',desc:'Automatically attach all project files (respecting .omniiignore) to every message'},{key:'plan_mode',label:'Plan Mode',desc:'Stage every action for review — nothing runs until you approve the plan'}].forEach(t=>{
+     [{key:'auto_create',label:'Auto-Create Files',desc:'Automatically create new files without asking first'},{key:'auto_edit',label:'Auto-Apply File Edits',desc:'Automatically write file changes without asking first'},{key:'auto_command',label:'Auto-Run Commands',desc:'Automatically execute terminal commands without asking first'},{key:'auto_attach',label:'Auto-Attach Files',desc:'Automatically attach all project files (respecting .omniiignore) to every message'},{key:'plan_mode',label:'Plan Mode',desc:'Stage every action for review — nothing runs until you approve the plan'}].forEach(t=>{
       const row=document.createElement('div');row.className='toggle-row';const left=document.createElement('div');left.innerHTML='<div class="toggle-label">'+t.label+'</div><div class="toggle-desc">'+t.desc+'</div>';
       const sw=document.createElement('div');sw.className='toggle-switch'+(cod[t.key]?' on':'');sw.onclick=()=>{sw.classList.toggle('on');authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[t.key]:sw.classList.contains('on')})})};
       row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
@@ -2034,6 +2038,11 @@ function renderSettings(){
     const sb=document.createElement('button');sb.className='btn btn-primary';sb.style.fontSize='11px';sb.textContent='Save Prompt';
     sb.onclick=()=>{authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_prompt:document.getElementById('coding-system-prompt').value})}).then(()=>showToast('System prompt saved','success'))};
     pa2.appendChild(sb);pr.appendChild(pa);pr.appendChild(pa2);cs.appendChild(pr);
+    const oi=document.createElement('div');oi.style.marginTop='16px';oi.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">Omniiignore</div>';
+    const oiTa=document.createElement('textarea');oiTa.style.cssText='width:100%;min-height:100px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6';oiTa.placeholder='node_modules\ndist/\n*.log';oiTa.id='omniiignore-editor';
+    const oiBtn=document.createElement('button');oiBtn.className='btn btn-primary';oiBtn.style.cssText='font-size:11px;margin-top:8px';oiBtn.textContent='Save Omniiignore';
+    oiBtn.onclick=()=>{const patterns=oiTa.value.split('\n').map(s=>s.trim()).filter(Boolean);authFetch(API+'/api/coding/omniiignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns})}).then(()=>{omniiignorePatterns=patterns;showToast('Omniiignore saved','success')})};
+    oi.appendChild(oiTa);oi.appendChild(oiBtn);cs.appendChild(oi);
   }).catch(()=>{});
   body.appendChild(cs);
   // Server keys (admin only — shared by everyone, saved to server .env, live immediately)
@@ -2282,14 +2291,16 @@ function renderFileTree(tree){
     const newFileBtn=document.createElement('button');newFileBtn.textContent='+ File';newFileBtn.title='New file';newFileBtn.style.cssText='padding:2px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';newFileBtn.onclick=()=>openNewFileModal();header.appendChild(newFileBtn);container.appendChild(header);
   if(!tree||tree.length===0){const empty=document.createElement('div');empty.className='filetree-empty';empty.textContent='No files found';container.appendChild(empty);return}
   function render(entries,parent,depth){for(const e of entries){const item=document.createElement('div');item.className='ft-item'+(e.type==='dir'?' dir':'');const indentHtml='<span class="ft-indent" style="width:'+(depth*16)+'px"></span>';
-    if(e.type==='dir'){item.innerHTML=indentHtml+'<span style="font-size:8px">\u25B6</span><span>'+escapeHtml(e.name)+'</span>';const children=document.createElement('div');children.className='ft-children';item.addEventListener('click',()=>{item.classList.toggle('open');item.querySelector('span:nth-child(2)').textContent=item.classList.contains('open')?'\u25BC':'\u25B6'});parent.appendChild(item);parent.appendChild(children);if(e.children)render(e.children,children,depth+1)}
+     if(e.type==='dir'){item.innerHTML=indentHtml+'<span style="font-size:8px">\u25B6</span><span>'+escapeHtml(e.name)+'</span>';const igDir=document.createElement('button');igDir.className='ft-ignore-btn';igDir.textContent='Ignore';igDir.title='Edit ignore list';igDir.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';igDir.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};item.appendChild(igDir);const children=document.createElement('div');children.className='ft-children';item.addEventListener('click',()=>{item.classList.toggle('open');item.querySelector('span:nth-child(2)').textContent=item.classList.contains('open')?'\u25BC':'\u25B6'});parent.appendChild(item);parent.appendChild(children);if(e.children)render(e.children,children,depth+1)}
     else{const lang=getLangForFile(e.name);const fp=e.path||e.name;const execCmd=getExecCmd(e.name);
       item.innerHTML=indentHtml+'<span style="font-size:10px;color:'+(lang?'var(--accent-light)':'var(--text-muted)')+'">'+(lang?'\u25A0':'\u25A1')+'</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(e.name)+'</span>'+(lang?'<span style="font-size:9px;color:var(--text-muted);background:var(--bg-tertiary);padding:1px 4px;border-radius:3px;flex-shrink:0">'+lang+'</span>':'');
       if(execCmd){const rb=document.createElement('button');rb.className='ft-run-btn';rb.textContent='\u25B6';rb.title='Run with '+execCmd;rb.style.cssText='width:20px;height:18px;border-radius:3px;background:var(--success);border:none;color:#fff;font-size:8px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:4px';rb.onclick=ev=>{ev.stopPropagation();runFileScanned(fp,execCmd)};item.appendChild(rb)}
       const delBtn=document.createElement('button');delBtn.textContent='\u00D7';delBtn.title='Delete file';delBtn.style.cssText='width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px';
       delBtn.onmouseenter=()=>{delBtn.style.background='var(--error)';delBtn.style.color='#fff'};delBtn.onmouseleave=()=>{delBtn.style.background='transparent';delBtn.style.color='var(--text-muted)'};
       delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete "'+e.name+'"?')))return;try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(fp)});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}else if(fsHandle)await fsDeleteFile(fp);else await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(fp),{method:'DELETE'});refreshCodingTree();showToast('Deleted '+e.name,'success')}catch(err){showToast('Delete failed: '+err.message,'error')}};
-      item.appendChild(delBtn);item.addEventListener('mouseenter',()=>{delBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>openFileActionModal(fp,execCmd||null));parent.appendChild(item)}}
+      const igBtn=document.createElement('button');igBtn.className='ft-ignore-btn';igBtn.textContent='Ignore';igBtn.title='Edit ignore list';igBtn.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';
+      igBtn.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};
+      item.appendChild(delBtn);item.appendChild(igBtn);item.addEventListener('mouseenter',()=>{delBtn.style.display='flex';igBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';igBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>openFileActionModal(fp,execCmd||null));parent.appendChild(item)}}
   }
   render(tree,container,0);
   container.classList.toggle('collapsed',codingTreeCollapsed);
@@ -2530,21 +2541,49 @@ function closeFilePreview(){const f=document.getElementById('file-preview-frame'
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
 function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
-function isOmniiIgnored(path){return false}
+var omniiignorePatterns=[];
+async function loadOmniiignore(){try{const r=await authFetch(API+'/api/coding/omniiignore');if(r.ok){const d=await r.json();omniiignorePatterns=d.patterns||[]}}catch(e){}}
+function omniiignoreMatches(rel,patterns){rel=String(rel||'').replace(/\\/g,'/');const parts=rel.split('/').filter(Boolean);const name=parts[parts.length-1]||'';return (patterns||[]).some(pat=>{const p=String(pat||'').trim().replace(/\/+$/,'');if(!p)return false;if(/[*?[]/.test(p)){const esc=p.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.');const re=new RegExp('^'+esc+'$');return parts.some(part=>re.test(part))||re.test(name)||re.test(rel)}return rel===p||rel.startsWith(p+'/')||name===p||parts.some(part=>part===p)})}
+function isIgnored(p){const parts=String(p||'').replace(/\\/g,'/').split('/').filter(Boolean);return omniiignorePatterns.some(pat=>{if(pat.charAt(pat.length-1)==='/'){const d=pat.slice(0,-1);return parts.indexOf(d)>=0}const name=parts[parts.length-1]||'';return name===pat||parts.indexOf(pat)>=0})}
 async function attachAllFiles(){
   if(!codingFolder){showToast('Open a folder first','info');return}
   try{
+    await loadOmniiignore();
     let tree;
     if(fsHandle)tree=await fsBuildTree(fsHandle);
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error(data.error||'no files');tree=data.tree}
-    const files=[];
-    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path)files.push(n)}})(tree);
-    files.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
-    const chosen=files.filter(f=>!isOmniiIgnored(f.path)).map(f=>f.path);
+    const chosen=[];
+    const ignoredFolders=[];
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n)}}})(tree);
+    chosen.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
+    codingIgnoredFolders=ignoredFolders;
     codingAtFiles=chosen;
     updateAtIndicator();
     showToast('Attached '+chosen.length+' file'+(chosen.length===1?'':'s')+' to context','success');
   }catch(e){showToast('Attach failed: '+e.message,'error')}
+}
+async function autoAttachAllFiles(){if(codingFolder)await attachAllFiles()}
+async function toggleOmniiIgnore(path){
+  await loadOmniiignore();
+  const idx=omniiignorePatterns.indexOf(path);
+  if(idx>=0)omniiignorePatterns.splice(idx,1);else omniiignorePatterns.push(path);
+  try{
+    await authFetch(API+'/api/coding/omniiignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns:omniiignorePatterns})});
+    refreshCodingTree();
+    showToast((idx>=0?'Unignored ':'Ignored ')+path,'success');
+  }catch(e){showToast('Failed: '+e.message,'error')}
+}
+function openOmniiignoreEditor(){
+  loadOmniiignore().then(()=>{
+    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+    const m=document.createElement('div');m.className='modal';m.style.maxWidth='520px';
+    m.innerHTML='<div class="modal-header"><h2>Omniiignore</h2></div><div class="modal-body"><div class="modal-field"><label>Ignore patterns (one per line, gitignore-style)</label><textarea class="omniiignore" id="omniiignore-modal-editor" placeholder="node_modules\ndist/\n*.log"></textarea></div><div class="modal-actions"><button class="btn btn-ghost" id="omniiignore-cancel">Cancel</button><button class="btn btn-primary" id="omniiignore-save">Save</button></div></div>';
+    ov.appendChild(m);document.body.appendChild(ov);
+    const ta=m.querySelector('.omniiignore');ta.value=omniiignorePatterns.join('\n');
+    m.querySelector('#omniiignore-cancel').onclick=()=>ov.remove();
+    m.querySelector('#omniiignore-save').onclick=async()=>{const patterns=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);await authFetch(API+'/api/coding/omniiignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns})});omniiignorePatterns=patterns;ov.remove();showToast('Omniiignore saved','success')};
+    ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  });
 }
 function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
 function autoAttachProjectFiles(){
@@ -2567,6 +2606,10 @@ function autoAttachProjectFiles(){
     }
     if(chosen.length){codingAtFiles=chosen;updateAtIndicator()}
   }catch(e){}
+  // When Auto-Attach Files is on, attach everything (respecting .omniiignore).
+  authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cs=>{
+    if(cs&&cs.auto_attach)attachAllFiles().catch(()=>{});
+  }).catch(()=>{});
 }
 
 function handleCodingKey(e){const dd=document.getElementById('at-dropdown');const isOpen=dd&&dd.classList.contains('open');
@@ -2595,6 +2638,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
+  if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
   // The server prompt already carries this block (api_server.py
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
   // for identical output. Only add it when it is genuinely missing.

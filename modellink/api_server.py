@@ -1188,7 +1188,7 @@ def _get_coding_state(user_id: str) -> dict:
             "auto_create": False,
             "auto_edit": False,
             "auto_command": False,
-            "auto_attach_all": False,
+            "auto_attach": False,
             "plan_mode": False,
             "max_file_size": 100000,
             "system_prompt": DEFAULT_CODING_PROMPT
@@ -2468,7 +2468,7 @@ IGNORE_EXTS = {
     ".min.js", ".min.css",
 }
 
-def _build_file_tree(root_path, prefix=""):
+def _build_file_tree(root_path, prefix="", patterns=None):
     entries = []
     try:
         items = sorted(os.listdir(root_path))
@@ -2489,13 +2489,66 @@ def _build_file_tree(root_path, prefix=""):
                 files.append(name)
     for d in dirs:
         sub_path = os.path.join(root_path, d)
-        children = _build_file_tree(sub_path, prefix + d + "/")
-        if children:
-            entries.append({"name": d, "type": "dir", "path": prefix + d, "children": children})
+        children = _build_file_tree(sub_path, prefix + d + "/", patterns)
+        rel = prefix + d
+        ignored = _omniiignore_ignored(rel, patterns or [])
+        entries.append({"name": d, "type": "dir", "path": rel, "children": children, "ignored": ignored})
     for f in files:
+        rel = prefix + f
         size = os.path.getsize(os.path.join(root_path, f))
-        entries.append({"name": f, "type": "file", "path": prefix + f, "size": size})
+        entries.append({"name": f, "type": "file", "path": rel, "size": size,
+                        "ignored": _omniiignore_ignored(rel, patterns or [])})
     return entries
+
+
+OMNIIIGNORE_NAME = ".omniiignore"
+
+
+def _read_omniiignore(folder):
+    """Read .omniiignore patterns from the project root (gitignore-style)."""
+    path = os.path.join(folder, OMNIIIGNORE_NAME)
+    patterns = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                patterns.append(line)
+    except Exception:
+        pass
+    return patterns
+
+
+def _omniiignore_ignored(rel_path, patterns):
+    """True when a project-relative path matches an .omniiignore pattern.
+
+    Supports exact names, trailing-slash dirs, and glob wildcards (*.log).
+    A directory pattern ignores everything beneath it. The tree still lists
+    ignored items (so the model sees folder names like node_modules) — only
+    their contents are kept out of the attached context.
+    """
+    if not patterns:
+        return False
+    import fnmatch
+    rel = rel_path.replace("\\", "/")
+    parts = [p for p in rel.split("/") if p]
+    name = parts[-1] if parts else ""
+    for pat in patterns:
+        p = pat.strip().rstrip("/")
+        if not p:
+            continue
+        if any(c in p for c in "*?["):
+            if fnmatch.fnmatch(name, p) or fnmatch.fnmatch(rel, p):
+                return True
+            if any(fnmatch.fnmatch(part, p) for part in parts):
+                return True
+        else:
+            if rel == p or rel.startswith(p + "/") or name == p:
+                return True
+            if any(part == p for part in parts):
+                return True
+    return False
 
 
 def _count_tree_files(entries):
@@ -2713,8 +2766,44 @@ async def coding_list_files(request: Request):
         return access_err
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": "No folder open"})
-    tree = _build_file_tree(folder)
+    tree = _build_file_tree(folder, patterns=_read_omniiignore(folder))
     return {"folder": folder, "tree": tree}
+
+
+@app.get("/api/coding/omniiignore")
+async def coding_get_omniiignore(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    return {"patterns": _read_omniiignore(folder)}
+
+
+@app.post("/api/coding/omniiignore")
+async def coding_set_omniiignore(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
+    patterns = body.get("patterns", [])
+    if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+        return JSONResponse(status_code=400, content={"error": "patterns must be a list of strings"})
+    path = os.path.join(folder, OMNIIIGNORE_NAME)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(p.strip() for p in patterns if p.strip()) + "\n")
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok", "patterns": _read_omniiignore(folder)}
 
 @app.get("/api/coding/file-content")
 async def coding_file_content(request: Request, path: str):
