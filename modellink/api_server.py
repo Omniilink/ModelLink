@@ -2084,11 +2084,31 @@ async def set_language_setting(http_request: Request, request: LanguageRequest):
     return {"status": "ok", "language": lang}
 
 def _split_used_model(used_model: str):
-    """'groq/qwen3.6-27b' -> ('groq', 'qwen3.6-27b')."""
+    """'groq/openai/gpt-oss-120b' -> ('groq', 'openai/gpt-oss-120b').
+
+    The provider is always the first path segment; everything after it is the
+    model name (which may itself contain slashes, as groq's do).
+    """
     if used_model and "/" in used_model:
         provider, _, model = used_model.partition("/")
         return provider or "unknown", model or used_model
     return "unknown", used_model or "unknown"
+
+
+def _resolve_request_model(req_model):
+    """Best-effort (provider, model) for a requested model name.
+
+    Direct selections like 'openai/gpt-oss-120b' resolve to the provider that
+    actually serves them (groq, here). The auto-router ('omniilink') has no
+    single provider, so it stays unknown. Used to attribute failed requests
+    to the right provider/model instead of lumping them into 'unknown'.
+    """
+    if not req_model or req_model in (MODEL_NAME, "omnilink"):
+        return "unknown", req_model or "unknown"
+    for prov_name, prov_cfg in PROVIDERS.items():
+        if req_model in prov_cfg.get("models", []):
+            return prov_name, req_model
+    return "unknown", req_model
 
 
 @app.get("/api/usage")
@@ -2229,7 +2249,8 @@ async def chat_completions(request: Request):
                 )
         except Exception as e:
             logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
-            _finish_usage("unknown/unknown", completion_tokens=0, status=500)
+            prov, mname = _resolve_request_model(req_model)
+            _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
             async def error_event_gen():
                 chat_id = f"chatcmpl-{int(time.time())}"
                 created_time = int(time.time())
@@ -2331,7 +2352,8 @@ async def chat_completions(request: Request):
                     opts=req_opts,
                 )
         except Exception as e:
-            _finish_usage("unknown/unknown", status=500)
+            prov, mname = _resolve_request_model(req_model)
+            _finish_usage(f"{prov}/{mname}", status=500)
             return JSONResponse(status_code=500, content={"error": str(e)})
         usage = (response or {}).get("usage") or {}
         completion_tokens = int(usage.get("completion_tokens") or 0)

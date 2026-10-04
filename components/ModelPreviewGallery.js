@@ -265,6 +265,21 @@
         return Math.min(4, Math.max(0.2, v));
       });
       var num = function (v, d, lo, hi) { v = Number(v); if (!isFinite(v)) return d; return Math.min(hi, Math.max(lo, v)); };
+      var parts = [];
+      if (Array.isArray(raw.parts)) {
+        raw.parts.forEach(function (p) {
+          if (!p || typeof p !== 'object') return;
+          var pk = coerceKind(p.kind, p.name || '');
+          if (SPEC_KINDS.indexOf(pk) < 0) return;
+          parts.push({
+            kind: pk,
+            size: [num(p.size && p.size[0], size[0], 0.02, 4), num(p.size && p.size[1], size[1], 0.02, 4), num(p.size && p.size[2], size[2], 0.02, 4)],
+            pos: [num(p.pos && p.pos[0], 0, -4, 4), num(p.pos && p.pos[1], 0, -4, 4), num(p.pos && p.pos[2], 0, -4, 4)],
+            rot: [num(p.rot && p.rot[0], 0, -360, 360) * (Math.PI / 180), num(p.rot && p.rot[1], 0, -360, 360) * (Math.PI / 180), num(p.rot && p.rot[2], 0, -360, 360) * (Math.PI / 180)],
+            color: String(p.color || '')
+          });
+        });
+      }
       return {
         kind: kind || 'crate',
         name: String(raw.name || '').replace(/\s+/g, ' ').trim().slice(0, 46),
@@ -272,91 +287,123 @@
         color: /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(raw.color || '')) ? String(raw.color) : '#9aa2ad',
         roughness: num(raw.roughness, 0.8, 0, 1),
         metalness: num(raw.metalness, 0.1, 0, 1),
-        detail: (raw.detail === 'low' || raw.detail === 'high') ? raw.detail : 'medium'
+        detail: (raw.detail === 'low' || raw.detail === 'high') ? raw.detail : 'medium',
+        parts: parts
       };
     }
   };
 
   // Build a mesh group from a normalised design spec.
-  Generators.fromSpec = function (spec) {
-    var THREE = global.THREE;
-    var s = SpecParser.normalize(spec) || SpecParser.normalize({});
-    var g = new THREE.Group();
-    var w = s.size[0], h = s.size[1], d = s.size[2];
-    var seg = s.detail === 'low' ? 12 : (s.detail === 'high' ? 64 : 32);
-    var round = (s.kind === 'barrel' || s.kind === 'cylinder' || s.kind === 'sphere' ||
-      s.kind === 'ring' || s.kind === 'column' || s.kind === 'cone');
-    var mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(s.color),
-      map: texFromCanvas(round ? Procedural.wornMetal(256) : Procedural.wood(256)),
-      roughness: s.roughness,
-      metalness: s.metalness
-    });
-    var trim = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(s.color).multiplyScalar(0.55),
-      roughness: Math.min(1, s.roughness + 0.15),
-      metalness: Math.max(0.2, s.metalness)
-    });
-    function add(mesh) { g.add(mesh); return mesh; }
-    switch (s.kind) {
-      case 'barrel': {
-        var shell = add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg, 1), mat));
-        shell.material.side = THREE.DoubleSide;
-        [-h * 0.36, h * 0.36].forEach(function (y) {
-          var r = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2 + 0.02, Math.min(0.04, w * 0.05), 8, seg), trim));
-          r.rotation.x = Math.PI / 2; r.position.y = y;
-        });
-        break;
-      }
-      case 'sphere':
-        add(new THREE.Mesh(new THREE.SphereGeometry(w / 2, seg, Math.max(8, Math.round(seg / 2))), mat));
-        break;
-      case 'cylinder':
-        add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg), mat));
-        break;
-      case 'cone':
-        add(new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, seg), mat));
-        break;
-      case 'slab': {
-        var slab = add(new THREE.Mesh(new THREE.BoxGeometry(w, Math.max(0.1, h * 0.35), d), mat));
-        [-w / 2, w / 2].forEach(function (x) {
-          var leg = add(new THREE.Mesh(new THREE.BoxGeometry(0.08, h, 0.08), trim));
-          leg.position.set(x * 0.9, 0, d * 0.4);
-          var leg2 = leg.clone(); leg2.position.z = -d * 0.4; g.add(leg2);
-        });
-        slab.position.y = h * 0.3;
-        break;
-      }
-      case 'ring': {
-        var ring = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2, Math.max(0.04, Math.min(w, h) * 0.12), 10, seg), mat));
-        ring.rotation.x = Math.PI / 2;
-        break;
-      }
-      case 'column': {
-        add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2 * 1.05, h, seg), mat));
-        [h / 2, -h / 2].forEach(function (y) {
-          var cap = add(new THREE.Mesh(new THREE.BoxGeometry(w * 1.25, Math.min(0.12, h * 0.12), w * 1.25), trim));
-          cap.position.y = y;
-        });
-        break;
-      }
-      case 'crate':
-      default: {
-        add(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
-        var t = Math.min(0.07, Math.min(w, d) * 0.12);
-        [-1, 1].forEach(function (sx) {
-          [-1, 1].forEach(function (sz) {
-            var post = add(new THREE.Mesh(new THREE.BoxGeometry(t, h * 1.02, t), trim));
-            post.position.set(sx * (w / 2 - t / 2), 0, sz * (d / 2 - t / 2));
-          });
-        });
-        break;
-      }
-    }
-    g.userData.suggestedName = s.name || '';
-    g.userData.spec = s;
-    return g;
-  };
+   // Build a single primitive (box/cylinder/sphere/...) as a small group.
+   // Shared by fromSpec for both the whole-object path and each part of a
+   // multi-part composition.
+   Generators.buildPrimitive = function (kind, w, h, d, seg, mat, trim) {
+     var THREE = global.THREE;
+     var g = new THREE.Group();
+     function add(mesh) { g.add(mesh); return mesh; }
+     switch (kind) {
+       case 'barrel': {
+         var shell = add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg, 1), mat));
+         shell.material.side = THREE.DoubleSide;
+         [-h * 0.36, h * 0.36].forEach(function (y) {
+           var r = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2 + 0.02, Math.min(0.04, w * 0.05), 8, seg), trim));
+           r.rotation.x = Math.PI / 2; r.position.y = y;
+         });
+         break;
+       }
+       case 'sphere':
+         add(new THREE.Mesh(new THREE.SphereGeometry(w / 2, seg, Math.max(8, Math.round(seg / 2))), mat));
+         break;
+       case 'cylinder':
+         add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg), mat));
+         break;
+       case 'cone':
+         add(new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, seg), mat));
+         break;
+       case 'slab': {
+         var slab = add(new THREE.Mesh(new THREE.BoxGeometry(w, Math.max(0.1, h * 0.35), d), mat));
+         [-w / 2, w / 2].forEach(function (x) {
+           var leg = add(new THREE.Mesh(new THREE.BoxGeometry(0.08, h, 0.08), trim));
+           leg.position.set(x * 0.9, 0, d * 0.4);
+           var leg2 = leg.clone(); leg2.position.z = -d * 0.4; g.add(leg2);
+         });
+         slab.position.y = h * 0.3;
+         break;
+       }
+       case 'ring': {
+         var ring = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2, Math.max(0.04, Math.min(w, h) * 0.12), 10, seg), mat));
+         ring.rotation.x = Math.PI / 2;
+         break;
+       }
+       case 'column': {
+         add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2 * 1.05, h, seg), mat));
+         [h / 2, -h / 2].forEach(function (y) {
+           var cap = add(new THREE.Mesh(new THREE.BoxGeometry(w * 1.25, Math.min(0.12, h * 0.12), w * 1.25), trim));
+           cap.position.y = y;
+         });
+         break;
+       }
+       case 'crate':
+       default: {
+         add(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+         var t = Math.min(0.07, Math.min(w, d) * 0.12);
+         [-1, 1].forEach(function (sx) {
+           [-1, 1].forEach(function (sz) {
+             var post = add(new THREE.Mesh(new THREE.BoxGeometry(t, h * 1.02, t), trim));
+             post.position.set(sx * (w / 2 - t / 2), 0, sz * (d / 2 - t / 2));
+           });
+         });
+         break;
+       }
+     }
+     return g;
+   };
+
+   Generators.fromSpec = function (spec) {
+     var THREE = global.THREE;
+     var s = SpecParser.normalize(spec) || SpecParser.normalize({});
+     var g = new THREE.Group();
+     var w = s.size[0], h = s.size[1], d = s.size[2];
+     var seg = s.detail === 'low' ? 12 : (s.detail === 'high' ? 64 : 32);
+     var round = (s.kind === 'barrel' || s.kind === 'cylinder' || s.kind === 'sphere' ||
+       s.kind === 'ring' || s.kind === 'column' || s.kind === 'cone');
+     var mat = new THREE.MeshStandardMaterial({
+       color: new THREE.Color(s.color),
+       map: texFromCanvas(round ? Procedural.wornMetal(256) : Procedural.wood(256)),
+       roughness: s.roughness,
+       metalness: s.metalness
+     });
+     var trim = new THREE.MeshStandardMaterial({
+       color: new THREE.Color(s.color).multiplyScalar(0.55),
+       roughness: Math.min(1, s.roughness + 0.15),
+       metalness: Math.max(0.2, s.metalness)
+     });
+     function add(mesh) { g.add(mesh); return mesh; }
+     if (Array.isArray(s.parts) && s.parts.length) {
+       s.parts.forEach(function (p) {
+         var pk = (SPEC_KINDS.indexOf(p.kind) >= 0) ? p.kind : s.kind;
+         var pw = Math.min(4, Math.max(0.02, Number(p.size[0]) || w));
+         var ph = Math.min(4, Math.max(0.02, Number(p.size[1]) || h));
+         var pd = Math.min(4, Math.max(0.02, Number(p.size[2]) || d));
+         var pm = mat;
+         if (p.color && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(p.color))) {
+           pm = new THREE.MeshStandardMaterial({
+             color: new THREE.Color(p.color),
+             map: mat.map, roughness: s.roughness, metalness: s.metalness
+           });
+         }
+         var part = Generators.buildPrimitive(pk, pw, ph, pd, seg, pm, trim);
+         part.position.set(Number(p.pos[0]) || 0, Number(p.pos[1]) || 0, Number(p.pos[2]) || 0);
+         part.rotation.set(Number(p.rot[0]) || 0, Number(p.rot[1]) || 0, Number(p.rot[2]) || 0);
+         g.add(part);
+       });
+     } else {
+       g.add(Generators.buildPrimitive(s.kind, w, h, d, seg, mat, trim));
+     }
+     g.userData.suggestedName = s.name || '';
+     g.userData.spec = s;
+     return g;
+   };
 
   // Map a natural-language prompt onto an available generator.
   function pickKind(prompt) {
@@ -819,20 +866,31 @@
   // Ask the selected AI model for a compact design spec (JSON).
   ModelPreviewGallery.prototype._askForSpec = async function (prompt, model) {
     if (!this._fetch) throw new Error('no fetch');
-    var sys = 'You are a 3D model designer. Reply with ONLY one compact JSON object, no markdown, no prose: ' +
+    var sys = 'You are an expert 3D model designer. Before answering, think carefully about the object the ' +
+      'user describes: its real-world size, its silhouette, and which simple primitive best captures its ' +
+      'overall form and proportions. A gun is long and thin, a ball is round, a crate is a box — match the ' +
+      'proportions to the real object and never turn an elongated object into a cube. ' +
+      'Reply with ONLY one compact JSON object, no markdown, no prose: ' +
       '{"kind":"...","name":"short name, max 6 words",' +
       '"size":[width,height,depth] in meters, each between 0.2 and 4,' +
       '"color":"#rrggbb","roughness":0.0-1.0,"metalness":0.0-1.0,"detail":"low|medium|high"}. ' +
       '"kind" MUST be exactly one of: crate, barrel, sphere, cylinder, cone, slab, ring, column. ' +
-      'Choose the kind that best fits the request. The object must be a simple primitive-based shape ' +
-      'that can be built from boxes, cylinders, spheres and tori.';
+      'Choose the kind whose shape best matches the object\'s overall form. Set "size" to the object\'s real ' +
+      'proportions (length, height, depth) so the result is recognizable. Use "detail":"high" for anything ' +
+      'with curves or intricate parts. For complex objects (vehicles, weapons, tools, furniture), also add a ' +
+      '"parts" array describing the object as 2-5 simple parts positioned together, where each part is ' +
+      '{"kind":"...","size":[w,h,d],"pos":[x,y,z],"rot":[x,y,z],"color":"#rrggbb"}. Use DEGREES for rot ' +
+      '(e.g. 90 means a quarter turn). For example a table is a slab top plus 4 column legs; a rifle is a long ' +
+      'cylinder barrel plus a box body plus a box stock. Keep every part to the allowed kinds. Simple objects ' +
+      '(a ball, a crate) need no parts. The object must be built from boxes, cylinders, spheres, cones and tori.';
     var body = {
       model: model || 'omniilink',
       messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
-      stream: false, temperature: 0.4, max_tokens: 300
+      stream: false, temperature: 0.3, max_tokens: 18000,
+      effort: 'high', thinking: 'high'
     };
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
     try {
       var r = await this._fetch(this.apiBase + '/v1/chat/completions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -128,18 +128,25 @@ a:hover{text-decoration:underline}
 .quick-action-btn{padding:7px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);font-size:12px;cursor:pointer;font-family:var(--font)}
 .quick-action-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .message{display:flex;gap:10px;width:100%;max-width:100%;animation:rise .16s ease-out}
-.message.user{flex-direction:row-reverse;justify-content:flex-end}
-.message.assistant{justify-content:flex-start}
+.message.user,.message.assistant{flex-direction:row}
+.message-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
 .message-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;font-weight:650}
 .message.user .message-avatar{background:var(--accent);color:#fff}
 .message.assistant .message-avatar{background:var(--bg-tertiary);color:var(--accent-light);border:1px solid var(--border)}
-.message-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;overflow-wrap:break-word;min-width:0}
-.message.user .message-content{background:var(--accent-dim);border-color:var(--accent);color:#fff;max-width:min(640px,80%)}
+.message-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;overflow-wrap:break-word;min-width:0;width:fit-content;max-width:100%}
+.message.user .message-content{background:var(--accent-dim);border-color:var(--accent);color:#fff;max-width:min(640px,85%)}
 .message-meta{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px}
 .message-actions{display:flex;gap:4px;opacity:0;margin-top:4px}
 .message:hover .message-actions{opacity:1}
 .msg-action-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px}
 .msg-action-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
+.msg-menu{position:relative;flex-shrink:0}
+.msg-menu-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:26px;height:26px;border-radius:var(--radius-xs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;line-height:1}
+.msg-menu-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
+.msg-dropdown{position:absolute;bottom:calc(100% + 4px);left:0;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);box-shadow:0 10px 28px rgba(0,0,0,.45);z-index:60;display:none;min-width:130px;padding:4px}
+.msg-dropdown.open{display:block}
+.msg-dropdown-item{padding:7px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.msg-dropdown-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .msg-edit-area{width:100%;background:var(--bg-input);border:1px solid var(--accent);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-family:var(--font);font-size:13.5px;resize:none;outline:none;line-height:1.5;min-height:60px}
 .msg-edit-bar{display:flex;gap:6px;margin-top:6px}
 .input-area{padding:10px 20px 16px;border-top:1px solid var(--border);background:var(--bg-secondary)}
@@ -245,6 +252,9 @@ a:hover{text-decoration:underline}
 .coding-controls select{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);font-size:11px;padding:5px 6px;cursor:pointer;font-family:var(--font);outline:none;max-width:200px}
 .coding-controls select:hover{background:var(--bg-hover);color:var(--text-primary)}
 .coding-controls select:focus{border-color:var(--accent)}
+.coding-model-dropdown{display:flex;max-width:220px}
+.coding-model-dropdown .model-btn{width:100%;justify-content:space-between}
+.coding-model-menu{top:calc(100% + 6px);bottom:auto;right:0;left:auto}
 .coding-input-box{display:flex;gap:8px;align-items:flex-end;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 4px 4px 12px}
 .coding-input-box:focus-within{border-color:var(--accent)}
 .coding-input-box textarea{flex:1;background:transparent;border:none;padding:7px 0;color:var(--text-primary);font-family:var(--font);font-size:13px;resize:none;outline:none;min-height:20px;max-height:120px;line-height:1.5;min-width:0}
@@ -469,10 +479,8 @@ a:hover{text-decoration:underline}
 .view-panel.open{animation:viewIn .18s ease}
 #chat-area{animation:fadeIn .15s ease}
 .nav-item{position:relative}
-.typing-indicator{display:flex;gap:4px;padding:4px 0;align-items:center}
-.typing-indicator span{width:5px;height:5px;border-radius:50%;background:var(--text-muted);animation:pulse 1.2s infinite}
-.typing-indicator span:nth-child(2){animation-delay:.2s}
-.typing-indicator span:nth-child(3){animation-delay:.4s}
+.typing-indicator{display:inline-flex;padding:2px 0;align-items:center}
+.typing-indicator .chat-spinner{width:16px;height:16px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .loading-shimmer{background:var(--bg-tertiary);animation:pulse 1.4s infinite}
 .cmd-overlay{position:fixed;inset:0;background:rgba(4,6,10,.62);z-index:300;display:none;align-items:flex-start;justify-content:center;padding:14vh 16px 16px}
 .cmd-overlay.open{display:flex}
@@ -1386,7 +1394,13 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div id="coding-at-files" style="display:none;flex-wrap:wrap;gap:4px;padding:0 0 6px"></div>
               <div class="coding-todo-bar" id="coding-todo-bar" style="display:none"><div class="coding-todo-head">Todos</div><div id="coding-todo-list"></div></div>
               <div class="coding-controls">
-                <select id="coding-model" title="Model" onchange="selectModel(this.value)"></select>
+                <div class="model-dropdown coding-model-dropdown" id="coding-model-dropdown">
+                  <button class="model-btn" id="coding-model-btn" onclick="toggleCodingModelMenu()">
+                    <span id="coding-model-btn-text">omniilink</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <div class="model-menu coding-model-menu" id="coding-model-menu"></div>
+                </div>
                 <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
                 <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
               </div>
@@ -1543,6 +1557,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
+ document.addEventListener('click',e=>{if(!document.getElementById('coding-model-dropdown').contains(e.target))document.getElementById('coding-model-menu').classList.remove('open')});
 });
 
 function connectLogStream(){
@@ -1689,7 +1704,7 @@ if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener(
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
-    function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));const cm=document.getElementById('coding-model');if(cm&&cm.value!==id)cm.value=id;try{localStorage.setItem('omniilink_model',id)}catch(e){}}
+    function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt)cmt.textContent=id;document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
 const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
@@ -1714,7 +1729,7 @@ function syncLevelControls(){
 function requestLevels(){return{effort:getLevel('effort'),thinking:getLevel('thinking')}}
 
 async function loadModels(){
-  try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth);
+    try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);renderCodingModelMenu();providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth);
     try{const saved=localStorage.getItem('omniilink_model');if(saved&&(saved==='omniilink'||(data.models||[]).some(m=>m.id===saved)))selectModel(saved)}catch(e){}
   }
   catch(e){console.error('Failed to load models:',e)}
@@ -1725,8 +1740,8 @@ function modelMenuFilter(menu,q){
   menu.querySelectorAll('.model-group-label').forEach(l=>{let n=l.nextElementSibling,vis=false;while(n&&!n.classList.contains('model-group-label')){if(n.classList&&n.classList.contains('model-option')&&n.style.display!=='none'){vis=true;break}n=n.nextElementSibling}l.style.display=vis?'':'none'});
   const empty=menu.querySelector('.model-empty');if(empty)empty.style.display=shown?'none':'';
 }
-function renderModelMenu(models,backupModel){
-  const menu=document.getElementById('model-menu');menu.innerHTML='';
+function renderModelMenuInto(menu,models,backupModel){
+  menu.innerHTML='';
   const wrap=document.createElement('div');wrap.className='model-search-wrap';
   const si=document.createElement('input');si.className='model-search';si.placeholder='Search models…';si.autocomplete='off';
   si.oninput=()=>modelMenuFilter(menu,si.value);wrap.appendChild(si);menu.appendChild(wrap);
@@ -1741,6 +1756,9 @@ function renderModelMenu(models,backupModel){
   }
   const nohit=document.createElement('div');nohit.className='model-empty';nohit.style.display='none';nohit.textContent='No models match';menu.appendChild(nohit);
 }
+function renderModelMenu(models,backupModel){renderModelMenuInto(document.getElementById('model-menu'),models,backupModel)}
+function renderCodingModelMenu(){renderModelMenuInto(document.getElementById('coding-model-menu'),allModels||[],null)}
+function toggleCodingModelMenu(){document.getElementById('coding-model-menu').classList.toggle('open')}
 let providerHealth={};
 function healthDotClass(name,hasModels){
   const h=providerHealth[name];
@@ -1883,14 +1901,16 @@ async function sendMessage(){
 function appendMessage(role,content,streaming=false,savedModel){
   const area=document.getElementById('chat-area');const msg=document.createElement('div');msg.className='message '+role;msg.dataset.msgIndex=messageCounter++;
   const avatar=document.createElement('div');avatar.className='message-avatar';avatar.textContent=role==='user'?'You':'O';
-  const body=document.createElement('div');const contentDiv=document.createElement('div');contentDiv.className='message-content';
-  if(streaming&&!content)contentDiv.innerHTML='<div class="typing-indicator"><span></span><span></span><span></span></div>';
-  else if(role==='assistant'){let _s=String(content==null?'':content);const _had=/```/.test(_s);_s=_s.replace(/```[\s\S]*?```/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();contentDiv.innerHTML=_s?renderContent(_s):(_had?'<span class="chat-code-note">Code stays out of Chat — open Coding to view or edit files.</span>':'')}
+  const body=document.createElement('div');body.className='message-body';const contentDiv=document.createElement('div');contentDiv.className='message-content';
+  if(streaming&&!content)contentDiv.innerHTML='<div class="typing-indicator"><span class="chat-spinner"></span></div>';
+  else if(role==='assistant'){let _s=String(content==null?'':content);const _had=/```/.test(_s);_s=_s.replace(/```[\s\S]*?```/g,'').replace(/`([^`]+)`/g,'$1').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();contentDiv.innerHTML=_s?renderContent(_s):(_had?'<span class="chat-code-note">Code stays out of Chat — open Coding to view or edit files.</span>':'')}
   else if(Array.isArray(content)){contentDiv.textContent=msgTextContent(content);const imgs=msgImages(content);if(imgs.length){const row=document.createElement('div');row.className='msg-imgs';imgs.forEach(u=>{const im=document.createElement('img');im.src=u;im.alt='attached image';im.onclick=()=>window.open(u,'_blank');row.appendChild(im)});body.appendChild(row)}}
   else contentDiv.textContent=content;
   body.appendChild(contentDiv);
-  if(role==='user'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';const editBtn=document.createElement('button');editBtn.className='msg-action-btn';editBtn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';editBtn.title='Edit message';editBtn.onclick=()=>startEditMessage(msg,contentDiv,actions);actions.appendChild(editBtn);body.appendChild(actions)}
-  if(role==='assistant'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';
+  if(role==='user'&&!streaming)body.appendChild(msgMenuBtn([{icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',label:'Edit',fn:()=>startEditMessage(msg,contentDiv)}]));
+  if(role==='assistant'){
+    body.appendChild(msgMenuBtn([{icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>',label:'Copy',fn:()=>copyMessageText(contentDiv)}]));
+    const actions=document.createElement('div');actions.className='message-actions';
     const bkBtn=document.createElement('button');bkBtn.className='msg-bookmark-btn';bkBtn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>';
     const bookmarks=getBookmarks();if(bookmarks.includes(parseInt(msg.dataset.msgIndex))){bkBtn.classList.add('active');msg.classList.add('bookmarked')}
     bkBtn.onclick=(e)=>{e.stopPropagation();toggleBookmark(parseInt(msg.dataset.msgIndex));bkBtn.classList.toggle('active')};
@@ -1898,15 +1918,17 @@ function appendMessage(role,content,streaming=false,savedModel){
   if(role==='assistant'){const meta=document.createElement('div');meta.className='message-meta';meta.textContent=savedModel||selectedModel;body.appendChild(meta)}
   msg.appendChild(avatar);msg.appendChild(body);area.appendChild(msg);area.scrollTop=area.scrollHeight;return contentDiv;
 }
-function startEditMessage(msgEl,contentDiv,actionsEl){
+function startEditMessage(msgEl,contentDiv){
   if(isStreaming)return;const idx=parseInt(msgEl.dataset.msgIndex);const originalContent=chatHistory.find((m,i)=>m.role==='user'&&Math.floor(i/2)*2===idx)?.content||contentDiv.textContent;const originalText=msgTextContent(originalContent);const origImgs=msgImages(originalContent);
+  const menu=msgEl.querySelector('.msg-menu');if(menu)menu.style.visibility='hidden';
   const textarea=document.createElement('textarea');textarea.className='msg-edit-area';textarea.value=originalText;textarea.rows=Math.min(originalText.split('\n').length+1,8);
   const bar=document.createElement('div');bar.className='msg-edit-bar';
   const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.style.cssText='padding:5px 14px;font-size:12px';saveBtn.textContent='Save & Resend';
   const cancelBtn=document.createElement('button');cancelBtn.className='btn btn-ghost';cancelBtn.style.cssText='padding:5px 14px;font-size:12px';cancelBtn.textContent='Cancel';
-  bar.appendChild(saveBtn);bar.appendChild(cancelBtn);contentDiv.innerHTML='';contentDiv.appendChild(textarea);contentDiv.appendChild(bar);actionsEl.style.display='none';textarea.focus();
-  cancelBtn.onclick=()=>{contentDiv.textContent=originalText;actionsEl.style.display=''};
-  saveBtn.onclick=()=>{const newText=textarea.value.trim();if(!newText||newText===originalText){contentDiv.textContent=originalText;actionsEl.style.display='';return}editAndResend(idx,newText,origImgs)};
+  bar.appendChild(saveBtn);bar.appendChild(cancelBtn);contentDiv.innerHTML='';contentDiv.appendChild(textarea);contentDiv.appendChild(bar);textarea.focus();
+  const restore=()=>{if(menu)menu.style.visibility=''};
+  cancelBtn.onclick=()=>{contentDiv.textContent=originalText;restore()};
+  saveBtn.onclick=()=>{const newText=textarea.value.trim();if(!newText||newText===originalText){contentDiv.textContent=originalText;restore();return}restore();editAndResend(idx,newText,origImgs)};
   textarea.onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();saveBtn.click()}if(e.key==='Escape')cancelBtn.click()};
 }
 function editAndResend(editIdx,newText,keepImgs){
@@ -1929,10 +1951,26 @@ function editAndResend(editIdx,newText,keepImgs){
 function renderMessageContent(el,content){
   let s=String(content==null?'':content);
   const hadCode=/```/.test(s);
-  s=s.replace(/```[\s\S]*?```/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  s=s.replace(/```[\s\S]*?```/g,'').replace(/`([^`]+)`/g,'$1').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
   el.innerHTML=s?renderContent(s):(hadCode?'<span class="chat-code-note">Code stays out of Chat — open Coding to view or edit files.</span>':'');
   document.getElementById('chat-area').scrollTop=document.getElementById('chat-area').scrollHeight;
 }
+const MSG_EDIT_SVG='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+function msgMenuBtn(items){
+  const wrap=document.createElement('div');wrap.className='msg-menu';
+  const btn=document.createElement('button');btn.className='msg-menu-btn';btn.textContent='⋯';btn.title='Message options';btn.setAttribute('aria-label','Message options');
+  const dd=document.createElement('div');dd.className='msg-dropdown';
+  items.forEach(it=>{const el=document.createElement('div');el.className='msg-dropdown-item';el.innerHTML=(it.icon||'')+'<span></span>';el.lastChild.textContent=it.label;el.onclick=(e)=>{e.stopPropagation();dd.classList.remove('open');it.fn()};dd.appendChild(el)});
+  btn.onclick=(e)=>{e.stopPropagation();const was=dd.classList.contains('open');document.querySelectorAll('.msg-dropdown.open').forEach(d=>d.classList.remove('open'));if(!was)dd.classList.add('open')};
+  wrap.appendChild(btn);wrap.appendChild(dd);return wrap;
+}
+function copyMessageText(el){
+  const t=el?(el.textContent||''):'';
+  if(!t.trim())return;
+  const done=()=>{if(typeof showToast==='function')showToast('Copied to clipboard','info')};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t).then(done).catch(()=>{});
+}
+document.addEventListener('click',e=>{if(!e.target.closest('.msg-menu'))document.querySelectorAll('.msg-dropdown.open').forEach(d=>d.classList.remove('open'))});
 function updateMessage(el,content){
   if(el._streamSettled)return;
   if(el._streamRaf){el._streamArgs=[el,content];el._streamFlush=()=>renderMessageContent(el,content);return}
@@ -5390,13 +5428,7 @@ function sendCompareRequest(userMsg){
 }
 
 // ========== CODING: search / git / history / plan / export ==========
-function syncCodingModelSelect(){
-  const sel=document.getElementById('coding-model');if(!sel)return;
-  const models=[{id:'omniilink',provider:'auto'}].concat((allModels||[]).filter(m=>m.id!=='omniilink'));
-  const cur=selectedModel||'omniilink';
-  sel.innerHTML=models.map(m=>'<option value="'+escapeHtml(m.id)+'">'+escapeHtml(m.id)+(m.provider?' ('+escapeHtml(m.provider)+')':'')+'</option>').join('');
-  sel.value=models.some(m=>m.id===cur)?cur:'omniilink';
-}
+function syncCodingModelSelect(){renderCodingModelMenu()}
 
 // ---- File upload (server limit from settings; admins unlimited;
 // files above the chunk threshold go up in small sequential chunks) ----
