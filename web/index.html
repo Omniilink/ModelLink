@@ -1770,7 +1770,7 @@ function renderModelMenuInto(menu,models,backupModel){
   const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omniilink';
   opt.innerHTML='<span class="pick">✓</span><span class="mname">omniilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omniilink');menu.appendChild(opt);
   const grouped={};models.filter(m=>m.id!=='omniilink').forEach(m=>{const p=m.provider||'other';if(!grouped[p])grouped[p]=[];grouped[p].push(m)});
-  const providerOrder=['ollama','opencode-go','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
+  const providerOrder=['ollama','opencode','opencode-go','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[0]);const bi=providerOrder.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[provider,pm]of sorted){
     const label=document.createElement('div');label.className='model-group-label';label.textContent=provider==='ollama'?'Ollama (local)':provider;menu.appendChild(label);

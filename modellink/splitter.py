@@ -287,8 +287,22 @@ PROVIDERS = {
         "stream_url": lambda model, key: "https://api.cohere.ai/v2/chat",
         "url": lambda model, key: "https://api.cohere.ai/v2/chat",
     },
-    "opencode-go": {
+    "opencode": {
         "env_prefix": "OPENCODE_API_KEY",
+        "api_base": "https://opencode.ai/zen/v1",
+        "models": ["opencode-default"],
+        "headers": lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        "build_body": lambda msgs, model, key: {
+            "model": "opencode-default",
+            "messages": msgs,
+            "temperature": 0.7,
+            "max_tokens": 4000
+        },
+        "stream_url": lambda model, key: os.environ.get("OPENCODE_API_URL", "https://opencode.ai/zen/v1/chat/completions"),
+        "url": lambda model, key: os.environ.get("OPENCODE_API_URL", "https://opencode.ai/zen/v1/chat/completions"),
+    },
+    "opencode-go": {
+        "env_prefix": "OPENCODE_GO_API_KEY",
         "api_base": "https://opencode.ai/zen/go/v1",
         "models": [
             "Ling 3.0 Flash Fin Free", "Ling 3.1 Flash Free", "LongCat 2.5 Preview Free",
@@ -305,8 +319,8 @@ PROVIDERS = {
             "temperature": 0.7,
             "max_tokens": 4000
         },
-        "stream_url": lambda model, key: os.environ.get("OPENCODE_API_URL", "https://opencode.ai/zen/go/v1/chat/completions"),
-        "url": lambda model, key: os.environ.get("OPENCODE_API_URL", "https://opencode.ai/zen/go/v1/chat/completions"),
+        "stream_url": lambda model, key: "https://opencode.ai/zen/go/v1/chat/completions",
+        "url": lambda model, key: "https://opencode.ai/zen/go/v1/chat/completions",
     },
 }
 
@@ -365,7 +379,7 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode-go"}
+_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode", "opencode-go"}
 
 
 def _add_tools_to_body(provider_name, body, tools):
