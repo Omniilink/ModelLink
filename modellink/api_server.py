@@ -6135,7 +6135,7 @@ PROVIDER_INFO = {
     "together": {"name": "Together AI", "color": "#6366F1", "env": "TOGETHER_API_KEY"},
     "deepseek": {"name": "DeepSeek", "color": "#4F46E5", "env": "DEEPSEEK_API_KEY"},
     "cohere": {"name": "Cohere", "color": "#39D98A", "env": "COHERE_API_KEY"},
-    "opencode": {"name": "OpenCode", "color": "#8B5CF6", "env": "OPENCODE_API_KEY"},
+    "opencode-go": {"name": "Opencode Go", "color": "#8B5CF6", "env": "OPENCODE_API_KEY"},
 }
 
 @app.get("/api/keys")

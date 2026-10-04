@@ -287,7 +287,7 @@ PROVIDERS = {
         "stream_url": lambda model, key: "https://api.cohere.ai/v2/chat",
         "url": lambda model, key: "https://api.cohere.ai/v2/chat",
     },
-    "opencode": {
+    "opencode-go": {
         "env_prefix": "OPENCODE_API_KEY",
         "api_base": "https://opencode.ai/zen/go/v1",
         "models": ["opencode-default"],
@@ -358,7 +358,7 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode"}
+_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode-go"}
 
 
 def _add_tools_to_body(provider_name, body, tools):
