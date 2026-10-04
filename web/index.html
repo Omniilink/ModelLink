@@ -4130,7 +4130,7 @@ async function loadProjectsPage(){
     const pct=Math.min(100,limit>0?used/limit*100:0);
     const bar=document.createElement('div');bar.className='storage-bar';bar.innerHTML='<div class="storage-info"><span>Storage</span><span>'+formatBandwidth(used)+' / '+formatBandwidth(limit)+' ('+Math.round(pct)+'%)</span></div><div class="storage-track"><div class="storage-fill" style="width:'+pct+'%"></div></div>';body.appendChild(bar);
     const actions=document.createElement('div');actions.style.cssText='display:flex;gap:8px;margin-bottom:16px';actions.innerHTML='<button class="btn btn-primary btn-sm" onclick="openProjectsModal();showProjectTab(\'create\',document.querySelector(\'.modal-tab:nth-child(2)\'))">+ New Project</button><button class="btn btn-ghost btn-sm" onclick="openProjectsModal();showProjectTab(\'import\',document.querySelector(\'.modal-tab:nth-child(3)\'))">Import Folder</button>';body.appendChild(actions);
-    const localTitle=document.createElement('div');localTitle.className='usage-section-title';localTitle.style.margin='4px 0 8px';localTitle.textContent='On this server';body.appendChild(localTitle);
+    const localTitle=document.createElement('div');localTitle.className='usage-section-title';localTitle.style.margin='4px 0 8px';localTitle.textContent='Omniilink cloud';body.appendChild(localTitle);
     if(projects.length===0){body.innerHTML+='<div style="text-align:center;padding:24px;color:var(--text-muted)"><p style="font-size:13px;margin-bottom:4px">No server projects yet</p><p style="font-size:12px">Create a new project or import an existing folder</p></div>'}
     for(const p of projects){const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
       card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+formatBandwidth(p.size_bytes||0)+'</div></div><button class="proj-del" title="Delete project">&times;</button>';
@@ -5770,7 +5770,7 @@ async function loadRemoteProjectsInto(box){
     const d=await r.json();agents=d.agents||[];
   }catch(e){return}
   if(!agents.length)return;
-  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.textContent='On your computers';box.appendChild(title);
+  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.textContent='Omniilink servers';box.appendChild(title);
   for(const a of agents){
     try{
       const wrap=document.createElement('div');wrap.dataset.aid=String(a.id);box.appendChild(wrap);
