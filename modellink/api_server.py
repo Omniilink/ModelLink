@@ -2971,7 +2971,7 @@ _PAGE_LINK_RE = re.compile(
     re.IGNORECASE | re.DOTALL)
 
 
-def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None, page_url_for=None) -> bytes:
+def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None, page_url_for=None, base_root="") -> bytes:
     """Rewrite relative asset URLs in a previewed HTML page to absolute
     preview-asset URLs (with a signed token), so linked CSS/JS/images actually
     load inside the opaque-origin iframe. Covers quoted, unquoted and srcset
@@ -3000,7 +3000,12 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
             return None
         # normpath clamps ".." at the project root; the asset endpoint
         # re-enforces containment, so anything truly outside 403s there.
-        norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
+        # A root-absolute ref (/style.css) means the SITE root, which for a
+        # project page is the project folder (base_root), not the server root.
+        if ref.startswith("/"):
+            norm = posixpath.normpath(posixpath.join("/" + (base_root or ""), ref.lstrip("/"))).lstrip("/")
+        else:
+            norm = posixpath.normpath(posixpath.join("/" + page_dir, ref)).lstrip("/")
         if not norm or norm == ".":
             return None
         if url_for is not None:
@@ -3037,7 +3042,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
 
     def repl_style(m):
         return (m.group(1)
-                + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for)
+                + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for, base_root)
                 + m.group(3))
 
     def repl_page(m):
@@ -3054,7 +3059,10 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
             return m.group(0)
         if os.path.splitext(clean)[1].lower() not in (".html", ".htm"):
             return m.group(0)
-        norm = posixpath.normpath(posixpath.join("/" + page_dir, clean)).lstrip("/")
+        if clean.startswith("/"):
+            norm = posixpath.normpath(posixpath.join("/" + (base_root or ""), clean.lstrip("/"))).lstrip("/")
+        else:
+            norm = posixpath.normpath(posixpath.join("/" + page_dir, clean)).lstrip("/")
         if not norm or norm == ".":
             return m.group(0)
         return m.group(1) + m.group(2) + page_url_for(norm) + m.group(2)
@@ -3067,7 +3075,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
     return text.encode("utf-8")
 
 
-def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None) -> str:
+def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None, base_root="") -> str:
     """Rewrite relative url(...) and @import "..." in a served stylesheet to
     preview-asset URLs so fonts/backgrounds resolve (external/data untouched)."""
     import posixpath
@@ -3081,7 +3089,10 @@ def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None) -
         ref = ref.split("#", 1)[0].split("?", 1)[0].strip()
         if not ref:
             return None
-        norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
+        if ref.startswith("/"):
+            norm = posixpath.normpath(posixpath.join("/" + (base_root or ""), ref.lstrip("/"))).lstrip("/")
+        else:
+            norm = posixpath.normpath(posixpath.join("/" + css_dir, ref)).lstrip("/")
         if not norm or norm == ".":
             return None
         if url_for is not None:
@@ -3439,20 +3450,23 @@ async def coding_remote_preview(request: Request, agent: str = "", path: str = "
         return JSONResponse(status_code=400, content={"error": (out or {}).get("error", "Could not read file")})
     content = str(out.get("content") or "").encode("utf-8")
     uid = user["id"]
+    proj = (request.query_params.get("proj", "") or "").replace("\\", "/").strip("/")
 
     def url_for(rel):
         return ("/api/coding/remote-asset?agent=" + _quote(agent, safe="") +
                 "&path=" + _quote(rel, safe="/") +
+                (("&proj=" + _quote(proj, safe="/")) if proj else "") +
                 "&t=" + _mint_preview_token(uid, _remote_tokkey(agent, rel)))
 
     def page_url_for(rel):
         u = ("/api/coding/remote-preview?agent=" + _quote(agent, safe="") +
              "&path=" + _quote(rel, safe="/") +
+             (("&proj=" + _quote(proj, safe="/")) if proj else "") +
              "&t=" + _mint_preview_token(uid, _remote_tokkey(agent, rel)))
         return u + ("&tab=1" if tab else "")
 
     content = _rewrite_preview_assets(content, path, user_id=uid, url_for=url_for,
-                                      page_url_for=page_url_for)
+                                      page_url_for=page_url_for, base_root=proj)
     return _Response(
         content=content,
         media_type="text/html",
@@ -3490,6 +3504,7 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
         return JSONResponse(status_code=500, content={"error": "Bad file data"})
     ext = os.path.splitext(path)[1].lower()
     media = _ASSET_MIME_OVERRIDES.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
+    proj = (request.query_params.get("proj", "") or "").replace("\\", "/").strip("/")
     if ext == ".css":
         import posixpath
         css_dir = posixpath.dirname(path.replace("\\", "/"))
@@ -3497,9 +3512,11 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
         def url_for(rel):
             return ("/api/coding/remote-asset?agent=" + _quote(agent, safe="") +
                     "&path=" + _quote(rel, safe="/") +
+                    (("&proj=" + _quote(proj, safe="/")) if proj else "") +
                     "&t=" + _mint_preview_token(user["id"], _remote_tokkey(agent, rel)))
         try:
-            data = _rewrite_css_urls(data.decode("utf-8"), css_dir, url_for=url_for).encode("utf-8")
+            data = _rewrite_css_urls(data.decode("utf-8"), css_dir, url_for=url_for,
+                                     base_root=proj).encode("utf-8")
         except Exception:
             pass
     return _Response(content=data, media_type=media,

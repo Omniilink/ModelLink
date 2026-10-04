@@ -2329,12 +2329,12 @@ async function previewFileScanned(path){
     let tab=null;try{tab=window.open('about:blank','_blank')}catch(e){}
     if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
     _previewPath=remoteRel(path);_previewLocal=false;
-    const rel=remoteRel(path);
+    const rel=remoteRel(path);const proj=String(remoteCtx.path||'');
     try{
-      const pre=await authFetch(API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+'&tab=1');
+      const pre=await authFetch(API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(proj?'&proj='+encodeURIComponent(proj):'')+'&tab=1');
       if(!pre.ok){let m='Remote preview failed';try{const d=await pre.json();if(d&&d.error)m='Remote preview: '+d.error}catch(e){};appAlert(m);try{if(tab)tab.close()}catch(e){}return}
       const token=pre.headers.get('X-Preview-Token')||'';
-      const url=API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
+      const url=API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(proj?'&proj='+encodeURIComponent(proj):'')+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
       document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
       if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
       showToast('Popup blocked — allow popups for full preview','error');
@@ -6063,10 +6063,11 @@ async function loadRemoteProjectsInto(box, mode){
     const d=await r.json();agents=d.agents||[];
   }catch(e){return}
   if(!agents.length)return;
-  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.textContent='Omniilink servers';box.appendChild(title);
+  const pad=mode==='ft'?'4px':'0px';
+  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.style.paddingLeft='12px';title.style.paddingRight='12px';title.textContent='Omniilink servers';box.appendChild(title);
   for(const a of agents){
     try{
-      const wrap=document.createElement('div');wrap.dataset.aid=String(a.id);box.appendChild(wrap);
+      const wrap=document.createElement('div');wrap.dataset.aid=String(a.id);wrap.style.paddingLeft=pad;wrap.style.paddingRight=pad;box.appendChild(wrap);
       wrap.appendChild(remoteDeviceSection(a));
       if(!a.online){const note=document.createElement('div');note.className='tool-status';note.textContent='Offline — start Omniilink Server on this computer to browse its projects.';wrap.appendChild(note);continue}
       const loading=document.createElement('div');loading.className='tool-status';loading.textContent='Loading projects from '+((a&&a.name)||'this computer')+'…';wrap.appendChild(loading);
