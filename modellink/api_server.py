@@ -33,9 +33,16 @@ sys.path.insert(0, APP_DIR)
 def _build_id():
     """Short id of the running code (shown in /api/health and the app
     footer) so a stale deployment is obvious instead of mysterious.
-    Prefers the git sha; the Docker image has no git binary, so fall back
-    to a hash of the shipped source files (changes with any backend or
-    frontend edit)."""
+    Prefers OMNIILINK_BUILD baked into the image, then git, then a hash
+    of the shipped source files (changes with any backend or frontend
+    edit). Newlines are normalized so Windows and Linux checkouts of the
+    same commit hash identically."""
+    try:
+        env = (os.environ.get("OMNIILINK_BUILD") or "").strip()
+        if env and env != "unknown":
+            return env
+    except Exception:
+        pass
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR,
                              capture_output=True, text=True, timeout=10)
@@ -52,7 +59,7 @@ def _build_id():
             if os.path.isfile(p):
                 with open(p, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
+                        h.update(chunk.replace(b"\r\n", b"\n"))
         return "code-" + h.hexdigest()[:7]
     except Exception:
         pass

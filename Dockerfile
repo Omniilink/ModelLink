@@ -30,6 +30,11 @@ RUN mkdir -p user_data modellink && touch omnilink.db network_usage.json bw_usag
 
 EXPOSE 8080
 
+# Baked at build time (update.bat passes --build-arg via compose args).
+# Lets /api/health report the exact commit without git in the image.
+ARG GIT_SHA=unknown
+ENV OMNIILINK_BUILD=${GIT_SHA}
+
 CMD ["python", "-m", "uvicorn", "modellink.api_server:app", \
      "--host", "0.0.0.0", "--port", "8080", \
      "--no-server-header", "--no-date-header"]

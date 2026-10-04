@@ -69,6 +69,8 @@ call :ensure_file ".env"
 call :ensure_file "modellink\server.log"
 echo.
 echo === Rebuilding and restarting containers ===
+for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set GIT_SHA=%%i
+if defined GIT_SHA echo Build marker: %GIT_SHA%
 docker compose up -d --build
 if errorlevel 1 (
   echo COMPOSE FAILED - is Docker Desktop running? Will retry on the next check.
