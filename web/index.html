@@ -4382,7 +4382,7 @@ function closeProjectsModal(){document.getElementById('projects-modal').classLis
 function openNewFileModal(){document.getElementById('newfile-modal').classList.add('open');const inp=document.getElementById('new-file-name');inp.value='';setTimeout(()=>inp.focus(),50)}
 function closeNewFileModal(){document.getElementById('newfile-modal').classList.remove('open')}
 async function confirmNewFile(){const name=document.getElementById('new-file-name').value.trim();if(!name)return;closeNewFileModal();try{await codingWriteFile(name,'');refreshCodingTree();showToast('Created '+name,'success')}catch(e){showToast('Failed: '+e.message,'error')}}
-function showProjectTab(tab,btn){document.querySelectorAll('.modal-tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');document.getElementById('project-tab-list').style.display=tab==='list'?'block':'none';document.getElementById('project-tab-create').style.display=tab==='create'?'block':'none';document.getElementById('project-tab-import').style.display=tab==='import'?'block':'none'}
+function showProjectTab(tab,btn){document.querySelectorAll('.modal-tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');document.getElementById('project-tab-list').style.display=tab==='list'?'block':'none';document.getElementById('project-tab-create').style.display=tab==='create'?'block':'none';document.getElementById('project-tab-import').style.display=tab==='import'?'block':'none';if(tab==='create'){try{loadCreateTargets()}catch(e){}}}
 async function loadProjectList(){const list=document.getElementById('project-list');list.innerHTML='<div style="padding:12px;color:var(--text-muted);font-size:12px">Loading...</div>';
   try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
     if(!data.projects||data.projects.length===0){list.innerHTML='<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">No projects yet.</div>'}
@@ -6023,9 +6023,10 @@ function remotePromptLine(){
 function updateProjectBadgeAgent(name){
   try{const badge=document.getElementById('coding-project-badge');if(badge)badge.title='Remote folder on '+name}catch(e){}
 }
-function remoteDeviceSection(a){
+function remoteDeviceSection(a, mode){
   const sec=document.createElement('div');
-  sec.style.cssText='margin:18px 0 6px;display:flex;align-items:center;gap:8px';
+  const center=(mode==='ft'||mode==='item');
+  sec.style.cssText='margin:18px 0 6px;display:flex;align-items:center;gap:8px'+(center?';justify-content:center;text-align:center':'');
   sec.innerHTML='<span class="status-dot '+((a&&a.online)?'online':'offline')+'"></span><span style="font-size:12.5px;font-weight:650;color:var(--text-primary)"></span><span class="tool-result-sub"></span>';
   const spans=sec.querySelectorAll('span');
   if(spans[1])spans[1].textContent=(a&&a.name)||('agent '+((a&&a.id)||'?'));
@@ -6064,11 +6065,11 @@ async function loadRemoteProjectsInto(box, mode){
   }catch(e){return}
   if(!agents.length)return;
   const pad=mode==='ft'?'4px':'0px';
-  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.style.paddingLeft='12px';title.style.paddingRight='12px';title.textContent='Omniilink servers';box.appendChild(title);
+  const title=document.createElement('div');title.className='usage-section-title';title.style.margin='20px 0 4px';title.style.paddingLeft='12px';title.style.paddingRight='12px';if(mode==='ft'||mode==='item')title.style.textAlign='center';title.textContent='Omniilink servers';box.appendChild(title);
   for(const a of agents){
     try{
       const wrap=document.createElement('div');wrap.dataset.aid=String(a.id);wrap.style.paddingLeft=pad;wrap.style.paddingRight=pad;box.appendChild(wrap);
-      wrap.appendChild(remoteDeviceSection(a));
+      wrap.appendChild(remoteDeviceSection(a, mode));
       if(!a.online){const note=document.createElement('div');note.className='tool-status';note.textContent='Offline — start Omniilink Server on this computer to browse its projects.';wrap.appendChild(note);continue}
       const loading=document.createElement('div');loading.className='tool-status';loading.textContent='Loading projects from '+((a&&a.name)||'this computer')+'…';wrap.appendChild(loading);
       loadRemoteEntry(a, wrap, loading, mode);
