@@ -305,6 +305,194 @@ PROVIDERS = {
 
 
 # ==========================================
+# Web search tool (function calling)
+# ==========================================
+def web_search(query, limit=8):
+    """Free web search via DuckDuckGo HTML (no API key needed).
+
+    Returns a list of {"title","url","snippet"}. Best-effort: returns []
+    on any failure so a search outage never breaks a chat turn.
+    """
+    import re
+    from html import unescape
+    results = []
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return results
+        html = resp.text
+        titles = []
+        for m in re.finditer(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
+            href = m.group(1)
+            title = unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+            if title:
+                titles.append((title, href))
+        snippets = [unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+                    for m in re.finditer(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)]
+        for i, (title, href) in enumerate(titles[:limit]):
+            results.append({
+                "title": title,
+                "url": href,
+                "snippet": snippets[i] if i < len(snippets) else "",
+            })
+    except Exception:
+        pass
+    return results
+
+
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current information. Use when the answer may require up-to-date facts, recent events, or information beyond your training data.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "The search query"}},
+            "required": ["query"],
+        },
+    },
+}
+
+_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode"}
+
+
+def _add_tools_to_body(provider_name, body, tools):
+    """Attach tool definitions to a provider payload in its native format."""
+    if not tools or not isinstance(body, dict):
+        return
+    if provider_name in _OPENAI_TOOL_PROVIDERS:
+        body["tools"] = tools
+        body.setdefault("tool_choice", "auto")
+    elif provider_name == "anthropic":
+        body["tools"] = [
+            {"name": t["function"]["name"], "description": t["function"]["description"],
+             "input_schema": t["function"]["parameters"]}
+            for t in tools
+        ]
+    elif provider_name == "gemini":
+        body["tools"] = [{"functionDeclarations": [
+            {"name": t["function"]["name"], "description": t["function"]["description"],
+             "parameters": t["function"]["parameters"]}
+            for t in tools
+        ]}]
+    elif provider_name == "cohere":
+        body["tools"] = [
+            {"name": t["function"]["name"], "description": t["function"]["description"],
+             "parameter_definitions": t["function"]["parameters"].get("properties", {})}
+            for t in tools
+        ]
+
+
+def _extract_tool_calls(provider_name, response):
+    """Pull tool calls out of a response.
+
+    _collect_response normalises every provider to the OpenAI shape, so check
+    that first; fall back to the raw anthropic/gemini payload shapes.
+    """
+    calls = []
+    if not response or not isinstance(response, dict):
+        return calls
+    choices = response.get("choices", []) or []
+    if choices:
+        msg = choices[0].get("message", {}) or {}
+        for tc in msg.get("tool_calls", []) or []:
+            fn = tc.get("function", {})
+            args = fn.get("arguments", "{}")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "args": args or {}})
+        if calls:
+            return calls
+    if provider_name == "anthropic":
+        for block in response.get("content", []) or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls.append({"id": block.get("id", ""), "name": block.get("name", ""),
+                              "args": block.get("input", {}) or {}})
+        return calls
+    if provider_name == "gemini":
+        for cand in response.get("candidates", []) or []:
+            for part in (cand.get("content", {}) or {}).get("parts", []) or []:
+                fn = part.get("functionCall") or part.get("function_call")
+                if fn:
+                    calls.append({"id": "", "name": fn.get("name", ""), "args": fn.get("args", {}) or {}})
+        return calls
+    return calls
+
+
+def _response_to_openai_message(response):
+    """Best-effort conversion of a provider response into an OpenAI assistant message."""
+    if not response or not isinstance(response, dict):
+        return {"role": "assistant", "content": ""}
+    choices = response.get("choices", []) or []
+    if choices:
+        msg = choices[0].get("message", {}) or {}
+        out = {"role": "assistant", "content": msg.get("content") or ""}
+        if msg.get("tool_calls"):
+            out["tool_calls"] = msg["tool_calls"]
+        return out
+    return {"role": "assistant", "content": ""}
+
+
+def _execute_tool_call(name, args):
+    """Run a tool call and return a readable text result for the model."""
+    if name == "web_search":
+        query = str((args or {}).get("query", "")).strip()
+        if not query:
+            return "Error: empty query"
+        try:
+            results = web_search(query)
+        except Exception as e:
+            return f"Error: {e}"
+        if not results:
+            return f"No web results found for '{query}'."
+        lines = [f"Web results for '{query}':"]
+        for r in results[:8]:
+            title = r.get("title", "")
+            snippet = (r.get("snippet", "") or "")[:200]
+            lines.append(f"- {title}: {snippet}")
+        return "\n".join(lines)
+    return f"Error: unknown tool: {name}"
+
+
+def run_tool_loop(messages, model="modellink", temperature=0.7, max_tokens=4000,
+                  user_keys=None, opts=None, max_iters=4):
+    """Run a tool-use loop: call the model, execute any tool calls, feed back.
+
+    Tool results are fed back as a user message so every provider understands
+    them (gemini/anthropic don't accept OpenAI-style tool messages). Returns
+    (response, used_model) with the same contract as generate().
+    """
+    msgs = list(messages)
+    last_response = None
+    last_used = model
+    for _ in range(max_iters):
+        response, used_model = generate(
+            messages=msgs, model=model, temperature=temperature,
+            max_tokens=max_tokens, stream=False, user_keys=user_keys, opts=opts,
+        )
+        last_response = response
+        last_used = used_model
+        provider = used_model.split("/", 1)[0] if "/" in used_model else "unknown"
+        calls = _extract_tool_calls(provider, response)
+        if not calls:
+            return response, used_model
+        result_texts = []
+        for call in calls:
+            result = _execute_tool_call(call["name"], call["args"])
+            result_texts.append(result)
+        msgs.append({"role": "user", "content": "Web search results:\n" + "\n\n".join(result_texts)})
+    return last_response, last_used
+
+
+# ==========================================
 # Caller-supplied generation options
 # (temperature / max_tokens / effort / thinking)
 # ==========================================
@@ -764,10 +952,19 @@ class MultiProviderBalancer:
                 headers = provider_cfg["headers"](api_key)
                 body = provider_cfg["build_body"](messages, model, api_key)
                 body, opts_applied = apply_request_opts(provider_name, body, opts)
+                if (opts or {}).get("tools"):
+                    _add_tools_to_body(provider_name, body, opts["tools"])
                 if provider_name != "gemini":
                     body["stream"] = stream
 
                 url = provider_cfg["stream_url"](model, api_key)
+                # Function-calling providers answer tool calls in a plain JSON
+                # body; gemini only does that on its non-SSE endpoint, so switch
+                # to it when tools are on (its stream_url is SSE-only).
+                if (opts or {}).get("tools"):
+                    plain_url = provider_cfg.get("url", provider_cfg["stream_url"])(model, api_key)
+                    if plain_url != url:
+                        url = plain_url
                 # Pooled session (no fresh TLS handshake); 10s connect cap
                 # so dead endpoints fail fast, 60s read budget for streams.
                 sess = self._session_for(provider_name)
@@ -823,25 +1020,94 @@ class MultiProviderBalancer:
 
         return None
 
+    def _raw_tool_calls(self, provider_name, raw):
+        """Extract tool calls from a raw provider JSON payload (OpenAI shape)."""
+        calls = []
+        if not isinstance(raw, dict):
+            return calls
+        if provider_name == "anthropic":
+            for block in raw.get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls.append({"id": block.get("id", ""), "type": "function",
+                                  "function": {"name": block.get("name", ""),
+                                               "arguments": json.dumps(block.get("input", {}) or {})}})
+            return calls
+        if provider_name == "gemini":
+            for cand in raw.get("candidates", []) or []:
+                for part in (cand.get("content", {}) or {}).get("parts", []) or []:
+                    fn = part.get("functionCall") or part.get("function_call")
+                    if fn:
+                        calls.append({"id": "", "type": "function",
+                                      "function": {"name": fn.get("name", ""),
+                                                   "arguments": json.dumps(fn.get("args", {}) or {})}})
+            return calls
+        choices = raw.get("choices", []) or []
+        if choices:
+            msg = choices[0].get("message", {}) or {}
+            for tc in msg.get("tool_calls", []) or []:
+                calls.append({"id": tc.get("id", ""), "type": "function",
+                              "function": {"name": tc.get("function", {}).get("name", ""),
+                                           "arguments": tc.get("function", {}).get("arguments", "{}")}})
+        return calls
+
+    def _raw_text(self, provider_name, raw):
+        """Extract plain text from a raw provider JSON payload."""
+        if not isinstance(raw, dict):
+            return ""
+        if provider_name == "anthropic":
+            return "".join(b.get("text", "") for b in raw.get("content", []) or []
+                           if isinstance(b, dict) and b.get("type") == "text")
+        if provider_name == "gemini":
+            out = []
+            for cand in raw.get("candidates", []) or []:
+                for part in (cand.get("content", {}) or {}).get("parts", []) or []:
+                    t = part.get("text", "")
+                    if t:
+                        out.append(t)
+            return "".join(out)
+        choices = raw.get("choices", []) or []
+        if choices:
+            return (choices[0].get("message", {}) or {}).get("content") or ""
+        return ""
+
     def _collect_response(self, resp, provider_name, model):
         """Read a provider response once and return an OpenAI-shaped completion.
 
-        Providers disagree on the non-streaming payload: gemini always answers
-        SSE (its ``url`` variant is never used here), others answer plain JSON
-        in either OpenAI or Gemini shape. ``_stream_response`` already
-        normalises all of those to text, so joining its chunks is the only
-        reliable way to build a completion dict for stream=False.
+        Preserves tool_calls so function-calling providers can drive a tool
+        loop. JSON payloads are parsed once for text + tool calls; SSE (gemini)
+        falls back to the streaming normaliser for text.
         """
         parts = []
-        for chunk in self._stream_response(resp, provider_name, model):
-            if isinstance(chunk, str):
-                parts.append(chunk)
-            elif hasattr(chunk, "text"):
-                parts.append(chunk.text)
+        tool_calls = []
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        is_sse = "event-stream" in ctype
+        if not is_sse:
+            try:
+                raw_bytes = resp.content
+            except Exception:
+                raw_bytes = b""
+            if raw_bytes:
+                try:
+                    raw = json.loads(raw_bytes)
+                    tool_calls = self._raw_tool_calls(provider_name, raw)
+                    txt = self._raw_text(provider_name, raw)
+                    if txt:
+                        parts.append(txt)
+                except Exception:
+                    pass
+        if not parts:
+            for chunk in self._stream_response(resp, provider_name, model):
+                if isinstance(chunk, str):
+                    parts.append(chunk)
+                elif hasattr(chunk, "text"):
+                    parts.append(chunk.text)
         text = "".join(parts)
-        if not text.strip() or "[Stream error from" in text:
+        if (not text.strip() or "[Stream error from" in text) and not tool_calls:
             raise RuntimeError(f"{provider_name}/{model} returned no usable content")
-        return self._make_response(text, f"{provider_name}/{model}")
+        result = self._make_response(text, f"{provider_name}/{model}")
+        if tool_calls:
+            result["choices"][0]["message"]["tool_calls"] = tool_calls
+        return result
 
     def _make_response(self, content, model=MODEL_NAME):
         return {

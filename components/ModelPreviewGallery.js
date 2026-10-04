@@ -535,19 +535,36 @@
     if (!THREE) { this.setStatus('Three.js not loaded.', 'error'); return; }
     var host = this.canvasHost;
     var scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0e0f12);
+    scene.background = new THREE.Color(0x3a4457);
     var camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
     camera.position.set(2.4, 1.8, 3.2);
     var renderer;
     try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); }
     catch (e) { this.setStatus('WebGL is unavailable in this browser.', 'error'); return; }
     renderer.setPixelRatio(Math.min(2, global.devicePixelRatio || 1));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.45;
     host.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.1));
-    var key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(4, 6, 5); scene.add(key);
-    var fill = new THREE.DirectionalLight(0x99bbff, 0.6); fill.position.set(-5, 2, -4); scene.add(fill);
-    var grid = new THREE.GridHelper(10, 20, 0x2a2f38, 0x1b1e24); grid.position.y = -0.001; scene.add(grid);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x667788, 2.6));
+    var key = new THREE.DirectionalLight(0xffffff, 3.2); key.position.set(4, 6, 5); scene.add(key);
+    var fill = new THREE.DirectionalLight(0xaaccff, 1.6); fill.position.set(-5, 2, -4); scene.add(fill);
+    var rim = new THREE.DirectionalLight(0xffffff, 1.1); rim.position.set(0, 3, -6); scene.add(rim);
+    var grid = new THREE.GridHelper(10, 20, 0x6b7a95, 0x46536b); grid.position.y = -0.001; scene.add(grid);
+
+    try {
+      var pmrem = new THREE.PMREMGenerator(renderer);
+      var envCanvas = document.createElement('canvas'); envCanvas.width = 4; envCanvas.height = 128;
+      var g2 = envCanvas.getContext('2d');
+      var grd = g2.createLinearGradient(0, 0, 0, 128);
+      grd.addColorStop(0, '#dfe7f2'); grd.addColorStop(0.5, '#8b96ab'); grd.addColorStop(1, '#3c4350');
+      g2.fillStyle = grd; g2.fillRect(0, 0, 4, 128);
+      var envTex = new THREE.CanvasTexture(envCanvas);
+      envTex.mapping = THREE.EquirectangularReflectionMapping;
+      envTex.encoding = THREE.sRGBEncoding;
+      scene.environment = pmrem.fromEquirectangular(envTex).texture;
+      envTex.dispose(); pmrem.dispose();
+    } catch (e) {}
 
     var controls = THREE.OrbitControls ? new THREE.OrbitControls(camera, renderer.domElement) : null;
     if (controls) { controls.enableDamping = true; controls.dampingFactor = 0.08; }
@@ -886,8 +903,8 @@
     var body = {
       model: model || 'omniilink',
       messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
-      stream: false, temperature: 0.3, max_tokens: 18000,
-      effort: 'high', thinking: 'high'
+      stream: false, temperature: 0.3, max_tokens: 34000,
+      effort: 'xhigh', thinking: 'xhigh'
     };
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;

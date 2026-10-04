@@ -90,7 +90,9 @@ from modellink.splitter import (
     load_all_keys, MODEL_RATE_LIMITS,
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL,
     get_language, set_language, normalize_level, EFFORT_LEVELS,
-    provider_health
+    provider_health,
+    web_search, WEB_SEARCH_TOOL, _add_tools_to_body, _extract_tool_calls,
+    _execute_tool_call, _response_to_openai_message, run_tool_loop
 )
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
@@ -2111,6 +2113,24 @@ def _resolve_request_model(req_model):
     return "unknown", req_model
 
 
+@app.get("/api/websearch")
+async def api_websearch(request: Request, q: str = "", limit: int = 8):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    query = (q or "").strip()
+    if not query:
+        return {"query": "", "results": []}
+    try:
+        limit = max(1, min(10, int(limit)))
+    except (TypeError, ValueError):
+        limit = 8
+    try:
+        return {"query": query, "results": web_search(query, limit)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/api/usage")
 async def api_usage(request: Request, range: str = "24h"):
     user, err = _require_auth(request)
@@ -2158,7 +2178,7 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid model name"})
     try:
         temp = max(0.0, min(2.0, float(temp)))
-        max_tokens = max(1, min(32000, int(max_tokens)))
+        max_tokens = max(1, min(40000, int(max_tokens)))
     except (TypeError, ValueError):
         return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
     is_stream = bool(is_stream)
@@ -2222,6 +2242,38 @@ async def chat_completions(request: Request):
             return JSONResponse(status_code=404, content={"error": "Custom provider not found. Re-add it under Providers."})
 
     if is_stream:
+        req_tools = body.get("tools")
+        if req_tools or body.get("websearch"):
+            tool_opts = dict(req_opts or {})
+            tool_opts["tools"] = req_tools or [WEB_SEARCH_TOOL]
+            try:
+                tool_response, tool_used = await asyncio.to_thread(
+                    run_tool_loop, messages, req_model, temp, max_tokens,
+                    user_keys, tool_opts,
+                )
+            except Exception as e:
+                logger.error(f"[CHAT] tool loop failed: {e}", exc_info=True)
+                prov, mname = _resolve_request_model(req_model)
+                _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
+                return JSONResponse(status_code=500, content={"error": str(e)})
+            tool_content = ""
+            try:
+                tool_content = tool_response["choices"][0]["message"].get("content") or ""
+            except Exception:
+                pass
+            chat_id = "chatcmpl-" + str(int(time.time()))
+            created_time = int(time.time())
+            async def tool_event_gen():
+                base = {"id": chat_id, "object": "chat.completion.chunk",
+                        "created": created_time, "model": tool_used}
+                if tool_content:
+                    chunk = dict(base, choices=[{"index": 0, "delta": {"content": tool_content}, "finish_reason": None}])
+                    yield "data: " + json.dumps(chunk) + "\n\n"
+                finish = dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])
+                yield "data: " + json.dumps(finish) + "\n\n"
+                yield "data: [DONE]\n\n"
+            _finish_usage(tool_used, completion_tokens=max(1, len(tool_content) // 4))
+            return StreamingResponse(tool_event_gen(), media_type="text/event-stream")
         try:
             if custom_row is not None:
                 stream, used_model = await asyncio.to_thread(
@@ -2252,7 +2304,7 @@ async def chat_completions(request: Request):
             prov, mname = _resolve_request_model(req_model)
             _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
             async def error_event_gen():
-                chat_id = f"chatcmpl-{int(time.time())}"
+                chat_id = "chatcmpl-" + str(int(time.time()))
                 created_time = int(time.time())
                 error_chunk = {
                     "id": chat_id, "object": "chat.completion.chunk",
@@ -2270,7 +2322,7 @@ async def chat_completions(request: Request):
             return StreamingResponse(error_event_gen(), media_type="text/event-stream")
 
         async def event_generator():
-            chat_id = f"chatcmpl-{int(time.time())}"
+            chat_id = "chatcmpl-" + str(int(time.time()))
             created_time = int(time.time())
             out_chars = 0
             finished = False
@@ -2341,16 +2393,25 @@ async def chat_completions(request: Request):
                     req_opts,
                 )
             else:
-                response, used_model = await asyncio.to_thread(
-                    generate,
-                    messages=messages,
-                    model=req_model,
-                    temperature=temp,
-                    max_tokens=max_tokens,
-                    stream=False,
-                    user_keys=user_keys,
-                    opts=req_opts,
-                )
+                req_tools = body.get("tools")
+                if req_tools or body.get("websearch"):
+                    tool_opts = dict(req_opts or {})
+                    tool_opts["tools"] = req_tools or [WEB_SEARCH_TOOL]
+                    response, used_model = await asyncio.to_thread(
+                        run_tool_loop, messages, req_model, temp, max_tokens,
+                        user_keys, tool_opts,
+                    )
+                else:
+                    response, used_model = await asyncio.to_thread(
+                        generate,
+                        messages=messages,
+                        model=req_model,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        stream=False,
+                        user_keys=user_keys,
+                        opts=req_opts,
+                    )
         except Exception as e:
             prov, mname = _resolve_request_model(req_model)
             _finish_usage(f"{prov}/{mname}", status=500)

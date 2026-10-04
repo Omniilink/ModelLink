@@ -97,6 +97,9 @@ a:hover{text-decoration:underline}
 .model-btn:hover{border-color:var(--border-light);color:var(--text-primary)}
 .model-btn svg{width:12px;height:12px;opacity:.5}
 .level-group{display:flex;gap:6px;align-items:center;flex-shrink:0}
+.ws-toggle{display:inline-flex;align-items:center;gap:5px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);padding:5px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;font-family:var(--font);flex-shrink:0}
+.ws-toggle:hover{color:var(--text-primary);border-color:var(--border-light)}
+.ws-toggle.on{background:var(--accent-dim);border-color:var(--accent);color:var(--accent-light)}
 .level-sel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:6px 6px;border-radius:var(--radius-xs);font-size:11px;font-family:var(--font);cursor:pointer;outline:none;max-width:104px}
 .level-sel:hover{border-color:var(--border-light);color:var(--text-primary)}
 .level-sel:focus{border-color:var(--accent)}
@@ -268,6 +271,7 @@ a:hover{text-decoration:underline}
 .cmd-result.stderr{color:var(--error)}
 .cmd-result.success{border-color:var(--success)}
 .cmd-result.fail{border-color:var(--error)}
+.cmd-result.neutral{border-color:var(--border);color:var(--text-muted)}
 .file-write-diff{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;white-space:pre;max-height:200px;overflow:auto}
 .file-write-diff.collapsed{max-height:76px;overflow:hidden;cursor:pointer}
 .cmd-result.collapsed{max-height:76px;overflow:hidden;cursor:pointer}
@@ -966,11 +970,14 @@ pre{max-width:100%}
             <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" title="Effort: reasoning work per answer (minimum = instant, max = deepest). See Help for details." onchange="setLevelCtl('effort',this.value)">
               <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
             </select>
-            <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" title="Think: thinking-token budget (minimum = direct answer, max = longest deliberation). See Help for details." onchange="setLevelCtl('thinking',this.value)">
-              <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
-            </select>
-          </div>
-        </div>
+             <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" title="Think: thinking-token budget (minimum = direct answer, max = longest deliberation). See Help for details." onchange="setLevelCtl('thinking',this.value)">
+               <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
+             </select>
+           </div>
+           <button class="ws-toggle" id="websearch-toggle" onclick="toggleWebSearch()" title="Let the model search the web for current information" aria-pressed="false">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Web</span>
+           </button>
+         </div>
         <div class="img-strip" id="img-strip" style="display:none"></div>
         <div class="input-box">
           <button class="img-btn" id="img-btn" onclick="document.getElementById('img-file').click()" title="Attach images (vision models only)">
@@ -1704,6 +1711,8 @@ if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener(
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
+var webSearchEnabled=false;
+function toggleWebSearch(){webSearchEnabled=!webSearchEnabled;var b=document.getElementById('websearch-toggle');if(b){b.classList.toggle('on',webSearchEnabled);b.setAttribute('aria-pressed',webSearchEnabled?'true':'false')}}
     function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt)cmt.textContent=id;document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
@@ -1884,7 +1893,7 @@ async function sendMessage(){
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   const startTime=Date.now();
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -1938,7 +1947,7 @@ function editAndResend(editIdx,newText,keepImgs){
   const area=document.getElementById('chat-area');const msgs=area.querySelectorAll('.message');
   msgs.forEach(m=>{const mi=parseInt(m.dataset.msgIndex);if(mi>=editIdx)m.remove()});
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})})
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
   .then(r=>r.body.getReader()).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='';
     function read(){reader.read().then(({done,value})=>{
@@ -2918,7 +2927,7 @@ async function sendCodingMessage(){
   if(!next.blocks){
     // A turn with no tool blocks keeps the streamed bubble — render the final
     // text now so no status note is left behind.
-    const cleaned=cleanCodingProse(fullText);
+    const cleaned=stripCodeForChat(cleanCodingProse(fullText));
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
@@ -3048,9 +3057,19 @@ function stripProtocolLines(text){
 function cleanCodingProse(text){
   return stripProtocolLines(stripToolBlocks(text)).replace(/\n{3,}/g,'\n\n').trim();
 }
+function stripCodeForChat(s){
+  return String(s==null?'':s).replace(/```[\s\S]*?```/g,'').replace(/`([^`]+)`/g,'$1').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+function cmdResultClass(result){
+  if(result.exit_code===0)return 'success';
+  var hasOut=(result.stdout||'').trim()||(result.stderr||'').trim();
+  return hasOut?'fail':'neutral';
+}
 function fmtCmdResult(result){
-  const t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
-  return escapeHtml(t.trim()?t:'(no output — command produced no text)');
+  var t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
+  t=t.trim();
+  if(!t)return (result.exit_code===0?'(no output)':'(no matches — exit '+result.exit_code+')');
+  return escapeHtml(t);
 }
 function diffLineOps(oldLines,newLines){
   // LCS diff -> [{t:' '|'-'|'+',text,an,bn}]. Null when too big (caller falls back).
@@ -3259,7 +3278,7 @@ async function processCodingActions(text,msgEl){
   const autoFile=fileCreates.length+fileEdits.length+filePatches.length,autoCmd=commands.length;
   if(autoFile+autoCmd>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=autoFile+' file action'+(autoFile!==1?'s':'')+' + '+autoCmd+' command'+(autoCmd!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
-  if(contentEl&&hasToolBlocks){const cleaned=cleanCodingProse(text);if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
+     if(contentEl&&hasToolBlocks){const cleaned=stripCodeForChat(cleanCodingProse(text));if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
@@ -3303,8 +3322,8 @@ async function processCodingActions(text,msgEl){
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok)refreshCodingTree();return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const wf of webFetches){
     const url=wf.url;
@@ -3365,7 +3384,7 @@ async function processCodingActions(text,msgEl){
         toolDiv.innerHTML='<div class="tool-label">Run command: '+escapeHtml(cmd.length>200?cmd.slice(0,200)+'…':cmd)+'</div>';
         const bar=document.createElement('div');bar.className='approve-bar';
         const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';
-        ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};
+        ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};
         const db=document.createElement('button');db.className='deny';db.textContent='Skip';
         db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
         bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
@@ -3491,7 +3510,7 @@ function appendCodingHistoryMsg(m){
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
-  el.querySelector('.coding-msg-content').innerHTML=renderContent(cleanCodingProse((m.content||'').replace(/```(\w*)\n[\s\S]*?```/g,(mm,lang)=>'\n[code block'+(lang?' ('+lang+')':'')+' omitted]\n')));
+   el.querySelector('.coding-msg-content').innerHTML=renderContent(stripCodeForChat(cleanCodingProse((m.content||'').replace(/```(\w*)\n[\s\S]*?```/g,''))));
   chat.appendChild(el);
 }
 const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos'];
@@ -3643,7 +3662,7 @@ async function streamCodingTurn(messages){
   if(!actions.blocks){
     // Same as sendCodingMessage: a turn with no tool blocks keeps the streamed
     // bubble — spinner included. Render the final text so it stops spinning.
-    const cleaned=cleanCodingProse(fullText);
+    const cleaned=stripCodeForChat(cleanCodingProse(fullText));
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
@@ -5410,7 +5429,7 @@ function sendCompareRequest(userMsg){
   const metaEl=assistantEl.closest('.message').querySelector('.message-meta');
   if(metaEl)metaEl.textContent='vs '+compareModel;
   const tempHistory=[...chatHistory.slice(0,-1)];
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})}).then(r=>{
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})}).then(r=>{
     if(!r.ok)throw new Error('offline');
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
     function read(){reader.read().then(({done,value})=>{
