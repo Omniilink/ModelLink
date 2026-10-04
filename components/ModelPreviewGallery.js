@@ -183,6 +183,126 @@
     }
   };
 
+  // ---- AI design spec -> geometry ---------------------------------------
+  var SPEC_KINDS = ['crate', 'barrel', 'sphere', 'cylinder', 'cone', 'slab', 'ring', 'column'];
+
+  var SpecParser = {
+    // Pull the first JSON object out of a model reply (tolerates prose/fences).
+    parse: function (text) {
+      var t = String(text || '').replace(/```[a-z]*/gi, '');
+      var s = t.indexOf('{'), e = t.lastIndexOf('}');
+      if (s < 0 || e <= s) return null;
+      var raw = null;
+      try { raw = JSON.parse(t.slice(s, e + 1)); } catch (err) { return null; }
+      return SpecParser.normalize(raw);
+    },
+    normalize: function (raw) {
+      if (!raw || typeof raw !== 'object') return null;
+      var kind = String(raw.kind || '').toLowerCase();
+      if (SPEC_KINDS.indexOf(kind) < 0) kind = '';
+      var size = [1, 1, 1], src = raw.size;
+      if (Array.isArray(src) && src.length >= 3) size = [src[0], src[1], src[2]];
+      else if (src && typeof src === 'object') size = [src.width || src.x || 1, src.height || src.y || 1, src.depth || src.z || 1];
+      else if (typeof src === 'number') size = [src, src, src];
+      size = size.map(function (n) {
+        var v = Number(n);
+        if (!isFinite(v) || v <= 0) return 1;
+        return Math.min(4, Math.max(0.2, v));
+      });
+      var num = function (v, d, lo, hi) { v = Number(v); if (!isFinite(v)) return d; return Math.min(hi, Math.max(lo, v)); };
+      return {
+        kind: kind || 'crate',
+        name: String(raw.name || '').replace(/\s+/g, ' ').trim().slice(0, 46),
+        size: size,
+        color: /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(raw.color || '')) ? String(raw.color) : '#9aa2ad',
+        roughness: num(raw.roughness, 0.8, 0, 1),
+        metalness: num(raw.metalness, 0.1, 0, 1),
+        detail: (raw.detail === 'low' || raw.detail === 'high') ? raw.detail : 'medium'
+      };
+    }
+  };
+
+  // Build a mesh group from a normalised design spec.
+  Generators.fromSpec = function (spec) {
+    var THREE = global.THREE;
+    var s = SpecParser.normalize(spec) || SpecParser.normalize({});
+    var g = new THREE.Group();
+    var w = s.size[0], h = s.size[1], d = s.size[2];
+    var seg = s.detail === 'low' ? 12 : (s.detail === 'high' ? 64 : 32);
+    var round = (s.kind === 'barrel' || s.kind === 'cylinder' || s.kind === 'sphere' ||
+      s.kind === 'ring' || s.kind === 'column' || s.kind === 'cone');
+    var mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(s.color),
+      map: texFromCanvas(round ? Procedural.wornMetal(256) : Procedural.wood(256)),
+      roughness: s.roughness,
+      metalness: s.metalness
+    });
+    var trim = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(s.color).multiplyScalar(0.55),
+      roughness: Math.min(1, s.roughness + 0.15),
+      metalness: Math.max(0.2, s.metalness)
+    });
+    function add(mesh) { g.add(mesh); return mesh; }
+    switch (s.kind) {
+      case 'barrel': {
+        var shell = add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg, 1), mat));
+        shell.material.side = THREE.DoubleSide;
+        [-h * 0.36, h * 0.36].forEach(function (y) {
+          var r = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2 + 0.02, Math.min(0.04, w * 0.05), 8, seg), trim));
+          r.rotation.x = Math.PI / 2; r.position.y = y;
+        });
+        break;
+      }
+      case 'sphere':
+        add(new THREE.Mesh(new THREE.SphereGeometry(w / 2, seg, Math.max(8, Math.round(seg / 2))), mat));
+        break;
+      case 'cylinder':
+        add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, h, seg), mat));
+        break;
+      case 'cone':
+        add(new THREE.Mesh(new THREE.ConeGeometry(w / 2, h, seg), mat));
+        break;
+      case 'slab': {
+        var slab = add(new THREE.Mesh(new THREE.BoxGeometry(w, Math.max(0.1, h * 0.35), d), mat));
+        [-w / 2, w / 2].forEach(function (x) {
+          var leg = add(new THREE.Mesh(new THREE.BoxGeometry(0.08, h, 0.08), trim));
+          leg.position.set(x * 0.9, 0, d * 0.4);
+          var leg2 = leg.clone(); leg2.position.z = -d * 0.4; g.add(leg2);
+        });
+        slab.position.y = h * 0.3;
+        break;
+      }
+      case 'ring': {
+        var ring = add(new THREE.Mesh(new THREE.TorusGeometry(w / 2, Math.max(0.04, Math.min(w, h) * 0.12), 10, seg), mat));
+        ring.rotation.x = Math.PI / 2;
+        break;
+      }
+      case 'column': {
+        add(new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2 * 1.05, h, seg), mat));
+        [h / 2, -h / 2].forEach(function (y) {
+          var cap = add(new THREE.Mesh(new THREE.BoxGeometry(w * 1.25, Math.min(0.12, h * 0.12), w * 1.25), trim));
+          cap.position.y = y;
+        });
+        break;
+      }
+      case 'crate':
+      default: {
+        add(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+        var t = Math.min(0.07, Math.min(w, d) * 0.12);
+        [-1, 1].forEach(function (sx) {
+          [-1, 1].forEach(function (sz) {
+            var post = add(new THREE.Mesh(new THREE.BoxGeometry(t, h * 1.02, t), trim));
+            post.position.set(sx * (w / 2 - t / 2), 0, sz * (d / 2 - t / 2));
+          });
+        });
+        break;
+      }
+    }
+    g.userData.suggestedName = s.name || '';
+    g.userData.spec = s;
+    return g;
+  };
+
   // Map a natural-language prompt onto an available generator.
   function pickKind(prompt) {
     var p = String(prompt || '').toLowerCase();
@@ -206,15 +326,26 @@
     this.apiBase = opts.apiBase || '';
     this._fetch = opts.fetch || (global.fetch ? global.fetch.bind(global) : null);
     this.onModifyModel = typeof opts.onModifyModel === 'function' ? opts.onModifyModel : function () {};
-    this.onGenerate = typeof opts.onGenerate === 'function' ? opts.onGenerate : null;
+    this.onModelCreated = typeof opts.onModelCreated === 'function' ? opts.onModelCreated : null;
+    this.getModels = typeof opts.getModels === 'function' ? opts.getModels : null;
     this.models = [];
     this.selected = null;
     this.filter = 'all';
     this.query = '';
     this.viewport = null;
+    this.busy = false;
+    this._loadToken = 0;
     this._disposed = false;
+    this.modelChoice = opts.model || ModelPreviewGallery._storageGet('omni_models_model') || 'omniilink';
     this.build();
   }
+
+  ModelPreviewGallery._storageGet = function (k) {
+    try { return global.localStorage ? global.localStorage.getItem(k) : ''; } catch (e) { return ''; }
+  };
+  ModelPreviewGallery._storageSet = function (k, v) {
+    try { if (global.localStorage) global.localStorage.setItem(k, v); } catch (e) {}
+  };
 
   ModelPreviewGallery.prototype.build = function () {
     var self = this;
@@ -236,30 +367,45 @@
     this.filtersEl = filters;
     bar.appendChild(filters);
     var spacer = h('span'); spacer.style.flex = '1'; bar.appendChild(spacer);
-    if (this.onGenerate) {
-      var gen = h('button', 'btn btn-primary btn-sm', '+ Create 3D model');
-      gen.onclick = function () { self.openComposer(); };
-      bar.appendChild(gen);
-    }
+    var gen = h('button', 'btn btn-primary btn-sm mpg-create', '+ Create 3D model');
+    gen.onclick = function () { self.openComposer(); };
+    this.createBtn = gen;
+    bar.appendChild(gen);
     var refresh = h('button', 'btn btn-ghost btn-sm', 'Refresh');
     refresh.onclick = function () { self.load(); };
     bar.appendChild(refresh);
     wrap.appendChild(bar);
 
-    // chat bar: describe the model, then generate
+    // chat bar: pick a model, describe the model, then generate
     this.composer = h('div', 'mpg-composer');
     this.composer.hidden = true;
+    var selRow = h('div', 'mpg-selrow');
+    var selLabel = h('label', 'mpg-sel-label', 'AI model');
+    this.modelSel = h('select', 'level-sel mpg-model-sel');
+    this.modelSel.setAttribute('aria-label', 'AI model to generate with');
+    this.modelSel.onchange = function () {
+      self.modelChoice = self.modelSel.value;
+      ModelPreviewGallery._storageSet('omni_models_model', self.modelChoice);
+    };
+    selLabel.appendChild(this.modelSel);
+    selRow.appendChild(selLabel);
+    var hint = h('span', 'mpg-sel-hint', 'Uses this model to design the shape, then builds it in 3D.');
+    selRow.appendChild(hint);
+    this.composer.appendChild(selRow);
+    this._fillModels();
+
     this.composerInput = h('textarea', 'mpg-composer-input');
     this.composerInput.rows = 2;
     this.composerInput.placeholder = 'Describe the 3D model you want… e.g. "a weathered wooden shipping crate with iron corners"';
     this.composerInput.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); self._submitPrompt(); }
     });
-    var send = h('button', 'btn btn-primary mpg-composer-send', 'Generate');
+    var send = h('button', 'btn btn-primary mpg-composer-send');
+    send.appendChild(h('span', 'mpg-send-label', 'Generate'));
     send.onclick = function () { self._submitPrompt(); };
     var close = h('button', 'mpg-composer-close', '×');
     close.setAttribute('aria-label', 'Close');
-    close.onclick = function () { self.closeComposer(); };
+    close.onclick = function () { if (!self.busy) self.closeComposer(); };
     this.composerSend = send;
     this.composer.appendChild(this.composerInput);
     this.composer.appendChild(send);
@@ -406,6 +552,12 @@
       meta.textContent = [(m.format || '').toUpperCase(), m.polygonCount ? m.polygonCount.toLocaleString() + ' tris' : '',
         m.generationMethod || '', m.quality || ''].filter(Boolean).join(' • ');
       body.appendChild(meta);
+      if (m.model || m.prompt) {
+        var sub = h('div', 'mpg-card-sub');
+        if (m.model) { var chip = h('span', 'mpg-chip', m.model); sub.appendChild(chip); }
+        if (m.shape) sub.appendChild(h('span', 'mpg-chip mpg-chip-quiet', m.shape));
+        body.appendChild(sub);
+      }
       if (m.prompt) { var pr = h('div', 'mpg-card-prompt', m.prompt); body.appendChild(pr); }
       var status = h('div', 'mpg-card-status ' + (m.status || 'ready'), m.status || 'ready');
       body.appendChild(status);
@@ -429,17 +581,36 @@
     });
   };
 
+  // Populate the AI-model dropdown from the app's discovered model list.
+  ModelPreviewGallery.prototype._fillModels = function () {
+    if (!this.modelSel) return;
+    var list = [];
+    try { list = (this.getModels ? this.getModels() : []) || []; } catch (e) { list = []; }
+    list = list.filter(function (m) { return m && m.id; });
+    if (!list.length) list = [{ id: 'omniilink', provider: 'auto' }];
+    var chosen = this.modelChoice;
+    if (!list.some(function (m) { return m.id === chosen; })) chosen = list[0].id;
+    this.modelChoice = chosen;
+    this.modelSel.innerHTML = '';
+    var self = this;
+    list.forEach(function (m) {
+      var o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.id + (m.provider && m.provider !== 'auto' ? ' · ' + m.provider : '');
+      self.modelSel.appendChild(o);
+    });
+    this.modelSel.value = chosen;
+  };
+
   ModelPreviewGallery.prototype._showEmpty = function () {
     var self = this;
     this.gridEl.innerHTML = '';
     var empty = h('div', 'mpg-empty');
     empty.appendChild(h('div', 'mpg-empty-title', 'No 3D models yet'));
     empty.appendChild(h('div', 'mpg-empty-sub', 'Generate your first model with Omniilink AI.'));
-    if (this.onGenerate) {
-      var b = h('button', 'btn btn-primary btn-sm', 'Create 3D model');
-      b.onclick = function () { self.openComposer(); };
-      empty.appendChild(b);
-    }
+    var b = h('button', 'btn btn-primary btn-sm', 'Create 3D model');
+    b.onclick = function () { self.openComposer(); };
+    empty.appendChild(b);
     this.gridEl.appendChild(empty);
   };
 
@@ -491,33 +662,71 @@
     this.infoEl.textContent = (this.selected ? this.selected.name : 'Model') + ' — ' + Math.round(tri).toLocaleString() + ' triangles, ' + Object.keys(mats).length + ' material(s)';
   };
 
+  // Human-readable text for anything a loader can throw at us.
+  function loadErrorText(e) {
+    var m = (e && e.message) ? String(e.message) : String(e);
+    if (e && e.name === 'AbortError') return 'the request timed out';
+    if (/Failed to fetch/i.test(m) || /Load failed/i.test(m)) {
+      return 'the browser blocked the request (network or content-security policy)';
+    }
+    if (!m || /^\[object (Event|ProgressEvent)\]$/.test(m)) return 'a network error interrupted the download';
+    return m;
+  }
+
+  // Fetch a model asset ourselves so we can report the exact HTTP status.
+  ModelPreviewGallery.prototype._fetchAsset = async function (url) {
+    if (!this._fetch) throw new Error('no fetch');
+    var r = await this._fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) {
+      var known = {
+        401: 'your session expired — sign in again',
+        403: 'you do not have access to this model',
+        404: 'the file is missing on the server',
+        413: 'the file is too large for the server',
+        500: 'the server hit an error reading the file'
+      };
+      var detail = known[r.status] || ('HTTP ' + r.status);
+      try {
+        var j = await r.clone().json();
+        if (j && j.error) detail = 'HTTP ' + r.status + ' — ' + j.error;
+      } catch (e) {}
+      throw new Error(detail);
+    }
+    return await r.arrayBuffer();
+  };
+
   ModelPreviewGallery.prototype._loadIntoViewport = function (m) {
-    var THREE = global.THREE; if (!THREE) { this.setStatus('Three.js not loaded.', 'error'); return; }
+    var THREE = global.THREE;
+    if (!THREE) { this.setStatus('Three.js not loaded.', 'error'); return; }
     var self = this;
     var url = this.apiBase + '/api/models/' + encodeURIComponent(m.id) + '/asset';
     var f = (m.format || ext(m.path) || '').toLowerCase();
-    this.setStatus('Loading ' + (m.name || 'model') + '...');
-    function done() { self.setStatus(''); }
-    function fail(e) { self.setStatus('Could not load model: ' + (e && e.message ? e.message : e), 'error'); }
-    try {
+    var token = ++this._loadToken;
+    this.setStatus('Loading ' + (m.name || 'model') + '…');
+    function stale() { return token !== self._loadToken; }
+    function ok(obj) { if (stale()) return; self._addAndFrame(obj); self.setStatus(''); }
+    function bad(e) { if (stale()) return; self.setStatus('Could not load model: ' + loadErrorText(e), 'error'); }
+    this._fetchAsset(url).then(function (buf) {
+      if (stale()) return;
       if (f === 'glb' || f === 'gltf') {
-        new THREE.GLTFLoader().load(url, function (g) { self._addAndFrame(g.scene || g.scenes[0]); done(); }, undefined, fail);
+        new THREE.GLTFLoader().parse(buf, '', function (g) {
+          ok(g.scene || (g.scenes && g.scenes[0]));
+        }, bad);
       } else if (f === 'obj') {
-        new THREE.OBJLoader().load(url, function (o) { self._addAndFrame(o); done(); }, undefined, fail);
+        ok(new THREE.OBJLoader().parse(new TextDecoder().decode(buf)));
       } else if (f === 'stl') {
-        new THREE.STLLoader().load(url, function (geo) {
-          geo.computeVertexNormals();
-          self._addAndFrame(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x9aa2ad, metalness: 0.2, roughness: 0.7 })));
-          done();
-        }, undefined, fail);
+        var geo = new THREE.STLLoader().parse(buf);
+        geo.computeVertexNormals();
+        ok(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x9aa2ad, metalness: 0.2, roughness: 0.7 })));
       } else {
-        fail(new Error('Unsupported format: ' + f));
+        bad(new Error('unsupported format "' + (f || 'unknown') + '"'));
       }
-    } catch (e) { fail(e); }
+    }).catch(bad);
   };
 
   ModelPreviewGallery.prototype.openComposer = function () {
     if (!this.composer) return;
+    this._fillModels();
     this.composer.hidden = false;
     this.composerInput.value = '';
     this.composerInput.focus();
@@ -525,29 +734,102 @@
   };
 
   ModelPreviewGallery.prototype.closeComposer = function () {
-    if (!this.composer) return;
+    if (!this.composer || this.busy) return;
     this.composer.hidden = true;
   };
 
-  // Send the chat-bar prompt to the app's AI handler (or generate locally).
-  ModelPreviewGallery.prototype._submitPrompt = async function () {
-    var prompt = (this.composerInput.value || '').trim();
-    if (!prompt) { this.composerInput.focus(); this.setStatus('Describe what you want to create.', 'error'); return; }
-    this.composerInput.disabled = true;
-    this.composerSend.disabled = true;
-    this.setStatus('Creating "' + prompt.slice(0, 80) + '"...');
+  // Spinner + disabled controls while a generation is in flight.
+  ModelPreviewGallery.prototype._setBusy = function (busy, label) {
+    this.busy = !!busy;
+    if (this.composer) this.composer.classList.toggle('busy', !!busy);
+    if (this.composerInput) this.composerInput.disabled = !!busy;
+    if (this.composerSend) {
+      this.composerSend.disabled = !!busy;
+      var lab = this.composerSend.querySelector('.mpg-send-label');
+      if (lab) lab.textContent = busy ? (label || 'Generating…') : 'Generate';
+      var sp = this.composerSend.querySelector('.mpg-spin');
+      if (busy && !sp) this.composerSend.insertBefore(h('span', 'mpg-spin'), this.composerSend.firstChild);
+      if (!busy && sp) sp.remove();
+    }
+    if (this.createBtn) {
+      this.createBtn.disabled = !!busy;
+      this.createBtn.textContent = busy ? (label || 'Generating…') : '+ Create 3D model';
+    }
+  };
+
+  ModelPreviewGallery.prototype._stage = function (msg) {
+    this.setStatus(msg || '');
+  };
+
+  // Ask the selected AI model for a compact design spec (JSON).
+  ModelPreviewGallery.prototype._askForSpec = async function (prompt, model) {
+    if (!this._fetch) throw new Error('no fetch');
+    var sys = 'You are a 3D model designer. Reply with ONLY one compact JSON object, no markdown, no prose: ' +
+      '{"kind":"crate|barrel|sphere|cylinder|cone|slab|ring|column","name":"short name, max 6 words",' +
+      '"size":[width,height,depth] in meters, each between 0.2 and 4,' +
+      '"color":"#rrggbb","roughness":0.0-1.0,"metalness":0.0-1.0,"detail":"low|medium|high"}. ' +
+      'Choose the kind that best fits the request. The object must be a simple primitive-based shape ' +
+      'that can be built from boxes, cylinders, spheres and tori.';
+    var body = {
+      model: model || 'omniilink',
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
+      stream: false, temperature: 0.4, max_tokens: 300
+    };
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 20000) : null;
     try {
-      if (this.onGenerate) { await this.onGenerate(prompt); }
-      else { await this.generate(null, prompt, 'MEDIUM'); }
+      var r = await this._fetch(this.apiBase + '/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if (!r.ok) { var er = await r.json().catch(function () { return {}; }); throw new Error((er && er.error) || ('HTTP ' + r.status)); }
+      var data = await r.json();
+      var text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (!text) throw new Error('the model returned no design');
+      var spec = ModelPreviewGallery.parseSpec(text);
+      if (!spec) throw new Error('the model returned an unreadable design');
+      return spec;
+    } finally { if (timer) clearTimeout(timer); }
+  };
+
+  // Send the chat-bar prompt: ask the chosen model, build geometry, save.
+  ModelPreviewGallery.prototype._submitPrompt = async function () {
+    if (this.busy) return;
+    var prompt = (this.composerInput.value || '').trim();
+    if (!prompt) {
+      this.composerInput.focus();
+      this._stage('Describe what you want to create.');
+      if (this.statusEl) this.statusEl.classList.add('error');
+      return;
+    }
+    var model = this.modelChoice || 'omniilink';
+    this._setBusy(true, 'Generating…');
+    if (this.statusEl) this.statusEl.classList.remove('error');
+    var spec = null;
+    try {
+      this._stage('Asking ' + model + ' for a design…');
+      try {
+        spec = await this._askForSpec(prompt, model);
+      } catch (e) {
+        spec = null;
+        this._stage('Design from ' + model + ' unavailable — using the built-in generator…');
+        if (global.showToast) {
+          global.showToast('The ' + model + ' design step failed (' + (e && e.message ? e.message : e)
+            + ') — built the model with the built-in generator instead', 'info');
+        }
+      }
+      this._stage('Building geometry…');
+      await this.generate(null, prompt, 'MEDIUM', spec, model);
       this.composerInput.value = '';
       this.closeComposer();
-      this.setStatus('');
+      this._stage('');
     } catch (e) {
-      this.setStatus('Generation failed: ' + (e && e.message ? e.message : e), 'error');
+      this._stage('Generation failed: ' + (e && e.message ? e.message : e));
+      if (this.statusEl) this.statusEl.classList.add('error');
     } finally {
-      this.composerInput.disabled = false;
-      this.composerSend.disabled = false;
-      this.composerInput.focus();
+      this._setBusy(false);
+      if (!this.composer.hidden) this.composerInput.focus();
     }
   };
 
@@ -583,19 +865,27 @@
     document.body.appendChild(a); a.click(); a.remove();
   };
 
-  // Build a procedural model client-side and register it to the workspace.
-  ModelPreviewGallery.prototype.generate = async function (kind, promptText, quality) {
+  // Build a model client-side (from an AI spec when we have one) and save it.
+  ModelPreviewGallery.prototype.generate = async function (kind, promptText, quality, spec, model) {
     var THREE = global.THREE; if (!THREE) throw new Error('Three.js not loaded');
     var prompt = String(promptText || '').trim();
-    if (!kind) kind = pickKind(prompt);
-    var make = Generators[kind] || Generators.crate;
-    var group = make();
-    var suggested = (group.userData && group.userData.suggestedName) || ('Procedural ' + kind);
-    var name = nameFromPrompt(prompt) || suggested;
-    return await this._exportAndRegister(group, name, prompt || suggested, quality || 'MEDIUM');
+    var group, shape;
+    if (spec) {
+      group = Generators.fromSpec(spec);
+      shape = spec.kind;
+    } else {
+      if (!kind) kind = pickKind(prompt);
+      group = (Generators[kind] || Generators.crate)();
+      shape = kind;
+    }
+    var suggested = (group.userData && group.userData.suggestedName) || ('Procedural ' + (shape || 'model'));
+    var name = nameFromPrompt(prompt) || spec && spec.name || suggested;
+    var method = spec ? 'ai-spec-three' : 'procedural-keyword';
+    return await this._exportAndRegister(group, name, prompt || suggested, quality || 'MEDIUM',
+      model || this.modelChoice, shape, method);
   };
 
-  ModelPreviewGallery.prototype._exportAndRegister = function (group, name, promptText, quality) {
+  ModelPreviewGallery.prototype._exportAndRegister = function (group, name, promptText, quality, model, shape, method) {
     var THREE = global.THREE, self = this;
     return new Promise(function (resolve, reject) {
       var exporter = new THREE.GLTFExporter();
@@ -607,16 +897,20 @@
           var tri = 0, mats = {};
           group.traverse(function (o) { if (o.geometry) { var g = o.geometry; tri += (g.index ? g.index.count : (g.attributes && g.attributes.position ? g.attributes.position.count : 0)) / 3; } if (o.material) mats[o.material.uuid || Math.random()] = 1; });
           var body = {
-            name: name, prompt: promptText, format: 'glb', generationMethod: 'procedural-three',
+            name: name, prompt: promptText, format: 'glb',
+            generationMethod: method || 'procedural-three',
             quality: quality, polygonCount: Math.round(tri), materialCount: Object.keys(mats).length,
             dimensions: { x: +dims.x.toFixed(3), y: +dims.y.toFixed(3), z: +dims.z.toFixed(3) },
+            model: model || '', shape: shape || '',
             asset_b64: b64
           };
+          self._stage('Saving…');
           var saved = await self._fetchJson('/api/models', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           await self.load();
           if (saved && saved.model) self.select(saved.model.id);
+          if (self.onModelCreated && saved && saved.model) self.onModelCreated(saved.model);
           resolve(saved);
         } catch (e) { reject(e); }
       }, { binary: true });
@@ -653,6 +947,10 @@
   ModelPreviewGallery.Generators = Generators;
   ModelPreviewGallery.pickKind = pickKind;
   ModelPreviewGallery.nameFromPrompt = nameFromPrompt;
+  ModelPreviewGallery.parseSpec = SpecParser.parse;
+  ModelPreviewGallery.normalizeSpec = SpecParser.normalize;
+  ModelPreviewGallery.SPEC_KINDS = SPEC_KINDS;
+  ModelPreviewGallery.loadErrorText = loadErrorText;
 
   global.ModelPreviewGallery = ModelPreviewGallery;
   if (typeof module !== 'undefined' && module.exports) module.exports = ModelPreviewGallery;

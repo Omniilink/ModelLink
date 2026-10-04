@@ -777,6 +777,22 @@ pre{max-width:100%}
 .mpg-composer-close:hover{color:var(--text-primary);background:var(--bg-active)}
 .mpg-del{color:var(--error) !important}
 .mpg-del:hover{border-color:var(--error) !important}
+/* model selector row in the chat bar */
+.mpg-selrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.mpg-sel-label{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);font-weight:700}
+.mpg-model-sel{min-width:190px;max-width:320px}
+.mpg-sel-hint{font-size:11.5px;color:var(--text-muted)}
+/* spinner */
+.mpg-spin{width:13px;height:13px;border-radius:50%;display:inline-block;flex-shrink:0;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:mpgspin .7s linear infinite;vertical-align:-2px}
+.mpg-composer.busy .mpg-composer-input{background:var(--bg-tertiary)}
+.mpg-create:disabled{opacity:.75;cursor:progress}
+.mpg-composer-send{gap:7px;display:inline-flex;align-items:center;justify-content:center}
+@keyframes mpgspin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.mpg-spin{animation-duration:2s}}
+/* card chips */
+.mpg-card-sub{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+.mpg-chip{font-size:9.5px;padding:2px 7px;border-radius:20px;background:var(--accent-dim);color:var(--accent-light);font-family:var(--mono);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mpg-chip-quiet{background:var(--bg-tertiary);color:var(--text-muted)}
 @media(max-width:900px){.mpg-cols{grid-template-columns:1fr}.mpg-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));max-height:none}.mpg-viewport{min-height:320px}.mpg-canvas{min-height:320px}}
 </style>
 </head>
@@ -6217,10 +6233,21 @@ function ensureModelsLibs(cb){
   })();
 }
 var modelsGallery=null;
+// Models the gallery can generate with: the auto-router first, then every
+// model the app has discovered from connected providers.
+function modelsForGallery(){
+  var list=(typeof allModels!=='undefined'&&allModels)?allModels.slice():[];
+  var out=[{id:'omniilink',provider:'auto'}];
+  list.forEach(function(m){if(m&&m.id&&m.id!=='omniilink')out.push(m)});
+  return out;
+}
+function modelCreated(m){
+  showToast('Generated "'+(m&&m.name?m.name:'3D model')+'"', 'success');
+}
 function openModelsView(){
   ensureModelsLibs(function(){
     var host=document.getElementById('models-body');if(!host)return;
-    if(!modelsGallery){modelsGallery=new ModelPreviewGallery(host,{apiBase:API,fetch:authFetch,onModifyModel:modifyModelWithAI,onGenerate:createModelWithAI})}
+    if(!modelsGallery){modelsGallery=new ModelPreviewGallery(host,{apiBase:API,fetch:authFetch,getModels:modelsForGallery,onModifyModel:modifyModelWithAI,onModelCreated:modelCreated})}
     modelsGallery.load();
   });
 }
@@ -6229,15 +6256,6 @@ function modifyModelWithAI(model){
   var line='Modify the 3D model "'+(model.name||'model')+'" ('+(model.format||'glb')+', '+((model.polygonCount||0).toLocaleString())+' triangles). Original prompt: '+(model.prompt||'')+'\\nUse the 3d-generation skill. Describe the exact change you want.';
   try{var inp=document.getElementById('coding-input');if(inp){inp.value=line;inp.style.height='auto';inp.focus()}}catch(e){}
   showToast('Describe the change in the coding chat and send','info');
-}
-function createModelWithAI(prompt){
-  ensureModelsLibs(function(){
-    if(!modelsGallery){openModelsView();setTimeout(function(){createModelWithAI(prompt)},400);return}
-    var kind=(typeof window.__modelKind==='string')?window.__modelKind:null;
-    modelsGallery.generate(kind,prompt||'','MEDIUM')
-      .then(function(){showToast('Generated a new 3D model','success')})
-      .catch(function(e){showToast('Generation failed: '+e.message,'error');throw e});
-  });
 }
 </script>
 </body>

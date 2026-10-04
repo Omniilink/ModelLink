@@ -599,9 +599,12 @@ def _csp_connect_extra():
 
 def _csp_policy():
     extra = _csp_connect_extra()
-    connect = "connect-src 'self' cloudflareinsights.com" + (f" {extra}" if extra else "")
+    # blob: is required by the Models viewport: three.js decodes embedded
+    # GLB textures into blob: URLs and fetch()es them, which connect-src
+    # blocks without it (that surfaced as "Could not load model: Failed to fetch").
+    connect = "connect-src 'self' cloudflareinsights.com" + (f" {extra}" if extra else "") + " blob:"
     return ("default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
-            "style-src 'self' 'unsafe-inline'; img-src 'self' data: *.ytimg.com; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: *.ytimg.com blob:; "
             f"{connect}; font-src 'self'; object-src 'none'; "
             "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
@@ -3584,7 +3587,8 @@ def _model_public(m):
     return {k: m.get(k) for k in
             ("id", "name", "prompt", "format", "generationMethod", "quality",
              "polygonCount", "materialCount", "textureCount", "fileSize",
-             "dimensions", "createdAt", "status", "thumbnail")}
+             "dimensions", "createdAt", "status", "thumbnail",
+             "model", "shape")}
 
 
 @app.get("/api/models")
@@ -3641,6 +3645,8 @@ async def models_create(request: Request):
         "fileSize": os.path.getsize(full),
         "dimensions": data.get("dimensions") or None,
         "thumbnail": data.get("thumbnail") or None,
+        "model": str(data.get("model", "") or "")[:128],
+        "shape": str(data.get("shape", "") or "")[:32],
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "status": "ready",
     }
