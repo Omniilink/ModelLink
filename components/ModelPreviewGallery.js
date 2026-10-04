@@ -151,17 +151,20 @@
       var wood = texFromCanvas(Procedural.wood(256));
       var rough = texFromCanvas(Procedural.roughness(128), false);
       var mat = new THREE.MeshStandardMaterial({ map: wood, roughnessMap: rough, roughness: 0.9, metalness: 0.0 });
-      var body = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
-      g.add(body);
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat));
+      // 12 edge beams form the frame around the box
       var frameMat = new THREE.MeshStandardMaterial({ color: 0x3a2412, roughness: 0.8 });
-      var s = 1.06, t = 0.07;
-      [[0, s / 2, 0], [0, -s / 2, 0], [s / 2, 0, 0], [-s / 2, 0, 0]].forEach(function (p) {
-        var bar = new THREE.Mesh(new THREE.BoxGeometry(p[1] ? t : s, p[0] || s, p[2] || s), frameMat);
-        bar.position.set(p[0], p[1], p[2]);
-        if (!p[1] && p[0]) bar.geometry = new THREE.BoxGeometry(t, s, s);
-        if (!p[2] && p[0]) bar.geometry = new THREE.BoxGeometry(t, s, s);
-        g.add(bar);
-      });
+      var s = 1.05, t = 0.09;
+      function beam(dims, pos) {
+        var m = new THREE.Mesh(new THREE.BoxGeometry(dims[0], dims[1], dims[2]), frameMat);
+        m.position.set(pos[0], pos[1], pos[2]);
+        g.add(m);
+      }
+      [-1, 1].forEach(function (a) { [-1, 1].forEach(function (b) {
+        beam([t, s, t], [a * s / 2, 0, b * s / 2]);   // vertical edges
+        beam([s, t, t], [0, a * s / 2, b * s / 2]);   // edges along x
+        beam([t, t, s], [a * s / 2, b * s / 2, 0]);   // edges along z
+      }); });
       g.userData.suggestedName = 'Procedural Crate';
       return g;
     },
@@ -186,20 +189,72 @@
   // ---- AI design spec -> geometry ---------------------------------------
   var SPEC_KINDS = ['crate', 'barrel', 'sphere', 'cylinder', 'cone', 'slab', 'ring', 'column'];
 
+  // Models rarely answer with our exact enum — map their words onto the
+  // primitives we can actually build. Insertion order is also the priority
+  // order used when scanning free text.
+  var KIND_ALIASES = {
+    sphere: 'sphere', ball: 'sphere', globe: 'sphere', orb: 'sphere', marble: 'sphere',
+    barrel: 'barrel', drum: 'barrel', canister: 'barrel', tank: 'barrel', bucket: 'barrel',
+    pail: 'barrel', keg: 'barrel', can: 'barrel',
+    cone: 'cone', pyramid: 'cone', wedge: 'cone', spike: 'cone', chevron: 'cone',
+    ring: 'ring', hoop: 'ring', torus: 'ring', donut: 'ring', tire: 'ring',
+    column: 'column', pillar: 'column', post: 'column', pole: 'column', tower: 'column',
+    rod: 'column', trunk: 'column', tree: 'column',
+    slab: 'slab', plate: 'slab', panel: 'slab', shelf: 'slab', table: 'slab',
+    platform: 'slab', disk: 'slab', counter: 'slab', tile: 'slab',
+    cylinder: 'cylinder', tube: 'cylinder', pipe: 'cylinder', roll: 'cylinder',
+    crate: 'crate', box: 'crate', chest: 'crate', case: 'crate', cube: 'crate',
+    block: 'crate', package: 'crate', parcel: 'crate', cabinet: 'crate', bin: 'crate'
+  };
+
+  // Aliases that are also ordinary English words. They may be trusted in the
+  // model's own short label, but never when scanning the user's sentence —
+  // "can you make a wooden crate" must not resolve to a barrel.
+  var AMBIGUOUS_ALIASES = { can: 1, case: 1, post: 1, roll: 1, block: 1 };
+
+  // Word-boundary scan of text. Enum kinds are checked first (unambiguous by
+  // definition), then the aliases.
+  function inferKind(text, allowAmbiguous) {
+    var t = String(text || '').toLowerCase();
+    if (!t) return '';
+    for (var j = 0; j < SPEC_KINDS.length; j++) {
+      if (new RegExp('\\b' + SPEC_KINDS[j] + '\\b').test(t)) return SPEC_KINDS[j];
+    }
+    var keys = Object.keys(KIND_ALIASES);
+    for (var i = 0; i < keys.length; i++) {
+      if (allowAmbiguous === false && AMBIGUOUS_ALIASES[keys[i]]) continue;
+      if (new RegExp('\\b' + keys[i] + '\\b').test(t)) return KIND_ALIASES[keys[i]];
+    }
+    return '';
+  }
+
+  // Resolve whatever the model called it into a buildable kind, falling back
+  // to the user's own wording before giving up.
+  function coerceKind(raw, hint) {
+    var k = String(raw || '').toLowerCase().trim();
+    if (SPEC_KINDS.indexOf(k) >= 0) return k;
+    if (KIND_ALIASES[k]) return KIND_ALIASES[k];
+    var words = k.split(/[^a-z]+/).filter(Boolean);
+    for (var i = 0; i < words.length; i++) if (SPEC_KINDS.indexOf(words[i]) >= 0) return words[i];
+    for (var j = 0; j < words.length; j++) if (KIND_ALIASES[words[j]]) return KIND_ALIASES[words[j]];
+    var fromLabel = inferKind(k, true);
+    if (fromLabel) return fromLabel;
+    return inferKind(hint, false);
+  }
+
   var SpecParser = {
     // Pull the first JSON object out of a model reply (tolerates prose/fences).
-    parse: function (text) {
+    parse: function (text, hint) {
       var t = String(text || '').replace(/```[a-z]*/gi, '');
       var s = t.indexOf('{'), e = t.lastIndexOf('}');
       if (s < 0 || e <= s) return null;
       var raw = null;
       try { raw = JSON.parse(t.slice(s, e + 1)); } catch (err) { return null; }
-      return SpecParser.normalize(raw);
+      return SpecParser.normalize(raw, hint);
     },
-    normalize: function (raw) {
+    normalize: function (raw, hint) {
       if (!raw || typeof raw !== 'object') return null;
-      var kind = String(raw.kind || '').toLowerCase();
-      if (SPEC_KINDS.indexOf(kind) < 0) kind = '';
+      var kind = coerceKind(raw.kind, hint || raw.name || '');
       var size = [1, 1, 1], src = raw.size;
       if (Array.isArray(src) && src.length >= 3) size = [src[0], src[1], src[2]];
       else if (src && typeof src === 'object') size = [src.width || src.x || 1, src.height || src.y || 1, src.depth || src.z || 1];
@@ -765,9 +820,10 @@
   ModelPreviewGallery.prototype._askForSpec = async function (prompt, model) {
     if (!this._fetch) throw new Error('no fetch');
     var sys = 'You are a 3D model designer. Reply with ONLY one compact JSON object, no markdown, no prose: ' +
-      '{"kind":"crate|barrel|sphere|cylinder|cone|slab|ring|column","name":"short name, max 6 words",' +
+      '{"kind":"...","name":"short name, max 6 words",' +
       '"size":[width,height,depth] in meters, each between 0.2 and 4,' +
       '"color":"#rrggbb","roughness":0.0-1.0,"metalness":0.0-1.0,"detail":"low|medium|high"}. ' +
+      '"kind" MUST be exactly one of: crate, barrel, sphere, cylinder, cone, slab, ring, column. ' +
       'Choose the kind that best fits the request. The object must be a simple primitive-based shape ' +
       'that can be built from boxes, cylinders, spheres and tori.';
     var body = {
@@ -787,7 +843,7 @@
       var data = await r.json();
       var text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
       if (!text) throw new Error('the model returned no design');
-      var spec = ModelPreviewGallery.parseSpec(text);
+      var spec = ModelPreviewGallery.parseSpec(text, prompt);
       if (!spec) throw new Error('the model returned an unreadable design');
       return spec;
     } finally { if (timer) clearTimeout(timer); }
@@ -949,6 +1005,8 @@
   ModelPreviewGallery.nameFromPrompt = nameFromPrompt;
   ModelPreviewGallery.parseSpec = SpecParser.parse;
   ModelPreviewGallery.normalizeSpec = SpecParser.normalize;
+  ModelPreviewGallery.coerceKind = coerceKind;
+  ModelPreviewGallery.inferKind = inferKind;
   ModelPreviewGallery.SPEC_KINDS = SPEC_KINDS;
   ModelPreviewGallery.loadErrorText = loadErrorText;
 

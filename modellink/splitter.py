@@ -823,6 +823,26 @@ class MultiProviderBalancer:
 
         return None
 
+    def _collect_response(self, resp, provider_name, model):
+        """Read a provider response once and return an OpenAI-shaped completion.
+
+        Providers disagree on the non-streaming payload: gemini always answers
+        SSE (its ``url`` variant is never used here), others answer plain JSON
+        in either OpenAI or Gemini shape. ``_stream_response`` already
+        normalises all of those to text, so joining its chunks is the only
+        reliable way to build a completion dict for stream=False.
+        """
+        parts = []
+        for chunk in self._stream_response(resp, provider_name, model):
+            if isinstance(chunk, str):
+                parts.append(chunk)
+            elif hasattr(chunk, "text"):
+                parts.append(chunk.text)
+        text = "".join(parts)
+        if not text.strip() or "[Stream error from" in text:
+            raise RuntimeError(f"{provider_name}/{model} returned no usable content")
+        return self._make_response(text, f"{provider_name}/{model}")
+
     def _make_response(self, content, model=MODEL_NAME):
         return {
             "id": f"chatcmpl-{MODEL_NAME}",
@@ -872,9 +892,7 @@ class MultiProviderBalancer:
                 if stream:
                     return (self._stream_response(resp, provider_name, model_name), used_model)
                 else:
-                    result = resp.json()
-                    result["model"] = used_model
-                    return (result, used_model)
+                    return (self._collect_response(resp, provider_name, model_name), used_model)
 
         fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
         return self._fallback_generate(messages, fallback_order, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
@@ -896,9 +914,7 @@ class MultiProviderBalancer:
                     if stream:
                         return (self._stream_response(resp, provider_name, pm), used_model)
                     else:
-                        result = resp.json()
-                        result["model"] = used_model
-                        return (result, used_model)
+                        return (self._collect_response(resp, provider_name, pm), used_model)
 
         return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
@@ -912,9 +928,7 @@ class MultiProviderBalancer:
                     if stream:
                         return (self._stream_response(resp, provider_name, model), used_model)
                     else:
-                        result = resp.json()
-                        result["model"] = used_model
-                        return (result, used_model)
+                        return (self._collect_response(resp, provider_name, model), used_model)
                 # The picked model failed: fall through to the other
                 # providers instead of giving up while working keys exist.
                 break
@@ -944,7 +958,7 @@ class MultiProviderBalancer:
         if stream:
             return self._stream_response(resp, "custom", endpoint_model), label
         try:
-            result = resp.json()
+            result = self._collect_response(resp, "custom", endpoint_model)
         except Exception as e:
             raise RuntimeError(f"custom provider '{name}' returned a non-JSON response: {e}")
         result["model"] = label
