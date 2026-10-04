@@ -20,6 +20,26 @@ Right-click the tray icon for: Open projects folder · Pair with server · Quit.
 
 To uninstall: Windows Settings -> Apps -> Omniilink Server -> Uninstall.
 
+## Windows Smart App Control
+
+The installer is not code-signed, so Windows 11 may refuse to run it with
+"Smart App Control blocked this app". Either:
+- open **Windows Security > App & browser control > Smart App Control** and
+  turn it off (it cannot be re-enabled without reinstalling Windows), or
+- right-click the .msi > Properties > tick **Unblock** and "Run anyway".
+
+A code-signing certificate (EV or OV) is the permanent fix and removes the
+prompt for every future release.
+
+## If SmartAppBlock (or another app-control tool) blocks it
+
+The installer and EXE are not code-signed, so strict application
+allow-listing may refuse to launch them. Either allow-list the install
+folder (`C:\Program Files\Omniilink Server\`) in your blocker's settings,
+or install by hand instead: copy `companion.py` anywhere, run
+`pip install pystray pillow`, and start it with `pythonw companion.py`
+(the tray icon and Setup page work exactly the same).
+
 ## Manual install (no admin rights)
 
 Run `install.bat` from this folder instead: it uses plain Python (no EXE),

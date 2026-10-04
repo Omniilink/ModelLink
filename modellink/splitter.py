@@ -98,6 +98,62 @@ def _load_settings_language():
 LANGUAGE = _load_settings_language()
 
 
+def _content_text(content):
+    """Plain text out of a message body, whether str or OpenAI-style parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(p.get("text", "")) for p in content
+                          if isinstance(p, dict) and p.get("type") == "text")
+    return ""
+
+
+def _content_images(content):
+    """(mime, b64) pairs out of OpenAI-style image_url parts (data: URLs)."""
+    out = []
+    if not isinstance(content, list):
+        return out
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        url = ((p.get("image_url") or {}).get("url", "")) if isinstance(p.get("image_url"), dict) else ""
+        m = re.match(r"^data:([\w\-+./]+);base64,([A-Za-z0-9+/=]+)$", url or "")
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
+def _anthropic_parts(content):
+    """Anthropic content blocks translated from OpenAI-style parts."""
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    parts = []
+    for p in content or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            parts.append({"type": "text", "text": str(p.get("text", ""))})
+    for mime, b64 in _content_images(content):
+        parts.append({"type": "image",
+                      "source": {"type": "base64", "media_type": mime, "data": b64}})
+    return parts or [{"type": "text", "text": ""}]
+
+
+def _gemini_parts(content):
+    """Gemini content parts translated from OpenAI-style parts."""
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts = []
+    for p in content or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            parts.append({"text": str(p.get("text", ""))})
+    for mime, b64 in _content_images(content):
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    return parts or [{"text": ""}]
+
+
 def set_language(lang):
     global LANGUAGE
     LANGUAGE = lang
@@ -114,11 +170,11 @@ PROVIDERS = {
         "headers": lambda key: {"Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: (
             lambda _sys: {
-                "contents": [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]} for m in msgs if m["role"] != "system"],
+                "contents": [{"role": "user" if m["role"] == "user" else "model", "parts": _gemini_parts(m["content"])} for m in msgs if m["role"] != "system"],
                 **({"systemInstruction": {"parts": [{"text": _sys}]} } if _sys else {}),
                 "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4000}
             }
-        )(next((m["content"] for m in msgs if m.get("role") == "system"), None)),
+        )(_content_text(next((m["content"] for m in msgs if m.get("role") == "system"), ""))),
         "stream_url": lambda model, key: f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={key}",
         "url": lambda model, key: f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
     },
@@ -143,7 +199,7 @@ PROVIDERS = {
         "headers": lambda key: {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
         "build_body": lambda msgs, model, key: {
             "model": model,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in msgs if m["role"] != "system"],
+            "messages": [{"role": m["role"], "content": _anthropic_parts(m["content"])} for m in msgs if m["role"] != "system"],
             "max_tokens": 4000
         },
         "stream_url": lambda model, key: "https://api.anthropic.com/v1/messages",
@@ -798,7 +854,7 @@ class MultiProviderBalancer:
             f"Do not use any other language."
         )
         if messages and messages[0].get("role") == "system":
-            messages[0]["content"] = system_msg + "\n\n" + messages[0].get("content", "")
+            messages[0]["content"] = system_msg + "\n\n" + _content_text(messages[0].get("content", ""))
         else:
             messages = [{"role": "system", "content": system_msg}] + list(messages)
         return messages

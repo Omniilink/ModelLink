@@ -6554,9 +6554,14 @@ async def agents_exec(request: Request, agent_id: str):
     command = str((data or {}).get("command", "") or "").strip()
     if not command or len(command) > 8000:
         return JSONResponse(status_code=400, content={"error": "Empty or oversized command"})
-    cid, err2 = _queue_agent_command(user, agent_id, command, "shell", None)
+    cwd = str((data or {}).get("cwd", "") or "")
+    if len(cwd) > 1024:
+        return JSONResponse(status_code=400, content={"error": "Path too long"})
+    cid, err2 = _queue_agent_command(user, agent_id, command, "shell",
+                                     {"cwd": cwd} if cwd else None)
     if err2:
         return err2
+    _agent_notify(agent_id)
     _audit("agent.exec", user["username"], f"agent={agent_id} cmd={command[:120]}")
     return {"status": "ok", "command_id": cid}
 
@@ -6590,6 +6595,7 @@ async def agents_file(request: Request, agent_id: str):
     cid, err2 = _queue_agent_command(user, agent_id, "", "file", payload)
     if err2:
         return err2
+    _agent_notify(agent_id)
     _audit("agent.file", user["username"], f"agent={agent_id} op={op} path={rel[:160]}")
     return {"status": "ok", "command_id": cid}
 

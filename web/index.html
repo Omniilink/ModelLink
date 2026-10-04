@@ -151,6 +151,16 @@ a:hover{text-decoration:underline}
 .send-btn:hover{background:var(--accent-light)}
 .send-btn:disabled{opacity:.35;cursor:not-allowed}
 .send-btn svg{width:15px;height:15px}
+.img-btn{width:32px;height:32px;border-radius:var(--radius-sm);background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0}
+.img-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
+.img-btn svg{width:16px;height:16px}
+.chat-code-note{font-size:12px;color:var(--text-muted);font-style:italic}
+.img-strip{display:flex;gap:6px;padding:0 2px 8px;flex-wrap:wrap}
+.img-thumb{position:relative;width:52px;height:52px;border-radius:var(--radius-xs);overflow:hidden;border:1px solid var(--border);flex-shrink:0}
+.img-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.img-thumb button{position:absolute;top:1px;right:1px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.65);border:none;color:#fff;cursor:pointer;font-size:10px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
+.msg-imgs{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.msg-imgs img{max-width:220px;max-height:160px;border-radius:var(--radius-xs);border:1px solid var(--border);object-fit:cover;cursor:zoom-in}
 .terminal-panel{display:none;flex:1;flex-direction:column;background:var(--bg-primary);overflow:hidden;min-height:0}
 .terminal-panel.open{display:flex}
 .terminal-header{height:38px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0}
@@ -168,6 +178,8 @@ a:hover{text-decoration:underline}
 .view-header h2{flex:1;font-size:14.5px;font-weight:650;letter-spacing:-0.1px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .view-body{flex:1;overflow-y:auto;padding:20px 24px}
 .view-body>div{max-width:960px;margin:0 auto}
+#projects-body{max-width:960px;width:100%;margin-left:auto;margin-right:auto}
+#agents-body{max-width:1180px;width:100%;margin-left:auto;margin-right:auto}
 .view-footer{padding:12px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;background:var(--bg-secondary);flex-shrink:0}
 .settings-section{margin-bottom:24px}
 .settings-section h3{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:10px;font-weight:650;display:flex;align-items:center;gap:8px}
@@ -247,6 +259,8 @@ a:hover{text-decoration:underline}
 .cmd-result.success{border-color:var(--success)}
 .cmd-result.fail{border-color:var(--error)}
 .file-write-diff{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;margin:4px 0;font-family:var(--mono);font-size:11px;white-space:pre;max-height:200px;overflow:auto}
+.file-write-diff.collapsed{max-height:76px;overflow:hidden;cursor:pointer}
+.cmd-result.collapsed{max-height:76px;overflow:hidden;cursor:pointer}
 .approve-bar{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 .approve-bar button{padding:5px 12px;border-radius:var(--radius-xs);border:1px solid var(--border);font-size:11px;cursor:pointer;font-family:var(--font)}
 .approve-bar .approve{background:var(--success);color:#fff;border-color:var(--success)}
@@ -881,7 +895,12 @@ pre{max-width:100%}
             </select>
           </div>
         </div>
+        <div class="img-strip" id="img-strip" style="display:none"></div>
         <div class="input-box">
+          <button class="img-btn" id="img-btn" onclick="document.getElementById('img-file').click()" title="Attach images (vision models only)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          </button>
+          <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleImageFiles(this.files);this.value=''" />
           <textarea id="chat-input" placeholder="Message Omniilink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
           <button class="send-btn" id="send-btn" onclick="sendMessage()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -1107,6 +1126,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li style="margin-bottom:8px"><strong>Add API Keys</strong> &mdash; Go to Providers and add at least one key (Groq is free and fast — each provider card has a setup guide)</li><li style="margin-bottom:8px"><strong>Start Chatting</strong> &mdash; Type a message and press Enter. Omniilink auto-routes to the best model.</li><li style="margin-bottom:8px"><strong>Choose a Model</strong> &mdash; Click the model button to pick a specific provider, or leave it on "omniilink" for auto-routing.</li></ol>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Smart Routing</h3><p style="color:var(--text-secondary);margin-bottom:20px">When set to "omniilink", the system classifies your message as simple, medium, or complex, then picks the best model for the task.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Reasoning controls: Effort &amp; Think</h3><p style="color:var(--text-secondary);margin-bottom:10px">The two dropdowns next to the model button control how hard the AI thinks before answering. They apply per message, are remembered between visits, and are mirrored in Coding mode.</p><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:10px"><li style="margin-bottom:8px"><strong>Effort</strong> &mdash; how much reasoning work to spend: <code>minimum</code> answers instantly with almost no deliberation, <code>low</code>/<code>medium</code> suit everyday questions, <code>high</code> and above dig into hard problems step by step. Higher effort is slower and uses more tokens.</li><li style="margin-bottom:8px"><strong>Think</strong> &mdash; the thinking budget: how many intermediate reasoning tokens the model may use. <code>minimum</code> forces a direct answer, larger budgets let it work through complex chains. Where a provider supports only one knob, thinking wins.</li><li style="margin-bottom:8px"><strong>Auto</strong> &mdash; lets the router pick a sensible level for the task. Start here; raise a level only when answers feel shallow, lower one when they feel slow.</li></ul><p style="color:var(--text-secondary);margin-bottom:20px">Rule of thumb: easy chat stays on auto/low, code and math go medium/high, and only genuinely hard debugging earns xhigh or max.</p>
+          <h3 style="margin:20px 0 10px;color:var(--accent)">Images in chat</h3><p style="color:var(--text-secondary);margin-bottom:20px">The picture button next to the message box attaches up to 4 images (auto-compressed). They need a vision-capable model: pick Gemini, GPT-4o, or Claude — or leave omniilink on auto and it routes to one for you. Other models will tell you they cannot see images.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Coding Mode</h3><p style="color:var(--text-secondary);margin-bottom:20px">Click the code icon in the sidebar to switch to Coding Mode. This provides a file tree, project management, and a terminal panel.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Prompts Library</h3><p style="color:var(--text-secondary);margin-bottom:20px">Save and reuse prompt templates. Organize by category: Coding, Writing, Analysis, or Custom.</p>
           <h3 style="margin:20px 0 10px;color:var(--accent)">Keyboard Shortcuts</h3><ul style="color:var(--text-secondary);padding-left:20px;margin-bottom:20px"><li><strong>Ctrl+Enter</strong> &mdash; Send message</li><li><strong>Ctrl+N</strong> &mdash; New chat</li><li><strong>Ctrl+/</strong> &mdash; Open help</li><li><strong>Escape</strong> &mdash; Close menus</li></ul>
@@ -1375,7 +1395,7 @@ function storeKey(base){
 }
 function getChats(){try{return JSON.parse(localStorage.getItem(storeKey('modellink_chats'))||'{}')}catch(e){return{}}}
 function saveChats(c){localStorage.setItem(storeKey('modellink_chats'),JSON.stringify(c))}
-function getChatTitle(h){const f=h.find(m=>m.role==='user');return f?f.content.slice(0,40)+(f.content.length>40?'...':''):'New Chat'}
+function getChatTitle(h){const f=h.find(m=>m.role==='user');const t=msgTextContent(f?f.content:'');return t?t.slice(0,40)+(t.length>40?'...':''):'New Chat'}
 function getPrompts(){try{return JSON.parse(localStorage.getItem('omnilink_prompts')||'[]')}catch(e){return[]}}
 function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p))}
 function getTheme(){return localStorage.getItem('omnilink_theme')||'dark'}
@@ -1418,10 +1438,12 @@ function renderChatList(){
     item.appendChild(text);item.appendChild(del);item.onclick=()=>loadChat(id);list.appendChild(item);
   }
 }
+function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
 function saveCurrentChat(){
   if(!currentChatId||chatHistory.length===0)return;
   const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:[...chatHistory],model:selectedModel,updated:Date.now()};
-  saveChats(chats);renderChatList();
+  try{saveChats(chats)}catch(e){try{const slim=Object.assign({},chats);slim[currentChatId]=Object.assign({},chats[currentChatId],{history:stripImagesForStore(chatHistory)});saveChats(slim)}catch(e2){}}
+  renderChatList();
 }
 
 const EMPTY_CHAT_HTML='<div class="chat-empty" id="chat-empty"><div class="chat-empty-icon"><img src="/favicon.svg?v=5" height="56" alt="Omniilink"></div><h2>Omniilink</h2><p>Multi-provider AI load balancer</p><div class="quick-actions"><button class="quick-action-btn" onclick="useQuickAction(\'Summarize the following text concisely:\')">Summarize</button><button class="quick-action-btn" onclick="useQuickAction(\'Explain the following code step by step:\')">Explain Code</button><button class="quick-action-btn" onclick="useQuickAction(\'Write unit tests for the following code:\')">Write Tests</button><button class="quick-action-btn" onclick="useQuickAction(\'Help me debug the following issue:\')">Debug</button></div></div>';
@@ -1727,18 +1749,52 @@ async function sendReport(){const note=document.getElementById('report-note').va
   btn.disabled=false}
 function reportBar(info){const bar=document.createElement('div');bar.className='report-bar';const t=document.createElement('span');t.textContent='Request failed. Flag this for the admin?';bar.appendChild(t);const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Send error report';b.onclick=()=>openReportModal(info);bar.appendChild(b);return bar}
 function maybeAttachReport(msgEl,text,model,context){try{if(!msgEl||msgEl.querySelector('.report-bar'))return;if(String(text||'').indexOf('all providers are currently unavailable')<0)return;msgEl.appendChild(reportBar({context:context,model:model||selectedModel,error:String(text||'').slice(0,2000)}))}catch(e){}}
+let pendingImages=[];
+const VISION_OK=[/gemini/i,/gpt-4o/i,/gpt-4\.1/i,/claude/i,/o1/i,/o3/i,/sonar/i];
+const VISION_NO=[/gpt-oss/i,/llama/i,/qwen/i,/mistral/i,/mixtral/i,/deepseek/i,/gemma/i,/command/i,/nemo/i,/qwq/i,/granite/i,/phi/i,/aya/i];
+function msgTextContent(c){if(typeof c==='string')return c;if(Array.isArray(c))return c.filter(p=>p&&p.type==='text').map(p=>p.text||'').join('\n');return ''}
+function msgImages(c){return Array.isArray(c)?c.filter(p=>p&&p.type==='image_url').map(p=>(p.image_url||{}).url).filter(Boolean):[]}
+function modelSupportsVision(id){id=String(id||'');if(id==='omniilink'||id==='custom'||id.indexOf('custom/')===0)return 'auto';if(VISION_OK.some(re=>re.test(id)))return true;if(VISION_NO.some(re=>re.test(id)))return false;return 'unknown'}
+function resolveVisionModel(){
+  const v=modelSupportsVision(selectedModel);
+  if(v===true)return selectedModel;
+  if(v==='auto'){
+    const pool=(allModels||[]).filter(m=>modelSupportsVision(m.id)===true);
+    const gem=pool.find(m=>/gemini/i.test(m.id))||pool[0];
+    if(gem){if(gem.id!==selectedModel)showToast('Auto-routing image to '+gem.id,'info');return gem.id}
+    showToast('No vision-capable model configured — add a Gemini, GPT-4o or Claude key','error');return null;
+  }
+  showToast(selectedModel+' cannot see images — pick Gemini, GPT-4o, Claude, or omniilink (auto)','error');return null;
+}
+function renderImgStrip(){const strip=document.getElementById('img-strip');if(!strip)return;strip.innerHTML='';strip.style.display=pendingImages.length?'flex':'none';
+  pendingImages.forEach((u,i)=>{const t=document.createElement('div');t.className='img-thumb';const im=document.createElement('img');im.src=u;t.appendChild(im);const x=document.createElement('button');x.textContent='×';x.title='Remove';x.onclick=()=>{pendingImages.splice(i,1);renderImgStrip()};t.appendChild(x);strip.appendChild(t)})}
+function handleImageFiles(files){
+  const list=[...files||[]].filter(f=>f&&f.type.indexOf('image/')===0);
+  if(!list.length){showToast('Only image files can be attached','error');return}
+  if(pendingImages.length+list.length>4){showToast('At most 4 images per message','error');return}
+  list.forEach(f=>{
+    const url=URL.createObjectURL(f);const img=new Image();
+    img.onload=()=>{try{const max=1568;let w=img.naturalWidth,h=img.naturalHeight;const sc=Math.min(1,max/Math.max(w,h));w=Math.round(w*sc);h=Math.round(h*sc);
+      const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);
+      pendingImages.push(cv.toDataURL('image/jpeg',0.85));renderImgStrip()}catch(e){showToast('Could not read image','error')}URL.revokeObjectURL(url)};
+    img.onerror=()=>{URL.revokeObjectURL(url);showToast('Could not read image','error')};
+    img.src=url;
+  });
+}
 async function sendMessage(){
-  if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();if(!text)return;
+  if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip();if(!text&&!imgs.length)return;
   if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
-  appendMessage('user',text);chatHistory.push({role:'user',content:text});
+  let content=text,model=selectedModel;
+  if(imgs.length){model=resolveVisionModel();if(!model){pendingImages=imgs;renderImgStrip();return}content=[{type:'text',text:text||'Describe this image'}].concat(imgs.map(u=>({type:'image_url',image_url:{url:u}})))}
+  appendMessage('user',content);chatHistory.push({role:'user',content});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   const startTime=Date.now();
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
-    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=selectedModel;
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
@@ -1755,7 +1811,9 @@ function appendMessage(role,content,streaming=false,savedModel){
   const avatar=document.createElement('div');avatar.className='message-avatar';avatar.textContent=role==='user'?'You':'O';
   const body=document.createElement('div');const contentDiv=document.createElement('div');contentDiv.className='message-content';
   if(streaming&&!content)contentDiv.innerHTML='<div class="typing-indicator"><span></span><span></span><span></span></div>';
-  else if(role==='assistant')contentDiv.innerHTML=renderContent(content);else contentDiv.textContent=content;
+  else if(role==='assistant'){let _s=String(content==null?'':content);const _had=/```/.test(_s);_s=_s.replace(/```[\s\S]*?```/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();contentDiv.innerHTML=_s?renderContent(_s):(_had?'<span class="chat-code-note">Code stays out of Chat — open Coding to view or edit files.</span>':'')}
+  else if(Array.isArray(content)){contentDiv.textContent=msgTextContent(content);const imgs=msgImages(content);if(imgs.length){const row=document.createElement('div');row.className='msg-imgs';imgs.forEach(u=>{const im=document.createElement('img');im.src=u;im.alt='attached image';im.onclick=()=>window.open(u,'_blank');row.appendChild(im)});body.appendChild(row)}}
+  else contentDiv.textContent=content;
   body.appendChild(contentDiv);
   if(role==='user'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';const editBtn=document.createElement('button');editBtn.className='msg-action-btn';editBtn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';editBtn.title='Edit message';editBtn.onclick=()=>startEditMessage(msg,contentDiv,actions);actions.appendChild(editBtn);body.appendChild(actions)}
   if(role==='assistant'&&!streaming){const actions=document.createElement('div');actions.className='message-actions';
@@ -1767,20 +1825,20 @@ function appendMessage(role,content,streaming=false,savedModel){
   msg.appendChild(avatar);msg.appendChild(body);area.appendChild(msg);area.scrollTop=area.scrollHeight;return contentDiv;
 }
 function startEditMessage(msgEl,contentDiv,actionsEl){
-  if(isStreaming)return;const idx=parseInt(msgEl.dataset.msgIndex);const originalText=chatHistory.find((m,i)=>m.role==='user'&&Math.floor(i/2)*2===idx)?.content||contentDiv.textContent;
+  if(isStreaming)return;const idx=parseInt(msgEl.dataset.msgIndex);const originalContent=chatHistory.find((m,i)=>m.role==='user'&&Math.floor(i/2)*2===idx)?.content||contentDiv.textContent;const originalText=msgTextContent(originalContent);const origImgs=msgImages(originalContent);
   const textarea=document.createElement('textarea');textarea.className='msg-edit-area';textarea.value=originalText;textarea.rows=Math.min(originalText.split('\n').length+1,8);
   const bar=document.createElement('div');bar.className='msg-edit-bar';
   const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.style.cssText='padding:5px 14px;font-size:12px';saveBtn.textContent='Save & Resend';
   const cancelBtn=document.createElement('button');cancelBtn.className='btn btn-ghost';cancelBtn.style.cssText='padding:5px 14px;font-size:12px';cancelBtn.textContent='Cancel';
   bar.appendChild(saveBtn);bar.appendChild(cancelBtn);contentDiv.innerHTML='';contentDiv.appendChild(textarea);contentDiv.appendChild(bar);actionsEl.style.display='none';textarea.focus();
   cancelBtn.onclick=()=>{contentDiv.textContent=originalText;actionsEl.style.display=''};
-  saveBtn.onclick=()=>{const newText=textarea.value.trim();if(!newText||newText===originalText){contentDiv.textContent=originalText;actionsEl.style.display='';return}editAndResend(idx,newText)};
+  saveBtn.onclick=()=>{const newText=textarea.value.trim();if(!newText||newText===originalText){contentDiv.textContent=originalText;actionsEl.style.display='';return}editAndResend(idx,newText,origImgs)};
   textarea.onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();saveBtn.click()}if(e.key==='Escape')cancelBtn.click()};
 }
-function editAndResend(editIdx,newText){
+function editAndResend(editIdx,newText,keepImgs){
   const userMsgIdx=Math.floor(editIdx/2);const newHistory=[];
   for(let i=0;i<chatHistory.length;i+=2){if(i/2<userMsgIdx){newHistory.push(chatHistory[i]);if(chatHistory[i+1])newHistory.push(chatHistory[i+1])}else if(i/2===userMsgIdx)break}
-  newHistory.push({role:'user',content:newText});chatHistory=newHistory;
+  newHistory.push({role:'user',content:(keepImgs&&keepImgs.length)?[{type:'text',text:newText}].concat(keepImgs.map(u=>({type:'image_url',image_url:{url:u}}))):newText});chatHistory=newHistory;
   const area=document.getElementById('chat-area');const msgs=area.querySelectorAll('.message');
   msgs.forEach(m=>{const mi=parseInt(m.dataset.msgIndex);if(mi>=editIdx)m.remove()});
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
@@ -1795,7 +1853,10 @@ function editAndResend(editIdx,newText){
   }).catch(e=>{const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false});
 }
 function renderMessageContent(el,content){
-  el.innerHTML=renderContent(content);
+  let s=String(content==null?'':content);
+  const hadCode=/```/.test(s);
+  s=s.replace(/```[\s\S]*?```/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  el.innerHTML=s?renderContent(s):(hadCode?'<span class="chat-code-note">Code stays out of Chat — open Coding to view or edit files.</span>':'');
   document.getElementById('chat-area').scrollTop=document.getElementById('chat-area').scrollHeight;
 }
 function updateMessage(el,content){
@@ -2096,7 +2157,7 @@ function renderFileTree(tree){
       if(execCmd){const rb=document.createElement('button');rb.className='ft-run-btn';rb.textContent='\u25B6';rb.title='Run with '+execCmd;rb.style.cssText='width:20px;height:18px;border-radius:3px;background:var(--success);border:none;color:#fff;font-size:8px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:4px';rb.onclick=ev=>{ev.stopPropagation();runFileScanned(fp,execCmd)};item.appendChild(rb)}
       const delBtn=document.createElement('button');delBtn.textContent='\u00D7';delBtn.title='Delete file';delBtn.style.cssText='width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px';
       delBtn.onmouseenter=()=>{delBtn.style.background='var(--error)';delBtn.style.color='#fff'};delBtn.onmouseleave=()=>{delBtn.style.background='transparent';delBtn.style.color='var(--text-muted)'};
-      delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete "'+e.name+'"?')))return;try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:fp});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}else if(fsHandle)await fsDeleteFile(fp);else await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(fp),{method:'DELETE'});refreshCodingTree();showToast('Deleted '+e.name,'success')}catch(err){showToast('Delete failed: '+err.message,'error')}};
+      delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete "'+e.name+'"?')))return;try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(fp)});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}else if(fsHandle)await fsDeleteFile(fp);else await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(fp),{method:'DELETE'});refreshCodingTree();showToast('Deleted '+e.name,'success')}catch(err){showToast('Delete failed: '+err.message,'error')}};
       item.appendChild(delBtn);item.addEventListener('mouseenter',()=>{delBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>openFileActionModal(fp,execCmd||null));parent.appendChild(item)}}
   }
   render(tree,container,0);
@@ -2172,13 +2233,11 @@ async function viewCodingFile(name){
     const head=document.createElement('div');head.className='coding-msg-content';
     head.innerHTML='Opened <strong>'+escapeHtml(name)+'</strong>'+(lang?' <span style="color:var(--text-muted);font-size:11px">('+lang+')</span>':'');
     wrap.appendChild(head);
-    const prev=document.createElement('div');prev.className='file-preview';prev.textContent=filePreviewText(content);
-    wrap.appendChild(prev);
     const bar=document.createElement('div');bar.style.cssText='margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap';
     const atBtn=document.createElement('button');atBtn.className='btn btn-ghost';atBtn.style.cssText='font-size:11px;padding:3px 10px';atBtn.textContent='@ Add to context';atBtn.onclick=()=>addAtFile(name);bar.appendChild(atBtn);
     if(editable){
       const editBtn=document.createElement('button');editBtn.className='btn btn-ghost';editBtn.style.cssText='font-size:11px;padding:3px 10px';editBtn.textContent='Edit';
-      editBtn.onclick=()=>openFileEditor(name,content,prev);
+      editBtn.onclick=()=>openFileEditor(name,content,null);
       bar.appendChild(editBtn);
     }else{
       const note=document.createElement('span');note.style.cssText='font-size:11px;color:var(--text-muted)';
@@ -2187,7 +2246,7 @@ async function viewCodingFile(name){
     }
     wrap.appendChild(bar);
     msg.appendChild(wrap);
-    chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;codingHistory.push({role:'assistant',content:'[Viewed file: '+name+']\n```\n'+content.slice(0,1500)+'\n```'});
+    chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;codingHistory.push({role:'assistant',content:'[Viewed file: '+name+']'});
   }catch(e){appAlert('Error: '+e.message)}
 }
 async function runCodingFile(name,execCmd){const cmd=execCmd+' "'+name+'"';addCodingSystemMsg('Running: '+cmd);const result=await codingRunCmd(cmd);if(result.exit_code===0)addCodingSystemMsg('Exit 0\n'+(result.stdout||'(no output)'));else addCodingSystemMsg('Exit '+result.exit_code+'\n'+(result.stdout||'')+'\n'+(result.stderr||''))}
@@ -2425,9 +2484,9 @@ function streamHiddenSpans(fullText){
   merged.sort((a,b)=>a[0]-b[0]);
   return merged;
 }
-function streamVisibleHTML(fullText){
+function streamVisibleParts(fullText){
   const merged=streamHiddenSpans(fullText);
-  if(!merged.length)return renderContent(fullText);
+  if(!merged.length)return{body:renderContent(fullText),label:''};
   // The status label follows what the model is doing RIGHT NOW: "thinking"
   // while it reasons, "plan" once it declares steps, "building" when file and
   // command blocks start landing. The most recent marker wins, so the note
@@ -2457,10 +2516,56 @@ function streamVisibleHTML(fullText){
   // Everything visible so far may be protocol only (plan/verdict lines) —
   // never render an empty bubble.
   const body=out.trim()?renderContent(out):'<span style="color:var(--text-muted);font-size:11.5px">…</span>';
-  return body+'<div class="stream-code-note"><span></span>'+escapeHtml(label)+'</div>';
+  return{body,label};
+}
+function streamVisibleHTML(fullText){
+  const p=streamVisibleParts(fullText);
+  return p.label?p.body+'<div class="stream-code-note"><span></span>'+escapeHtml(p.label)+'</div>':p.body;
+}
+function streamNoteLabel(note){
+  if(!note)return'';
+  const kids=note.childNodes||[];
+  for(let i=0;i<kids.length;i++)if(kids[i].nodeType===3)return kids[i].textContent||'';
+  return note.textContent||'';
+}
+function streamSetNoteLabel(note,label){
+  const kids=note.childNodes||[];
+  for(let i=0;i<kids.length;i++){if(kids[i].nodeType===3){kids[i].textContent=label;return}}
+  note.appendChild(document.createTextNode(label));
 }
 function renderStreamingContent(chat,contentEl,fullText){
-  contentEl.innerHTML=streamVisibleHTML(fullText);
+  // NEVER rebuild the spinner node: detaching and re-inserting an element
+  // restarts its CSS animation (the visible "teleporting" ring). The body
+  // lives in its own child that gets swapped; the note is created once,
+  // stays attached, and only its label text changes.
+  const p=streamVisibleParts(fullText);
+  let body=contentEl._streamBody;
+  if(!body||!body.parentNode||body.parentNode!==contentEl){
+    contentEl.innerHTML='';
+    body=document.createElement('div');
+    body.className='stream-body';
+    contentEl.appendChild(body);
+    contentEl._streamBody=body;
+    contentEl._streamNote=null;
+  }
+  body.innerHTML=p.body;
+  let note=contentEl._streamNote;
+  if(p.label){
+    if(!note||note.parentNode!==contentEl){
+      note=document.createElement('div');
+      note.className='stream-code-note';
+      const spin=document.createElement('span');
+      note.appendChild(spin);
+      note.appendChild(document.createTextNode(p.label));
+      contentEl.appendChild(note);
+      contentEl._streamNote=note;
+    }else if(streamNoteLabel(note)!==p.label){
+      streamSetNoteLabel(note,p.label);
+    }
+  }else if(note){
+    note.remove();
+    contentEl._streamNote=null;
+  }
   if(chat.scrollHeight-chat.scrollTop-chat.clientHeight<120)chat.scrollTop=chat.scrollHeight;
 }
 function updateStreamingContent(chat,contentEl,fullText){
@@ -3041,11 +3146,11 @@ async function processCodingActions(text,msgEl){
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Patched!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
-    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok)refreshCodingTree();return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
+    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok)refreshCodingTree();return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const wf of webFetches){
     const url=wf.url;
@@ -3106,7 +3211,7 @@ async function processCodingActions(text,msgEl){
         toolDiv.innerHTML='<div class="tool-label">Run command: '+escapeHtml(cmd.length>200?cmd.slice(0,200)+'…':cmd)+'</div>';
         const bar=document.createElement('div');bar.className='approve-bar';
         const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';
-        ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+'">'+fmtCmdResult(result)+'</div>'};
+        ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+(result.exit_code===0?'success':'fail')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};
         const db=document.createElement('button');db.className='deny';db.textContent='Skip';
         db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
         bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
@@ -3116,7 +3221,7 @@ async function processCodingActions(text,msgEl){
       if(code.trim().length<20||shown>=5)continue;
       shown++;
       const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
-      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code block as file'+(lang?' ('+escapeHtml(lang)+')':'')+'</div><div class="file-write-diff">'+escapeHtml(code.slice(0,1500))+'</div>';
+      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code block as file'+(lang?' ('+escapeHtml(lang)+')':'')+'</div><div class="file-write-diff collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+escapeHtml(code.slice(0,1500))+'</div>';
       const bar=document.createElement('div');bar.className='approve-bar';
       const nameInput=document.createElement('input');
       nameInput.placeholder='filename (e.g. index.html)';nameInput.value=guessName[lang]||'';
@@ -3141,7 +3246,7 @@ async function processCodingActions(text,msgEl){
     for(const run of extractBareCodeRuns(stripped).slice(0,5)){
       const code=run.code;shownBare++;
       const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
-      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code snippet as file</div><div class="file-write-diff">'+escapeHtml(code.slice(0,1500))+'</div>';
+      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code snippet as file</div><div class="file-write-diff collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+escapeHtml(code.slice(0,1500))+'</div>';
       const bar=document.createElement('div');bar.className='approve-bar';
       const nameInput=document.createElement('input');
       nameInput.placeholder='filename (e.g. index.html)';nameInput.value=guessBareFileName(code);
@@ -3232,7 +3337,7 @@ function appendCodingHistoryMsg(m){
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
-  el.querySelector('.coding-msg-content').innerHTML=renderContent(cleanCodingProse(m.content||''));
+  el.querySelector('.coding-msg-content').innerHTML=renderContent(cleanCodingProse((m.content||'').replace(/```(\w*)\n[\s\S]*?```/g,(mm,lang)=>'\n[code block'+(lang?' ('+lang+')':'')+' omitted]\n')));
   chat.appendChild(el);
 }
 const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos'];
@@ -3731,14 +3836,18 @@ async function codingAutoContinue(){
 // ---- Remote folders (paired computers): route file/shell ops through the
 // agent instead of the server project dir. remoteCtx={id,name,path}.
 function isRemote(){return !!(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.id)}
+// Coding paths are project-relative; the agent jail is rooted at the
+// projects folder, so every remote op is prefixed with the open project.
+function remoteRel(path){path=String(path||'');const base=(typeof remoteCtx!=='undefined'&&remoteCtx&&remoteCtx.path)||'';return base?base+'/'+path:path}
 async function codingReadFile(path){
   if(fsHandle)return fsReadFile(path);
-  if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'read',path});if(!out||!out.ok)throw new Error((out&&out.error)||'Read failed');return out.content||''}
+  if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});if(!out||!out.ok)throw new Error((out&&out.error)||'Read failed');return out.content||''}
   const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));const data=await r.json();if(!r.ok)throw new Error(data.error||'Read failed');return data.content;
 }
-async function agentExecSync(aid,command,timeoutMs){
+async function agentExecSync(aid,command,timeoutMs,cwd){
   timeoutMs=timeoutMs||120000;
-  const r=await authFetch(API+'/api/agents/'+aid+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command})});
+  const body={command};if(cwd)body.cwd=cwd;
+  const r=await authFetch(API+'/api/agents/'+aid+'/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<timeoutMs){
@@ -3771,7 +3880,7 @@ async function agentBuildTree(aid,base,depth){
 }
 async function codingWriteFile(path,content){
   try{
-    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path,content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);return{ok:true,added:lines,removed:0}}
+    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);return{ok:true,added:lines,removed:0}}
     if(fsHandle){
       let existed=false;try{existed=await fsFileExists(path)}catch(e){}
       await fsWriteFile(path,content);
@@ -3860,7 +3969,7 @@ async function codingPatchFile(path,oldText,newText){
       const patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
       const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
       let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
-      const wres=await agentFileOp(remoteCtx.id,{op:'write',path,content:patched});
+      const wres=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content:patched});
       if(!wres||!wres.ok)return{ok:false,error:(wres&&wres.error)||'Write failed'};
       codingWrittenPaths.push(path);
       return{ok:true,added:a,removed:r};
@@ -3883,7 +3992,7 @@ async function codingPatchFile(path,oldText,newText){
     return{ok:false,error:data.error||'patch failed'};
   }catch(e){return{ok:false,error:e.message}}
 }
-async function codingRunCmd(command){if(isRemote()){try{return await agentExecSync(remoteCtx.id,command)}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
+async function codingRunCmd(command){if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){
@@ -4153,7 +4262,7 @@ async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentia
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
 
-function exportChatMD(){const chats=getChats();const chat=chats[currentChatId];if(!chat){showToast('No chat to export','error');return}let md='# '+chat.title+'\n\n';for(const msg of chat.history)md+='## '+(msg.role==='user'?'You':'Omniilink')+'\n\n'+msg.content+'\n\n';
+function exportChatMD(){const chats=getChats();const chat=chats[currentChatId];if(!chat){showToast('No chat to export','error');return}let md='# '+chat.title+'\n\n';for(const msg of chat.history){const nImg=msgImages(msg.content).length;md+='## '+(msg.role==='user'?'You':'Omniilink')+'\n\n'+msgTextContent(msg.content)+(nImg?'\n\n*['+nImg+' image'+(nImg===1?'':'s')+' attached]*':'')+'\n\n'}
   const blob=new Blob([md],{type:'text/markdown'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=(chat.title||'chat').replace(/[^a-z0-9]/gi,'_')+'.md';a.click();URL.revokeObjectURL(url);showToast('Exported as Markdown','success')}
 function exportChatJSON(){const chats=getChats();const chat=chats[currentChatId];if(!chat){showToast('No chat to export','error');return}
   const blob=new Blob([JSON.stringify(chat,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=(chat.title||'chat').replace(/[^a-z0-9]/gi,'_')+'.json';a.click();URL.revokeObjectURL(url);showToast('Exported as JSON','success')}
@@ -4195,7 +4304,7 @@ function switchProject(){openProjectsModal()}
 async function deleteCurrentProject(){if(!currentProjectName)return;if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
 
 async function loadProjectsPage(){
-  const body=document.getElementById('projects-body');body.innerHTML='';
+  const body=document.getElementById('projects-body');body.innerHTML='';body.style.maxWidth='920px';body.style.margin='0 auto';body.style.width='100%';
   try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
     const projects=data.projects||[];let totalFiles=0;projects.forEach(p=>totalFiles+=p.file_count||0);
     const used=data.storage_used_bytes||0,limit=data.storage_limit_bytes||1073741824;
@@ -5772,7 +5881,7 @@ async function admRestartServer(){if(!(await appConfirm('Restart the API server 
 async function admLoadLogs(){try{const r=await authFetch(API+'/api/admin/logs?lines='+encodeURIComponent(document.getElementById('adm-logs-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-logs-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
 async function admLoadAudit(){try{const r=await authFetch(API+'/api/admin/audit?lines='+encodeURIComponent(document.getElementById('adm-audit-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-audit-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
 async function admGenPairing(){try{const r=await authFetch(API+'/api/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
-  document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
+  document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Windows may show &quot;Smart App Control blocked this app&quot; because the installer is unsigned — open Windows Security &gt; App &amp; browser control &gt; Smart App Control and turn it off, or choose &quot;Run anyway&quot;. Buying a code-signing certificate removes that prompt for good.<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
 function admAgo(t){t=Number(t)||0;if(!t)return 'never';const s=Math.max(0,Date.now()/1000-t);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
 async function admLoadAgents(){const box=document.getElementById('adm-agents');try{try{const hr=await authFetch(API+'/api/health');const hd=await hr.json();document.getElementById('adm-api-build').textContent='api '+(hd.build||'?')}catch(e){}
 const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';

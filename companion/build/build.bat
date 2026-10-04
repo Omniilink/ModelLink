@@ -24,17 +24,17 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo === Building OmniilinkCompanion.exe ===
+echo === Building OmniilinkServer.exe ===
 pyinstaller --noconfirm --noconsole --onefile --name OmniilinkServer --clean ^
-  --exclude-module tkinter ^
+  --exclude-module tkinter --icon "%~dp0icon.ico" --version-file "%~dp0version.txt" ^
   --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0" companion.py
 if errorlevel 1 (
   echo PYINSTALLER FAILED.
   pause
   exit /b 1
 )
-echo === Building OmniilinkCompanionSetup.msi ===
-"%WIXBIN%\candle.exe" -nologo -arch x64 "-dExeSourceDir=%~dp0dist" -o "%~dp0msi\companion.wixobj" "%~dp0companion.wxs"
+echo === Building OmniilinkServerSetup.msi ===
+"%WIXBIN%\candle.exe" -nologo -arch x64 "-dExeSourceDir=%~dp0dist" "-dIconDir=%~dp0" -o "%~dp0msi\companion.wixobj" "%~dp0companion.wxs"
 if errorlevel 1 (
   echo CANDLE FAILED.
   pause

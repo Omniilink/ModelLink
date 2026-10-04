@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Omniilink Server installer (WiX v3). Rebuild with build.bat. -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Omniilink Server" Language="1033" Version="1.0.6"
+  <Product Id="*" Name="Omniilink Server" Language="1033" Version="1.0.7"
            Manufacturer="Omniilink" UpgradeCode="12EF83D7-102A-4CE7-AC8D-2FEA1B3C89F0">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <Icon Id="AppIcon" SourceFile="$(var.IconDir)\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <MajorUpgrade Schedule="afterInstallExecute"
                   DowngradeErrorMessage="A newer version of Omniilink Server is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -18,11 +20,13 @@
             <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuDir"
                       Name="Omniilink Server"
                       Target="[#OmniilinkServer.exe]"
+                      Icon="AppIcon"
                       WorkingDirectory="INSTALLDIR" />
             <Shortcut Id="StartupShortcut" Directory="StartupDir"
                       Name="Omniilink Server"
                       Target="[#OmniilinkServer.exe]"
                       Arguments="tray"
+                      Icon="AppIcon"
                       WorkingDirectory="INSTALLDIR" />
           </Component>
         </Directory>

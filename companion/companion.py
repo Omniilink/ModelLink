@@ -192,10 +192,13 @@ def do_file_op(root, payload):
         return {"ok": False, "error": str(e)}
 
 
-def do_shell(cmd, timeout=CMD_TIMEOUT):
+def do_shell(cmd, root=None, timeout=CMD_TIMEOUT, cwd=None):
     try:
+        workdir = None
+        if cwd:
+            workdir = safe_join(root or PROJECTS_ROOT_DEFAULT, cwd)
         proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                              timeout=timeout)
+                              timeout=timeout, cwd=workdir)
         out = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode, out[-65536:]
     except subprocess.TimeoutExpired:
@@ -231,7 +234,10 @@ def poll_once(server, token, root, status_cb=None):
             code = 0 if res.get("ok") else 1
             out = json.dumps(res)
         else:
-            code, out = do_shell(cmd.get("command") or "", int(cmd.get("timeout") or CMD_TIMEOUT))
+            payload = cmd.get("payload") or {}
+            code, out = do_shell(cmd.get("command") or "", root,
+                                 int(cmd.get("timeout") or CMD_TIMEOUT),
+                                 payload.get("cwd"))
         api(server, "POST", "/api/agent/result", token,
             {"command_id": cmd["id"], "exit_code": code, "output": out[-65536:]})
     except Exception as e:
