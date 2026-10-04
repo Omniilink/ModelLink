@@ -1188,6 +1188,7 @@ def _get_coding_state(user_id: str) -> dict:
             "auto_create": False,
             "auto_edit": False,
             "auto_command": False,
+            "auto_attach_all": False,
             "plan_mode": False,
             "max_file_size": 100000,
             "system_prompt": DEFAULT_CODING_PROMPT
