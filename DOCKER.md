@@ -220,6 +220,13 @@ First Google sign-in creates a normal account (username from the email
 address, random unusable password) and lands on `/chat`. Returning users
 are matched by their Google subject id, never by email alone.
 
+**Google-only sign-in:** while `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are
+set, password sign-in and sign-up are disabled (the UI hides them and the
+API returns 403), so Google is the only way in. If Google is ever
+misconfigured and you are locked out, set `OMNIILINK_ALLOW_PASSWORD=1` in
+`.env` and restart the API to re-enable the password forms. The username
+`admin` (and the owner handle) is always a full admin.
+
 ## Useful commands
 
 ```powershell

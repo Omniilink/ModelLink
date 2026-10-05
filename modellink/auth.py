@@ -5,6 +5,7 @@ Replaces Cloudflare Workers (signupomniilink + useomniilink).
 import os
 import re
 import sys
+import shutil
 import sqlite3
 import hashlib
 import hmac
@@ -277,7 +278,7 @@ def init_db():
     # even if is_admin was ever flipped off in the database. Each entry also
     # matches its filesystem-safe form, so "isaac tribbe" promotes a
     # "isaac_tribbe" account (signup forbids spaces, so that is the real row).
-    env_admin_list = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe").strip().lower()
+    env_admin_list = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe,admin").strip().lower()
     admin_names = {x.strip() for x in (env_admin + "," + env_admin_list).split(",") if x.strip()}
     for u in admin_names:
         conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
@@ -532,6 +533,67 @@ def _rewrite_paths_in(root: str, old: str, new: str):
             pass
 
 
+def _move_user_dir(src: str, dst: str) -> str:
+    """Move every entry of `src` into `dst`, merging directories and
+    overwriting files. Falls back to copy+delete when a rename is refused
+    (Windows locks a directory that is a process's cwd). Returns "" on success
+    or a short error string; `src` is removed when it ends up empty."""
+    try:
+        os.makedirs(dst, exist_ok=True)
+    except Exception as e:
+        return f"cannot create destination: {e}"
+    # Fast path: whole-directory rename when the destination is empty.
+    try:
+        if not os.listdir(dst):
+            os.rmdir(dst)
+            os.rename(src, dst)
+            return ""
+    except Exception:
+        pass
+    errs = []
+    try:
+        entries = os.listdir(src)
+    except OSError as e:
+        return str(e)
+    for name in entries:
+        s = os.path.join(src, name)
+        d = os.path.join(dst, name)
+        try:
+            if os.path.isdir(s) and not os.path.islink(s):
+                if os.path.exists(d):
+                    e = _move_user_dir(s, d)
+                    if e:
+                        errs.append(e)
+                else:
+                    try:
+                        os.rename(s, d)
+                    except Exception:
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                        shutil.rmtree(s, ignore_errors=True)
+            else:
+                if os.path.exists(d):
+                    try:
+                        os.remove(d)
+                    except OSError:
+                        pass
+                try:
+                    os.rename(s, d)
+                except Exception:
+                    shutil.copy2(s, d)
+                    try:
+                        os.remove(s)
+                    except OSError:
+                        pass
+        except Exception as e:
+            errs.append(f"{name}: {e}")
+    try:
+        if not os.listdir(src):
+            os.rmdir(src)
+    except OSError:
+        pass
+    return "; ".join(errs)
+
+
 def change_username(user_id: int, new_username: str) -> dict:
     """Rename a user, keeping their Google link, password, and all data.
 
@@ -574,18 +636,20 @@ def change_username(user_id: int, new_username: str) -> dict:
         conn.commit()
     finally:
         conn.close()
-    # Rename the data folder AFTER the DB commit. A failure here is reported
-    # but never loses data: the old folder is still on disk.
+    # Move the data folder AFTER the DB commit. This must be robust: a plain
+    # os.rename is refused on Windows when the folder (or a child) is open —
+    # which previously left projects behind under the old name, so the renamed
+    # account looked brand new. _move_user_dir merges + copies instead.
     try:
         base = os.path.join(_base_path(), "user_data")
         old_dir = os.path.join(base, _auth_safe_username(old))
         new_dir = os.path.join(base, new_safe)
         if os.path.isdir(old_dir) and os.path.normcase(old_dir) != os.path.normcase(new_dir):
-            if os.path.exists(new_dir):
-                return {"ok": True, "username": new,
-                        "warning": "renamed, but a data folder with the new name already existed"}
-            os.rename(old_dir, new_dir)
+            err = _move_user_dir(old_dir, new_dir)
             _rewrite_paths_in(new_dir, old_dir, new_dir)
+            if err:
+                return {"ok": True, "username": new,
+                        "warning": f"some data may not have moved ({err})"}
     except Exception as e:
         return {"ok": True, "username": new, "warning": f"data folder could not be moved ({e})"}
     return {"ok": True, "username": new}

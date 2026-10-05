@@ -1550,6 +1550,8 @@ def _record_signup(ip: str):
 
 @app.post("/api/auth/signup")
 async def auth_signup(request: Request, req: SignupRequest):
+    if _google_only():
+        return JSONResponse(status_code=403, content={"error": "Sign-up is Google-only on this server — use Sign up with Google"})
     ip = request.headers.get("cf-connecting-ip", "") or (request.client.host if request.client else "")
     if not _signup_allowed(ip):
         return JSONResponse(status_code=429, content={"error": "Too many signups. Try again later."})
@@ -1583,6 +1585,8 @@ async def auth_signup(request: Request, req: SignupRequest):
 
 @app.post("/api/auth/signin")
 async def auth_signin(request: Request, req: SigninRequest):
+    if _google_only():
+        return JSONResponse(status_code=403, content={"error": "Sign-in is Google-only on this server — use Sign in with Google"})
     ip = request.headers.get("cf-connecting-ip", "") or (request.client.host if request.client else "")
     throttle_key = f"{ip}:{req.username.strip().lower()}"
     if not _login_allowed(throttle_key):
@@ -1611,12 +1615,22 @@ async def auth_signout(request: Request):
 def _google_oauth_configured() -> bool:
     return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"))
 
+def _google_only() -> bool:
+    """Password sign-in/signup is disabled while Google sign-in is the only way.
+
+    Active whenever Google OAuth is configured, unless OMNIILINK_ALLOW_PASSWORD
+    is truthy — that escape hatch keeps the server owner from ever being locked
+    out if Google is misconfigured."""
+    if os.environ.get("OMNIILINK_ALLOW_PASSWORD", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    return _google_oauth_configured()
+
 def _google_redirect_uri() -> str:
     return os.environ.get("GOOGLE_REDIRECT_URI", "https://omniilink.dpdns.org/api/auth/google/callback")
 
 @app.get("/api/auth/oauth-status")
 async def oauth_status():
-    return {"google": _google_oauth_configured()}
+    return {"google": _google_oauth_configured(), "google_only": _google_only()}
 
 @app.get("/api/auth/google/start")
 async def google_oauth_start(request: Request):
@@ -7453,7 +7467,7 @@ async def _do_delete(request: Request, path, name):
 # ==========================================
 # Admin panel — allowlisted super-admins only
 # ==========================================
-# Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default "isaac tribbe").
+# Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default "isaac tribbe,admin").
 # Every mutating action is rate limited and appended to user_data/audit.log.
 
 _ADMIN_STARTED_AT = time.time()
@@ -7474,7 +7488,7 @@ _ADMIN_SHELL_SEM = asyncio.Semaphore(2)
 
 
 def _admin_allowlist() -> set:
-    raw = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe")
+    raw = os.environ.get("OMNIILINK_ADMIN_USERS", "isaac tribbe,admin")
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
 

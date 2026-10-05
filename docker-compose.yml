@@ -54,7 +54,7 @@ services:
       # Only these usernames can open /admin (comma separated). They are also
       # promoted to is_admin=1 on every boot. "isaac tribbe" also covers an
       # "isaac_tribbe" account, since signup forbids spaces.
-      - OMNIILINK_ADMIN_USERS=isaac tribbe
+      - OMNIILINK_ADMIN_USERS=isaac tribbe,admin
       # GitHub token, only read by updater/omni-update when you run it by
       # hand against this PRIVATE repo. Empty is fine: the api also
       # re-reads it from the mounted .env, so adding

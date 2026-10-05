@@ -74,6 +74,12 @@
       if (b) b.style.display = 'none';
       var n = document.getElementById('gNote');
       if (n) n.style.display = 'block';
+    } else if (d.google_only) {
+      var f = document.getElementById('f'); if (f) f.style.display = 'none';
+      var or = document.querySelector('.or'); if (or) or.style.display = 'none';
+      var swap = document.querySelector('.swap'); if (swap) swap.style.display = 'none';
+      var h1 = document.querySelector('h1'); if (h1) h1.textContent = 'Sign in with Google';
+      var sub = document.querySelector('.sub'); if (sub) sub.textContent = 'Continue with your Google account.';
     }
   }).catch(function(){});
   document.getElementById('f').addEventListener('submit', function(e){
