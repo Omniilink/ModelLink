@@ -136,7 +136,6 @@ a:hover{text-decoration:underline}
 .message.assistant{flex-direction:row}
 .message-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .message.user .message-body{align-items:flex-end}
-.message.user .message-body{align-items:flex-end}
 .message.assistant .message-body{align-items:flex-start}
 .message-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;font-weight:650}
 .message.user .message-avatar{background:var(--accent);color:#fff}
@@ -1702,6 +1701,7 @@ function switchView(view){
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
   document.getElementById('agents-view').classList.toggle('open',view==='agents');
   document.getElementById('models-view').classList.toggle('open',view==='models');
+  document.getElementById('assets-view').classList.toggle('open',view==='assets');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
