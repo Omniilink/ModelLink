@@ -6795,6 +6795,9 @@ async function openPublicDetail(pid){
     if(p.allow_download){
       const dl=document.createElement('button');dl.className='btn btn-primary btn-sm';dl.textContent='⬇ Download (.zip)';dl.onclick=()=>window.open(API+'/api/public/projects/'+pid+'/download','_blank');row.appendChild(dl);
     }
+    if(p.main_file){
+      const run=document.createElement('button');run.className='btn btn-primary btn-sm';run.textContent='▶ Run';run.onclick=()=>runPublicProject(pid,p.main_file,p.files||[]);row.appendChild(run);
+    }
     const fv=document.createElement('button');fv.className='btn btn-ghost btn-sm';fv.textContent=(p.favorited?'♥ Favorited':'♡ Favorite');fv.onclick=async()=>{const rr=await authFetch(API+'/api/public/projects/'+pid+'/favorite',{method:'POST'});if(rr.ok){openPublicDetail(pid)}};row.appendChild(fv);
     if(p.mine){
       const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});loadPublicView()};row.appendChild(del);
@@ -6803,48 +6806,136 @@ async function openPublicDetail(pid){
     host.appendChild(wrap);
   }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Not found</div>'}
 }
-function openPublishModal(){
+async function runPublicProject(pid,mainPath,fileList){
+  showToast('Loading '+mainPath+'…','info');
+  const getFile=async(p)=>{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/file?path='+encodeURIComponent(p));
+    if(!r.ok)throw new Error('missing '+p);
+    return r.json();
+  };
+  try{
+    const main=await getFile(mainPath);
+    let body=main.encoding==='base64'
+      ? atob(main.content)
+      : main.content;
+    if(/\.(html?)$/i.test(mainPath)){
+      const sibs={};
+      for(const f of (fileList||[])){
+        if(/\.m?js$/i.test(f.path)||/\.css$/i.test(f.path)){
+          try{
+            const d=await getFile(f.path);
+            sibs[f.path]=d.encoding==='base64'?atob(d.content):d.content;
+          }catch(e){}
+        }
+      }
+      const baseDir=mainPath.includes('/')?mainPath.slice(0,mainPath.lastIndexOf('/')+1):'';
+      body=body.replace(/<script[^>]*src=["']([^"']+)["'][^>]*>\s*<\/script>/gi,(m,src)=>{
+        const key=(baseDir+src).replace(/^\.\//,'');
+        const hit=sibs[key]||sibs[src];
+        return hit!==undefined?'<script>\n'+hit+'\n<\/script>':m;
+      });
+      body=body.replace(/<link[^>]*href=["']([^"']+\.css)["'][^>]*>/gi,(m,href)=>{
+        const key=(baseDir+href).replace(/^\.\//,'');
+        const hit=sibs[key]||sibs[href];
+        return hit!==undefined?'<style>\n'+hit+'\n</style>':m;
+      });
+      const w=window.open('','_blank');
+      if(w){w.document.write(body);w.document.close()}
+      else showToast('Popup blocked — allow popups to run','error');
+    } else {
+      const blob=new Blob([body],{type:'text/plain'});
+      window.open(URL.createObjectURL(blob),'_blank');
+    }
+  }catch(e){showToast('Run failed: '+e.message,'error')}
+}
+async function openPublishModal(){
   const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
   const m=document.createElement('div');m.className='modal';m.style.maxWidth='520px';
   m.innerHTML='<div class="modal-header"><h2>Publish to Public</h2></div><div class="modal-body">'+
     '<div class="modal-field"><label>Name</label><input type="text" id="pub-name" placeholder="My cool project" /></div>'+
     '<div class="modal-field"><label>Description</label><textarea id="pub-desc" style="width:100%;min-height:90px" placeholder="What does it do?"></textarea></div>'+
     '<div class="modal-field"><label>Type</label><select id="pub-kind"><option value="project">Project</option><option value="model">3D model</option><option value="asset">Asset</option></select></div>'+
-    '<div class="modal-field"><label>Files from your project folder</label><div style="display:flex;gap:8px;margin-bottom:6px"><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-all">Select all</button><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-none">Clear</button></div><div id="pub-filetree" style="max-height:220px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;font-size:12px"></div></div>'+
+    '<div class="modal-field"><label>Project folder</label><select id="pub-folder" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)"></select></div>'+
+    '<div class="modal-field"><label>Files from the folder <span style="color:var(--text-muted);font-weight:400">(tick to include · circle = main file opened on Run)</span></label><div style="display:flex;gap:8px;margin-bottom:6px"><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-all">Select all</button><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-none">Clear</button></div><div id="pub-filetree" style="max-height:220px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;font-size:12px"></div></div>'+
     '<div class="modal-field"><label>Model ID (optional, for 3D models)</label><input type="text" id="pub-model" placeholder="m123…" /></div>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked /> Show my username</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
     '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
   ov.appendChild(m);document.body.appendChild(ov);
   m.querySelector('#pub-cancel').onclick=()=>ov.remove();
-  // Populate the folder file tree with checkboxes.
+  // Folder picker: current open folder + saved projects.
+  const folderSel=m.querySelector('#pub-folder');
   const ftHost=m.querySelector('#pub-filetree');
+  let pubTree=[],pubProjName='';
+  const pubRenderMain=()=>{
+    const selMain=ftHost.querySelector('input[name=pub-main]:checked');
+    return selMain?selMain.value:'';
+  };
   const renderPubTree=()=>{
     ftHost.innerHTML='';
-    const tree=(typeof window!=='undefined'&&window.lastCodingTree)||[];
-    if(!tree.length){ftHost.innerHTML='<div style="color:var(--text-muted)">Open a project folder first (Coding view).</div>';return}
-    const walk=(ns,depth)=>{
+    if(!pubTree.length){ftHost.innerHTML='<div style="color:var(--text-muted)">No files in this folder. Open a project folder first (Coding view).</div>';return}
+    const walk=(ns)=>{
       (ns||[]).forEach(n=>{
         if(!n)return;
-        const row=document.createElement('label');row.style.cssText='display:flex;gap:6px;align-items:center;padding:2px 0 2px '+(depth*14)+'px;cursor:pointer;color:var(--text-secondary)';
         if(n.type==='dir'){
-          const t=document.createElement('span');t.textContent='▸ '+n.name;t.style.fontWeight='600';row.appendChild(t);
-          ftHost.appendChild(row);
-          walk(n.children,depth+1);
-        } else {
-          const cb=document.createElement('input');cb.type='checkbox';cb.value=n.path;cb.checked=true;
-          const t=document.createElement('span');t.textContent=n.name;
-          row.appendChild(cb);row.appendChild(t);
-          ftHost.appendChild(row);
+          const t=document.createElement('div');t.textContent='▸ '+n.name;t.style.cssText='font-weight:600;color:var(--text-secondary);padding:6px 0 2px';ftHost.appendChild(t);
+          walk(n.children);
+          return;
         }
+        const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--bg-tertiary)';
+        const cb=document.createElement('input');cb.type='checkbox';cb.value=n.path;cb.checked=true;cb.style.cssText='width:15px;height:15px;flex-shrink:0';
+        const radio=document.createElement('input');radio.type='radio';radio.name='pub-main';radio.value=n.path;radio.title='Main file (opens on Run)';radio.style.cssText='width:14px;height:14px;flex-shrink:0';
+        const t=document.createElement('span');t.textContent=n.path;t.style.cssText='flex:1;text-align:right;font-size:12px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        row.appendChild(cb);row.appendChild(radio);row.appendChild(t);
+        ftHost.appendChild(row);
       });
     };
-    walk(tree,0);
+    walk(pubTree);
+    // Default the main file to index.html when present.
+    const idx=[...ftHost.querySelectorAll('input[name=pub-main]')].find(r=>/(^|\/)index\.html?$/i.test(r.value));
+    (idx||ftHost.querySelector('input[name=pub-main]')||{}).checked=true;
   };
-  renderPubTree();
+  const loadPubFolder=async(val)=>{
+    pubProjName='';
+    if(!val){
+      pubTree=(typeof window!=='undefined'&&window.lastCodingTree)||[];
+    } else {
+      pubProjName=val;
+      try{
+        const r=await authFetch(API+'/api/projects/tree?name='+encodeURIComponent(val));
+        if(!r.ok)throw new Error('load failed');
+        const d=await r.json();
+        pubTree=d.tree||[];
+      }catch(e){pubTree=[]}
+    }
+    renderPubTree();
+  };
+  try{
+    const r=await authFetch(API+'/api/projects');
+    const d=r.ok?await r.json().catch(()=>({})):({});
+    const opts=[{name:'',label:'Current folder'+(codingFolder?' ('+codingFolder.split(/[\\/]/).pop()+')':'')}];
+    (d.projects||[]).forEach(p=>{if(p&&p.name)opts.push({name:p.name,label:p.name+' ('+(p.file_count||0)+' files)'})});
+    folderSel.innerHTML='';
+    opts.forEach(o=>{const op=document.createElement('option');op.value=o.name;op.textContent=o.label;folderSel.appendChild(op)});
+  }catch(e){}
+  folderSel.onchange=()=>loadPubFolder(folderSel.value);
+  await loadPubFolder('');
   m.querySelector('#pub-sel-all').onclick=()=>{ftHost.querySelectorAll('input[type=checkbox]').forEach(c=>{c.checked=true})};
   m.querySelector('#pub-sel-none').onclick=()=>{ftHost.querySelectorAll('input[type=checkbox]').forEach(c=>{c.checked=false})};
   m.querySelector('#pub-submit').onclick=async()=>{
+    const main_file=pubRenderMain();
+    if(pubProjName){
+      const paths=[...ftHost.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value).slice(0,200);
+      const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
+        kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
+        show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,
+        project_name:pubProjName,paths,main_file};
+      const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok){ov.remove();showToast('Submitted for review','success');loadPublicView()}
+      else showToast((d&&d.error)||'Submit failed','error');
+      return;
+    }
     const paths=[...ftHost.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value).slice(0,200);
     const files=[];
     for(const p of paths){
@@ -6855,7 +6946,7 @@ function openPublishModal(){
     }
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
-      show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,files};
+      show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,files,main_file};
     const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
     if(r.ok){ov.remove();showToast('Submitted for review','success');loadPublicView()}

@@ -164,6 +164,7 @@ def init_db():
             allow_download INTEGER DEFAULT 1,
             status TEXT DEFAULT 'pending',
             fav_count INTEGER DEFAULT 0,
+            main_file TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now')),
             approved_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -226,6 +227,12 @@ def init_db():
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)")
     if "google_sub" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+    try:
+        pcols = [r["name"] for r in conn.execute("PRAGMA table_info(public_projects)").fetchall()]
+    except Exception:
+        pcols = []
+    if pcols and "main_file" not in pcols:
+        conn.execute("ALTER TABLE public_projects ADD COLUMN main_file TEXT DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
     # Admin panel allowlist (default: "isaac tribbe", matching api_server):

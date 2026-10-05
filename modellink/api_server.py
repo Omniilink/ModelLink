@@ -3935,6 +3935,11 @@ PUBLIC_KINDS = ("project", "model", "asset")
 
 def _pub_row(r):
     show = r["show_author"] if "show_author" in r.keys() else 1
+    mf = ""
+    try:
+        mf = r["main_file"] or "" if "main_file" in r.keys() else ""
+    except Exception:
+        mf = ""
     return {
         "id": r["id"],
         "name": r["name"] or "Untitled",
@@ -3944,6 +3949,7 @@ def _pub_row(r):
         "allow_download": bool(r["allow_download"]),
         "status": r["status"],
         "favorites": int(r["fav_count"] or 0),
+        "main_file": mf,
         "created_at": r["created_at"],
     }
 
@@ -3990,29 +3996,66 @@ async def public_submit(request: Request):
                       "content": "base64:" + base64.b64encode(raw).decode()})
         total = len(raw)
     else:
-        for f in (data.get("files") or [])[:200]:
-            if not isinstance(f, dict):
-                continue
-            p = str(f.get("path", ""))[:200].strip().lstrip("/").replace("\\", "/")
-            if not p or ".." in p.split("/"):
-                continue
-            c = f.get("content", "")
-            if not isinstance(c, str):
-                c = ""
-            if len(c.encode("utf-8", "ignore")) > PUBLIC_FILE_MAX_BYTES:
-                return JSONResponse(status_code=400, content={"error": f"File too large: {p}"})
-            total += len(c.encode("utf-8", "ignore"))
-            if total > PUBLIC_SUBMIT_MAX_BYTES:
-                return JSONResponse(status_code=400, content={"error": "Submission too large (2MB max)"})
-            files.append({"path": p, "size": len(c.encode("utf-8", "ignore")), "content": c})
+        proj_name = str(data.get("project_name", "") or "").strip().replace("\\", "/").strip("/")
+        if proj_name and not data.get("files"):
+            # Folder-based submit: read the listed paths server-side from a saved project.
+            if ".." in proj_name.split("/") or proj_name.startswith("."):
+                return JSONResponse(status_code=400, content={"error": "Bad project name"})
+            pdir = os.path.join(_user_projects_dir(_safe_username(user["username"])), proj_name)
+            if not os.path.isdir(pdir) or not _is_within(_user_projects_dir(_safe_username(user["username"])), pdir):
+                return JSONResponse(status_code=404, content={"error": "Project not found"})
+            for p in (data.get("paths") or [])[:200]:
+                p = str(p or "")[:200].strip().lstrip("/").replace("\\", "/")
+                if not p or ".." in p.split("/"):
+                    continue
+                full = os.path.join(pdir, p)
+                if not _is_within(pdir, full) or not os.path.isfile(full):
+                    continue
+                try:
+                    with open(full, "rb") as fh:
+                        raw = fh.read()
+                except OSError:
+                    continue
+                if len(raw) > PUBLIC_FILE_MAX_BYTES:
+                    return JSONResponse(status_code=400, content={"error": f"File too large: {p}"})
+                total += len(raw)
+                if total > PUBLIC_SUBMIT_MAX_BYTES:
+                    return JSONResponse(status_code=400, content={"error": "Submission too large (2MB max)"})
+                try:
+                    c = raw.decode("utf-8")
+                except Exception:
+                    c = "base64:" + base64.b64encode(raw).decode()
+                    files.append({"path": p, "size": len(raw), "content": c})
+                    continue
+                files.append({"path": p, "size": len(raw), "content": c})
+        else:
+            for f in (data.get("files") or [])[:200]:
+                if not isinstance(f, dict):
+                    continue
+                p = str(f.get("path", ""))[:200].strip().lstrip("/").replace("\\", "/")
+                if not p or ".." in p.split("/"):
+                    continue
+                c = f.get("content", "")
+                if not isinstance(c, str):
+                    c = ""
+                if len(c.encode("utf-8", "ignore")) > PUBLIC_FILE_MAX_BYTES:
+                    return JSONResponse(status_code=400, content={"error": f"File too large: {p}"})
+                total += len(c.encode("utf-8", "ignore"))
+                if total > PUBLIC_SUBMIT_MAX_BYTES:
+                    return JSONResponse(status_code=400, content={"error": "Submission too large (2MB max)"})
+                files.append({"path": p, "size": len(c.encode("utf-8", "ignore")), "content": c})
     if not files:
         return JSONResponse(status_code=400, content={"error": "Nothing to submit"})
+    main_file = str(data.get("main_file", "") or "")[:200].strip().lstrip("/").replace("\\", "/")
+    paths = {f["path"] for f in files}
+    if main_file and main_file not in paths:
+        main_file = ""
     conn = get_db()
     try:
         cur = conn.execute(
-            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
-            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download))
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download, main_file))
         pid = cur.lastrowid
         for f in files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
@@ -4118,6 +4161,34 @@ async def public_download(request: Request, pid: int):
             os.unlink(tmp.name)
         except OSError:
             pass
+
+
+@app.get("/api/public/projects/{pid}/file")
+async def public_file(request: Request, pid: int, path: str = ""):
+    """Fetch one stored file's content (for the Run preview)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    p = (path or "").strip().lstrip("/").replace("\\", "/")
+    if not p or ".." in p.split("/"):
+        return JSONResponse(status_code=400, content={"error": "Bad path"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        f = conn.execute("SELECT path, size, content FROM public_project_files WHERE project_id = ? AND path = ?",
+                         (pid, p)).fetchone()
+        if not f:
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        c = f["content"] or ""
+        if c.startswith("base64:"):
+            return {"path": f["path"], "encoding": "base64", "content": c[7:]}
+        return {"path": f["path"], "encoding": "text", "content": c}
+    finally:
+        conn.close()
 
 
 @app.post("/api/public/projects/{pid}/favorite")
@@ -6777,6 +6848,24 @@ async def list_projects(request: Request):
             total_size += dir_size
             projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime, "size_bytes": dir_size})
     return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
+
+
+@app.get("/api/projects/tree")
+async def project_tree(request: Request, name: str = ""):
+    """File tree for one saved project (for the publish picker)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    projects_dir = _user_projects_dir(user_id)
+    safe = (name or "").strip().replace("\\", "/").strip("/")
+    if not safe or ".." in safe.split("/") or safe.startswith("."):
+        return JSONResponse(status_code=400, content={"error": "Bad project name"})
+    path = os.path.join(projects_dir, safe)
+    if not os.path.isdir(path) or not _is_within(projects_dir, path):
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    tree = _build_file_tree(path)
+    return {"name": safe, "tree": tree}
 
 class ProjectCreate(BaseModel):
     name: str
