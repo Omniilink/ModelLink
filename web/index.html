@@ -1337,6 +1337,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               </div>
               <div class="tool-row">
                 <button class="btn btn-primary" id="yt-dl-btn" onclick="ytDownloadBrowser()">Download</button>
+                <button class="btn btn-ghost" id="yt-dl-fast-btn" onclick="ytDownloadServer()">Download (fast)</button>
                 <button class="btn btn-ghost" id="yt-cancel-btn" style="display:none" onclick="ytCancelDownload()">Cancel</button>
                 <span class="tool-result-sub" id="yt-path-note"></span>
               </div>
@@ -1344,7 +1345,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div id="yt-info" class="tool-result" style="display:none"></div>
               <div id="yt-status" class="tool-status"></div>
               <div id="yt-setup" class="tool-hint" style="display:none"></div>
-              <div class="tool-hint">Having trouble? <a href="#" onclick="ytDownloadServer();return false">Download via server instead</a> (slower, counts toward bandwidth).</div>
+              <div class="tool-hint">Having trouble? <a href="#" onclick="ytDownloadServer();return false">Download via server</a> (fast — local yt-dlp with 16 concurrent fragments, no bandwidth cap).</div>
             </div>
             <div class="tool-pane" id="tool-convert" style="display:none">
               <button class="btn btn-ghost btn-sm" onclick="navigate('more')">← All tools</button>
