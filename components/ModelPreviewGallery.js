@@ -509,7 +509,49 @@
     close.setAttribute('aria-label', 'Close');
     close.onclick = function () { if (!self.busy) self.closeComposer(); };
     this.composerSend = send;
+    this.refImage = null;
+    var imgRow = h('div', 'mpg-img-row');
+    var imgBtn = h('button', 'btn btn-ghost mpg-img-btn', 'Reference image');
+    imgBtn.setAttribute('type', 'button');
+    var fileInput = h('input', 'mpg-file-input');
+    fileInput.setAttribute('type', 'file');
+    fileInput.setAttribute('accept', 'image/png,image/jpeg,image/webp');
+    fileInput.style.display = 'none';
+    imgBtn.onclick = function () { fileInput.click(); };
+    fileInput.onchange = function () {
+      var f = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!f) return;
+      var U = (typeof URL !== 'undefined') ? URL : (global.URL || {});
+      var url = U.createObjectURL ? U.createObjectURL(f) : null;
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var max = 1024, w = img.naturalWidth, hh = img.naturalHeight;
+          var sc = Math.min(1, max / Math.max(w, hh));
+          w = Math.round(w * sc); hh = Math.round(hh * sc);
+          var cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
+          cv.getContext('2d').drawImage(img, 0, 0, w, hh);
+          self.refImage = cv.toDataURL('image/jpeg', 0.85);
+          self._renderRefThumb();
+          if (global.showToast) global.showToast('Reference image attached', 'success');
+        } catch (e) {
+          if (global.showToast) global.showToast('Could not read image', 'error');
+        }
+        if (url && U.revokeObjectURL) { try { U.revokeObjectURL(url); } catch (e2) {} }
+      };
+      img.onerror = function () {
+        if (url && U.revokeObjectURL) { try { U.revokeObjectURL(url); } catch (e2) {} }
+        if (global.showToast) global.showToast('Could not read image', 'error');
+      };
+      if (url) img.src = url;
+    };
+    imgRow.appendChild(imgBtn);
+    imgRow.appendChild(fileInput);
+    this.refThumb = h('div', 'mpg-ref-thumb');
+    imgRow.appendChild(this.refThumb);
     this.composer.appendChild(this.composerInput);
+    this.composer.appendChild(imgRow);
     this.composer.appendChild(send);
     this.composer.appendChild(close);
     wrap.appendChild(this.composer);
@@ -852,6 +894,25 @@
     this.composer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
 
+  // Show (or clear) the attached reference-image thumbnail.
+  ModelPreviewGallery.prototype._renderRefThumb = function () {
+    if (!this.refThumb) return;
+    this.refThumb.innerHTML = '';
+    if (!this.refImage) return;
+    var self = this;
+    var im = document.createElement('img');
+    im.src = this.refImage;
+    im.alt = 'reference';
+    im.style.cssText = 'width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border)';
+    var x = document.createElement('button');
+    x.textContent = '×';
+    x.title = 'Remove reference image';
+    x.style.cssText = 'margin-left:6px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);width:22px;height:22px;border-radius:6px;cursor:pointer;font-size:13px;line-height:1';
+    x.onclick = function () { self.refImage = null; self._renderRefThumb(); };
+    this.refThumb.appendChild(im);
+    this.refThumb.appendChild(x);
+  };
+
   ModelPreviewGallery.prototype.closeComposer = function () {
     if (!this.composer || this.busy) return;
     this.composer.hidden = true;
@@ -884,7 +945,7 @@
   // Step 1 of the two-step pipeline: turn the user's short request into a
   // detailed SUPERPROMPT (precise technical description the spec step builds
   // from). The model is told to take as long as it needs — thoroughness wins.
-  ModelPreviewGallery.prototype._makeSuperprompt = async function (prompt, model) {
+  ModelPreviewGallery.prototype._makeSuperprompt = async function (prompt, model, refImage) {
     if (!this._fetch) throw new Error('no fetch');
     var sys = 'You are a senior 3D modeling artist. The user described an object in a few words. ' +
       'Expand it into a precise technical SUPERPROMPT: the real-world dimensions in meters, the overall ' +
@@ -892,9 +953,12 @@
       'to the other parts, and how the parts join together WITHOUT interpenetrating. Be concrete: give numbers, ' +
       'positions, and sizes — not adjectives. Take as long as you need; thoroughness matters far more than ' +
       'speed. Output ONLY the superprompt text, no JSON, no markdown fences, no commentary.';
+    var userMsg = refImage
+      ? { role: 'user', content: [{ type: 'text', text: prompt + '\nStudy the attached reference image carefully and base all proportions, colors and parts on it.' }, { type: 'image_url', image_url: { url: refImage } }] }
+      : { role: 'user', content: prompt };
     var body = {
       model: model || 'omniilink',
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
+      messages: [{ role: 'system', content: sys }, userMsg],
       stream: false, temperature: 0.5, max_tokens: 4000,
       effort: 'xhigh', thinking: 'xhigh'
     };
@@ -916,7 +980,7 @@
 
   // Step 2 of the two-step pipeline: turn a superprompt into a buildable JSON
   // spec. Placement rules are explicit: nothing may clip into anything else.
-  ModelPreviewGallery.prototype._askForSpec = async function (prompt, model) {
+  ModelPreviewGallery.prototype._askForSpec = async function (prompt, model, refImage) {
     if (!this._fetch) throw new Error('no fetch');
     var sys = 'You are an expert 3D model designer creating a precise build specification. ' +
       'ABSOLUTE RULE — NO INTERPENETRATION: parts must NEVER overlap in 3D space. For every part you place, ' +
@@ -937,9 +1001,12 @@
       'where each part is {"kind":"...","size":[w,h,d],"pos":[x,y,z],"rot":[x,y,z],"color":"#rrggbb"}. Use DEGREES ' +
       'for rot (e.g. 90 means a quarter turn). Keep every part to the allowed kinds. Simple objects (a ball, a ' +
       'crate) need no parts. The object must be built from boxes, cylinders, spheres, cones and tori.';
+    var userMsg = refImage
+      ? { role: 'user', content: [{ type: 'text', text: prompt + '\nMatch the attached reference image: same silhouette, proportions and colors.' }, { type: 'image_url', image_url: { url: refImage } }] }
+      : { role: 'user', content: prompt };
     var body = {
       model: model || 'omniilink',
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
+      messages: [{ role: 'system', content: sys }, userMsg],
       stream: false, temperature: 0.3, max_tokens: 34000,
       effort: 'xhigh', thinking: 'xhigh'
     };
@@ -975,17 +1042,18 @@
     this._setBusy(true, 'Generating…');
     if (this.statusEl) this.statusEl.classList.remove('error');
     var spec = null;
+    var ref = this.refImage || null;
     try {
       this._stage('Refining your idea into a detailed design brief (' + model + ', taking its time)…');
       var brief = null;
       try {
-        brief = await this._makeSuperprompt(prompt, model);
+        brief = await this._makeSuperprompt(prompt, model, ref);
       } catch (e) {
         brief = null;
       }
       this._stage('Designing the 3D model from the brief (this can take a minute)…');
       try {
-        spec = await this._askForSpec(brief || prompt, model);
+        spec = await this._askForSpec(brief || prompt, model, ref);
       } catch (e) {
         spec = null;
         this._stage('Design from ' + model + ' unavailable — using the built-in generator…');
@@ -997,6 +1065,8 @@
       this._stage('Building geometry…');
       await this.generate(null, prompt, 'MEDIUM', spec, model);
       this.composerInput.value = '';
+      this.refImage = null;
+      this._renderRefThumb();
       this.closeComposer();
       this._stage('');
     } catch (e) {
