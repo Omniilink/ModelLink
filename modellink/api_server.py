@@ -191,7 +191,7 @@ class BodyLimitMiddleware:
 
 
 # ---- Per-user bandwidth limits: 10 Mbit/s pacing + 1 GB per 6h window ----
-BW_RATE_MBPS = float(os.environ.get("OMNIILINK_BW_RATE_MBPS", "10") or 10)
+BW_RATE_MBPS = float(os.environ.get("OMNIILINK_BW_RATE_MBPS", "100") or 100)
 BW_WINDOW_MB = float(os.environ.get("OMNIILINK_BW_WINDOW_MB", "1000") or 1000)
 BW_WINDOW_HOURS = float(os.environ.get("OMNIILINK_BW_WINDOW_HOURS", "6") or 6)
 BW_ENABLED = (os.environ.get("OMNIILINK_BW_ENABLED", "1").strip().lower()
@@ -5055,7 +5055,8 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
             return JSONResponse(status_code=400, content={
                 "error": f"Video is too long ({duration // 3600}h+ — 3h max)"})
         title = (info.get("title") if isinstance(info, dict) else "") or "youtube"
-        base = ytdlp + ["--no-playlist", "--no-warnings"]
+        base = ytdlp + ["--no-playlist", "--no-warnings",
+                        "--concurrent-fragments", "8"]
         if ffmpeg:
             base += ["--ffmpeg-location", ffmpeg]
         out_tpl = os.path.join(tmpdir, "media.%(ext)s")
