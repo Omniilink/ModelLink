@@ -4477,6 +4477,41 @@ async def coding_file_delete(request: Request, path: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/api/coding/rename")
+async def coding_rename(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
+    old_path = (body.get("old_path") or "").strip()
+    new_path = (body.get("new_path") or "").strip()
+    if not old_path or not new_path:
+        return JSONResponse(status_code=400, content={"error": "old_path and new_path required"})
+    if _bad_path(old_path) or _bad_path(new_path):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    full_old = os.path.join(folder, old_path)
+    full_new = os.path.join(folder, new_path)
+    if not _is_within(folder, full_old) or not _is_within(folder, full_new):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    if not os.path.exists(full_old):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.exists(full_new):
+        return JSONResponse(status_code=409, content={"error": "Target already exists"})
+    try:
+        os.rename(full_old, full_new)
+        logger.info(f"[CODING] Renamed: {old_path} -> {new_path} user={user.get('username','-')}")
+        return {"status": "ok"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ==========================================
 # More Tools: YouTube download + file conversion
 # ==========================================

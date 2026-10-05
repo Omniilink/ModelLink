@@ -382,6 +382,9 @@ a:hover{text-decoration:underline}
 .api-key-row button.danger{border-color:var(--error);color:var(--error)}
 .api-key-row button.danger:hover{background:var(--error);color:#fff}
 .ft-item{display:flex;align-items:center;gap:6px;padding:4px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ft-context-menu{position:fixed;z-index:500;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);box-shadow:0 12px 32px rgba(0,0,0,.5);padding:4px;min-width:150px}
+.ft-context-item{display:block;width:100%;text-align:left;padding:7px 12px;border-radius:var(--radius-xs);background:none;border:none;color:var(--text-secondary);font-size:12.5px;cursor:pointer;font-family:var(--font)}
+.ft-context-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .ft-ignore-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
 .ft-item:hover{background:var(--bg-hover);color:var(--text-primary)}
 .ft-item.dir{color:var(--accent-light);font-weight:600}
@@ -2289,17 +2292,42 @@ async function refreshCodingTree(){if(!codingFolder&&!isRemote())return;try{if(i
 </script>
 
 <script>
+function filterFileTree(q){
+  q=(q||'').trim().toLowerCase();
+  document.querySelectorAll('#coding-filetree .ft-item').forEach(item=>{
+    const name=item.lastElementChild?item.lastElementChild.textContent:'';
+    item.style.display=(!q||name.toLowerCase().includes(q))?'':'none';
+  });
+}
+function openFileTreeContextMenu(ev,path,isDir){
+  ev.preventDefault();ev.stopPropagation();
+  closeFileTreeContextMenu();
+  const menu=document.createElement('div');menu.id='ft-context-menu';menu.className='ft-context-menu';
+  const items=[
+    {label:'Open',fn:()=>openFileActionModal(path,null)},
+    {label:'Rename',fn:()=>openRenameModal(path)},
+    {label:'Copy path',fn:()=>{if(navigator.clipboard)navigator.clipboard.writeText(path)}},
+    {label:'Delete',fn:()=>{if(appConfirm('Delete "'+path+'"?'))deleteCodingFile(path)}}
+  ];
+  items.forEach(it=>{const b=document.createElement('button');b.className='ft-context-item';b.textContent=it.label;b.onclick=e=>{e.stopPropagation();closeFileTreeContextMenu();it.fn()};menu.appendChild(b)});
+  document.body.appendChild(menu);
+  const r=ev.target.getBoundingClientRect();
+  menu.style.left=Math.min(r.left,window.innerWidth-160)+'px';
+  menu.style.top=Math.min(r.bottom,window.innerHeight-160)+'px';
+  setTimeout(()=>document.addEventListener('click',closeFileTreeContextMenu,{once:true}),0);
+}
+function closeFileTreeContextMenu(){const m=document.getElementById('ft-context-menu');if(m)m.remove()}
 function renderFileTree(tree){
   try{if(typeof window!=='undefined')window.lastCodingTree=tree||[]}catch(e){}
   const container=document.getElementById('coding-filetree');container.innerHTML='';
-    const header=document.createElement('div');header.className='ft-header';header.style.cssText='padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)';header.innerHTML='<span style="flex:1">Files</span>';
+    const header=document.createElement('div');header.className='ft-header';header.style.cssText='padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)';header.innerHTML='<span style="flex:1">Files</span><input id="ft-search" placeholder="Filter..." style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:2px 6px;color:var(--text-primary);font-size:10px;font-family:var(--font);outline:none;width:90px" oninput="filterFileTree(this.value)"/>';
     const treeChev=document.createElement('button');treeChev.id='coding-tree-toggle';treeChev.textContent=codingTreeCollapsed?'\u25B8':'\u25BE';treeChev.title='Toggle file tree';treeChev.style.cssText='padding:1px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';treeChev.onclick=()=>toggleCodingTree();header.appendChild(treeChev);
     const newFileBtn=document.createElement('button');newFileBtn.textContent='+ File';newFileBtn.title='New file';newFileBtn.style.cssText='padding:2px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';newFileBtn.onclick=()=>openNewFileModal();header.appendChild(newFileBtn);container.appendChild(header);
   if(!tree||tree.length===0){const empty=document.createElement('div');empty.className='filetree-empty';empty.textContent='No files found';container.appendChild(empty);return}
   function render(entries,parent,depth){for(const e of entries){const item=document.createElement('div');item.className='ft-item'+(e.type==='dir'?' dir':'');const indentHtml='<span class="ft-indent" style="width:'+(depth*16)+'px"></span>';
-     if(e.type==='dir'){item.innerHTML=indentHtml+'<span style="font-size:8px">\u25B6</span><span>'+escapeHtml(e.name)+'</span>';const igDir=document.createElement('button');igDir.className='ft-ignore-btn';igDir.textContent='Ignore';igDir.title='Edit ignore list';igDir.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';igDir.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};item.appendChild(igDir);const children=document.createElement('div');children.className='ft-children';item.addEventListener('click',()=>{item.classList.toggle('open');item.querySelector('span:nth-child(2)').textContent=item.classList.contains('open')?'\u25BC':'\u25B6'});parent.appendChild(item);parent.appendChild(children);if(e.children)render(e.children,children,depth+1)}
+           if(e.type==='dir'){item.innerHTML=indentHtml+'<span style="font-size:8px">\u25B6</span><span>'+escapeHtml(e.name)+'</span>';item.oncontextmenu=ev=>openFileTreeContextMenu(ev,e.path||e.name,true);const igDir=document.createElement('button');igDir.className='ft-ignore-btn';igDir.textContent='Ignore';igDir.title='Edit ignore list';igDir.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';igDir.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};item.appendChild(igDir);const children=document.createElement('div');children.className='ft-children';item.addEventListener('click',()=>{item.classList.toggle('open');item.querySelector('span:nth-child(2)').textContent=item.classList.contains('open')?'\u25BC':'\u25B6'});parent.appendChild(item);parent.appendChild(children);if(e.children)render(e.children,children,depth+1)}
     else{const lang=getLangForFile(e.name);const fp=e.path||e.name;const execCmd=getExecCmd(e.name);
-      item.innerHTML=indentHtml+'<span style="font-size:10px;color:'+(lang?'var(--accent-light)':'var(--text-muted)')+'">'+(lang?'\u25A0':'\u25A1')+'</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(e.name)+'</span>'+(lang?'<span style="font-size:9px;color:var(--text-muted);background:var(--bg-tertiary);padding:1px 4px;border-radius:3px;flex-shrink:0">'+lang+'</span>':'');
+      item.innerHTML=indentHtml+'<span style="font-size:10px;color:'+(lang?'var(--accent-light)':'var(--text-muted)')+'">'+(lang?'\u25A0':'\u25A1')+'</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(e.name)+'</span>'+(lang?'<span style="font-size:9px;color:var(--text-muted);background:var(--bg-tertiary);padding:1px 4px;border-radius:3px;flex-shrink:0">'+lang+'</span>':'');item.oncontextmenu=ev=>openFileTreeContextMenu(ev,fp,false);
       if(execCmd){const rb=document.createElement('button');rb.className='ft-run-btn';rb.textContent='\u25B6';rb.title='Run with '+execCmd;rb.style.cssText='width:20px;height:18px;border-radius:3px;background:var(--success);border:none;color:#fff;font-size:8px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:4px';rb.onclick=ev=>{ev.stopPropagation();runFileScanned(fp,execCmd)};item.appendChild(rb)}
       const delBtn=document.createElement('button');delBtn.textContent='\u00D7';delBtn.title='Delete file';delBtn.style.cssText='width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px';
       delBtn.onmouseenter=()=>{delBtn.style.background='var(--error)';delBtn.style.color='#fff'};delBtn.onmouseleave=()=>{delBtn.style.background='transparent';delBtn.style.color='var(--text-muted)'};
@@ -2412,6 +2440,29 @@ function openFileActionModal(path,execCmd){
   document.getElementById('file-action-modal').classList.add('open');
 }
 function closeFileActionModal(){document.getElementById('file-action-modal').classList.remove('open')}
+function openRenameModal(path){
+  const oldName=path.split('/').pop();
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='420px';
+  m.innerHTML='<div class="modal-header"><h2>Rename</h2></div><div class="modal-body"><div class="modal-field"><label>New name</label><input type="text" id="rename-input" value="'+escapeHtml(oldName)+'" /></div><div class="modal-actions"><button class="btn btn-ghost" id="rename-cancel">Cancel</button><button class="btn btn-primary" id="rename-save">Rename</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  const inp=m.querySelector('#rename-input');inp.focus();inp.select();
+  m.querySelector('#rename-cancel').onclick=()=>ov.remove();
+  const doRename=async()=>{
+    const newName=inp.value.trim();
+    if(!newName||newName===oldName){ov.remove();return}
+    const dir=path.includes('/')?path.slice(0,path.lastIndexOf('/')):'';
+    const newPath=dir?dir+'/'+newName:newName;
+    try{
+      const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:path,new_path:newPath})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(d.error||'Rename failed');
+      ov.remove();refreshCodingTree();showToast('Renamed to '+newName,'success');
+    }catch(e){showToast('Rename failed: '+e.message,'error')}
+  };
+  m.querySelector('#rename-save').onclick=doRename;
+  inp.onkeydown=e=>{if(e.key==='Enter')doRename();if(e.key==='Escape')ov.remove()};
+}
 async function scanPathForAction(path,action){
   // Returns true when it is OK to proceed. Danger findings require an
   // explicit confirm listing every hit; scan errors fail open with a
