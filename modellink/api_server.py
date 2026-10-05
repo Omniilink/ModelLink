@@ -89,7 +89,7 @@ import urllib.parse
 from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
     load_all_keys, MODEL_RATE_LIMITS,
-    scan_ollama_models, get_backup_model, OLLAMA_BASE_URL,
+    scan_ollama_models, get_backup_model, OLLAMA_BASE_URL, set_ollama_base_url,
     get_language, set_language, normalize_level, EFFORT_LEVELS,
     provider_health,
     web_search, WEB_SEARCH_TOOL, _add_tools_to_body, _extract_tool_calls,
@@ -106,6 +106,26 @@ from modellink.auth import (
     revoke_user_sessions, record_usage, get_usage, get_api_key_id_by_key,
     all_usernames, validate_api_key
 )
+
+def _ollama_url_from_dotenv() -> str:
+    try:
+        from dotenv import dotenv_values
+        vals = dotenv_values(os.path.join(APP_DIR, ".env"))
+        return ((vals or {}).get("OMNIILINK_OLLAMA_URL", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _resolve_ollama_url() -> str:
+    return (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
+
+
+# Apply the server-wide Ollama address at boot (.env/env), so the fallback and
+# /api/discover use it before any admin interaction.
+try:
+    set_ollama_base_url(_resolve_ollama_url())
+except Exception:
+    pass
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
 MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
@@ -1913,33 +1933,60 @@ async def get_provider_health(request: Request):
         return err
     return {"health": provider_health(health_scope(request))}
 
+def _ollama_current_url() -> str:
+    """The live server-wide Ollama address (updated at runtime by the admin)."""
+    return getattr(lb, "OLLAMA_BASE_URL", OLLAMA_BASE_URL)
+
+
 @app.get("/api/ollama/models")
 async def ollama_models(request: Request):
     _user, err = _require_auth(request)
     if err:
         return err
-    prefs = _load_user_prefs(_safe_username(_user["username"]))
-    custom_url = (prefs.get("ollama_base_url") or "").strip()
-    models = scan_ollama_models(custom_url or None)
+    models = scan_ollama_models()
     return {"models": models, "available": len(models) > 0,
-            "base_url": custom_url or OLLAMA_BASE_URL, "custom": bool(custom_url)}
+            "base_url": _ollama_current_url()}
 
 
 @app.get("/api/ollama/config")
 async def ollama_config_get(request: Request):
+    """Server-wide Ollama status (configured in the admin panel, not per user)."""
     _user, err = _require_auth(request)
     if err:
         return err
-    prefs = _load_user_prefs(_safe_username(_user["username"]))
-    custom_url = (prefs.get("ollama_base_url") or "").strip()
-    models = scan_ollama_models(custom_url or None)
-    return {"base_url": custom_url or OLLAMA_BASE_URL, "custom": bool(custom_url),
-            "available": len(models) > 0, "models": models}
+    models = scan_ollama_models()
+    return {"base_url": _ollama_current_url(), "available": len(models) > 0,
+            "models": models, "is_admin": bool(_user.get("is_admin"))}
+
+
+def _set_env_var(key_name: str, key_value: str):
+    """Persist KEY=value into the server .env and the live environment."""
+    env_path = os.path.join(APP_DIR, ".env")
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+    target = f"{key_name}="
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(target):
+            lines[i] = f"{key_name}={key_value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key_name}={key_value}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+    if key_value:
+        os.environ[key_name] = key_value
+    else:
+        os.environ.pop(key_name, None)
 
 
 @app.post("/api/ollama/config")
 async def ollama_config_set(request: Request):
-    _user, err = _require_auth(request)
+    """Admin-only: set the SERVER's Ollama URL (the server app's setting)."""
+    _user, err = _require_admin(request)
     if err:
         return err
     body, jerr = await _safe_json(request)
@@ -1948,9 +1995,10 @@ async def ollama_config_set(request: Request):
     url = str((body or {}).get("base_url", "")).strip().rstrip("/")
     if url and not re.match(r"^https?://", url):
         return JSONResponse(status_code=400, content={"error": "URL must start with http:// or https://"})
-    _save_user_pref(_safe_username(_user["username"]), "ollama_base_url", url)
-    models = scan_ollama_models(url or None)
-    return {"status": "ok", "base_url": url or OLLAMA_BASE_URL,
+    _set_env_var("OMNIILINK_OLLAMA_URL", url)
+    set_ollama_base_url(url)
+    models = scan_ollama_models()
+    return {"status": "ok", "base_url": _ollama_current_url(),
             "available": len(models) > 0, "models": models}
 
 
@@ -1988,7 +2036,7 @@ async def get_settings(request: Request):
     db_provider_keys = get_user_provider_keys(user["id"])
     settings = {
         "backup_model": get_backup_model(),
-        "ollama_url": OLLAMA_BASE_URL,
+        "ollama_url": _ollama_current_url(),
         "language": _user_language(_safe_username(user["username"])),
         "is_admin": bool(user.get("is_admin")),
     }
@@ -7136,33 +7184,70 @@ def _valid_project_name(name: str) -> bool:
         return False
     return True
 
+def _scan_project_dir(path: str, max_files: int = 50000, max_dirs: int = 20000) -> tuple:
+    """(file_count, total_bytes) for a project folder — never raises.
+
+    Uses an explicit stack with a visited-realpath set so Windows directory
+    junctions / symlink cycles (common after importing a folder) cannot make
+    the walk loop forever or bubble an OSError that would 500 /api/projects
+    (the frontend shows that as "Server offline")."""
+    file_count = 0
+    dir_size = 0
+    seen = set()
+    stack = [path]
+    while stack and file_count < max_files and len(seen) < max_dirs:
+        d = stack.pop()
+        try:
+            key = os.path.normcase(os.path.realpath(d))
+            if key in seen:
+                continue
+            seen.add(key)
+            with os.scandir(d) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            if not any(entry.name.endswith(e) for e in IGNORE_EXTS):
+                                file_count += 1
+                            dir_size += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return file_count, dir_size
+
+
 @app.get("/api/projects")
 async def list_projects(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
     user_id = _safe_username(user["username"])
-    projects_dir = _user_projects_dir(user_id)
+    try:
+        projects_dir = _user_projects_dir(user_id)
+        names = sorted(os.listdir(projects_dir))
+    except Exception as e:
+        logger.warning(f"[PROJECTS] cannot list projects for {user_id}: {e}")
+        return {"projects": [], "dir": "", "storage_used_bytes": 0,
+                "storage_limit_bytes": _user_quota_bytes()}
     projects = []
     total_size = 0
-    for name in sorted(os.listdir(projects_dir)):
-        if name.startswith("_del_"): continue
+    for name in names:
+        if name.startswith("_del_"):
+            continue
         path = os.path.join(projects_dir, name)
-        if not os.path.isdir(path): continue
-        if os.path.isdir(path):
-            file_count = 0
-            dir_size = 0
-            for root, dirs, files in os.walk(path):
-                for f in files:
-                    fp = os.path.join(root, f)
-                    if not any(f.endswith(e) for e in IGNORE_EXTS):
-                        file_count += 1
-                    try:
-                        dir_size += os.path.getsize(fp)
-                    except: pass
+        try:
+            if not os.path.isdir(path):
+                continue
+            file_count, dir_size = _scan_project_dir(path)
             mtime = os.path.getmtime(path)
             total_size += dir_size
-            projects.append({"name": name, "path": path, "file_count": file_count, "modified": mtime, "size_bytes": dir_size})
+            projects.append({"name": name, "path": path, "file_count": file_count,
+                             "modified": mtime, "size_bytes": dir_size})
+        except Exception as e:
+            logger.warning(f"[PROJECTS] skipped {path}: {e}")
+            continue
     return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
 
 

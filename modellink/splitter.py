@@ -81,8 +81,26 @@ MODEL_RATE_LIMITS = {
     "qwen/qwen-2.5-72b-instruct":  {"rpm": 10,  "tpm": 100000},
 }
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+def _default_ollama_base_url() -> str:
+    """Server-wide Ollama address. OMNIILINK_OLLAMA_URL (set from the admin
+    panel) wins; the legacy OLLAMA_BASE_URL still works; else localhost."""
+    return (os.environ.get("OMNIILINK_OLLAMA_URL")
+            or os.environ.get("OLLAMA_BASE_URL")
+            or "http://localhost:11434").strip().rstrip("/")
+
+
+OLLAMA_BASE_URL = _default_ollama_base_url()
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
+
+
+def set_ollama_base_url(url: str) -> str:
+    """Point the server-wide Ollama fallback at `url` at runtime (no restart).
+
+    Read dynamically by scan_ollama_models() and the fallback, so the admin
+    panel takes effect immediately."""
+    global OLLAMA_BASE_URL
+    OLLAMA_BASE_URL = (url or "").strip().rstrip("/") or _default_ollama_base_url()
+    return OLLAMA_BASE_URL
 
 def _load_settings_language():
     settings_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")

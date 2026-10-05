@@ -1208,6 +1208,13 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 <div><div class="usage-section-title">Environment</div><div class="usage-chart-wrap"><div class="usage-chart-body" id="adm-env"></div></div></div>
                 <div><div class="usage-section-title">Admin access</div><div class="usage-chart-wrap"><div class="usage-chart-body" id="adm-access"></div></div></div>
               </div>
+              <div class="usage-section-title" style="margin-top:16px">Ollama (server)</div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body">
+                <div class="tool-row"><input type="text" id="adm-ollama-url" placeholder="http://localhost:11434" style="flex:1;min-width:220px" spellcheck="false" oninput="this.dataset.touched='1'" /><button class="btn btn-ghost btn-sm" onclick="admOllamaTest()">Test</button><button class="btn btn-primary btn-sm" onclick="admOllamaSave()">Save</button></div>
+                <div class="tool-status" id="adm-ollama-status">…</div>
+                <div id="adm-ollama-models" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
+                <div class="tool-result-sub" style="margin-top:6px">Stored on the server, so it reaches Ollama running on the server machine — not your browser's localhost.</div>
+              </div></div>
               <div id="adm-jobs"></div>
             </div>
             <div data-apane="reports" style="display:none">
@@ -2236,44 +2243,6 @@ async function renderProvidersPage(){
   try{const r=await authFetch(API+'/api/provider-keys');if(r.ok){const d=await r.json();keys=d.keys||[]}}catch(e){}
   try{const r2=await authFetch(API+'/api/custom-providers');if(r2.ok){const d2=await r2.json();customs=d2.providers||[]}}catch(e2){}
   body.innerHTML='';
-  // Ollama (local) section is always shown — link this server to your Ollama.
-  const oll=document.createElement('div');oll.style.cssText='margin-bottom:18px';
-  const ollSec=document.createElement('div');ollSec.className='settings-section';ollSec.style.margin='0';
-  const ollH=document.createElement('h3');ollH.style.margin='0 0 10px';ollH.textContent='Ollama (local)';ollSec.appendChild(ollH);
-  const ollSt=document.createElement('div');ollSt.className='tool-status';ollSt.style.marginBottom='8px';ollSt.textContent='Checking Ollama…';ollSec.appendChild(ollSt);
-  const ollRow=document.createElement('div');ollRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px';
-  const ollInp=document.createElement('input');ollInp.id='oll-url';ollInp.placeholder='http://localhost:11434';ollInp.style.cssText='flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none';
-  const ollTest=document.createElement('button');ollTest.className='btn btn-ghost btn-sm';ollTest.textContent='Test';
-  const ollSave=document.createElement('button');ollSave.className='btn btn-primary btn-sm';ollSave.textContent='Save URL';
-  ollRow.appendChild(ollInp);ollRow.appendChild(ollTest);ollRow.appendChild(ollSave);ollSec.appendChild(ollRow);
-  const ollList=document.createElement('div');ollList.id='oll-models';ollList.style.cssText='display:flex;flex-wrap:wrap;gap:6px';ollSec.appendChild(ollList);
-  oll.appendChild(ollSec);
-  body.appendChild(oll);
-  const refreshOll=async()=>{
-    try{
-      const r=await authFetch(API+'/api/ollama/config');
-      if(r.ok){
-        const d=await r.json();
-        if(!ollInp.dataset.touched)ollInp.value=d.base_url||'';
-        ollSt.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url):('Ollama not reachable at '+(d.base_url||'default')+'. Start Ollama or set the URL above.');
-        ollList.innerHTML='';
-        (d.models||[]).forEach(m=>{
-          const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=m;
-          b.onclick=()=>{selectModel(m);showToast('Selected '+m,'success')};
-          ollList.appendChild(b);
-        });
-      }
-    }catch(e){ollSt.textContent='Could not reach the server.'}
-  };
-  ollInp.addEventListener('input',e=>{e.target.dataset.touched='1'});
-  ollTest.onclick=async()=>{ollSt.textContent='Testing…';await refreshOll();};
-  ollSave.onclick=async()=>{
-    const url=ollInp.value.trim();
-    const r=await authFetch(API+'/api/ollama/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:url})});
-    if(r.ok){showToast('Ollama URL saved','success');await refreshOll();loadModels();}
-    else{showToast('Save failed','error')}
-  };
-  await refreshOll();
   if(!keys.length&&!customs.length){
     const empty=document.createElement('div');empty.style.cssText='text-align:center;padding:48px 16px;color:var(--text-muted)';
     empty.innerHTML='<div style="font-size:15px;margin-bottom:8px;color:var(--text-primary)">No providers yet</div><div style="font-size:12px;margin-bottom:16px">Add a provider key to start chatting with real models.</div>';
@@ -6440,7 +6409,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview()}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -6457,6 +6426,30 @@ async function admLoadOverview(){try{const r=await authFetch(API+'/api/admin/ove
   kv(document.getElementById('adm-access'),[['Allowlist',(caps.admin_users||[]).join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']]);
   const jb=document.getElementById('adm-jobs');jb.innerHTML='';(d.jobs||[]).forEach(j=>{const p=document.createElement('div');p.className='usage-chart-wrap';p.innerHTML='<div class="usage-chart-header">Job '+escapeHtml(j.kind)+' — '+escapeHtml(j.status)+'</div><div class="usage-chart-body"><pre class="code-block">'+escapeHtml((j.lines||[]).join('\n'))+'</pre></div>';jb.appendChild(p)});
 }catch(e){}}
+async function admLoadOllama(){
+  const st=document.getElementById('adm-ollama-status');if(!st)return;
+  try{
+    const r=await authFetch(API+'/api/ollama/config');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    const inp=document.getElementById('adm-ollama-url');if(inp&&!inp.dataset.touched)inp.value=d.base_url||'';
+    st.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url):('Not reachable at '+(d.base_url||'default')+'. Start Ollama on the server, or set its URL above.');
+    const list=document.getElementById('adm-ollama-models');list.innerHTML='';
+    (d.models||[]).forEach(m=>{const b=document.createElement('span');b.className='chip';b.textContent=m;list.appendChild(b)});
+  }catch(e){st.textContent='Could not read Ollama status: '+e.message}
+}
+async function admOllamaTest(){const st=document.getElementById('adm-ollama-status');if(st)st.textContent='Testing…';await admLoadOllama()}
+async function admOllamaSave(){
+  const inp=document.getElementById('adm-ollama-url');if(!inp)return;
+  const url=inp.value.trim();inp.dataset.touched='1';
+  try{
+    const r=await authFetch(API+'/api/ollama/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:url})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+    showToast('Ollama URL saved on the server','success');
+    await admLoadOllama();try{loadModels()}catch(e){}
+  }catch(e){showToast('Save failed: '+e.message,'error')}
+}
 async function admLoadReports(){const box=document.getElementById('adm-reports');try{const r=await authFetch(API+'/api/admin/error-reports?status=all');if(!r.ok){box.innerHTML='<div class="tool-status">Could not load reports.</div>';return}const d=await r.json();const reps=d.reports||[];
   const cnt=document.getElementById('adm-rep-count');if(cnt)cnt.textContent=(d.open_count||0)?'('+d.open_count+')':'';
   box.innerHTML='';if(!reps.length){box.innerHTML='<div class="tool-status">No error reports. Nice.</div>';return}
@@ -7108,7 +7101,7 @@ async function openMyPublished(){
           const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=async()=>{await authFetch(API+'/api/public/projects/'+p.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})});openMyPublishedRefresh(ov)};row.appendChild(no);
         } else {
           const open=document.createElement('button');open.className='btn btn-ghost btn-sm';open.textContent='Open';open.onclick=()=>{ov.remove();openPublicDetail(p.id)};row.appendChild(open);
-          if(extra==='mine'&&p.can_update){
+          if(extra==='mine'){
             const up=document.createElement('button');up.className='btn btn-ghost btn-sm';up.textContent='Update';
             up.onclick=async()=>{
               if(!(await appConfirm('Update "'+(p.name||'Untitled')+'" to the latest version of the original project?\n\nIt will be sent for re-approval and hidden from Public until an admin approves it again.')))return;
