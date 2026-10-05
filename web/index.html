@@ -1199,6 +1199,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="docker" onclick="admShow('docker',this)">Docker</button>
               <button class="modal-tab" data-atab="logs" onclick="admShow('logs',this)">Logs</button>
               <button class="modal-tab" data-atab="audit" onclick="admShow('audit',this)">Audit</button>
+              <button class="modal-tab" data-atab="review" onclick="admShow('review',this)">Review <span id="adm-rev-count"></span></button>
             </div>
             <div data-apane="overview">
               <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -1245,6 +1246,11 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div data-apane="audit" style="display:none">
               <div class="tool-row"><label class="tool-result-sub"><input type="checkbox" id="adm-audit-auto" onchange="this.checked?admArm('audit'):admClearTimer('audit')" /> auto (3s)</label><label class="tool-result-sub">lines <input type="text" id="adm-audit-lines" value="300" style="width:70px" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadAudit()">Refresh</button></div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><pre class="code-block" id="adm-audit-out" style="max-height:60vh">(empty)</pre></div></div>
+            </div>
+            <div data-apane="review" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Status <select id="adm-rev-status" onchange="admLoadReview()"><option value="pending" selected>Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All</option></select></label><button class="btn btn-ghost btn-sm" onclick="admLoadReview()">Refresh</button><span class="tool-result-sub" id="adm-rev-meta"></span></div>
+              <div class="tool-result-sub" style="margin-bottom:10px">Public projects and assets waiting for approval. Run previews the submission without publishing it.</div>
+              <div id="adm-review"></div>
             </div>
           </div>
         </div>
@@ -6384,7 +6390,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview')admLoadOverview();else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -6441,6 +6447,47 @@ async function admRestartContainer(name,btn){if(!(await appConfirm('Restart cont
 async function admRestartServer(){if(!(await appConfirm('Restart the API server container? This drops every connection.')))return;try{const r=await authFetch(API+'/api/admin/server/restart',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await r.json();if(!r.ok)throw new Error((d&&(d.error||d.detail))||('HTTP '+r.status));showToast('Restarting — reconnecting…','success');setTimeout(()=>location.reload(),6000)}catch(e){showToast((e.data&&e.data.error)||e.message,'error')}}
 async function admLoadLogs(){try{const r=await authFetch(API+'/api/admin/logs?lines='+encodeURIComponent(document.getElementById('adm-logs-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-logs-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
 async function admLoadAudit(){try{const r=await authFetch(API+'/api/admin/audit?lines='+encodeURIComponent(document.getElementById('adm-audit-lines').value||300));if(!r.ok)return;const d=await r.json();const pre=document.getElementById('adm-audit-out');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;pre.textContent=d.lines||'(empty)';if(atEnd)pre.scrollTop=pre.scrollHeight}catch(e){}}
+async function admLoadReview(){
+  const box=document.getElementById('adm-review');if(!box)return;
+  box.innerHTML='<div class="tool-status">Loading…</div>';
+  const sel=document.getElementById('adm-rev-status');const status=sel?sel.value:'pending';
+  try{
+    const r=await authFetch(API+'/api/admin/public?status='+encodeURIComponent(status));
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const c=d.counts||{};
+    const meta=document.getElementById('adm-rev-meta');if(meta)meta.textContent=(c.pending||0)+' pending · '+(c.approved||0)+' approved · '+(c.rejected||0)+' rejected';
+    const cnt=document.getElementById('adm-rev-count');if(cnt)cnt.textContent=(c.pending?('('+c.pending+')'):'');
+    const items=d.projects||[];box.innerHTML='';
+    if(!items.length){box.innerHTML='<div class="tool-status">Nothing here.</div>';return}
+    items.forEach(p=>{
+      const card=document.createElement('div');card.className='prompt-card';
+      const head=document.createElement('div');head.className='prompt-header';
+      const nm=document.createElement('span');nm.className='prompt-name';nm.textContent=(p.name||'Untitled')+' · '+(p.kind||'project');
+      head.appendChild(nm);
+      const badge=document.createElement('span');badge.className='act-status-'+(p.status==='approved'?'success':p.status==='rejected'?'error':'warning')+' act-status';badge.style.cssText='font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px';badge.textContent=p.status||'';
+      head.appendChild(badge);card.appendChild(head);
+      const body=document.createElement('div');body.className='prompt-content';
+      body.textContent='Submitted by '+(p.username||('user '+p.user_id))+(p.allow_download?' · downloads allowed':' · downloads off')+'\n'+(p.description||'(no description)')+'\n'+(p.files||0)+' file'+((p.files===1)?'':'s')+' · '+admBytes(p.bytes||0)+(p.main_file?' · main: '+p.main_file:'');
+      card.appendChild(body);
+      const acts=document.createElement('div');acts.className='prompt-actions';
+      if(p.main_file){const run=document.createElement('button');run.className='btn btn-ghost btn-sm';run.textContent='▶ Run';run.onclick=()=>admRunPublic(p.id,p.main_file);acts.appendChild(run);}
+      const view=document.createElement('button');view.className='btn btn-ghost btn-sm';view.textContent='Open page';view.onclick=()=>{navigate('public');openPublicDetail(p.id)};acts.appendChild(view);
+      if(p.status!=='approved'){const ok=document.createElement('button');ok.className='btn btn-primary btn-sm';ok.textContent='Approve';ok.onclick=()=>admReviewSubmit(p.id,'approve');acts.appendChild(ok);}
+      if(p.status!=='rejected'){const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=()=>admReviewSubmit(p.id,'reject');acts.appendChild(no);}
+      card.appendChild(acts);box.appendChild(card);
+    });
+  }catch(e){box.innerHTML='<div class="tool-status">Load failed: '+escapeHtml(e.message)+'</div>'}
+}
+async function admReviewSubmit(pid,action){
+  try{const r=await authFetch(API+'/api/public/projects/'+pid+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    showToast('Submission '+action+'d','success');admLoadReview();
+  }catch(e){showToast(e.message,'error')}
+}
+async function admRunPublic(pid,mainPath){
+  try{const r=await authFetch(API+'/api/public/projects/'+pid);if(!r.ok)throw new Error('HTTP '+r.status);const p=await r.json();runPublicProject(pid,p.main_file||mainPath,p.files||[])}
+  catch(e){showToast('Run failed: '+e.message,'error')}
+}
 async function admGenPairing(){try{const r=await authFetch(API+'/api/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
   document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Windows may show &quot;Smart App Control blocked this app&quot; because the installer is unsigned — open Windows Security &gt; App &amp; browser control &gt; Smart App Control and turn it off, or choose &quot;Run anyway&quot;. Buying a code-signing certificate removes that prompt for good.<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
 function admAgo(t){t=Number(t)||0;if(!t)return 'never';const s=Math.max(0,Date.now()/1000-t);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}

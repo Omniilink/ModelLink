@@ -3014,6 +3014,8 @@ async def coding_preview(request: Request, path: str):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    # Opening a preview brings the project's (idle-shut-down) container back up.
+    _maybe_warm_project(user, folder)
     if _bad_path(path):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     if os.path.splitext(path)[1].lower() not in (".html", ".htm"):
@@ -4282,6 +4284,51 @@ async def public_review(request: Request, pid: int):
         conn.close()
     _audit("public.review", _admin.get("username", ""), f"{pid} {action}")
     return {"status": "ok"}
+
+
+@app.get("/api/admin/public")
+async def admin_public_list(request: Request, status: str = "pending"):
+    """Admin review queue: every public submission with its real author.
+
+    `_pub_row` hides the username when the creator opted out of showing it,
+    but moderators must always see who submitted something, so the raw
+    username/user_id are added back here. File count/size are included so the
+    admin can judge the submission without opening it.
+    """
+    _admin, err = _require_admin(request)
+    if err:
+        return err
+    status = (status or "").strip().lower()
+    conn = get_db()
+    try:
+        if status in ("pending", "approved", "rejected"):
+            rows = conn.execute(
+                "SELECT * FROM public_projects WHERE status = ? ORDER BY created_at DESC LIMIT 500",
+                (status,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM public_projects ORDER BY created_at DESC LIMIT 500").fetchall()
+        out = []
+        for r in rows:
+            fc = conn.execute(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS s "
+                "FROM public_project_files WHERE project_id = ?", (r["id"],)).fetchone()
+            row = _pub_row(r)
+            row["username"] = r["username"] or ""
+            row["user_id"] = r["user_id"]
+            row["show_author"] = bool(r["show_author"])
+            row["files"] = int(fc["c"] if fc else 0)
+            row["bytes"] = int(fc["s"] if fc else 0)
+            row["approved_at"] = r["approved_at"]
+            out.append(row)
+        counts = {}
+        for st in ("pending", "approved", "rejected"):
+            counts[st] = conn.execute(
+                "SELECT COUNT(*) AS c FROM public_projects WHERE status = ?",
+                (st,)).fetchone()["c"]
+        return {"projects": out, "counts": counts}
+    finally:
+        conn.close()
 
 
 # ==========================================
@@ -6133,10 +6180,13 @@ def _sandbox_config() -> Optional[dict]:
     mode = os.environ.get("OMNIILINK_SANDBOX", "").strip().lower()
     if mode not in ("docker", "project"):
         return None
+    # Default 5: project containers stop after 5 idle minutes (their installed
+    # layers survive and they revive on next use), so a forgotten preview never
+    # keeps a container running forever. Set 0 to keep them running.
     try:
-        idle_minutes = int(os.environ.get("OMNIILINK_PROJ_IDLE_MIN", "0") or 0)
+        idle_minutes = int(os.environ.get("OMNIILINK_PROJ_IDLE_MIN", "5") or 0)
     except ValueError:
-        idle_minutes = 0
+        idle_minutes = 5
     return {
         "mode": mode,
         "image": os.environ.get("OMNIILINK_SANDBOX_IMAGE", "omniilink-sandbox:latest"),
@@ -6165,6 +6215,38 @@ def _project_container_name(user_id: str, folder: str) -> str:
 _proj_containers: dict = {}
 _proj_lock = threading.Lock()
 _reaper_started = False
+# Mirrored to disk so idle bookkeeping survives an API restart: a container
+# that was busy seconds before a restart is not mistaken for a stale one.
+_PROJ_ACTIVITY_FILE = os.path.join(APP_DIR, "user_data", ".proj_activity.json")
+
+
+def _proj_activity_load() -> dict:
+    try:
+        with open(_PROJ_ACTIVITY_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {str(k): float(v) for k, v in raw.items() if v}
+    except Exception:
+        return {}
+
+
+def _proj_activity_save() -> None:
+    try:
+        os.makedirs(os.path.dirname(_PROJ_ACTIVITY_FILE), exist_ok=True)
+        with _proj_lock:
+            snap = dict(_proj_containers)
+        tmp = _PROJ_ACTIVITY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+        os.replace(tmp, _PROJ_ACTIVITY_FILE)
+    except Exception:
+        pass
+
+
+def _proj_touch(name: str) -> None:
+    """Record that a project container was just used (drives idle reaping)."""
+    with _proj_lock:
+        _proj_containers[name] = time.time()
+    _proj_activity_save()
 
 
 def _docker_available() -> bool:
@@ -6182,16 +6264,14 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
         r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name],
                            capture_output=True, text=True, timeout=15)
         if r.returncode == 0 and r.stdout.strip() == "true":
-            with _proj_lock:
-                _proj_containers[name] = time.time()
+            _proj_touch(name)
             return True, ""
         if r.returncode == 0:
             # Exists but stopped: revive (keeps installed packages)
             r2 = subprocess.run(["docker", "start", name],
                                 capture_output=True, text=True, timeout=60)
             if r2.returncode == 0:
-                with _proj_lock:
-                    _proj_containers[name] = time.time()
+                _proj_touch(name)
                 return True, ""
         subprocess.run(["docker", "rm", "-f", name],
                        capture_output=True, timeout=30)
@@ -6206,8 +6286,7 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
         r3 = subprocess.run(argv, capture_output=True, text=True, timeout=180)
         if r3.returncode != 0:
             return False, ((r3.stderr or r3.stdout) or "docker run failed")[-500:]
-        with _proj_lock:
-            _proj_containers[name] = time.time()
+        _proj_touch(name)
         _maybe_start_reaper(cfg.get("idle_minutes", 0))
         return True, ""
     except Exception as e:
@@ -6215,22 +6294,56 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
 
 
 def _exec_project_container(name: str, command: str, timeout: int):
-    with _proj_lock:
-        _proj_containers[name] = time.time()
+    _proj_touch(name)
     return subprocess.run(["docker", "exec", "-w", "/work", name,
                            "sh", "-c", command],
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _maybe_warm_project(user, folder) -> None:
+    """Bring a project's sandbox container back up when its preview is opened.
+
+    Stopped containers keep their installed layers, so reviving here makes a
+    preview link work transparently after an idle shutdown. Best-effort: any
+    failure is ignored so previewing still works when Docker is unavailable.
+    Never removes anything — the project's files live on the bind mount, not
+    in the container.
+    """
+    try:
+        sb = _sandbox_config()
+        if not sb or sb.get("mode") != "project" or not folder:
+            return
+        if not _docker_available():
+            return
+        if _api_in_container():
+            _warn_missing_host_root()
+        user_id = _safe_username(user.get("username", ""))
+        name = _project_container_name(user_id, folder)
+        _ensure_project_container(name, folder, sb)
+    except Exception:
+        pass
+
+
 def _maybe_start_reaper(idle_minutes: int):
     """Idle reaper: STOP (not remove, so installed layers survive) project
-    containers unused for idle_minutes. 0 disables. Started once."""
+    containers unused for idle_minutes. 0 disables. Started once.
+
+    `docker stop` keeps the container and its installed layers; the next
+    command or preview revives it with `docker start`. The project's files
+    live on the bind mount, so a stopped/removed container never deletes a
+    project. Activity is mirrored to disk so this survives API restarts.
+    """
     global _reaper_started
     if not idle_minutes or _reaper_started:
         return
     _reaper_started = True
 
     def _loop():
+        # Seed from disk first so containers used shortly before a restart are
+        # not treated as idle the moment the reaper comes back.
+        for n, t in _proj_activity_load().items():
+            with _proj_lock:
+                _proj_containers.setdefault(n, t)
         while True:
             try:
                 time.sleep(60)
@@ -6243,6 +6356,10 @@ def _maybe_start_reaper(idle_minutes: int):
                                        capture_output=True, timeout=30)
                     except Exception:
                         pass
+                    with _proj_lock:
+                        _proj_containers.pop(n, None)
+                if stale:
+                    _proj_activity_save()
             except Exception:
                 pass
 

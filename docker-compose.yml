@@ -78,8 +78,9 @@ services:
       - OMNIILINK_SANDBOX_MEM=512m
       - OMNIILINK_SANDBOX_CPUS=1.0
       # Stop project containers after N idle minutes (keeps their installed
-      # layers; they revive on next use). 0 = keep running forever.
-      - OMNIILINK_PROJ_IDLE_MIN=0
+      # layers; they revive on next use, and opening a project preview
+      # transparently starts them again). 0 = keep running forever.
+      - OMNIILINK_PROJ_IDLE_MIN=5
     networks:
       - omniilink-net
 

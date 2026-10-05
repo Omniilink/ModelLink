@@ -176,7 +176,7 @@ docker inspect omniilink:latest --format="{{.Config.Cmd}}"
 |---|---|---|
 | `OMNIILINK_SANDBOX` | `project` | `""` host execution · `docker` fresh container per command · `project` one persistent container per project (installs survive). Inside the API container, `""` is **refused** (503) — commands never run where the docker socket, the database and everyone's files live |
 | `OMNIILINK_SANDBOX_HOST_ROOT` | `C:/Modellink` | Host folder that backs the API container's `/app`. Bind-mount sources are resolved by the Docker daemon **on the host**, so without this a containerized API would mount an empty directory instead of your real project files (commands look like they work, writes vanish). Native runs leave it unset → no remapping |
-| `OMNIILINK_PROJ_IDLE_MIN` | `0` | stop project containers after N idle minutes (installed layers kept, revived on next use). `0` = keep running |
+| `OMNIILINK_PROJ_IDLE_MIN` | `5` | stop project containers after N idle minutes (installed layers kept, revived on next use — opening a project preview also starts them again). `0` = keep running |
 | `OMNIILINK_SANDBOX_IMAGE` | `omniilink-sandbox:latest` | Image each command runs in |
 | `OMNIILINK_SANDBOX_NET` | `bridge` | `bridge` = internet works (pip/npm install). `none` = fully offline code only |
 | `OMNIILINK_SANDBOX_MEM` | `512m` | RAM cap per command |
@@ -247,8 +247,13 @@ anything installed stays installed:
 - Another Node version: `n 20` (the `n` version manager is preinstalled).
 - See them: `docker ps --filter name=omniilink-p-`
 - A project's container is deleted automatically when the project is
-  deleted; idle ones can auto-stop via `OMNIILINK_PROJ_IDLE_MIN`
-  (stopped containers keep their layers and revive on next use).
+  deleted; idle ones auto-stop after `OMNIILINK_PROJ_IDLE_MIN` minutes
+  (default 5). The stop keeps the container and its layers — it is NOT a
+  delete, so the preview link is unchanged and the project's files (which
+  live on the bind mount, never in the container) are untouched. The next
+  command or preview request revives it with `docker start`, so access is
+  effectively instant. Idle bookkeeping is stored in
+  `user_data/.proj_activity.json` and survives an API restart.
 
 Each container still sees ONLY its own project folder at `/work` —
 different projects, different users, and your ProDesk host stay
