@@ -6810,15 +6810,49 @@ function openPublishModal(){
     '<div class="modal-field"><label>Name</label><input type="text" id="pub-name" placeholder="My cool project" /></div>'+
     '<div class="modal-field"><label>Description</label><textarea id="pub-desc" style="width:100%;min-height:90px" placeholder="What does it do?"></textarea></div>'+
     '<div class="modal-field"><label>Type</label><select id="pub-kind"><option value="project">Project</option><option value="model">3D model</option><option value="asset">Asset</option></select></div>'+
-    '<div class="modal-field"><label>Files (from your project folder, one per line)</label><textarea id="pub-files" style="width:100%;min-height:90px" placeholder="index.html\nsrc/app.js"></textarea></div>'+
+    '<div class="modal-field"><label>Files from your project folder</label><div style="display:flex;gap:8px;margin-bottom:6px"><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-all">Select all</button><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-none">Clear</button></div><div id="pub-filetree" style="max-height:220px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;font-size:12px"></div></div>'+
     '<div class="modal-field"><label>Model ID (optional, for 3D models)</label><input type="text" id="pub-model" placeholder="m123…" /></div>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked /> Show my username</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
     '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
   ov.appendChild(m);document.body.appendChild(ov);
   m.querySelector('#pub-cancel').onclick=()=>ov.remove();
+  // Populate the folder file tree with checkboxes.
+  const ftHost=m.querySelector('#pub-filetree');
+  const renderPubTree=()=>{
+    ftHost.innerHTML='';
+    const tree=(typeof window!=='undefined'&&window.lastCodingTree)||[];
+    if(!tree.length){ftHost.innerHTML='<div style="color:var(--text-muted)">Open a project folder first (Coding view).</div>';return}
+    const walk=(ns,depth)=>{
+      (ns||[]).forEach(n=>{
+        if(!n)return;
+        const row=document.createElement('label');row.style.cssText='display:flex;gap:6px;align-items:center;padding:2px 0 2px '+(depth*14)+'px;cursor:pointer;color:var(--text-secondary)';
+        if(n.type==='dir'){
+          const t=document.createElement('span');t.textContent='▸ '+n.name;t.style.fontWeight='600';row.appendChild(t);
+          ftHost.appendChild(row);
+          walk(n.children,depth+1);
+        } else {
+          const cb=document.createElement('input');cb.type='checkbox';cb.value=n.path;cb.checked=true;
+          const t=document.createElement('span');t.textContent=n.name;
+          row.appendChild(cb);row.appendChild(t);
+          ftHost.appendChild(row);
+        }
+      });
+    };
+    walk(tree,0);
+  };
+  renderPubTree();
+  m.querySelector('#pub-sel-all').onclick=()=>{ftHost.querySelectorAll('input[type=checkbox]').forEach(c=>{c.checked=true})};
+  m.querySelector('#pub-sel-none').onclick=()=>{ftHost.querySelectorAll('input[type=checkbox]').forEach(c=>{c.checked=false})};
   m.querySelector('#pub-submit').onclick=async()=>{
-    const files=(m.querySelector('#pub-files').value||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,200).map(p=>({path:p,content:''}));
+    const paths=[...ftHost.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value).slice(0,200);
+    const files=[];
+    for(const p of paths){
+      try{
+        const content=await codingReadFile(p);
+        files.push({path:p,content:(content||'').slice(0,200000)});
+      }catch(e){}
+    }
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
       show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,files};
