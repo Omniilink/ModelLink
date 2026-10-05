@@ -1063,6 +1063,20 @@ pre{max-width:100%}
                 </div>
               </div>
             </div>
+            <div class="usage-grid">
+              <div>
+                <div class="usage-chart-wrap">
+                  <div class="usage-chart-header">Tokens by Model</div>
+                  <div class="usage-chart-body"><div class="usage-bars" id="us-token-bars"></div></div>
+                </div>
+              </div>
+              <div>
+                <div class="usage-chart-wrap">
+                  <div class="usage-chart-header">Prompt vs Completion</div>
+                  <div class="usage-chart-body"><canvas id="usage-doughnut-canvas" height="180"></canvas></div>
+                </div>
+              </div>
+            </div>
             <div style="margin-bottom:24px">
               <div class="usage-chart-wrap">
                 <div class="usage-chart-header">API Key Usage</div>
@@ -2506,6 +2520,45 @@ async function scanPathForAction(path,action){
 async function runFileScanned(path,execCmd){
   if(!(await scanPathForAction(path,'run')))return;
   runCodingFile(path,execCmd);
+}
+async function runProjectTests(){
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  const r=await authFetch(API+'/api/coding/run-tests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){showToast((d&&d.error)||'Tests failed','error');return}
+  showToast((d&&d.message)||'Tests passed','success');
+}
+async function deleteMultipleFiles(paths){
+  if(!paths||!paths.length)return;
+  if(!appConfirm('Delete '+paths.length+' files?'))return;
+  let ok=0,fail=0;
+  for(const p of paths){
+    try{
+      const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p),{method:'DELETE'});
+      if(r.ok)ok++;else fail++;
+    }catch(e){fail++}
+  }
+  showToast('Deleted '+ok+(fail?' ('+fail+' failed)':''),fail?'info':'success');
+  refreshCodingTree();
+}
+async function downloadMultipleFiles(paths){
+  if(!paths||!paths.length)return;
+  const zip=document.createElement('a');
+  zip.href=URL.createObjectURL(new Blob([''],{type:'application/zip'}));
+  zip.download='files.zip';
+  // For simplicity, download each file individually
+  for(const p of paths){
+    const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(p));
+    if(r.ok){
+      const d=await r.json();
+      const blob=new Blob([d.content||''],{type:'text/plain'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=p.split('/').pop();
+      a.click();
+    }
+  }
+  showToast('Downloaded '+paths.length+' files','success');
 }
 let _previewPath=null,_previewLocal=false;
 async function sharePreview(){
@@ -5197,6 +5250,8 @@ async function loadUsage(range,btn){
     renderUsageTokenBreakdown(data);
     renderUsageModelBars(data);
     renderUsageProviderBars(data);
+    renderUsageTokenBars(data);
+    renderUsageDoughnut(data);
     renderUsageKeyTable(data);
     renderUsageActivity(data);
   }catch(e){
@@ -5294,6 +5349,50 @@ function renderUsageProviderBars(data){
     .map(p=>({label:p.provider||p.name||'unknown',value:p.requests||0,display:(p.requests||0)+' req'}))
     .sort((a,b)=>b.value-a.value).slice(0,10);
   renderUsageBars('us-provider-bars',items);
+}
+function renderUsageTokenBars(data){
+  const byModel=data.by_model||[];
+  const items=(Array.isArray(byModel)?byModel:Object.entries(byModel).map(([k,v])=>({model:k,...(typeof v==='object'?v:{requests:v})})))
+    .map(m=>({label:m.model||m.name||'unknown',value:(m.prompt_tokens||0)+(m.completion_tokens||0),display:((m.prompt_tokens||0)+(m.completion_tokens||0)).toLocaleString()+' tok'}))
+    .sort((a,b)=>b.value-a.value).slice(0,10);
+  renderUsageBars('us-token-bars',items);
+}
+function renderUsageDoughnut(data){
+  const canvas=document.getElementById('usage-doughnut-canvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const dpr=window.devicePixelRatio||1;
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*dpr;canvas.height=180*dpr;
+  canvas.style.width=rect.width+'px';canvas.style.height='180px';
+  ctx.scale(dpr,dpr);
+  const W=rect.width,H=180;
+  ctx.clearRect(0,0,W,H);
+  const prompt=data.summary?.prompt_tokens||0;
+  const completion=data.summary?.completion_tokens||0;
+  const total=prompt+completion;
+  if(!total){ctx.fillStyle='#6b7280';ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillText('No token data yet',W/2,H/2);return}
+  const cx=W/2,cy=H/2,r=Math.min(W,H)/2-20;
+  const dataArr=[{label:'Prompt',value:prompt,color:'#2563eb'},{label:'Completion',value:completion,color:'#34c77b'}];
+  let angle=-Math.PI/2;
+  dataArr.forEach(d=>{
+    const slice=(d.value/total)*Math.PI*2;
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,angle,angle+slice);ctx.closePath();
+    ctx.fillStyle=d.color;ctx.fill();
+    angle+=slice;
+  });
+  ctx.beginPath();ctx.arc(cx,cy,r*0.55,0,Math.PI*2);ctx.fillStyle='var(--bg-secondary)';ctx.fill();
+  ctx.fillStyle='var(--text-primary)';ctx.font='bold 13px system-ui';ctx.textAlign='center';
+  ctx.fillText(total>=1000000?(total/1000000).toFixed(1)+'M':total>=1000?(total/1000).toFixed(1)+'K':total,cx,cy-4);
+  ctx.font='10px system-ui';ctx.fillStyle='var(--text-muted)';
+  ctx.fillText('tokens',cx,cy+12);
+  let ly=14;
+  dataArr.forEach(d=>{
+    ctx.fillStyle=d.color;ctx.fillRect(10,ly-8,10,10);
+    ctx.fillStyle='var(--text-secondary)';ctx.font='11px system-ui';ctx.textAlign='left';
+    ctx.fillText(d.label+': '+d.value.toLocaleString(),26,ly);
+    ly+=18;
+  });
 }
 function renderUsageKeyTable(data){
   const tbody=document.querySelector('#us-key-table tbody');if(!tbody)return;tbody.innerHTML='';
@@ -6127,6 +6226,14 @@ document.addEventListener('keydown',e=>{
   else if(e.ctrlKey&&e.key==='e'){e.preventDefault();exportChat()}
   else if(e.ctrlKey&&e.key==='u'&&currentView==='coding'){e.preventDefault();openUploadPicker()}
   else if(e.key==='F2'&&currentView==='coding'){e.preventDefault();const sel=document.querySelector('.ft-item.selected');if(sel)openRenameModal(sel.dataset.path||'')}
+  else if(e.ctrlKey&&e.key==='s'&&currentView==='coding'){e.preventDefault();const ed=document.getElementById('file-edit-modal');if(ed&&ed.classList.contains('open'))saveFileEditor()}
+  else if(e.ctrlKey&&e.key==='w'&&currentView==='coding'){e.preventDefault();const ed=document.getElementById('file-edit-modal');if(ed&&ed.classList.contains('open'))closeFileEditor()}
+  else if(e.ctrlKey&&e.key==='p'&&currentView==='coding'){e.preventDefault();runProjectTests()}
+  else if(e.ctrlKey&&e.key==='g'&&currentView==='coding'){e.preventDefault();openSearchModal()}
+  else if(e.ctrlKey&&e.key==='1'){e.preventDefault();navigate('chat')}
+  else if(e.ctrlKey&&e.key==='2'){e.preventDefault();navigate('coding')}
+  else if(e.ctrlKey&&e.key==='3'){e.preventDefault();navigate('projects')}
+  else if(e.ctrlKey&&e.key==='4'){e.preventDefault();navigate('models')}
 });
 </script>
 <script>
