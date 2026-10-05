@@ -490,7 +490,7 @@ class BandwidthLimitMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "") or ""
-        transfer = path.startswith(BW_TRANSFER_PREFIXES)
+        transfer = path.startswith(BW_TRANSFER_PREFIXES) and not path.startswith("/api/tools/youtube/download")
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
         # Resolving the user is only needed for transfers; a page refresh
@@ -5056,7 +5056,10 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
                 "error": f"Video is too long ({duration // 3600}h+ — 3h max)"})
         title = (info.get("title") if isinstance(info, dict) else "") or "youtube"
         base = ytdlp + ["--no-playlist", "--no-warnings",
-                        "--concurrent-fragments", "8"]
+                        "--concurrent-fragments", "16",
+                        "--http-chunk-size", "10M",
+                        "--buffer-size", "32K",
+                        "--no-part"]
         if ffmpeg:
             base += ["--ffmpeg-location", ffmpeg]
         out_tpl = os.path.join(tmpdir, "media.%(ext)s")
