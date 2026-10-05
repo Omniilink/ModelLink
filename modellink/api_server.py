@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import io
 import base64
 import logging
 import asyncio
@@ -3921,6 +3922,442 @@ async def models_delete(request: Request, model_id: str):
     except OSError:
         pass
     _audit("model.delete", user["username"], model_id)
+    return {"status": "ok"}
+
+
+# ==========================================
+# Public sharing (submit -> admin review -> release)
+# ==========================================
+PUBLIC_SUBMIT_MAX_BYTES = 2 * 1024 * 1024
+PUBLIC_FILE_MAX_BYTES = 200 * 1024
+PUBLIC_KINDS = ("project", "model", "asset")
+
+
+def _pub_row(r):
+    show = r["show_author"] if "show_author" in r.keys() else 1
+    return {
+        "id": r["id"],
+        "name": r["name"] or "Untitled",
+        "description": r["description"] or "",
+        "kind": r["kind"] or "project",
+        "author": r["username"] if show else "",
+        "allow_download": bool(r["allow_download"]),
+        "status": r["status"],
+        "favorites": int(r["fav_count"] or 0),
+        "created_at": r["created_at"],
+    }
+
+
+@app.post("/api/public/submit")
+async def public_submit(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    name = str(data.get("name", ""))[:120].strip() or "Untitled"
+    desc = str(data.get("description", ""))[:2000]
+    kind = str(data.get("kind", "project")).lower()
+    if kind not in PUBLIC_KINDS:
+        kind = "project"
+    show_author = 1 if data.get("show_author", True) else 0
+    allow_download = 1 if data.get("allow_download", True) else 0
+    files = []
+    total = 0
+    # Copy a 3D model from the user's own store by id.
+    mid = str(data.get("model_id", "") or "").strip()
+    if mid:
+        store = _models_load(user)
+        m = next((x for x in store.get("models", []) if x.get("id") == mid), None)
+        if not m:
+            return JSONResponse(status_code=404, content={"error": "Model not found"})
+        rel = str(m.get("path", "") or "")
+        base = _user_data_dir(_safe_username(user["username"]))
+        full = os.path.join(base, rel)
+        if not _is_within(base, full) or not os.path.isfile(full):
+            return JSONResponse(status_code=404, content={"error": "Model file missing"})
+        try:
+            with open(full, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        if len(raw) > PUBLIC_SUBMIT_MAX_BYTES:
+            return JSONResponse(status_code=400, content={"error": "Model file too large"})
+        files.append({"path": (m.get("name") or "model") + "." + (m.get("format", "glb") or "glb"),
+                      "size": len(raw),
+                      "content": "base64:" + base64.b64encode(raw).decode()})
+        total = len(raw)
+    else:
+        for f in (data.get("files") or [])[:200]:
+            if not isinstance(f, dict):
+                continue
+            p = str(f.get("path", ""))[:200].strip().lstrip("/").replace("\\", "/")
+            if not p or ".." in p.split("/"):
+                continue
+            c = f.get("content", "")
+            if not isinstance(c, str):
+                c = ""
+            if len(c.encode("utf-8", "ignore")) > PUBLIC_FILE_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": f"File too large: {p}"})
+            total += len(c.encode("utf-8", "ignore"))
+            if total > PUBLIC_SUBMIT_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": "Submission too large (2MB max)"})
+            files.append({"path": p, "size": len(c.encode("utf-8", "ignore")), "content": c})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Nothing to submit"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download))
+        pid = cur.lastrowid
+        for f in files:
+            conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
+                         (pid, f["path"], f["size"], f["content"]))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.submit", user.get("username", ""), f"{pid} {name}")
+    return {"status": "ok", "id": pid}
+
+
+@app.get("/api/public/projects")
+async def public_list(request: Request, q: str = "", kind: str = "", sort: str = "new"):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        where = ["status = 'approved'"]
+        params: list = []
+        if kind in PUBLIC_KINDS:
+            where.append("kind = ?")
+            params.append(kind)
+        if q:
+            where.append("(name LIKE ? OR description LIKE ? OR username LIKE ?)")
+            like = f"%{q.strip()[:60]}%"
+            params += [like, like, like]
+        order = "fav_count DESC, created_at DESC" if sort == "top" else "created_at DESC"
+        rows = conn.execute(
+            f"SELECT * FROM public_projects WHERE {' AND '.join(where)} ORDER BY {order} LIMIT 200",
+            params).fetchall()
+        return {"projects": [_pub_row(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}")
+async def public_detail(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        files = conn.execute("SELECT path, size FROM public_project_files WHERE project_id = ? ORDER BY path",
+                             (pid,)).fetchall()
+        fav = conn.execute("SELECT 1 FROM project_favorites WHERE user_id = ? AND project_id = ?",
+                           (user["id"], pid)).fetchone()
+        out = _pub_row(r)
+        out["files"] = [{"path": f["path"], "size": f["size"]} for f in files]
+        out["favorited"] = bool(fav)
+        out["mine"] = r["user_id"] == user["id"]
+        return out
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/download")
+async def public_download(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if not r["allow_download"] and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "The creator disabled downloads"})
+        files = conn.execute("SELECT path, content FROM public_project_files WHERE project_id = ? ORDER BY path",
+                             (pid,)).fetchall()
+    finally:
+        conn.close()
+    if not files:
+        return JSONResponse(status_code=404, content={"error": "Empty project"})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            c = f["content"] or ""
+            if c.startswith("base64:"):
+                try:
+                    zf.writestr(f["path"], base64.b64decode(c[7:]))
+                except Exception:
+                    continue
+            else:
+                zf.writestr(f["path"], c)
+    buf.seek(0)
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "_", r["name"] or "project")[:60] or "project"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        tmp.write(buf.read())
+        tmp.close()
+        disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname + ".zip")
+        return FileResponse(tmp.name, media_type="application/zip", headers={"Content-Disposition": disp})
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+@app.post("/api/public/projects/{pid}/favorite")
+async def public_favorite(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id FROM public_projects WHERE id = ? AND status = 'approved'", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        has = conn.execute("SELECT 1 FROM project_favorites WHERE user_id = ? AND project_id = ?",
+                           (user["id"], pid)).fetchone()
+        if has:
+            conn.execute("DELETE FROM project_favorites WHERE user_id = ? AND project_id = ?", (user["id"], pid))
+            conn.execute("UPDATE public_projects SET fav_count = MAX(0, fav_count - 1) WHERE id = ?", (pid,))
+            conn.commit()
+            return {"favorited": False}
+        conn.execute("INSERT INTO project_favorites (user_id, project_id) VALUES (?, ?)", (user["id"], pid))
+        conn.execute("UPDATE public_projects SET fav_count = fav_count + 1 WHERE id = ?", (pid,))
+        conn.commit()
+        return {"favorited": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/mine")
+async def public_mine(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        mine = conn.execute("SELECT * FROM public_projects WHERE user_id = ? ORDER BY created_at DESC",
+                            (user["id"],)).fetchall()
+        favs = conn.execute(
+            "SELECT p.* FROM public_projects p JOIN project_favorites f ON f.project_id = p.id"
+            " WHERE f.user_id = ? AND p.status = 'approved' ORDER BY f.created_at DESC",
+            (user["id"],)).fetchall()
+        pend = []
+        if user.get("is_admin"):
+            pend = conn.execute("SELECT * FROM public_projects WHERE status = 'pending' ORDER BY created_at ASC").fetchall()
+        return {"mine": [_pub_row(r) for r in mine],
+                "favorites": [_pub_row(r) for r in favs],
+                "pending": [_pub_row(r) for r in pend],
+                "is_admin": bool(user.get("is_admin"))}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/projects/{pid}")
+async def public_delete(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("DELETE FROM public_projects WHERE id = ?", (pid,))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.delete", user.get("username", ""), str(pid))
+    return {"status": "ok"}
+
+
+@app.post("/api/public/projects/{pid}/review")
+async def public_review(request: Request, pid: int):
+    _admin, err = _require_admin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    action = str((data or {}).get("action", "")).lower()
+    if action not in ("approve", "reject"):
+        return JSONResponse(status_code=400, content={"error": "action must be approve or reject"})
+    conn = get_db()
+    try:
+        if action == "approve":
+            conn.execute("UPDATE public_projects SET status = 'approved', approved_at = datetime('now') WHERE id = ?", (pid,))
+        else:
+            conn.execute("UPDATE public_projects SET status = 'rejected' WHERE id = ?", (pid,))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.review", _admin.get("username", ""), f"{pid} {action}")
+    return {"status": "ok"}
+
+
+# ==========================================
+# Forums
+# ==========================================
+@app.get("/api/forums/sections")
+async def forums_sections(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        secs = conn.execute("SELECT * FROM forum_sections ORDER BY sort, id").fetchall()
+        out = []
+        for s in secs:
+            tc = conn.execute("SELECT COUNT(*) AS c FROM forum_threads WHERE section_id = ?", (s["id"],)).fetchone()["c"]
+            out.append({"id": s["id"], "name": s["name"], "description": s["description"], "threads": tc})
+        return {"sections": out}
+    finally:
+        conn.close()
+
+
+@app.get("/api/forums/threads")
+async def forums_threads(request: Request, section_id: int = 0):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if section_id:
+            rows = conn.execute("SELECT * FROM forum_threads WHERE section_id = ? ORDER BY last_post_at DESC LIMIT 100",
+                                (section_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM forum_threads ORDER BY last_post_at DESC LIMIT 100").fetchall()
+        out = []
+        for r in rows:
+            show = r["show_author"] if "show_author" in r.keys() else 1
+            out.append({"id": r["id"], "section_id": r["section_id"], "title": r["title"],
+                        "author": r["username"] if show else "", "posts": r["post_count"],
+                        "created_at": r["created_at"], "last_post_at": r["last_post_at"],
+                        "mine": r["user_id"] == _user["id"]})
+        return {"threads": out}
+    finally:
+        conn.close()
+
+
+@app.post("/api/forums/threads")
+async def forums_thread_create(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    try:
+        section_id = int(data.get("section_id", 0))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "section_id required"})
+    title = str(data.get("title", ""))[:140].strip()
+    content = str(data.get("content", ""))[:20000].strip()
+    if not title or not content:
+        return JSONResponse(status_code=400, content={"error": "title and content required"})
+    show_author = 1 if data.get("show_author", True) else 0
+    conn = get_db()
+    try:
+        sec = conn.execute("SELECT id FROM forum_sections WHERE id = ?", (section_id,)).fetchone()
+        if not sec:
+            return JSONResponse(status_code=404, content={"error": "Section not found"})
+        cur = conn.execute(
+            "INSERT INTO forum_threads (section_id, user_id, username, show_author, title, post_count) VALUES (?, ?, ?, ?, ?, 0)",
+            (section_id, user["id"], user.get("username", ""), show_author, title))
+        tid = cur.lastrowid
+        conn.execute("INSERT INTO forum_posts (thread_id, user_id, username, show_author, content) VALUES (?, ?, ?, ?, ?)",
+                     (tid, user["id"], user.get("username", ""), show_author, content))
+        conn.execute("UPDATE forum_threads SET post_count = 1 WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "id": tid}
+
+
+@app.get("/api/forums/threads/{tid}")
+async def forums_thread_detail(request: Request, tid: int):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM forum_threads WHERE id = ?", (tid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        show = r["show_author"] if "show_author" in r.keys() else 1
+        posts = conn.execute("SELECT * FROM forum_posts WHERE thread_id = ? ORDER BY id ASC LIMIT 500", (tid,)).fetchall()
+        return {"id": r["id"], "section_id": r["section_id"], "title": r["title"],
+                "author": r["username"] if show else "", "mine": r["user_id"] == _user["id"],
+                "created_at": r["created_at"],
+                "posts": [{"id": p["id"],
+                           "author": p["username"] if (p["show_author"] if "show_author" in p.keys() else 1) else "",
+                           "content": p["content"], "created_at": p["created_at"],
+                           "mine": p["user_id"] == _user["id"]} for p in posts]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/forums/threads/{tid}/posts")
+async def forums_post_create(request: Request, tid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    content = str((data or {}).get("content", ""))[:20000].strip()
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "content required"})
+    show_author = 1 if (data or {}).get("show_author", True) else 0
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id FROM forum_threads WHERE id = ?", (tid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        conn.execute("INSERT INTO forum_posts (thread_id, user_id, username, show_author, content) VALUES (?, ?, ?, ?, ?)",
+                     (tid, user["id"], user.get("username", ""), show_author, content))
+        conn.execute("UPDATE forum_threads SET post_count = post_count + 1, last_post_at = datetime('now') WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.delete("/api/forums/threads/{tid}")
+async def forums_thread_delete(request: Request, tid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id FROM forum_threads WHERE id = ?", (tid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("DELETE FROM forum_threads WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
     return {"status": "ok"}
 
 

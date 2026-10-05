@@ -884,6 +884,14 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
         <span>Assets</span>
       </div>
+      <div class="nav-item" data-view="public">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.9 5.7 3.9 9S14.5 18.4 12 21c-2.5-2.6-3.9-5.7-3.9-9S9.5 5.6 12 3z"/></svg>
+        <span>Public</span>
+      </div>
+      <div class="nav-item" data-view="forums">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>
+        <span>Forums</span>
+      </div>
       <div class="nav-item" data-view="providers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L21 2"/><path d="M15 8l3 3"/></svg>
         <span>Providers</span>
@@ -1165,6 +1173,14 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
       <div class="view-panel" id="assets-view">
         <div class="view-header"><h2>Assets</h2><span class="tool-result-sub">Your uploaded images and generated 3D models.</span><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="assets-body"></div>
+      </div>
+      <div class="view-panel" id="public-view">
+        <div class="view-header"><h2>Public</h2><span class="tool-result-sub">Community projects and assets, reviewed before release.</span><button class="btn btn-primary btn-sm" onclick="openPublishModal()">+ Publish</button><button class="btn btn-ghost btn-sm" onclick="openMyPublished()">My published</button></div>
+        <div class="view-body" id="public-body"></div>
+      </div>
+      <div class="view-panel" id="forums-view">
+        <div class="view-header"><h2>Forums</h2><span class="tool-result-sub">Discuss, showcase, and get help.</span><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body" id="forums-body"></div>
       </div>
       <div class="view-panel" id="providers-view">
         <div class="view-header"><h2>Providers</h2><button class="btn btn-primary btn-sm" onclick="openProvidersAdd()">+ Add</button></div>
@@ -1706,17 +1722,19 @@ function switchView(view){
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
   document.getElementById('agents-view').classList.toggle('open',view==='agents');
   document.getElementById('assets-view').classList.toggle('open',view==='assets');
+  document.getElementById('public-view').classList.toggle('open',view==='public');
+  document.getElementById('forums-view').classList.toggle('open',view==='forums');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -6704,11 +6722,243 @@ async function loadAssetsView(){
     }
   }catch(e){}
 }
+var pubState={q:'',kind:'',sort:'new',tab:'projects'};
+async function loadPublicView(){
+  var host=document.getElementById('public-body');if(!host)return;
+  host.innerHTML='<div style="padding:20px;display:flex;flex-direction:column;gap:16px">'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+    '<input id="pub-search" placeholder="Search projects…" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)" />'+
+    '<select id="pub-kind" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none"><option value="">All types</option><option value="project">Projects</option><option value="model">3D models</option><option value="asset">Assets</option></select>'+
+    '<select id="pub-sort" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none"><option value="new">Newest</option><option value="top">Top favorited</option></select></div>'+
+    '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" data-pubtab="projects">Projects</button><button class="btn btn-ghost btn-sm" data-pubtab="assets">Assets</button></div>'+
+    '<div id="pub-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px"></div></div>';
+  var sq=host.querySelector('#pub-search'),sk=host.querySelector('#pub-kind'),ss=host.querySelector('#pub-sort');
+  pubState.q='';pubState.kind='';pubState.sort='new';pubState.tab='projects';
+  sq.oninput=()=>{pubState.q=sq.value;pubListDebounced();};
+  sk.onchange=()=>{pubState.kind=sk.value;loadPublicList();};
+  ss.onchange=()=>{pubState.sort=ss.value;loadPublicList();};
+  host.querySelectorAll('[data-pubtab]').forEach(b=>{
+    b.onclick=()=>{pubState.tab=b.dataset.pubtab;host.querySelectorAll('[data-pubtab]').forEach(x=>x.classList.toggle('btn-primary',x===b));loadPublicList();};
+    if(b.dataset.pubtab==='projects')b.classList.add('btn-primary');
+  });
+  await loadPublicList();
+}
+var pubListT=null;
+function pubListDebounced(){clearTimeout(pubListT);pubListT=setTimeout(loadPublicList,250)}
+async function loadPublicList(){
+  var list=document.getElementById('pub-list');if(!list)return;
+  list.innerHTML='<div class="tool-status">Loading…</div>';
+  const params=new URLSearchParams({q:pubState.q||'',kind:pubState.kind||'',sort:pubState.sort||'new'});
+  try{
+    const r=await authFetch(API+'/api/public/projects?'+params.toString());
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    let items=d.projects||[];
+    if(pubState.tab==='assets')items=items.filter(p=>p.kind==='asset'||p.kind==='model');
+    else items=items.filter(p=>p.kind==='project');
+    if(!items.length){list.innerHTML='<div style="color:var(--text-muted);font-size:12px;padding:24px;text-align:center">Nothing here yet — be the first to publish.</div>';return}
+    list.innerHTML='';
+    items.forEach(p=>{
+      const card=document.createElement('div');card.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;cursor:pointer';
+      card.onclick=()=>openPublicDetail(p.id);
+      const nm=document.createElement('div');nm.textContent=p.name||'Untitled';nm.style.cssText='font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:6px';
+      const ds=document.createElement('div');ds.textContent=(p.description||'').slice(0,120);ds.style.cssText='font-size:11.5px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px;min-height:34px';
+      const meta=document.createElement('div');meta.style.cssText='font-size:11px;color:var(--text-muted);display:flex;gap:8px;align-items:center';
+      meta.innerHTML='<span>'+escapeHtml(p.kind||'project')+'</span><span>♥ '+(p.favorites||0)+'</span>'+(p.author?'<span>by '+escapeHtml(p.author)+'</span>':'');
+      card.appendChild(nm);card.appendChild(ds);card.appendChild(meta);
+      list.appendChild(card);
+    });
+  }catch(e){list.innerHTML='<div style="color:var(--error);font-size:12px;padding:20px">Load failed: '+escapeHtml(e.message)+'</div>'}
+}
+async function openPublicDetail(pid){
+  var host=document.getElementById('public-body');if(!host)return;
+  host.innerHTML='<div class="tool-status">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid);
+    if(!r.ok)throw new Error('not found');
+    const p=await r.json();
+    host.innerHTML='';
+    const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:14px;max-width:760px';
+    const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Back to Public';back.style.alignSelf='flex-start';back.onclick=loadPublicView;wrap.appendChild(back);
+    const title=document.createElement('h2');title.style.margin='0';title.textContent=p.name||'Untitled';wrap.appendChild(title);
+    const sub=document.createElement('div');sub.className='tool-result-sub';sub.textContent=(p.kind||'project')+(p.author?' · by '+p.author:' · anonymous')+' · ♥ '+(p.favorites||0);wrap.appendChild(sub);
+    if(p.description){const ds=document.createElement('div');ds.style.cssText='font-size:13px;line-height:1.65;color:var(--text-primary);white-space:pre-wrap';ds.textContent=p.description;wrap.appendChild(ds)}
+    const files=document.createElement('div');files.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px';
+    const fh=document.createElement('div');fh.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px';fh.textContent='Files ('+(p.files||[]).length+')';files.appendChild(fh);
+    (p.files||[]).forEach(f=>{
+      const row=document.createElement('div');row.style.cssText='font-size:12px;font-family:var(--mono);color:var(--text-secondary);padding:3px 0';
+      row.textContent=f.path+' ('+Math.round((f.size||0)/102.4)/10+' KB)';
+      files.appendChild(row);
+    });
+    wrap.appendChild(files);
+    const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
+    if(p.allow_download){
+      const dl=document.createElement('button');dl.className='btn btn-primary btn-sm';dl.textContent='⬇ Download (.zip)';dl.onclick=()=>window.open(API+'/api/public/projects/'+pid+'/download','_blank');row.appendChild(dl);
+    }
+    const fv=document.createElement('button');fv.className='btn btn-ghost btn-sm';fv.textContent=(p.favorited?'♥ Favorited':'♡ Favorite');fv.onclick=async()=>{const rr=await authFetch(API+'/api/public/projects/'+pid+'/favorite',{method:'POST'});if(rr.ok){openPublicDetail(pid)}};row.appendChild(fv);
+    if(p.mine){
+      const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});loadPublicView()};row.appendChild(del);
+    }
+    wrap.appendChild(row);
+    host.appendChild(wrap);
+  }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Not found</div>'}
+}
+function openPublishModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='520px';
+  m.innerHTML='<div class="modal-header"><h2>Publish to Public</h2></div><div class="modal-body">'+
+    '<div class="modal-field"><label>Name</label><input type="text" id="pub-name" placeholder="My cool project" /></div>'+
+    '<div class="modal-field"><label>Description</label><textarea id="pub-desc" style="width:100%;min-height:90px" placeholder="What does it do?"></textarea></div>'+
+    '<div class="modal-field"><label>Type</label><select id="pub-kind"><option value="project">Project</option><option value="model">3D model</option><option value="asset">Asset</option></select></div>'+
+    '<div class="modal-field"><label>Files (from your project folder, one per line)</label><textarea id="pub-files" style="width:100%;min-height:90px" placeholder="index.html\nsrc/app.js"></textarea></div>'+
+    '<div class="modal-field"><label>Model ID (optional, for 3D models)</label><input type="text" id="pub-model" placeholder="m123…" /></div>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked /> Show my username</label>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
+    '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#pub-cancel').onclick=()=>ov.remove();
+  m.querySelector('#pub-submit').onclick=async()=>{
+    const files=(m.querySelector('#pub-files').value||'').split('\n').map(s=>s.trim()).filter(Boolean).slice(0,200).map(p=>({path:p,content:''}));
+    const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
+      kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
+      show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,files};
+    const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){ov.remove();showToast('Submitted for review','success');loadPublicView()}
+    else showToast((d&&d.error)||'Submit failed','error');
+  };
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+}
+async function openMyPublished(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>My published</h2></div><div class="modal-body" id="mypub-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="mypub-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#mypub-close').onclick=()=>ov.remove();
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#mypub-body');
+  try{
+    const r=await authFetch(API+'/api/public/mine');
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    body.innerHTML='';
+    const sec=(t,items,extra)=>{
+      const h=document.createElement('h3');h.style.cssText='font-size:12px;color:var(--text-muted);margin:12px 0 8px;text-transform:uppercase;letter-spacing:.8px';h.textContent=t;body.appendChild(h);
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='None';body.appendChild(e);return}
+      items.forEach(p=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=p.name||'Untitled';row.appendChild(nm);
+        const st=document.createElement('span');st.className='prov';st.textContent=p.status||p.kind||'';row.appendChild(st);
+        if(extra==='admin'&&p.status==='pending'){
+          const ok=document.createElement('button');ok.className='btn btn-primary btn-sm';ok.textContent='Approve';ok.onclick=async()=>{await authFetch(API+'/api/public/projects/'+p.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'approve'})});openMyPublishedRefresh(ov)};row.appendChild(ok);
+          const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=async()=>{await authFetch(API+'/api/public/projects/'+p.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})});openMyPublishedRefresh(ov)};row.appendChild(no);
+        } else {
+          const open=document.createElement('button');open.className='btn btn-ghost btn-sm';open.textContent='Open';open.onclick=()=>{ov.remove();openPublicDetail(p.id)};row.appendChild(open);
+        }
+        body.appendChild(row);
+      });
+    };
+    sec('My submissions',(d.mine||[]),'mine');
+    sec('Favorites',(d.favorites||[]),'fav');
+    if(d.is_admin)sec('Pending review',(d.pending||[]),'admin');
+  }catch(e){body.innerHTML='<div style="color:var(--error)">Load failed</div>'}
+}
+async function openMyPublishedRefresh(ov){ov.remove();openMyPublished()}
 function modifyModelWithAI(model){
   navigate('coding');
   var line='Modify the 3D model "'+(model.name||'model')+'" ('+(model.format||'glb')+', '+((model.polygonCount||0).toLocaleString())+' triangles). Original prompt: '+(model.prompt||'')+'\\nUse the 3d-generation skill. Describe the exact change you want.';
   try{var inp=document.getElementById('coding-input');if(inp){inp.value=line;inp.style.height='auto';inp.focus()}}catch(e){}
   showToast('Describe the change in the coding chat and send','info');
+}
+async function loadForumsView(){
+  var host=document.getElementById('forums-body');if(!host)return;
+  host.innerHTML='<div class="tool-status" style="padding:20px">Loading forums…</div>';
+  try{
+    const r=await authFetch(API+'/api/forums/sections');
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    host.innerHTML='';
+    const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:10px;max-width:780px';
+    (d.sections||[]).forEach(s=>{
+      const card=document.createElement('div');card.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;cursor:pointer';
+      card.onclick=()=>openForumSection(s.id,s.name);
+      const nm=document.createElement('div');nm.style.cssText='font-size:14px;font-weight:650;color:var(--text-primary)';nm.textContent=s.name;card.appendChild(nm);
+      const ds=document.createElement('div');ds.style.cssText='font-size:12px;color:var(--text-muted);margin-top:2px';ds.textContent=(s.description||'')+' · '+s.threads+' threads';card.appendChild(ds);
+      wrap.appendChild(card);
+    });
+    host.appendChild(wrap);
+  }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Load failed</div>'}
+}
+async function openForumSection(sid,name){
+  var host=document.getElementById('forums-body');if(!host)return;
+  host.innerHTML='<div class="tool-status" style="padding:20px">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/forums/threads?section_id='+sid);
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    host.innerHTML='';
+    const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:10px;max-width:780px';
+    const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Forums';back.style.alignSelf='flex-start';back.onclick=loadForumsView;wrap.appendChild(back);
+    const head=document.createElement('div');head.style.cssText='display:flex;align-items:center;gap:10px';
+    const h=document.createElement('h2');h.style.margin='0';h.textContent=name;head.appendChild(h);
+    const nw=document.createElement('button');nw.className='btn btn-primary btn-sm';nw.textContent='+ New thread';nw.onclick=()=>openForumNewThread(sid);head.appendChild(nw);
+    wrap.appendChild(head);
+    (d.threads||[]).forEach(t=>{
+      const card=document.createElement('div');card.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer';
+      card.onclick=()=>openForumThread(t.id);
+      const ti=document.createElement('div');ti.style.cssText='font-size:13px;font-weight:600;color:var(--text-primary)';ti.textContent=t.title;card.appendChild(ti);
+      const mt=document.createElement('div');mt.className='tool-result-sub';mt.textContent=(t.author?('by '+t.author+' · '):'')+t.posts+' posts';card.appendChild(mt);
+      wrap.appendChild(card);
+    });
+    if(!(d.threads||[]).length){const e=document.createElement('div');e.className='tool-status';e.textContent='No threads yet — start one!';wrap.appendChild(e)}
+    host.appendChild(wrap);
+  }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Load failed</div>'}
+}
+function openForumNewThread(sid){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='520px';
+  m.innerHTML='<div class="modal-header"><h2>New thread</h2></div><div class="modal-body">'+
+    '<div class="modal-field"><label>Title</label><input type="text" id="fth-title" /></div>'+
+    '<div class="modal-field"><label>Message</label><textarea id="fth-body" style="width:100%;min-height:120px"></textarea></div>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="fth-author" checked /> Show my username</label>'+
+    '<div class="modal-actions"><button class="btn btn-ghost" id="fth-cancel">Cancel</button><button class="btn btn-primary" id="fth-post">Post</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#fth-cancel').onclick=()=>ov.remove();
+  m.querySelector('#fth-post').onclick=async()=>{
+    const r=await authFetch(API+'/api/forums/threads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({section_id:sid,title:m.querySelector('#fth-title').value.trim(),content:m.querySelector('#fth-body').value.trim(),show_author:m.querySelector('#fth-author').checked})});
+    if(r.ok){ov.remove();openForumSection(sid,'');showToast('Thread posted','success')}
+    else{const d=await r.json().catch(()=>({}));showToast((d&&d.error)||'Post failed','error')}
+  };
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+}
+async function openForumThread(tid){
+  var host=document.getElementById('forums-body');if(!host)return;
+  host.innerHTML='<div class="tool-status" style="padding:20px">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/forums/threads/'+tid);
+    if(!r.ok)throw new Error('not found');
+    const t=await r.json();
+    host.innerHTML='';
+    const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:12px;max-width:780px';
+    const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Back';back.style.alignSelf='flex-start';back.onclick=loadForumsView;wrap.appendChild(back);
+    const h=document.createElement('h2');h.style.margin='0';h.textContent=t.title;wrap.appendChild(h);
+    (t.posts||[]).forEach(p=>{
+      const card=document.createElement('div');card.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px';
+      const hd=document.createElement('div');hd.className='tool-result-sub';hd.style.marginBottom='6px';hd.textContent=(p.author||'anonymous');card.appendChild(hd);
+      const bd=document.createElement('div');bd.style.cssText='font-size:13px;line-height:1.65;white-space:pre-wrap;color:var(--text-primary)';bd.textContent=p.content;card.appendChild(bd);
+      wrap.appendChild(card);
+    });
+    const box=document.createElement('div');box.style.cssText='display:flex;gap:8px;align-items:flex-end';
+    const ta=document.createElement('textarea');ta.placeholder='Write a reply…';ta.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);min-height:60px;resize:vertical';
+    const send=document.createElement('button');send.className='btn btn-primary btn-sm';send.textContent='Reply';
+    send.onclick=async()=>{
+      const r2=await authFetch(API+'/api/forums/threads/'+tid+'/posts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:ta.value.trim(),show_author:true})});
+      if(r2.ok)openForumThread(tid);
+      else showToast('Reply failed','error');
+    };
+    box.appendChild(ta);box.appendChild(send);wrap.appendChild(box);
+    host.appendChild(wrap);
+  }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Not found</div>'}
 }
 </script>
 </body>

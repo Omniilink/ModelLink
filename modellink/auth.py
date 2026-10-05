@@ -152,6 +152,72 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_shared_previews_token ON shared_previews(token);
+
+        CREATE TABLE IF NOT EXISTS public_projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            show_author INTEGER DEFAULT 1,
+            name TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            kind TEXT DEFAULT 'project',
+            allow_download INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'pending',
+            fav_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            approved_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS public_project_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            path TEXT DEFAULT '',
+            size INTEGER DEFAULT 0,
+            content TEXT,
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_favorites (
+            user_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, project_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS forum_sections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            sort INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS forum_threads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            section_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            show_author INTEGER DEFAULT 1,
+            title TEXT DEFAULT '',
+            post_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_post_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (section_id) REFERENCES forum_sections(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS forum_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            show_author INTEGER DEFAULT 1,
+            content TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (thread_id) REFERENCES forum_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_projects_status ON public_projects(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_public_project_files_pid ON public_project_files(project_id);
+        CREATE INDEX IF NOT EXISTS idx_forum_threads_section ON forum_threads(section_id, last_post_at);
+        CREATE INDEX IF NOT EXISTS idx_forum_posts_thread ON forum_posts(thread_id, id);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -173,6 +239,20 @@ def init_db():
         conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (u,))
         conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?",
                      (_auth_safe_username(u),))
+    # Seed default forum sections once.
+    try:
+        n = conn.execute("SELECT COUNT(*) AS c FROM forum_sections").fetchone()["c"]
+    except Exception:
+        n = 1
+    if not n:
+        for i, (nm, ds) in enumerate([
+            ("General", "Anything about Omniilink"),
+            ("Showcase", "Share what you built"),
+            ("Help", "Ask questions, get unstuck"),
+            ("Ideas", "Feature requests and feedback"),
+        ]):
+            conn.execute("INSERT INTO forum_sections (name, description, sort) VALUES (?, ?, ?)",
+                         (nm, ds, i))
     conn.commit()
     conn.close()
 
