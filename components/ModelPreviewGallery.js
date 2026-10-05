@@ -881,25 +881,62 @@
   };
 
   // Ask the selected AI model for a compact design spec (JSON).
+  // Step 1 of the two-step pipeline: turn the user's short request into a
+  // detailed SUPERPROMPT (precise technical description the spec step builds
+  // from). The model is told to take as long as it needs — thoroughness wins.
+  ModelPreviewGallery.prototype._makeSuperprompt = async function (prompt, model) {
+    if (!this._fetch) throw new Error('no fetch');
+    var sys = 'You are a senior 3D modeling artist. The user described an object in a few words. ' +
+      'Expand it into a precise technical SUPERPROMPT: the real-world dimensions in meters, the overall ' +
+      'silhouette, each component part with its shape, size, material, color, and exact position relative ' +
+      'to the other parts, and how the parts join together WITHOUT interpenetrating. Be concrete: give numbers, ' +
+      'positions, and sizes — not adjectives. Take as long as you need; thoroughness matters far more than ' +
+      'speed. Output ONLY the superprompt text, no JSON, no markdown fences, no commentary.';
+    var body = {
+      model: model || 'omniilink',
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
+      stream: false, temperature: 0.5, max_tokens: 4000,
+      effort: 'xhigh', thinking: 'xhigh'
+    };
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 120000) : null;
+    try {
+      var r = await this._fetch(this.apiBase + '/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if (!r.ok) { var er = await r.json().catch(function () { return {}; }); throw new Error((er && er.error) || ('HTTP ' + r.status)); }
+      var data = await r.json();
+      var text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (!text || !String(text).trim()) throw new Error('the model returned no design brief');
+      return String(text).trim();
+    } finally { if (timer) clearTimeout(timer); }
+  };
+
+  // Step 2 of the two-step pipeline: turn a superprompt into a buildable JSON
+  // spec. Placement rules are explicit: nothing may clip into anything else.
   ModelPreviewGallery.prototype._askForSpec = async function (prompt, model) {
     if (!this._fetch) throw new Error('no fetch');
-    var sys = 'You are an expert 3D model designer. Before answering, think carefully about the object the ' +
-      'user describes: its real-world size, its silhouette, and which simple primitive best captures its ' +
-      'overall form and proportions. A gun is long and thin, a ball is round, a crate is a box — match the ' +
-      'proportions to the real object and never turn an elongated object into a cube. ' +
+    var sys = 'You are an expert 3D model designer creating a precise build specification. ' +
+      'ABSOLUTE RULE — NO INTERPENETRATION: parts must NEVER overlap in 3D space. For every part you place, ' +
+      'compute its center from the sizes of the parts it touches: if part A spans [x1,x2] and part B of width w ' +
+      'attaches to A\'s +x face, B\'s center must be at x >= x2 + w/2 (exactly flush or with a small visible ' +
+      'gap). Apply this on all three axes. If unsure, leave a 0.02 m gap rather than risk clipping — floating ' +
+      'parts are always better than intersecting parts. ' +
+      'Take as long as you need; carefully reason about each part\'s position before writing the JSON. ' +
+      'Accuracy of placement is far more important than speed. ' +
+      'Match real-world proportions (a gun is long and thin, a ball is round, a crate is a box). ' +
       'Reply with ONLY one compact JSON object, no markdown, no prose: ' +
       '{"kind":"...","name":"short name, max 6 words",' +
       '"size":[width,height,depth] in meters, each between 0.2 and 4,' +
       '"color":"#rrggbb","roughness":0.0-1.0,"metalness":0.0-1.0,"detail":"low|medium|high"}. ' +
       '"kind" MUST be exactly one of: crate, barrel, sphere, cylinder, cone, slab, ring, column. ' +
-      'Choose the kind whose shape best matches the object\'s overall form. Set "size" to the object\'s real ' +
-      'proportions (length, height, depth) so the result is recognizable. Use "detail":"high" for anything ' +
-      'with curves or intricate parts. For complex objects (vehicles, weapons, tools, furniture), also add a ' +
-      '"parts" array describing the object as 2-5 simple parts positioned together, where each part is ' +
-      '{"kind":"...","size":[w,h,d],"pos":[x,y,z],"rot":[x,y,z],"color":"#rrggbb"}. Use DEGREES for rot ' +
-      '(e.g. 90 means a quarter turn). For example a table is a slab top plus 4 column legs; a rifle is a long ' +
-      'cylinder barrel plus a box body plus a box stock. Keep every part to the allowed kinds. Simple objects ' +
-      '(a ball, a crate) need no parts. The object must be built from boxes, cylinders, spheres, cones and tori.';
+      'Use "detail":"high" for anything with curves or intricate parts. For complex objects (vehicles, weapons, ' +
+      'tools, furniture), also add a "parts" array describing the object as 2-5 simple parts positioned together, ' +
+      'where each part is {"kind":"...","size":[w,h,d],"pos":[x,y,z],"rot":[x,y,z],"color":"#rrggbb"}. Use DEGREES ' +
+      'for rot (e.g. 90 means a quarter turn). Keep every part to the allowed kinds. Simple objects (a ball, a ' +
+      'crate) need no parts. The object must be built from boxes, cylinders, spheres, cones and tori.';
     var body = {
       model: model || 'omniilink',
       messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
@@ -907,7 +944,7 @@
       effort: 'xhigh', thinking: 'xhigh'
     };
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 45000) : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 120000) : null;
     try {
       var r = await this._fetch(this.apiBase + '/v1/chat/completions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -939,9 +976,16 @@
     if (this.statusEl) this.statusEl.classList.remove('error');
     var spec = null;
     try {
-      this._stage('Asking ' + model + ' for a design…');
+      this._stage('Refining your idea into a detailed design brief (' + model + ', taking its time)…');
+      var brief = null;
       try {
-        spec = await this._askForSpec(prompt, model);
+        brief = await this._makeSuperprompt(prompt, model);
+      } catch (e) {
+        brief = null;
+      }
+      this._stage('Designing the 3D model from the brief (this can take a minute)…');
+      try {
+        spec = await this._askForSpec(brief || prompt, model);
       } catch (e) {
         spec = null;
         this._stage('Design from ' + model + ' unavailable — using the built-in generator…');

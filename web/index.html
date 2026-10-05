@@ -6584,13 +6584,6 @@ function modelsForGallery(){
 function modelCreated(m){
   showToast('Generated "'+(m&&m.name?m.name:'3D model')+'"', 'success');
 }
-function openModelsView(){
-  ensureModelsLibs(function(){
-    var host=document.getElementById('models-body');if(!host)return;
-    if(!modelsGallery){modelsGallery=new ModelPreviewGallery(host,{apiBase:API,fetch:authFetch,getModels:modelsForGallery,onModifyModel:modifyModelWithAI,onModelCreated:modelCreated})}
-    modelsGallery.load();
-  });
-}
 async function loadAssetsView(){
   var host=document.getElementById('assets-body');if(!host)return;
   host.innerHTML='<div style="padding:20px;display:flex;flex-direction:column;gap:24px">'+
