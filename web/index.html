@@ -4878,26 +4878,6 @@ async function ytDownloadBrowser(){
   const btn=document.getElementById('yt-dl-btn');
   if(!url){st.textContent='Paste a YouTube link first.';return}
   const sel=ytSelection();
-  // Try the local yt-dlp path first — it downloads with 16 concurrent
-  // fragments and is exempt from the bandwidth throttle, so it is much
-  // faster than the converter tunnel for large files.
-  try{
-    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({url,format:sel.type==='audio'?'mp3':'mp4',kind:sel.type,container:sel.container,codec:sel.codec,compress:sel.compress,fps:sel.fps,height:sel.height,streams:sel.streams,subs:sel.subs,audio_format:sel.aFormat,audio_bitrate:sel.aBitrate,cover:sel.cover})});
-    if(r.ok){
-      const blob=await r.blob();
-      if(blob.size){
-        const cd=r.headers.get('Content-Disposition')||'';
-        const m=cd.match(/filename\*=UTF-8''([^;]+)/);
-        let name='youtube.'+(sel.type==='audio'?(sel.aFormat==='original'?'m4a':sel.aFormat):(sel.container||'mp4'));
-        if(m){try{name=decodeURIComponent(m[1])}catch(e){}}
-        downloadBlob(blob,name);
-        st.textContent='Saved '+name;
-        return;
-      }
-    }
-  }catch(e){}
-  // Fall back to the converter API (browser path).
   const why=ytNeedsServer(sel);
   if(why){
     st.textContent=why.charAt(0).toUpperCase()+why.slice(1)+' — not supported in the browser; use the server link below for it.';
