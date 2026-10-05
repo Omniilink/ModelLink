@@ -2098,6 +2098,24 @@ async function loadSettingsData(){
   catch(e){document.getElementById('settings-body').innerHTML='<div style="padding:20px;text-align:center;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not connect to Omniilink backend</p></div>'}
 }
 async function openSettings(){navigate('settings')}
+async function changeUsername(newName){
+  newName=String(newName||'').trim().toLowerCase();
+  if(!newName){showToast('Enter a username first','error');return}
+  const cur=(window.__user&&window.__user.username)||'';
+  if(newName===cur){showToast('That is already your username','info');return}
+  if(!(await appConfirm('Change your username to "'+newName+'"?\n\nYour Google link stays connected and all your projects, models and settings are kept.')))return;
+  try{
+    const r=await authFetch(API+'/api/auth/change-username',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:newName})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+    if(d.user)window.__user=d.user;
+    try{applyAdminNav()}catch(e){}
+    const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=(d.user&&(d.user.name||d.user.username))||newName;
+    try{renderChatList()}catch(e){}
+    const ai=document.getElementById('settings-username');if(ai)ai.value=newName;
+    showToast('Username changed to '+newName+(d.warning?' ('+d.warning+')':''),'success');
+  }catch(e){showToast('Could not change username: '+e.message,'error')}
+}
 function renderSettings(){
   const body=document.getElementById('settings-body');body.innerHTML='';
   const names={gemini:'Google Gemini',openai:'OpenAI',anthropic:'Anthropic',openrouter:'OpenRouter',groq:'Groq',mistral:'Mistral',together:'Together AI',deepseek:'DeepSeek',cohere:'Cohere',opencode:'OpenCode'};
@@ -2109,6 +2127,16 @@ function renderSettings(){
   ['English','Spanish','French','German','Italian','Portuguese','Dutch','Russian','Chinese','Japanese','Korean','Arabic','Hindi','Turkish','Polish','Vietnamese','Thai','Indonesian','Swedish','Norwegian','Danish','Finnish','Czech','Romanian','Hungarian','Greek','Hebrew','Ukrainian','Malay','Tagalog','Swahili','Persian'].forEach(l=>{const o=document.createElement('option');o.value=l;o.textContent=l;if(l===(settingsData.language||'English'))o.selected=true;lsel.appendChild(o)});
   lsel.onchange=()=>{authFetch(API+'/api/language',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lsel.value})}).then(()=>showToast('Language set to '+lsel.value,'success'))};
   lr.appendChild(ll);lr.appendChild(lsel);ls.appendChild(lr);body.appendChild(ls);
+  // Account: change username (keeps the Google link and all data)
+  const acct=document.createElement('div');acct.className='settings-section';acct.innerHTML='<h3>Account</h3>';
+  const ar=document.createElement('div');ar.className='key-row';
+  const al=document.createElement('label');al.textContent='Username';al.style.minWidth='170px';
+  const ai=document.createElement('input');ai.type='text';ai.id='settings-username';ai.placeholder='new username';ai.autocomplete='off';ai.spellcheck=false;ai.value=(window.__user&&window.__user.username)||'';
+  const ab=document.createElement('button');ab.className='btn btn-primary';ab.style.fontSize='11px';ab.textContent='Change';ab.onclick=()=>changeUsername(ai.value);
+  ar.appendChild(al);ar.appendChild(ai);ar.appendChild(ab);acct.appendChild(ar);
+  const anote=document.createElement('p');anote.style.cssText='font-size:12px;color:var(--text-muted);margin-top:8px';
+  anote.textContent='3–32 characters: letters, numbers, - and _ only. Your Google sign-in link stays connected and all your projects, models and settings are kept.';
+  acct.appendChild(anote);body.appendChild(acct);
   // Coding Mode
   const cs=document.createElement('div');cs.className='settings-section';cs.innerHTML='<h3>Coding Mode</h3>';
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cod=>{
@@ -7046,7 +7074,8 @@ async function openPublishModal(){
     }
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
-      show_author:true,allow_download:m.querySelector('#pub-dl').checked,files,main_file};
+      show_author:true,allow_download:m.querySelector('#pub-dl').checked,files,main_file,
+      folder:(typeof codingFolder!=='undefined'?codingFolder:'')};
     const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
     if(r.ok){ov.remove();showToast('Submitted for review','success');loadPublicView()}
@@ -7079,6 +7108,21 @@ async function openMyPublished(){
           const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=async()=>{await authFetch(API+'/api/public/projects/'+p.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})});openMyPublishedRefresh(ov)};row.appendChild(no);
         } else {
           const open=document.createElement('button');open.className='btn btn-ghost btn-sm';open.textContent='Open';open.onclick=()=>{ov.remove();openPublicDetail(p.id)};row.appendChild(open);
+          if(extra==='mine'&&p.can_update){
+            const up=document.createElement('button');up.className='btn btn-ghost btn-sm';up.textContent='Update';
+            up.onclick=async()=>{
+              if(!(await appConfirm('Update "'+(p.name||'Untitled')+'" to the latest version of the original project?\n\nIt will be sent for re-approval and hidden from Public until an admin approves it again.')))return;
+              up.disabled=true;up.textContent='Updating…';
+              try{
+                const rr=await authFetch(API+'/api/public/projects/'+p.id+'/update',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                const dd=await rr.json().catch(()=>({}));
+                if(!rr.ok)throw new Error(dd.error||('HTTP '+rr.status));
+                showToast('Updated ('+(dd.files||0)+' file'+((dd.files===1)?'':'s')+') — sent for re-approval','success');
+                openMyPublishedRefresh(ov);
+              }catch(e){showToast('Update failed: '+e.message,'error');up.disabled=false;up.textContent='Update'}
+            };
+            row.appendChild(up);
+          }
         }
         body.appendChild(row);
       });

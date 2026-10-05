@@ -172,6 +172,9 @@ def init_db():
             fav_count INTEGER DEFAULT 0,
             main_file TEXT DEFAULT '',
             slug TEXT DEFAULT '',
+            source_project TEXT DEFAULT '',
+            source_folder TEXT DEFAULT '',
+            source_paths TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now')),
             approved_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -240,6 +243,15 @@ def init_db():
         pcols = []
     if pcols and "main_file" not in pcols:
         conn.execute("ALTER TABLE public_projects ADD COLUMN main_file TEXT DEFAULT ''")
+    if pcols and "source_project" not in pcols:
+        # Where a published project came from, so the owner can "update" it to
+        # the latest version of the original folder. source_project = saved
+        # project folder name; source_folder = absolute folder used when
+        # publishing the currently-open folder; source_paths = JSON list of the
+        # included relative paths.
+        conn.execute("ALTER TABLE public_projects ADD COLUMN source_project TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE public_projects ADD COLUMN source_folder TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE public_projects ADD COLUMN source_paths TEXT DEFAULT ''")
     if pcols and "slug" not in pcols:
         # Shareable links use /public/<username>/<slug>. Backfill existing
         # rows with a per-user-unique slug derived from the project name.
@@ -488,6 +500,95 @@ def update_user_password(user_id: int, new_password: str):
         conn.commit()
     finally:
         conn.close()
+
+
+def _rewrite_paths_in(root: str, old: str, new: str):
+    """Replace a stale absolute dir prefix inside a user's small state files.
+
+    Renaming user_data/<old> -> user_data/<new> moves the folder but leaves
+    any stored absolute path (e.g. the open coding folder) pointing at the old
+    location. Rewrite it in plain and JSON-escaped form.
+    """
+    variants = [(old, new)]
+    try:
+        variants.append((json.dumps(old)[1:-1], json.dumps(new)[1:-1]))
+    except Exception:
+        pass
+    for name in ("coding_folder.txt", "coding_settings.json", "prefs.json"):
+        p = os.path.join(root, name)
+        try:
+            if not os.path.isfile(p) or os.path.getsize(p) > 2_000_000:
+                continue
+            with open(p, "r", encoding="utf-8") as f:
+                txt = f.read()
+            orig = txt
+            for a, b in variants:
+                if a and a in txt:
+                    txt = txt.replace(a, b)
+            if txt != orig:
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(txt)
+        except Exception:
+            pass
+
+
+def change_username(user_id: int, new_username: str) -> dict:
+    """Rename a user, keeping their Google link, password, and all data.
+
+    Renames user_data/<old> to user_data/<new> (projects, models, settings,
+    version history), updates denormalized username columns, and rewrites
+    stored absolute paths that pointed inside the old data dir. Sessions are
+    keyed by user id, so the caller stays signed in. Returns {"ok": True,
+    "username": new} or {"error": ...}.
+    """
+    new = (new_username or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,31}", new):
+        return {"error": "Username must be 3-32 chars: letters, numbers, - and _ only"}
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            return {"error": "User not found"}
+        old = row["username"]
+        if new == old:
+            return {"ok": True, "username": new}
+        if conn.execute("SELECT id FROM users WHERE username = ? AND id != ?",
+                        (new, user_id)).fetchone():
+            return {"error": "Username already taken"}
+        new_safe = _auth_safe_username(new)
+        for r in conn.execute("SELECT username FROM users WHERE id != ?", (user_id,)).fetchall():
+            if _auth_safe_username(r["username"]) == new_safe:
+                return {"error": "Username already taken"}
+        try:
+            conn.execute("UPDATE users SET username = ? WHERE id = ?", (new, user_id))
+        except sqlite3.IntegrityError:
+            return {"error": "Username already taken"}
+        # Keep denormalized copies in step so history/forums/public show the
+        # new name (they are keyed by user id, so nothing is lost).
+        for table in ("error_reports", "shared_previews", "public_projects",
+                      "forum_threads", "forum_posts"):
+            try:
+                conn.execute(f"UPDATE {table} SET username = ? WHERE user_id = ?", (new, user_id))
+            except Exception:
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+    # Rename the data folder AFTER the DB commit. A failure here is reported
+    # but never loses data: the old folder is still on disk.
+    try:
+        base = os.path.join(_base_path(), "user_data")
+        old_dir = os.path.join(base, _auth_safe_username(old))
+        new_dir = os.path.join(base, new_safe)
+        if os.path.isdir(old_dir) and os.path.normcase(old_dir) != os.path.normcase(new_dir):
+            if os.path.exists(new_dir):
+                return {"ok": True, "username": new,
+                        "warning": "renamed, but a data folder with the new name already existed"}
+            os.rename(old_dir, new_dir)
+            _rewrite_paths_in(new_dir, old_dir, new_dir)
+    except Exception as e:
+        return {"ok": True, "username": new, "warning": f"data folder could not be moved ({e})"}
+    return {"ok": True, "username": new}
 
 
 # ==========================================

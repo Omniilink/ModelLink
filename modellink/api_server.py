@@ -98,7 +98,7 @@ from modellink.splitter import (
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
     create_session, destroy_session, set_session_cookie, get_user_by_id,
-    update_user_name, update_user_password, generate_api_key, get_user_api_keys,
+    update_user_name, update_user_password, change_username, generate_api_key, get_user_api_keys,
     revoke_api_key, get_user_provider_keys, save_user_provider_key,
     delete_user_provider_key, get_custom_providers, get_custom_provider,
     save_custom_provider, delete_custom_provider, get_user_by_google_sub,
@@ -1722,6 +1722,31 @@ async def auth_update_profile(request: Request, req: UpdateProfileRequest):
         revoke_user_sessions(user["id"], keep_token=current_token)
     updated = get_user_by_id(user["id"])
     return {"status": "ok", "user": updated}
+
+@app.post("/api/auth/change-username")
+async def auth_change_username(request: Request):
+    """Rename the signed-in user without dropping their Google link or data."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    new = str((data or {}).get("username", "")).strip().lower()
+    if not new:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    # Reserved admin handles can never be claimed by another account (mirrors signup).
+    if all_usernames() and _allowlisted(new) and new != (user.get("username") or "").lower():
+        return JSONResponse(status_code=409, content={"error": "That username is reserved"})
+    result = change_username(user["id"], new)
+    if result.get("error"):
+        return JSONResponse(status_code=400, content={"error": result["error"]})
+    updated = get_user_by_id(user["id"])
+    _audit("auth.change_username", updated.get("username", ""), new)
+    out = {"status": "ok", "user": updated}
+    if result.get("warning"):
+        out["warning"] = result["warning"]
+    return out
 
 # Provider API Key Management (per-user, stored in DB)
 @app.get("/api/provider-keys")
@@ -3964,6 +3989,12 @@ def _pub_row(r):
         slug = (r["slug"] or "") if "slug" in r.keys() else ""
     except Exception:
         slug = ""
+    src_proj = src_folder = ""
+    try:
+        src_proj = (r["source_project"] or "") if "source_project" in r.keys() else ""
+        src_folder = (r["source_folder"] or "") if "source_folder" in r.keys() else ""
+    except Exception:
+        src_proj = src_folder = ""
     uname = r["username"] or ""
     return {
         "id": r["id"],
@@ -3973,6 +4004,8 @@ def _pub_row(r):
         "author": uname if show else "",
         "username": uname,
         "slug": slug,
+        "can_update": bool(src_proj or src_folder),
+        "source_project": src_proj,
         "allow_download": bool(r["allow_download"]),
         "status": r["status"],
         "favorites": int(r["fav_count"] or 0),
@@ -4001,6 +4034,10 @@ async def public_submit(request: Request):
     allow_download = 1 if data.get("allow_download", True) else 0
     files = []
     total = 0
+    # Remember where this came from so the owner can later "update" the
+    # published copy to the latest version of the original project.
+    source_project = ""
+    source_folder = ""
     # Copy a 3D model from the user's own store by id.
     mid = str(data.get("model_id", "") or "").strip()
     if mid:
@@ -4033,6 +4070,7 @@ async def public_submit(request: Request):
             pdir = os.path.join(_user_projects_dir(_safe_username(user["username"])), proj_name)
             if not os.path.isdir(pdir) or not _is_within(_user_projects_dir(_safe_username(user["username"])), pdir):
                 return JSONResponse(status_code=404, content={"error": "Project not found"})
+            source_project = proj_name
             for p in (data.get("paths") or [])[:200]:
                 p = str(p or "")[:200].strip().lstrip("/").replace("\\", "/")
                 if not p or ".." in p.split("/"):
@@ -4079,13 +4117,26 @@ async def public_submit(request: Request):
     paths = {f["path"] for f in files}
     if main_file and main_file not in paths:
         main_file = ""
+    # Link the source folder (publishing the currently-open folder) so an
+    # "update" can re-read it later. Ignored when not accessible.
+    if not source_project:
+        raw_folder = str(data.get("folder", "") or "").strip()
+        if raw_folder:
+            try:
+                cand = os.path.normpath(raw_folder)
+                if not _folder_access_error(user, cand) and os.path.isdir(cand):
+                    source_folder = cand
+            except Exception:
+                source_folder = ""
+    source_paths = json.dumps([f["path"] for f in files])
     conn = get_db()
     try:
         slug = _public_slug(conn, user["id"], name)
         cur = conn.execute(
-            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file, slug)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download, main_file, slug))
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file, slug, source_project, source_folder, source_paths)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download,
+             main_file, slug, source_project, source_folder, source_paths))
         pid = cur.lastrowid
         for f in files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
@@ -4337,6 +4388,101 @@ async def public_review(request: Request, pid: int):
         conn.close()
     _audit("public.review", _admin.get("username", ""), f"{pid} {action}")
     return {"status": "ok"}
+
+
+@app.post("/api/public/projects/{pid}/update")
+async def public_update(request: Request, pid: int):
+    """Re-sync a published project with the latest version of its source.
+
+    Re-reads the originally-included file list from the saved project (or the
+    linked folder) and replaces the stored snapshot. Owner/admin only; the
+    review status is preserved so an approved project stays live.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+
+        def _col(name):
+            try:
+                return (r[name] or "") if name in r.keys() else ""
+            except Exception:
+                return ""
+
+        src_proj = _col("source_project")
+        src_folder = _col("source_folder")
+        try:
+            paths = json.loads(_col("source_paths") or "[]")
+        except Exception:
+            paths = []
+        if not isinstance(paths, list):
+            paths = []
+        # Resolve the base folder to re-read from.
+        base = ""
+        if src_proj:
+            pdir = _user_projects_dir(_safe_username(r["username"] or user["username"]))
+            cand = os.path.join(pdir, src_proj)
+            if os.path.isdir(cand) and _is_within(pdir, cand):
+                base = cand
+        if not base and src_folder:
+            if not _folder_access_error(user, src_folder) and os.path.isdir(src_folder):
+                base = src_folder
+        if not base:
+            return JSONResponse(status_code=400, content={
+                "error": "This project has no linked source folder — re-publish it to enable updates."})
+        if not paths:
+            paths = [row["path"] for row in conn.execute(
+                "SELECT path FROM public_project_files WHERE project_id = ?", (pid,)).fetchall()]
+        new_files = []
+        total = 0
+        for p in paths[:200]:
+            p = str(p or "")[:200].strip().lstrip("/").replace("\\", "/")
+            if not p or ".." in p.split("/"):
+                continue
+            full = os.path.join(base, p)
+            if not _is_within(base, full) or not os.path.isfile(full):
+                continue
+            try:
+                with open(full, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if len(raw) > PUBLIC_FILE_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": f"File too large: {p}"})
+            total += len(raw)
+            if total > PUBLIC_SUBMIT_MAX_BYTES:
+                return JSONResponse(status_code=400, content={"error": "Project too large (2MB max)"})
+            try:
+                c = raw.decode("utf-8")
+            except Exception:
+                c = "base64:" + base64.b64encode(raw).decode()
+            new_files.append({"path": p, "size": len(raw), "content": c})
+        if not new_files:
+            return JSONResponse(status_code=400, content={
+                "error": "The source project has no matching files — nothing to update."})
+        main_file = _col("main_file")
+        if main_file and main_file not in {f["path"] for f in new_files}:
+            main_file = ""
+        conn.execute("DELETE FROM public_project_files WHERE project_id = ?", (pid,))
+        for f in new_files:
+            conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
+                         (pid, f["path"], f["size"], f["content"]))
+        # An update is a new revision: send it back for re-approval so it is
+        # never published to the world without a fresh review.
+        conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ?,"
+                     " status = 'pending', approved_at = NULL WHERE id = ?",
+                     (main_file, json.dumps([f["path"] for f in new_files]), pid))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.update", user.get("username", ""), f"{pid}")
+    return {"status": "ok", "files": len(new_files), "review": "pending"}
 
 
 @app.get("/api/admin/public")
