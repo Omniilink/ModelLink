@@ -2167,8 +2167,17 @@ async def chat_completions(request: Request):
     if not messages or not isinstance(messages, list) or len(messages) > 200:
         return JSONResponse(status_code=400, content={"error": "Invalid messages"})
     for m in messages:
-        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant") \
-                or not isinstance(m.get("content"), str) or len(m["content"]) > 500000:
+        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant"):
+            return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
+        content = m.get("content")
+        if isinstance(content, str):
+            if len(content) > 500000:
+                return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
+        elif isinstance(content, list):
+            # Multimodal content (text + image_url parts) — must be non-empty.
+            if not content:
+                return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
+        else:
             return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
 
     temp = body.get("temperature", 0.7)
