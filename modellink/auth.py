@@ -539,6 +539,8 @@ def _move_user_dir(src: str, dst: str) -> str:
     (Windows locks a directory that is a process's cwd). Returns "" on success
     or a short error string; `src` is removed when it ends up empty."""
     try:
+        if os.path.exists(dst) and not os.path.isdir(dst):
+            os.remove(dst)
         os.makedirs(dst, exist_ok=True)
     except Exception as e:
         return f"cannot create destination: {e}"

@@ -932,18 +932,35 @@ def _check_quota(user, user_id: str, incoming_bytes: int = 0):
         return JSONResponse(status_code=413, content={"error": "Storage quota exceeded"})
     return None
 
+def _ensure_dir(path: str) -> str:
+    """mkdir -p that never raises FileExistsError from a non-directory.
+
+    os.makedirs(path, exist_ok=True) raises FileExistsError when `path`
+    already exists as a file/symlink rather than a directory. A file sitting at
+    user_data/<username> is never valid user data (a user's files always live
+    inside a directory named after them), so it is removed and the folder is
+    created. Without this, one stray file 500s every endpoint that touches the
+    account (e.g. GET /api/projects)."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except FileExistsError:
+        try:
+            os.remove(path)
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            pass
+    return path
+
+
 def _user_data_dir(user_id: str) -> str:
     """Get or create per-user data directory (user_id must already be sanitized)."""
     safe = _safe_username(user_id)
-    d = os.path.join(APP_DIR, "user_data", safe)
-    os.makedirs(d, exist_ok=True)
-    return d
+    return _ensure_dir(os.path.join(APP_DIR, "user_data", safe))
+
 
 def _user_projects_dir(user_id: str) -> str:
     """Get per-user projects directory."""
-    d = os.path.join(_user_data_dir(user_id), "projects")
-    os.makedirs(d, exist_ok=True)
-    return d
+    return _ensure_dir(os.path.join(_user_data_dir(user_id), "projects"))
 
 def _migrate_user_data_dirs():
     """Rename legacy numeric user_data/<id> folders to user_data/<username>."""
