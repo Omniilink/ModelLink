@@ -1549,14 +1549,14 @@ function renderChatList(){
 function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
 function saveCurrentChat(){
   if(!currentChatId||chatHistory.length===0)return;
-  const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:[...chatHistory],model:selectedModel,updated:Date.now()};
-  try{saveChats(chats)}catch(e){try{const slim=Object.assign({},chats);slim[currentChatId]=Object.assign({},chats[currentChatId],{history:stripImagesForStore(chatHistory)});saveChats(slim)}catch(e2){}}
+  const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:stripImagesForStore(chatHistory),model:selectedModel,updated:Date.now()};
+  try{saveChats(chats)}catch(e){}
   renderChatList();
 }
 
 const EMPTY_CHAT_HTML='<div class="chat-empty" id="chat-empty"><div class="chat-empty-icon"><img src="/favicon.svg?v=5" height="56" alt="Omniilink"></div><h2>Omniilink</h2><p>Multi-provider AI load balancer</p><div class="quick-actions"><button class="quick-action-btn" onclick="useQuickAction(\'Summarize the following text concisely:\')">Summarize</button><button class="quick-action-btn" onclick="useQuickAction(\'Explain the following code step by step:\')">Explain Code</button><button class="quick-action-btn" onclick="useQuickAction(\'Write unit tests for the following code:\')">Write Tests</button><button class="quick-action-btn" onclick="useQuickAction(\'Help me debug the following issue:\')">Debug</button></div></div>';
 
-function newChat(){saveCurrentChat();currentChatId='chat_'+Date.now();chatHistory=[];messageCounter=0;try{document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML}catch(e){}renderChatList();try{if(typeof navigate==='function')navigate('chat');else if(typeof switchView==='function')switchView('chat')}catch(e){try{if(typeof switchView==='function')switchView('chat')}catch(_){}}try{document.getElementById('chat-input').focus()}catch(e){}}
+function newChat(){saveCurrentChat();currentChatId='chat_'+Date.now();chatHistory=[];messageCounter=0;pendingImages=[];renderImgStrip();try{document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML}catch(e){}renderChatList();try{if(typeof navigate==='function')navigate('chat');else if(typeof switchView==='function')switchView('chat')}catch(e){try{if(typeof switchView==='function')switchView('chat')}catch(_){}}try{document.getElementById('chat-input').focus()}catch(e){}}
 function loadChat(id){
   saveCurrentChat();const chats=getChats();const chat=chats[id];if(!chat)return;
   currentChatId=id;chatHistory=[...chat.history];if(chat.model)selectedModel=chat.model;
@@ -1887,6 +1887,9 @@ function handleImageFiles(files){
   const list=[...files||[]].filter(f=>f&&f.type.indexOf('image/')===0);
   if(!list.length){showToast('Only image files can be attached','error');return}
   if(pendingImages.length+list.length>4){showToast('At most 4 images per message','error');return}
+  const MAX=25*1024*1024;
+  const oversize=list.filter(f=>f.size>MAX);
+  if(oversize.length){showToast('Images must be under 25 MB','error');return}
   list.forEach(f=>{
     const url=URL.createObjectURL(f);const img=new Image();
     img.onload=()=>{try{const max=1568;let w=img.naturalWidth,h=img.naturalHeight;const sc=Math.min(1,max/Math.max(w,h));w=Math.round(w*sc);h=Math.round(h*sc);
@@ -1901,7 +1904,7 @@ async function sendMessage(){
   if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
   let content=text,model=selectedModel;
-  if(imgs.length){model=resolveVisionModel();if(!model){pendingImages=imgs;renderImgStrip();return}content=[{type:'text',text:text||'Describe this image'}].concat(imgs.map(u=>({type:'image_url',image_url:{url:u}})))}
+  if(imgs.length){model=resolveVisionModel();if(!model){pendingImages=imgs;renderImgStrip();input.value=text;input.style.height='auto';return}content=[{type:'text',text:text||'Describe this image'}].concat(imgs.map(u=>({type:'image_url',image_url:{url:u}})))}
   appendMessage('user',content);chatHistory.push({role:'user',content});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
@@ -1961,7 +1964,8 @@ function editAndResend(editIdx,newText,keepImgs){
   const area=document.getElementById('chat-area');const msgs=area.querySelectorAll('.message');
   msgs.forEach(m=>{const mi=parseInt(m.dataset.msgIndex);if(mi>=editIdx)m.remove()});
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
+  const sendModel=(keepImgs&&keepImgs.length)?(resolveVisionModel()||selectedModel):selectedModel;
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:sendModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
   .then(r=>r.body.getReader()).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='';
     function read(){reader.read().then(({done,value})=>{
@@ -5537,7 +5541,7 @@ function sendCompareRequest(userMsg){
   assistantEl.closest('.message').classList.add('compare-response');
   const metaEl=assistantEl.closest('.message').querySelector('.message-meta');
   if(metaEl)metaEl.textContent='vs '+compareModel;
-  const tempHistory=[...chatHistory.slice(0,-1)];
+  const tempHistory=[...chatHistory];
   authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:compareModel,messages:tempHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})}).then(r=>{
     if(!r.ok)throw new Error('offline');
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
