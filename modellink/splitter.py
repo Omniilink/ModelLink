@@ -772,9 +772,11 @@ def load_all_keys():
     return provider_keys
 
 
-def scan_ollama_models():
+def scan_ollama_models(base_url=None):
+    """List local Ollama models. base_url overrides OLLAMA_BASE_URL."""
+    url = (base_url or "").strip().rstrip("/") or OLLAMA_BASE_URL
     try:
-        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
+        resp = requests.get(f"{url}/api/tags", timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]

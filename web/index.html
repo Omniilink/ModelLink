@@ -2158,6 +2158,47 @@ async function renderProvidersPage(){
   try{const r=await authFetch(API+'/api/provider-keys');if(r.ok){const d=await r.json();keys=d.keys||[]}}catch(e){}
   try{const r2=await authFetch(API+'/api/custom-providers');if(r2.ok){const d2=await r2.json();customs=d2.providers||[]}}catch(e2){}
   body.innerHTML='';
+  // Ollama (local) section is always shown — link this server to your Ollama.
+  const oll=document.createElement('div');oll.style.cssText='margin-bottom:18px';
+  oll.innerHTML='<div class="settings-section" style="margin:0"><h3 style="margin:0 0 10px">Ollama (local)</h3>'+
+    '<div id="oll-status" class="tool-status" style="margin-bottom:8px">Checking Ollama…</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'+
+    '<input id="oll-url" placeholder="http://localhost:11434" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none" />'+
+    '<button class="btn btn-ghost btn-sm" id="oll-test">Test</button>'+
+    '<button class="btn btn-primary btn-sm" id="oll-save">Save URL</button></div>'+
+    '<div id="oll-models" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>';
+  body.appendChild(oll);
+  const refreshOll=async()=>{
+    const st=oll.querySelector('#oll-status');const list=oll.querySelector('#oll-models');
+    const inp=oll.querySelector('#oll-url');
+    try{
+      const r=await authFetch(API+'/api/ollama/config');
+      if(r.ok){
+        const d=await r.json();
+        if(inp&&!inp.dataset.touched)inp.value=d.base_url||'';
+        st.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url):('Ollama not reachable at '+(d.base_url||'default')+'. Start Ollama or set the URL above.');
+        st.style.color=d.available?'var(--success)':'var(--text-muted)';
+        list.innerHTML='';
+        (d.models||[]).forEach(m=>{
+          const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=m;
+          b.onclick=()=>{selectModel(m);showToast('Selected '+m,'success')};
+          list.appendChild(b);
+        });
+      }
+    }catch(e){st.textContent='Could not reach the server.'}
+  };
+  oll.querySelector('#oll-url').addEventListener('input',e=>{e.target.dataset.touched='1'});
+  oll.querySelector('#oll-test').onclick=async()=>{
+    const st=oll.querySelector('#oll-status');st.textContent='Testing…';
+    await refreshOll();
+  };
+  oll.querySelector('#oll-save').onclick=async()=>{
+    const url=oll.querySelector('#oll-url').value.trim();
+    const r=await authFetch(API+'/api/ollama/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:url})});
+    if(r.ok){showToast('Ollama URL saved','success');await refreshOll();loadModels();}
+    else{showToast('Save failed','error')}
+  };
+  await refreshOll();
   if(!keys.length&&!customs.length){
     const empty=document.createElement('div');empty.style.cssText='text-align:center;padding:48px 16px;color:var(--text-muted)';
     empty.innerHTML='<div style="font-size:15px;margin-bottom:8px;color:var(--text-primary)">No providers yet</div><div style="font-size:12px;margin-bottom:16px">Add a provider key to start chatting with real models.</div>';

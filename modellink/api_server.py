@@ -1892,8 +1892,40 @@ async def ollama_models(request: Request):
     _user, err = _require_auth(request)
     if err:
         return err
-    models = scan_ollama_models()
-    return {"models": models, "available": len(models) > 0, "base_url": OLLAMA_BASE_URL}
+    prefs = _load_user_prefs(_safe_username(_user["username"]))
+    custom_url = (prefs.get("ollama_base_url") or "").strip()
+    models = scan_ollama_models(custom_url or None)
+    return {"models": models, "available": len(models) > 0,
+            "base_url": custom_url or OLLAMA_BASE_URL, "custom": bool(custom_url)}
+
+
+@app.get("/api/ollama/config")
+async def ollama_config_get(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    prefs = _load_user_prefs(_safe_username(_user["username"]))
+    custom_url = (prefs.get("ollama_base_url") or "").strip()
+    models = scan_ollama_models(custom_url or None)
+    return {"base_url": custom_url or OLLAMA_BASE_URL, "custom": bool(custom_url),
+            "available": len(models) > 0, "models": models}
+
+
+@app.post("/api/ollama/config")
+async def ollama_config_set(request: Request):
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
+    url = str((body or {}).get("base_url", "")).strip().rstrip("/")
+    if url and not re.match(r"^https?://", url):
+        return JSONResponse(status_code=400, content={"error": "URL must start with http:// or https://"})
+    _save_user_pref(_safe_username(_user["username"]), "ollama_base_url", url)
+    models = scan_ollama_models(url or None)
+    return {"status": "ok", "base_url": url or OLLAMA_BASE_URL,
+            "available": len(models) > 0, "models": models}
 
 
 @app.post("/api/error-reports")
