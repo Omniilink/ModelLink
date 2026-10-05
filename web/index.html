@@ -2183,40 +2183,37 @@ async function renderProvidersPage(){
   body.innerHTML='';
   // Ollama (local) section is always shown — link this server to your Ollama.
   const oll=document.createElement('div');oll.style.cssText='margin-bottom:18px';
-  oll.innerHTML='<div class="settings-section" style="margin:0"><h3 style="margin:0 0 10px">Ollama (local)</h3>'+
-    '<div id="oll-status" class="tool-status" style="margin-bottom:8px">Checking Ollama…</div>'+
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'+
-    '<input id="oll-url" placeholder="http://localhost:11434" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none" />'+
-    '<button class="btn btn-ghost btn-sm" id="oll-test">Test</button>'+
-    '<button class="btn btn-primary btn-sm" id="oll-save">Save URL</button></div>'+
-    '<div id="oll-models" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>';
+  const ollSec=document.createElement('div');ollSec.className='settings-section';ollSec.style.margin='0';
+  const ollH=document.createElement('h3');ollH.style.margin='0 0 10px';ollH.textContent='Ollama (local)';ollSec.appendChild(ollH);
+  const ollSt=document.createElement('div');ollSt.className='tool-status';ollSt.style.marginBottom='8px';ollSt.textContent='Checking Ollama…';ollSec.appendChild(ollSt);
+  const ollRow=document.createElement('div');ollRow.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px';
+  const ollInp=document.createElement('input');ollInp.id='oll-url';ollInp.placeholder='http://localhost:11434';ollInp.style.cssText='flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none';
+  const ollTest=document.createElement('button');ollTest.className='btn btn-ghost btn-sm';ollTest.textContent='Test';
+  const ollSave=document.createElement('button');ollSave.className='btn btn-primary btn-sm';ollSave.textContent='Save URL';
+  ollRow.appendChild(ollInp);ollRow.appendChild(ollTest);ollRow.appendChild(ollSave);ollSec.appendChild(ollRow);
+  const ollList=document.createElement('div');ollList.id='oll-models';ollList.style.cssText='display:flex;flex-wrap:wrap;gap:6px';ollSec.appendChild(ollList);
+  oll.appendChild(ollSec);
   body.appendChild(oll);
   const refreshOll=async()=>{
-    const st=oll.querySelector('#oll-status');const list=oll.querySelector('#oll-models');
-    const inp=oll.querySelector('#oll-url');
     try{
       const r=await authFetch(API+'/api/ollama/config');
       if(r.ok){
         const d=await r.json();
-        if(inp&&!inp.dataset.touched)inp.value=d.base_url||'';
-        st.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url):('Ollama not reachable at '+(d.base_url||'default')+'. Start Ollama or set the URL above.');
-        st.style.color=d.available?'var(--success)':'var(--text-muted)';
-        list.innerHTML='';
+        if(!ollInp.dataset.touched)ollInp.value=d.base_url||'';
+        ollSt.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url):('Ollama not reachable at '+(d.base_url||'default')+'. Start Ollama or set the URL above.');
+        ollList.innerHTML='';
         (d.models||[]).forEach(m=>{
           const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=m;
           b.onclick=()=>{selectModel(m);showToast('Selected '+m,'success')};
-          list.appendChild(b);
+          ollList.appendChild(b);
         });
       }
-    }catch(e){st.textContent='Could not reach the server.'}
+    }catch(e){ollSt.textContent='Could not reach the server.'}
   };
-  oll.querySelector('#oll-url').addEventListener('input',e=>{e.target.dataset.touched='1'});
-  oll.querySelector('#oll-test').onclick=async()=>{
-    const st=oll.querySelector('#oll-status');st.textContent='Testing…';
-    await refreshOll();
-  };
-  oll.querySelector('#oll-save').onclick=async()=>{
-    const url=oll.querySelector('#oll-url').value.trim();
+  ollInp.addEventListener('input',e=>{e.target.dataset.touched='1'});
+  ollTest.onclick=async()=>{ollSt.textContent='Testing…';await refreshOll();};
+  ollSave.onclick=async()=>{
+    const url=ollInp.value.trim();
     const r=await authFetch(API+'/api/ollama/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:url})});
     if(r.ok){showToast('Ollama URL saved','success');await refreshOll();loadModels();}
     else{showToast('Save failed','error')}

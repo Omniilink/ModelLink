@@ -621,6 +621,9 @@ def apply_request_opts(provider_name, body, opts):
             effort_str = OPENAI_EFFORT.get(level)
             if effort_str:
                 body["reasoning_effort"] = effort_str
+    rm = (opts or {}).get("response_modalities")
+    if rm and isinstance(gc, dict):
+        gc["responseModalities"] = list(rm)
     return body, json.dumps(body, sort_keys=True, default=str) != before
 
 

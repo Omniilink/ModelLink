@@ -942,6 +942,50 @@
   };
 
   // Ask the selected AI model for a compact design spec (JSON).
+  // Try to generate a reference image from the prompt (gemini image output).
+  // Returns a data URL, or null if the model cannot generate images.
+  ModelPreviewGallery.prototype._generateRefImage = async function (prompt, model) {
+    if (!this._fetch) return null;
+    var sys = 'Generate a single clear reference photo of the object described below, centered, neutral background, good lighting. Output the image.';
+    var body = {
+      model: model || 'omniilink',
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
+      stream: false, temperature: 0.7, max_tokens: 2000,
+      response_modalities: ['TEXT', 'IMAGE']
+    };
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 60000) : null;
+    try {
+      var r = await this._fetch(this.apiBase + '/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if (!r.ok) return null;
+      var data = await r.json();
+      // Look for inline image data in the response (gemini image output).
+      var choices = (data && data.choices) || [];
+      for (var i = 0; i < choices.length; i++) {
+        var msg = choices[i].message || {};
+        var content = msg.content;
+        if (typeof content === 'string') {
+          var m = content.match(/data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+/);
+          if (m) return m[0];
+        }
+        // OpenAI-style image parts (future-proof).
+        if (Array.isArray(content)) {
+          for (var j = 0; j < content.length; j++) {
+            var p = content[j] || {};
+            if (p.type === 'image_url' && p.image_url && p.image_url.url) return p.image_url.url;
+          }
+        }
+      }
+      return null;
+    } catch (e) {
+      return null;
+    } finally { if (timer) clearTimeout(timer); }
+  };
+
   // Step 1 of the two-step pipeline: turn the user's short request into a
   // detailed SUPERPROMPT (precise technical description the spec step builds
   // from). The model is told to take as long as it needs — thoroughness wins.
@@ -1044,6 +1088,18 @@
     var spec = null;
     var ref = this.refImage || null;
     try {
+      if (!ref) {
+        this._stage('Generating a reference image to design from (taking its time)…');
+        try {
+          ref = await this._generateRefImage(prompt, model);
+          if (ref) {
+            this.refImage = ref;
+            this._renderRefThumb();
+          }
+        } catch (e) {
+          ref = null;
+        }
+      }
       this._stage('Refining your idea into a detailed design brief (' + model + ', taking its time)…');
       var brief = null;
       try {

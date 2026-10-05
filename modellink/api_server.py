@@ -2232,6 +2232,10 @@ async def chat_completions(request: Request):
     req_opts = {"temperature": temp, "max_tokens": max_tokens, "effort": effort, "thinking": thinking,
                 "language": _user_language(_safe_username(user["username"])),
                 "health_scope": health_scope(request)}
+    if body.get("response_modalities"):
+        req_opts["response_modalities"] = body.get("response_modalities")
+    if body.get("tools"):
+        req_opts["tools"] = body.get("tools")
 
     # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
