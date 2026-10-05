@@ -1700,7 +1700,6 @@ function switchView(view){
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
   document.getElementById('agents-view').classList.toggle('open',view==='agents');
-  document.getElementById('models-view').classList.toggle('open',view==='models');
   document.getElementById('assets-view').classList.toggle('open',view==='assets');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
