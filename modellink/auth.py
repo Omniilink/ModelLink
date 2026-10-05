@@ -37,6 +37,12 @@ def _auth_safe_username(username: str) -> str:
     return name or "user"
 
 
+def _slugify(text: str) -> str:
+    """URL slug for shareable /public/<user>/<slug> links (a-z0-9 and -)."""
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:60].strip("-")
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -165,6 +171,7 @@ def init_db():
             status TEXT DEFAULT 'pending',
             fav_count INTEGER DEFAULT 0,
             main_file TEXT DEFAULT '',
+            slug TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now')),
             approved_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -233,6 +240,24 @@ def init_db():
         pcols = []
     if pcols and "main_file" not in pcols:
         conn.execute("ALTER TABLE public_projects ADD COLUMN main_file TEXT DEFAULT ''")
+    if pcols and "slug" not in pcols:
+        # Shareable links use /public/<username>/<slug>. Backfill existing
+        # rows with a per-user-unique slug derived from the project name.
+        conn.execute("ALTER TABLE public_projects ADD COLUMN slug TEXT DEFAULT ''")
+        used = {}
+        for r in conn.execute("SELECT id, user_id, name FROM public_projects").fetchall():
+            base = _slugify(r["name"]) or "project"
+            slug, n = base, 2
+            seen = used.setdefault(r["user_id"], set())
+            while slug in seen:
+                slug = (base[:55].rstrip("-") + "-" + str(n))
+                n += 1
+            seen.add(slug)
+            conn.execute("UPDATE public_projects SET slug = ? WHERE id = ?", (slug, r["id"]))
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
+    except Exception:
+        pass
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
     # Admin panel allowlist (default: "isaac tribbe", matching api_server):

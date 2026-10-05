@@ -1744,6 +1744,8 @@ const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tool
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
+  var pm=path.match(/^\/public\/([^\/]+)\/([^\/]+)$/);
+  if(pm){try{return{view:'public',tool:null,pubUser:decodeURIComponent(pm[1]),pubSlug:decodeURIComponent(pm[2])}}catch(e){return{view:'public',tool:null}}}
   for(const t in TOOL_ROUTES)if(TOOL_ROUTES[t]===path)return{view:'more',tool:t};
   for(const v in VIEW_ROUTES)if(VIEW_ROUTES[v]===path)return{view:v,tool:null};
   return{view:'chat',tool:null};
@@ -1752,11 +1754,12 @@ function routeFor(view,tool){
   if(tool&&TOOL_ROUTES[tool])return TOOL_ROUTES[tool];
   return VIEW_ROUTES[view]||'/';
 }
-function applyRoute(view,tool){
+function applyRoute(view,tool,pubTarget){
   if(!VIEW_ROUTES[view])view='chat';
   switchView(view);
   if(view==='more'){if(tool)openTool(tool);else closeTool()}
   else if(tool)openTool(tool);
+  if(view==='public'&&pubTarget&&pubTarget.pubUser&&pubTarget.pubSlug){try{openPublicBySlug(pubTarget.pubUser,pubTarget.pubSlug,true)}catch(e){}}
   try{
     const label=(tool?tool.charAt(0).toUpperCase()+tool.slice(1)+' — ':'')+(VIEW_TITLES[view]||'Chat');
     document.title=label+' — Omniilink';
@@ -1771,7 +1774,7 @@ function applyInitialRoute(){
   try{
     if(typeof location==='undefined')return;
     const r=routeFromPath(location.pathname);
-    if(r.view!=='chat'||r.tool)applyRoute(r.view,r.tool);
+    if(r.view!=='chat'||r.tool)applyRoute(r.view,r.tool,r);
     try{
       const q=new URLSearchParams(location.search||'');
       if(q.get('signup')==='1'){showAuthSignup();showAuthModal()}
@@ -1780,7 +1783,7 @@ function applyInitialRoute(){
     }catch(e2){}
   }catch(e){}
 }
-if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('popstate',()=>{try{const r=routeFromPath(location.pathname);applyRoute(r.view,r.tool)}catch(e){}});
+if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('popstate',()=>{try{const r=routeFromPath(location.pathname);applyRoute(r.view,r.tool,r)}catch(e){}});
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
@@ -3752,6 +3755,7 @@ const CODING_MAX_PLAN=60;      // no single plan may exceed this
 const CODING_MAX_REPLANS=3;    // how often the plan may be recounted
 const CODING_HARD_MAX_ROUNDS=40; // absolute backstop when no todos exist
 const CODING_MAX_SETBACKS=3;
+const CODING_MAX_CONTINUES=4;   // auto-continue an output-limited file block
 let codingPlanSteps=CODING_DEFAULT_PLAN,codingRounds=0,codingReplans=0;
 function scanPlanSteps(text){
   // Pick up a PLAN-STEPS: N declaration from any assistant turn. The budget
@@ -3931,11 +3935,29 @@ async function streamCodingTurn(messages){
   const contentEl=assistantEl.querySelector('.coding-msg-content');
   let actualModel=selectedModel,fullText='';
   let turnCtrl=new AbortController();codingAbort=turnCtrl;
-  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages})});
-  if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;return{error:errMsg}}
-  const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
-  while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-    for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+  // One streaming request, appending its deltas to fullText. Returns an error
+  // string (or null), so the caller can retry as a continuation.
+  const pump=async(msgs)=>{
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:msgs})});
+    if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}return errMsg}
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
+    while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+    return null;
+  };
+  const firstErr=await pump(messages);
+  if(firstErr){contentEl.textContent=firstErr;return{error:firstErr}}
+  // Output limit cut the reply mid-file? Continue EXACTLY where it stopped and
+  // stitch the pieces, instead of discarding the partial block and asking for
+  // the whole oversized file again (which just truncates the same way).
+  let cont=0;
+  while(!codingStopRequested&&codingTruncatedAt(fullText)>=0&&cont<CODING_MAX_CONTINUES){
+    cont++;
+    try{addCodingSystemMsg('Reply hit the output limit — auto-continuing the file (part '+(cont+1)+')…')}catch(e){}
+    const contErr=await pump([...messages,{role:'assistant',content:fullText},
+      {role:'user',content:'Your previous reply was cut off by the output limit in the middle of a file block. Continue EXACTLY from the last character you wrote: output ONLY the remaining content, do NOT repeat anything already written, do NOT add a new FILE_CREATE/EDIT header (the block is already open), and close the open block with the correct matching END_ tag when the file is complete.'}]);
+    if(contErr)break;
+  }
   const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);
   if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
   contentEl._streamArgs=null;contentEl._streamRaf=0;
@@ -4724,7 +4746,7 @@ function showAuthSignin(){document.getElementById('auth-form-signup').style.disp
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 function applyAdminNav(){try{var el=document.getElementById('nav-admin');if(el)el.style.display=(window.__user&&window.__user.is_admin)?'':'none'}catch(_){}}
-async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
+async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
 
@@ -6817,6 +6839,51 @@ async function loadPublicList(){
     });
   }catch(e){list.innerHTML='<div style="color:var(--error);font-size:12px;padding:20px">Load failed: '+escapeHtml(e.message)+'</div>'}
 }
+function publicShareUrl(p){
+  if(!p||!p.username||!p.slug)return '';
+  const path='/public/'+encodeURIComponent(p.username)+'/'+encodeURIComponent(p.slug);
+  try{return location.origin+path}catch(e){return path}
+}
+function renderPublicDetail(p){
+  var host=document.getElementById('public-body');if(!host)return;
+  host.innerHTML='';
+  const pid=p.id;
+  const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:14px;max-width:760px';
+  const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Back to Public';back.style.alignSelf='flex-start';back.onclick=()=>navigate('public');wrap.appendChild(back);
+  const title=document.createElement('h2');title.style.margin='0';title.textContent=p.name||'Untitled';wrap.appendChild(title);
+  const sub=document.createElement('div');sub.className='tool-result-sub';sub.textContent=(p.kind||'project')+(p.username?' · by '+p.username:'')+' · ♥ '+(p.favorites||0);wrap.appendChild(sub);
+  if(p.description){const ds=document.createElement('div');ds.style.cssText='font-size:13px;line-height:1.65;color:var(--text-primary);white-space:pre-wrap';ds.textContent=p.description;wrap.appendChild(ds)}
+  const share=publicShareUrl(p);
+  if(share){
+    const sl=document.createElement('div');sl.style.cssText='display:flex;gap:8px;align-items:center;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 8px';
+    const inp=document.createElement('input');inp.readOnly=true;inp.value=share;inp.style.cssText='flex:1;background:transparent;border:none;color:var(--text-secondary);font-family:var(--mono);font-size:11.5px;outline:none;min-width:0';
+    inp.onclick=()=>inp.select();
+    const cb=document.createElement('button');cb.className='btn btn-ghost btn-sm';cb.textContent='Copy link';
+    cb.onclick=async()=>{try{await navigator.clipboard.writeText(share);showToast('Link copied','success')}catch(e){inp.select();try{document.execCommand('copy');showToast('Link copied','success')}catch(e2){showToast('Copy failed — select and copy manually','error')}}};
+    sl.appendChild(inp);sl.appendChild(cb);wrap.appendChild(sl);
+  }
+  const files=document.createElement('div');files.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px';
+  const fh=document.createElement('div');fh.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px';fh.textContent='Files ('+(p.files||[]).length+')';files.appendChild(fh);
+  (p.files||[]).forEach(f=>{
+    const row=document.createElement('div');row.style.cssText='font-size:12px;font-family:var(--mono);color:var(--text-secondary);padding:3px 0';
+    row.textContent=f.path+' ('+Math.round((f.size||0)/102.4)/10+' KB)';
+    files.appendChild(row);
+  });
+  wrap.appendChild(files);
+  const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
+  if(p.allow_download){
+    const dl=document.createElement('button');dl.className='btn btn-primary btn-sm';dl.textContent='⬇ Download (.zip)';dl.onclick=()=>window.open(API+'/api/public/projects/'+pid+'/download','_blank');row.appendChild(dl);
+  }
+  if(p.main_file){
+    const run=document.createElement('button');run.className='btn btn-primary btn-sm';run.textContent='▶ Run';run.onclick=()=>runPublicProject(pid,p.main_file,p.files||[]);row.appendChild(run);
+  }
+  const fv=document.createElement('button');fv.className='btn btn-ghost btn-sm';fv.textContent=(p.favorited?'♥ Favorited':'♡ Favorite');fv.onclick=async()=>{const rr=await authFetch(API+'/api/public/projects/'+pid+'/favorite',{method:'POST'});if(rr.ok){const d=await rr.json().catch(()=>({}));p.favorited=!!d.favorited;p.favorites=Math.max(0,(p.favorites||0)+(p.favorited?1:-1));renderPublicDetail(p)}};row.appendChild(fv);
+  if(p.mine){
+    const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});navigate('public')};row.appendChild(del);
+  }
+  wrap.appendChild(row);
+  host.appendChild(wrap);
+}
 async function openPublicDetail(pid){
   var host=document.getElementById('public-body');if(!host)return;
   host.innerHTML='<div class="tool-status">Loading…</div>';
@@ -6824,34 +6891,20 @@ async function openPublicDetail(pid){
     const r=await authFetch(API+'/api/public/projects/'+pid);
     if(!r.ok)throw new Error('not found');
     const p=await r.json();
-    host.innerHTML='';
-    const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:14px;max-width:760px';
-    const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Back to Public';back.style.alignSelf='flex-start';back.onclick=loadPublicView;wrap.appendChild(back);
-    const title=document.createElement('h2');title.style.margin='0';title.textContent=p.name||'Untitled';wrap.appendChild(title);
-    const sub=document.createElement('div');sub.className='tool-result-sub';sub.textContent=(p.kind||'project')+(p.author?' · by '+p.author:' · anonymous')+' · ♥ '+(p.favorites||0);wrap.appendChild(sub);
-    if(p.description){const ds=document.createElement('div');ds.style.cssText='font-size:13px;line-height:1.65;color:var(--text-primary);white-space:pre-wrap';ds.textContent=p.description;wrap.appendChild(ds)}
-    const files=document.createElement('div');files.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px';
-    const fh=document.createElement('div');fh.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px';fh.textContent='Files ('+(p.files||[]).length+')';files.appendChild(fh);
-    (p.files||[]).forEach(f=>{
-      const row=document.createElement('div');row.style.cssText='font-size:12px;font-family:var(--mono);color:var(--text-secondary);padding:3px 0';
-      row.textContent=f.path+' ('+Math.round((f.size||0)/102.4)/10+' KB)';
-      files.appendChild(row);
-    });
-    wrap.appendChild(files);
-    const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
-    if(p.allow_download){
-      const dl=document.createElement('button');dl.className='btn btn-primary btn-sm';dl.textContent='⬇ Download (.zip)';dl.onclick=()=>window.open(API+'/api/public/projects/'+pid+'/download','_blank');row.appendChild(dl);
-    }
-    if(p.main_file){
-      const run=document.createElement('button');run.className='btn btn-primary btn-sm';run.textContent='▶ Run';run.onclick=()=>runPublicProject(pid,p.main_file,p.files||[]);row.appendChild(run);
-    }
-    const fv=document.createElement('button');fv.className='btn btn-ghost btn-sm';fv.textContent=(p.favorited?'♥ Favorited':'♡ Favorite');fv.onclick=async()=>{const rr=await authFetch(API+'/api/public/projects/'+pid+'/favorite',{method:'POST'});if(rr.ok){openPublicDetail(pid)}};row.appendChild(fv);
-    if(p.mine){
-      const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});loadPublicView()};row.appendChild(del);
-    }
-    wrap.appendChild(row);
-    host.appendChild(wrap);
+    if(publicShareUrl(p)){try{history.pushState({view:'public'},'','/public/'+encodeURIComponent(p.username)+'/'+encodeURIComponent(p.slug))}catch(e){}}
+    renderPublicDetail(p);
   }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Not found</div>'}
+}
+async function openPublicBySlug(username,slug,replaceUrl){
+  var host=document.getElementById('public-body');if(!host)return;
+  host.innerHTML='<div class="tool-status">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/public/by-user/'+encodeURIComponent(username)+'/'+encodeURIComponent(slug));
+    if(!r.ok)throw new Error('not found');
+    const p=await r.json();
+    if(replaceUrl){try{history.replaceState({view:'public'},'','/public/'+encodeURIComponent(p.username||username)+'/'+encodeURIComponent(p.slug||slug))}catch(e){}}
+    renderPublicDetail(p);
+  }catch(e){host.innerHTML='<div style="color:var(--error);padding:20px">Not found — this project may be pending review or removed.</div>'}
 }
 async function runPublicProject(pid,mainPath,fileList){
   showToast('Loading '+mainPath+'…','info');
@@ -6905,7 +6958,7 @@ async function openPublishModal(){
     '<div class="modal-field"><label>Project folder</label><select id="pub-folder" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)"></select></div>'+
     '<div class="modal-field"><label>Files from the folder <span style="color:var(--text-muted);font-weight:400">(tick to include · circle = main file opened on Run)</span></label><div style="display:flex;gap:8px;margin-bottom:6px"><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-all">Select all</button><button type="button" class="btn btn-ghost btn-sm" id="pub-sel-none">Clear</button></div><div id="pub-filetree" style="max-height:220px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;font-size:12px"></div></div>'+
     '<div class="modal-field"><label>Model ID (optional, for 3D models)</label><input type="text" id="pub-model" placeholder="m123…" /></div>'+
-    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked /> Show my username</label>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked disabled /> Username shown on your project (required for share links)</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
     '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
   ov.appendChild(m);document.body.appendChild(ov);
@@ -6975,7 +7028,7 @@ async function openPublishModal(){
       const paths=[...ftHost.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value).slice(0,200);
       const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
         kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
-        show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,
+        show_author:true,allow_download:m.querySelector('#pub-dl').checked,
         project_name:pubProjName,paths,main_file};
       const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const d=await r.json().catch(()=>({}));
@@ -6993,7 +7046,7 @@ async function openPublishModal(){
     }
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
-      show_author:m.querySelector('#pub-author').checked,allow_download:m.querySelector('#pub-dl').checked,files,main_file};
+      show_author:true,allow_download:m.querySelector('#pub-dl').checked,files,main_file};
     const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
     if(r.ok){ov.remove();showToast('Submitted for review','success');loadPublicView()}

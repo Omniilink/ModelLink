@@ -3935,6 +3935,23 @@ PUBLIC_FILE_MAX_BYTES = 200 * 1024
 PUBLIC_KINDS = ("project", "model", "asset")
 
 
+def _public_slug(conn, user_id, name: str, exclude_id=None) -> str:
+    """Per-user-unique URL slug for /public/<username>/<slug> share links."""
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:60].strip("-") or "project"
+    slug = base
+    n = 2
+    while True:
+        q = "SELECT id FROM public_projects WHERE user_id = ? AND slug = ?"
+        args = [user_id, slug]
+        if exclude_id:
+            q += " AND id != ?"
+            args.append(exclude_id)
+        if not conn.execute(q, args).fetchone():
+            return slug
+        slug = (base[:55].rstrip("-") + "-" + str(n))
+        n += 1
+
+
 def _pub_row(r):
     show = r["show_author"] if "show_author" in r.keys() else 1
     mf = ""
@@ -3942,12 +3959,20 @@ def _pub_row(r):
         mf = r["main_file"] or "" if "main_file" in r.keys() else ""
     except Exception:
         mf = ""
+    slug = ""
+    try:
+        slug = (r["slug"] or "") if "slug" in r.keys() else ""
+    except Exception:
+        slug = ""
+    uname = r["username"] or ""
     return {
         "id": r["id"],
         "name": r["name"] or "Untitled",
         "description": r["description"] or "",
         "kind": r["kind"] or "project",
-        "author": r["username"] if show else "",
+        "author": uname if show else "",
+        "username": uname,
+        "slug": slug,
         "allow_download": bool(r["allow_download"]),
         "status": r["status"],
         "favorites": int(r["fav_count"] or 0),
@@ -3970,7 +3995,9 @@ async def public_submit(request: Request):
     kind = str(data.get("kind", "project")).lower()
     if kind not in PUBLIC_KINDS:
         kind = "project"
-    show_author = 1 if data.get("show_author", True) else 0
+    # The author's username is required: shared links are /public/<username>/<slug>
+    # and the submitter is always credited.
+    show_author = 1
     allow_download = 1 if data.get("allow_download", True) else 0
     files = []
     total = 0
@@ -4054,10 +4081,11 @@ async def public_submit(request: Request):
         main_file = ""
     conn = get_db()
     try:
+        slug = _public_slug(conn, user["id"], name)
         cur = conn.execute(
-            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download, main_file))
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file, slug)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download, main_file, slug))
         pid = cur.lastrowid
         for f in files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
@@ -4066,7 +4094,7 @@ async def public_submit(request: Request):
     finally:
         conn.close()
     _audit("public.submit", user.get("username", ""), f"{pid} {name}")
-    return {"status": "ok", "id": pid}
+    return {"status": "ok", "id": pid, "slug": slug}
 
 
 @app.get("/api/public/projects")
@@ -4094,6 +4122,19 @@ async def public_list(request: Request, q: str = "", kind: str = "", sort: str =
         conn.close()
 
 
+def _public_payload(conn, r, user):
+    """Detail payload shared by the id- and slug-addressed public endpoints."""
+    files = conn.execute("SELECT path, size FROM public_project_files WHERE project_id = ? ORDER BY path",
+                         (r["id"],)).fetchall()
+    fav = conn.execute("SELECT 1 FROM project_favorites WHERE user_id = ? AND project_id = ?",
+                       (user["id"], r["id"])).fetchone()
+    out = _pub_row(r)
+    out["files"] = [{"path": f["path"], "size": f["size"]} for f in files]
+    out["favorited"] = bool(fav)
+    out["mine"] = r["user_id"] == user["id"]
+    return out
+
+
 @app.get("/api/public/projects/{pid}")
 async def public_detail(request: Request, pid: int):
     user, err = _require_auth(request)
@@ -4106,15 +4147,31 @@ async def public_detail(request: Request, pid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
             return JSONResponse(status_code=404, content={"error": "Not found"})
-        files = conn.execute("SELECT path, size FROM public_project_files WHERE project_id = ? ORDER BY path",
-                             (pid,)).fetchall()
-        fav = conn.execute("SELECT 1 FROM project_favorites WHERE user_id = ? AND project_id = ?",
-                           (user["id"], pid)).fetchone()
-        out = _pub_row(r)
-        out["files"] = [{"path": f["path"], "size": f["size"]} for f in files]
-        out["favorited"] = bool(fav)
-        out["mine"] = r["user_id"] == user["id"]
-        return out
+        return _public_payload(conn, r, user)
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/by-user/{username}/{slug}")
+async def public_by_slug(request: Request, username: str, slug: str):
+    """Resolve a shareable /public/<username>/<slug> link to a submission."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    username = (username or "").strip().lower()[:64]
+    slug = (slug or "").strip().lower()[:80]
+    if not username or not slug:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    conn = get_db()
+    try:
+        r = conn.execute(
+            "SELECT * FROM public_projects WHERE username = ? AND slug = ? ORDER BY id DESC LIMIT 1",
+            (username, slug)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        return _public_payload(conn, r, user)
     finally:
         conn.close()
 
@@ -4150,19 +4207,15 @@ async def public_download(request: Request, pid: int):
                     continue
             else:
                 zf.writestr(f["path"], c)
-    buf.seek(0)
     fname = re.sub(r"[^A-Za-z0-9._-]+", "_", r["name"] or "project")[:60] or "project"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    try:
-        tmp.write(buf.read())
-        tmp.close()
-        disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname + ".zip")
-        return FileResponse(tmp.name, media_type="application/zip", headers={"Content-Disposition": disp})
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+    disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname + ".zip")
+    # Return the bytes directly: FileResponse streams a path lazily, so any
+    # temp file deleted here (in finally) would be gone before it is read,
+    # giving a 500. Submissions are size-capped, so an in-memory response is
+    # both simpler and race-free.
+    from fastapi.responses import Response as _Response
+    return _Response(content=buf.getvalue(), media_type="application/zip",
+                     headers={"Content-Disposition": disp})
 
 
 @app.get("/api/public/projects/{pid}/file")
