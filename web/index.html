@@ -4783,19 +4783,57 @@ function ytCdFilename(cd){
   return m?m[1]:'';
 }
 async function ytFetchWithProgress(url,onp,signal){
+  // Probe whether the tunnel supports range requests (parallel download).
+  let total=0,rangeOk=false;
+  try{
+    const pr=await fetch(url,{headers:{Range:'bytes=0-0'},signal:signal});
+    if(pr.status===206){
+      rangeOk=true;
+      const cr=pr.headers.get('Content-Range')||'';
+      const m=cr.match(/\/(\d+)$/);
+      total=m?parseInt(m[1],10):0;
+    }else if(pr.status===200){
+      total=parseInt(pr.headers.get('Content-Length')||'0',10)||0;
+    }
+    if(pr.body&&pr.body.cancel)pr.body.cancel();
+  }catch(e){}
+  if(rangeOk&&total>0)return ytFetchParallel(url,total,onp,signal);
+  // Single-connection fallback.
   const r=await fetch(url,signal?{signal}:undefined);
   if(!r.ok)throw new Error('Converter stream failed ('+r.status+')');
-  const total=parseInt(r.headers.get('Content-Length')||r.headers.get('Estimated-Content-Length')||'0',10)||0;
+  const total2=parseInt(r.headers.get('Content-Length')||r.headers.get('Estimated-Content-Length')||'0',10)||0;
   const reader=r.body.getReader();
   const chunks=[];let loaded=0;
   for(;;){
     const it=await reader.read();
     if(it.done)break;
-    chunks.push(it.value);loaded+=it.value.length;onp(loaded,total);
+    chunks.push(it.value);loaded+=it.value.length;onp(loaded,total2);
   }
   const out=new Blob(chunks);
   if(!out.size)throw Object.assign(new Error('converter returned an empty file'),{emptyFile:true});
   return {blob:out,name:ytCdFilename(r.headers.get('Content-Disposition')||'')};
+}
+async function ytFetchParallel(url,total,onp,signal){
+  const N=8;
+  const chunkSize=Math.ceil(total/N);
+  const parts=new Array(N);
+  let loaded=0;
+  await Promise.all(Array.from({length:N},(_,i)=>{
+    const start=i*chunkSize;
+    const end=Math.min(total-1,start+chunkSize-1);
+    if(start>end){parts[i]=new Uint8Array(0);return Promise.resolve();}
+    return (async()=>{
+      const r=await fetch(url,{headers:{Range:'bytes='+start+'-'+end},signal:signal});
+      if(!r.ok)throw new Error('chunk '+i+' failed ('+r.status+')');
+      const buf=await r.arrayBuffer();
+      parts[i]=new Uint8Array(buf);
+      loaded+=buf.byteLength;
+      onp(loaded,total);
+    })();
+  }));
+  const out=new Blob(parts);
+  if(!out.size)throw Object.assign(new Error('converter returned an empty file'),{emptyFile:true});
+  return {blob:out,name:ytCdFilename('')};
 }
 let ytUrlTimer=null,ytInfoSeq=0;
 function ytUrlChanged(){
@@ -4840,6 +4878,26 @@ async function ytDownloadBrowser(){
   const btn=document.getElementById('yt-dl-btn');
   if(!url){st.textContent='Paste a YouTube link first.';return}
   const sel=ytSelection();
+  // Try the local yt-dlp path first — it downloads with 16 concurrent
+  // fragments and is exempt from the bandwidth throttle, so it is much
+  // faster than the converter tunnel for large files.
+  try{
+    const r=await authFetch(API+'/api/tools/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url,format:sel.type==='audio'?'mp3':'mp4',kind:sel.type,container:sel.container,codec:sel.codec,compress:sel.compress,fps:sel.fps,height:sel.height,streams:sel.streams,subs:sel.subs,audio_format:sel.aFormat,audio_bitrate:sel.aBitrate,cover:sel.cover})});
+    if(r.ok){
+      const blob=await r.blob();
+      if(blob.size){
+        const cd=r.headers.get('Content-Disposition')||'';
+        const m=cd.match(/filename\*=UTF-8''([^;]+)/);
+        let name='youtube.'+(sel.type==='audio'?(sel.aFormat==='original'?'m4a':sel.aFormat):(sel.container||'mp4'));
+        if(m){try{name=decodeURIComponent(m[1])}catch(e){}}
+        downloadBlob(blob,name);
+        st.textContent='Saved '+name;
+        return;
+      }
+    }
+  }catch(e){}
+  // Fall back to the converter API (browser path).
   const why=ytNeedsServer(sel);
   if(why){
     st.textContent=why.charAt(0).toUpperCase()+why.slice(1)+' — not supported in the browser; use the server link below for it.';
