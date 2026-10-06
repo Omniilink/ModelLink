@@ -9488,6 +9488,11 @@ async def serve_signup():
     p = os.path.join(APP_DIR, "web", "signup.html")
     return FileResponse(p, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
+@app.get("/menu")
+async def serve_menu():
+    p = os.path.join(APP_DIR, "web", "menu.html")
+    return FileResponse(p, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
 @app.get("/favicon.svg")
 async def serve_favicon():
     favicon_path = os.path.join(APP_DIR, "web", "favicon.svg")

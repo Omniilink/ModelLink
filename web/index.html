@@ -92,6 +92,9 @@ a:hover{text-decoration:underline}
 .header-spacer{flex:1;min-width:4px}
 .header-btn{background:transparent;border:1px solid transparent;color:var(--text-muted);padding:5px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;font-family:var(--font);white-space:nowrap}
 .header-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
+.header-brand{display:none;align-items:center;gap:8px;flex-shrink:0;font-weight:700;font-size:14px;letter-spacing:-0.2px;color:var(--text-primary)}
+.header-brand img{border-radius:6px}
+.header-mobile-only{display:none}
 .header-btn.active{background:var(--bg-active);color:var(--text-primary);border-color:var(--border)}
 .header-btn svg{width:14px;height:14px}
 .model-dropdown{position:relative}
@@ -160,20 +163,20 @@ a:hover{text-decoration:underline}
 .msg-edit-area{width:100%;background:var(--bg-input);border:1px solid var(--accent);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-family:var(--font);font-size:13.5px;resize:none;outline:none;line-height:1.5;min-height:60px}
 .msg-edit-bar{display:flex;gap:6px;margin-top:6px}
 .input-area{padding:10px 20px 16px;border-top:1px solid var(--border);background:var(--bg-secondary)}
-.input-box{display:flex;gap:8px;align-items:flex-end;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:4px 4px 4px 14px}
+.input-box{display:flex;gap:8px;align-items:center;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:5px 5px 5px 14px}
 .input-box:focus-within{border-color:var(--accent)}
 .input-box textarea{flex:1;background:transparent;border:none;padding:8px 0;color:var(--text-primary);font-family:var(--font);font-size:13.5px;resize:none;outline:none;min-height:22px;max-height:160px;line-height:1.5;min-width:0}
 .input-box textarea::placeholder{color:var(--text-muted)}
-.send-btn{width:34px;height:34px;border-radius:var(--radius-sm);background:var(--accent);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.send-btn{width:40px;height:40px;border-radius:var(--radius-sm);background:var(--accent);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .send-btn:hover{background:var(--accent-light)}
 .send-btn:disabled{opacity:.35;cursor:not-allowed}
-.send-btn svg{width:15px;height:15px}
-.img-btn{width:32px;height:32px;border-radius:var(--radius-sm);background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0}
+.send-btn svg{width:18px;height:18px}
+.img-btn{width:38px;height:38px;border-radius:var(--radius-sm);background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;flex-shrink:0}
 .attach-all-btn{transition:all .12s}
 .attach-all-btn.on{background:var(--accent-dim);color:var(--accent-light)}
 .omniiignore{width:100%;min-height:100px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6}
 .img-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
-.img-btn svg{width:16px;height:16px}
+.img-btn svg{width:18px;height:18px}
 .chat-code-note{font-size:12px;color:var(--text-muted);font-style:italic}
 .img-strip{display:flex;gap:6px;padding:0 2px 8px;flex-wrap:wrap}
 .img-thumb{position:relative;width:52px;height:52px;border-radius:var(--radius-xs);overflow:hidden;border:1px solid var(--border);flex-shrink:0}
@@ -676,7 +679,12 @@ pre{max-width:100%}
 .sidebar:not(.hidden){transform:translateX(0)}
 .sidebar-overlay{position:fixed;inset:0;background:rgba(4,6,10,.6);z-index:199;display:none}
 .sidebar-overlay.open{display:block}
-.header{padding:0 10px;gap:6px}
+.header{height:56px;min-height:56px;padding:0 10px;gap:6px}
+.header-brand{display:flex}
+.header-mobile-only{display:flex}
+.input-box{align-items:center}
+.img-btn{width:42px;height:42px}
+.send-btn{width:44px;height:44px}
 #crumb-view{font-size:13px}
 .ws-x{display:flex;align-items:center;justify-content:center}
 .header-btn{padding:6px 8px;font-size:11px}
@@ -935,6 +943,7 @@ pre{max-width:100%}
   <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
   <div class="main">
     <div class="header">
+      <div class="header-brand"><img src="/favicon.svg?v=5" height="22" alt="Omniilink"><span>Omniilink</span></div>
       <div class="crumbs"><span id="crumb-view">Chat</span></div>
       <div class="header-spacer"></div>
       <button class="header-btn hide-mobile" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
@@ -954,6 +963,13 @@ pre{max-width:100%}
       <button class="header-btn hide-mobile" onclick="exportChatJSON()" title="Export as JSON">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span>JSON</span>
+      </button>
+      <button class="header-btn header-mobile-only" onclick="newChat()" title="New chat" aria-label="New chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button class="header-btn header-mobile-only" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">
+        <svg id="hdr-theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+        <svg id="hdr-theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       </button>
       <button class="header-btn" id="terminal-toggle" onclick="toggleTerminal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -1012,7 +1028,7 @@ pre{max-width:100%}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleImageFiles(this.files);this.value=''" />
-          <textarea id="chat-input" placeholder="Message Omniilink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          <textarea id="chat-input" placeholder="Message Omniilink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)" onfocus="onComposerFocus()"></textarea>
           <button class="send-btn" id="send-btn" onclick="sendMessage()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
@@ -1487,7 +1503,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                 </button>
                 <input type="file" id="coding-img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleCodingImageFiles(this.files);this.value=''" />
-                <textarea id="coding-input" placeholder="Message (type @ to attach files)..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)"></textarea>
+                <textarea id="coding-input" placeholder="Message (type @ to attach files)..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)" onfocus="onComposerFocus()"></textarea>
                 <button class="send-btn" id="coding-send-btn" onclick="sendCodingMessage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
               </div>
             </div>
@@ -1503,7 +1519,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <button class="tab-item" data-tab="coding" onclick="navigate('coding')" aria-label="Code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Code<span class="beta-tag">Beta</span></button>
 <button class="tab-item" data-tab="more" onclick="navigate('more')" aria-label="Tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Tools</button>
 <button class="tab-item" data-tab="usage" onclick="navigate('usage')" aria-label="Usage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Usage</button>
-<button class="tab-item" data-tab="menu" onclick="toggleSidebar()" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
+<button class="tab-item" data-tab="menu" onclick="location.href='/menu'" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
 </nav>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
 <div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
@@ -1590,9 +1606,10 @@ function getChatTitle(h){const f=h.find(m=>m.role==='user');const t=msgTextConte
 function getPrompts(){try{return JSON.parse(localStorage.getItem('omnilink_prompts')||'[]')}catch(e){return[]}}
 function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p))}
 function getTheme(){return localStorage.getItem('omnilink_theme')||'dark'}
-function setTheme(t){localStorage.setItem('omnilink_theme',t);document.documentElement.setAttribute('data-theme',t);document.body.style.transition='background-color .35s ease,color .35s ease';const moon=document.getElementById('theme-icon-moon');const sun=document.getElementById('theme-icon-sun');if(moon)moon.style.display=t==='dark'?'':'none';if(sun)sun.style.display=t==='light'?'':'none'}
+function setTheme(t){localStorage.setItem('omnilink_theme',t);document.documentElement.setAttribute('data-theme',t);document.body.style.transition='background-color .35s ease,color .35s ease';[['theme-icon-moon','theme-icon-sun'],['hdr-theme-moon','hdr-theme-sun']].forEach(p=>{const moon=document.getElementById(p[0]);const sun=document.getElementById(p[1]);if(moon)moon.style.display=t==='dark'?'':'none';if(sun)sun.style.display=t==='light'?'':'none'})}
 
-function focusDesktop(id){try{if(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)return;const el=document.getElementById(id);if(el)el.focus()}catch(e){}}
+function settleInputAfterSend(id){try{if(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches){const ae=document.activeElement;if(ae&&ae!==document.body&&ae.blur)ae.blur();return}const el=document.getElementById(id);if(el)el.focus()}catch(e){}}
+function onComposerFocus(){try{const a=document.getElementById('chat-area');if(a)a.scrollTop=a.scrollHeight;const c=document.getElementById('coding-chat');if(c)c.scrollTop=c.scrollHeight}catch(e){}}
 function escapeHtml(s){if(s==null||s===false)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 async function authFetch(url,opts={}){opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
@@ -1818,7 +1835,8 @@ function applyInitialRoute(){
       const q=new URLSearchParams(location.search||'');
       if(q.get('signup')==='1'){showAuthSignup();showAuthModal()}
       else if(q.get('login')==='1'){showAuthModal()}
-      if((q.get('signup')==='1'||q.get('login')==='1')&&history.replaceState)history.replaceState(null,'',location.pathname);
+      if(q.get('new')==='1'){try{newChat()}catch(e){}}
+      if((q.get('signup')==='1'||q.get('login')==='1'||q.get('new')==='1')&&history.replaceState)history.replaceState(null,'',location.pathname);
     }catch(e2){}
   }catch(e){}
 }
@@ -2085,7 +2103,7 @@ async function sendMessage(){
   }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   settleSpinners(assistantEl);
   if(!assistantEl.textContent.trim()&&!assistantEl.querySelector('.message-content'))assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';
-  isStreaming=false;document.getElementById('send-btn').disabled=false;focusDesktop('chat-input');
+  isStreaming=false;document.getElementById('send-btn').disabled=false;settleInputAfterSend('chat-input');
 }
 
 function appendMessage(role,content,streaming=false,savedModel){
@@ -2133,7 +2151,7 @@ function editAndResend(editIdx,newText,keepImgs){
   .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='',seenDone=false;
     function read(){reader.read().then(({done,value})=>{
-      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText.trim(),model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;focusDesktop('chat-input');return}
+      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText.trim(),model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;settleInputAfterSend('chat-input');return}
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
@@ -3326,7 +3344,7 @@ async function sendCodingMessage(){
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText.trim()});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
-  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;focusDesktop('coding-input');
+  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -4471,7 +4489,7 @@ async function codingAutoContinue(){
   codingAutoLoop=false;codingStream=false;codingAbort=null;setCodingLoopUI(false);
   settleSpinners(document.getElementById('coding-chat'));
   document.getElementById('coding-send-btn').disabled=false;
-  focusDesktop('coding-input');
+  settleInputAfterSend('coding-input');
   await maybeOfferPendingFiles().catch(()=>{});
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
