@@ -96,6 +96,7 @@ from modellink.splitter import (
     web_search, WEB_SEARCH_TOOL, _add_tools_to_body, _extract_tool_calls,
     _execute_tool_call, _response_to_openai_message, run_tool_loop
 )
+from modellink import relay
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
     create_session, destroy_session, set_session_cookie, get_user_by_id,
@@ -1980,6 +1981,52 @@ async def get_status(request: Request):
     except Exception as e:
         return {"providers": {}, "rate_limits": {}, "model_name": MODEL_NAME, "error": str(e)}
 
+def _device_model_entries(user):
+    """Model entries for Ollama on the caller's OWN paired devices.
+
+    Owner-only by product decision: even admins don't get another account's
+    device models. Offline devices keep their last-known tags with
+    online:false so the menu never jumps around. Contains relay I/O — call
+    via asyncio.to_thread, never directly on the event loop."""
+    out = []
+    try:
+        uid = int(user.get("id") or 0)
+    except (TypeError, ValueError):
+        return out
+    with _AGENT_LOCK:
+        st = _agents_load()
+        agents = [dict(a) for a in st["agents"].values()]
+    for a in agents:
+        try:
+            if int(a.get("owner_id") or 0) != uid:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if "ollama" not in (a.get("caps") or ()):
+            continue
+        aid = str(a.get("id") or "")
+        if not aid:
+            continue
+        name = str(a.get("name") or a.get("hostname") or aid)
+        online = _agent_online(a)
+        try:
+            tags = scan_ollama_models(agent_id=aid)
+        except Exception:
+            tags = []
+        if not tags:
+            continue
+        try:
+            vision = ollama_model_capabilities(agent_id=aid)
+        except Exception:
+            vision = {}
+        for tag in tags:
+            out.append({"id": f"device/{aid}/{tag}", "provider": "device",
+                        "group": f"device/{aid}", "group_label": f"Ollama · {name}",
+                        "source": "device", "online": bool(online),
+                        "vision": bool((vision.get(tag) or {}).get("vision"))})
+    return out
+
+
 @app.get("/api/discover")
 async def discover_models(request: Request):
     _user, err = _require_auth(request)
@@ -2009,6 +2056,12 @@ async def discover_models(request: Request):
             if not any(x["id"] == mid for x in all_models):
                 all_models.append({"id": mid, "provider": "ollama", "source": "local",
                                    "vision": bool((_ollama_caps.get(m) or {}).get("vision"))})
+    try:
+        for entry in await asyncio.to_thread(_device_model_entries, _user):
+            if not any(x["id"] == entry["id"] for x in all_models):
+                all_models.append(entry)
+    except Exception as e:
+        logger.warning(f"[DISCOVER] device scan failed: {e}")
     for cp in get_custom_providers(_user["id"]):
         mid = "custom/" + cp["name"]
         discovered.setdefault("custom", []).append(mid)
@@ -2105,6 +2158,42 @@ async def ollama_config_set(request: Request):
     models = scan_ollama_models()
     return {"status": "ok", "base_url": _ollama_current_url(),
             "available": len(models) > 0, "models": models}
+
+
+@app.get("/api/devices/{agent_id}/ollama")
+async def device_ollama_status(request: Request, agent_id: str):
+    """Relayed Ollama status for one paired device (owner or admin view —
+    management info; using the models stays owner-only in chat)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st = _agents_load()
+        a = st["agents"].get(str(agent_id))
+    if not a or not _agent_visible(user, a):
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    caps = a.get("caps") or []
+    out = {"id": str(a.get("id")), "name": str(a.get("name") or ""),
+           "online": _agent_online(a), "caps": caps, "ollama": None}
+    if "ollama" in caps and out["online"]:
+        try:
+            tags = await asyncio.to_thread(scan_ollama_models, None, str(agent_id), True)
+            try:
+                vision = await asyncio.to_thread(
+                    lambda: ollama_model_capabilities(force=True, agent_id=str(agent_id)))
+            except Exception:
+                vision = {}
+            out["ollama"] = {"ok": True, "models": tags,
+                             "vision": {m: bool((vision.get(m) or {}).get("vision"))
+                                        for m in tags}}
+        except Exception as e:
+            out["ollama"] = {"ok": False, "error": str(e)}
+    elif "ollama" in caps:
+        out["ollama"] = {"ok": False, "error": f"{out['name']} is offline"}
+    else:
+        out["ollama"] = {"ok": False, "supported": False,
+                         "error": "companion app needs updating"}
+    return out
 
 
 @app.post("/api/error-reports")
@@ -2301,12 +2390,31 @@ def _split_used_model(used_model: str):
     """'groq/openai/gpt-oss-120b' -> ('groq', 'openai/gpt-oss-120b').
 
     The provider is always the first path segment; everything after it is the
-    model name (which may itself contain slashes, as groq's do).
+    model name (which may itself contain slashes, as groq's do). Device ids
+    ('device/<agent>/<tag>') resolve to the paired device's display name so
+    usage rows read 'MSI/llama3.1:8b' instead of '1/llama3.1:8b'.
     """
+    if used_model and used_model.startswith("device/"):
+        parts = used_model.split("/", 2)
+        if len(parts) == 3:
+            return "device", f"{_device_display_name(parts[1])}/{parts[2]}"
     if used_model and "/" in used_model:
         provider, _, model = used_model.partition("/")
         return provider or "unknown", model or used_model
     return "unknown", used_model or "unknown"
+
+
+def _device_display_name(agent_id):
+    """Paired device display name for usage/attribution, else its id."""
+    try:
+        with _AGENT_LOCK:
+            st = _agents_load()
+            a = st["agents"].get(str(agent_id))
+        if a:
+            return str(a.get("name") or a.get("hostname") or agent_id)
+    except Exception:
+        pass
+    return str(agent_id)
 
 
 def _resolve_request_model(req_model):
@@ -2321,6 +2429,11 @@ def _resolve_request_model(req_model):
         return "unknown", req_model or "unknown"
     if req_model.startswith("ollama/"):
         return "ollama", req_model.split("/", 1)[1]
+    if req_model.startswith("device/"):
+        parts = req_model.split("/", 2)
+        if len(parts) == 3:
+            return "device", f"{_device_display_name(parts[1])}/{parts[2]}"
+        return "device", req_model
     for prov_name, prov_cfg in PROVIDERS.items():
         if req_model in prov_cfg.get("models", []):
             return prov_name, req_model
@@ -2406,6 +2519,25 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
     is_stream = bool(is_stream)
 
+    # Paired-device models are owner-only: strictly the account that paired
+    # the device may use it — not even an admin. Reject before anything runs.
+    if req_model.startswith("device/"):
+        parts = req_model.split("/", 2)
+        agent = None
+        if len(parts) == 3 and parts[1].isdigit():
+            with _AGENT_LOCK:
+                st = _agents_load()
+                agent = st["agents"].get(parts[1])
+        if not agent:
+            return JSONResponse(status_code=400, content={"error": "Invalid model name"})
+        try:
+            owner_ok = int(agent.get("owner_id") or 0) == int(user.get("id") or 0)
+        except (TypeError, ValueError):
+            owner_ok = False
+        if not owner_ok:
+            return JSONResponse(status_code=403, content={
+                "error": "This device's models belong to the account that paired it."})
+
     # Optional generation controls from the UI menus: invalid values are
     # coerced to "auto" (provider default) instead of rejecting the request.
     effort = normalize_level(body.get("effort"), "auto")
@@ -2423,7 +2555,7 @@ async def chat_completions(request: Request):
     if not user.get("is_admin"):
         db_keys = get_user_provider_keys(user["id"])
         db_customs = get_custom_providers(user["id"])
-        if not db_keys and not db_customs and not req_model.startswith("ollama/"):
+        if not db_keys and not db_customs and not req_model.startswith(("ollama/", "device/")):
             return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your providers under Providers."})
         user_keys = db_keys
 
@@ -2565,7 +2697,17 @@ async def chat_completions(request: Request):
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                 else:
-                    for chunk in stream:
+                    # Iterate the chunk stream in a worker thread: the loop
+                    # must stay free while we wait (device-relay batches arrive
+                    # over HTTP on this same server, and blocking here would
+                    # starve them until the first-timeout fires).
+                    _stream_iter = iter(stream)
+                    _stream_sentinel = object()
+                    while True:
+                        chunk = await asyncio.to_thread(
+                            next, _stream_iter, _stream_sentinel)
+                        if chunk is _stream_sentinel:
+                            break
                         text_chunk = ""
                         if hasattr(chunk, 'text'):
                             text_chunk = chunk.text
@@ -2677,6 +2819,12 @@ async def list_models(request: Request):
             mid = "ollama/" + m
             if not any(existing["id"] == mid for existing in models):
                 models.append({"id": mid})
+    except Exception:
+        pass
+    try:
+        for entry in await asyncio.to_thread(_device_model_entries, _user):
+            if not any(existing["id"] == entry["id"] for existing in models):
+                models.append({"id": entry["id"]})
     except Exception:
         pass
     return {"data": models}
@@ -8045,16 +8193,20 @@ def _agents_save(st):
         pass
 
 
-def _agent_public(a):
-    now = time.time()
+def _agent_online(a):
+    """True when the companion polled within the last 75 seconds."""
     try:
         seen = float(a.get("last_seen") or 0)
     except (TypeError, ValueError):
         seen = 0
+    return bool(seen and time.time() - seen < 75)
+
+
+def _agent_public(a):
     return {"id": a.get("id", ""), "name": a.get("name", ""), "hostname": a.get("hostname", ""),
             "platform": a.get("platform", ""), "created_at": a.get("created_at", ""),
-            "last_seen": a.get("last_seen", 0), "online": bool(seen and now - seen < 75),
-            "owner": a.get("owner_name", "")}
+            "last_seen": a.get("last_seen", 0), "online": _agent_online(a),
+            "owner": a.get("owner_name", ""), "caps": a.get("caps") or []}
 
 
 def _agent_from_token(request):
@@ -8091,13 +8243,18 @@ _AGENT_WAITERS = {}
 
 def _agent_take_queued(agent_id):
     """Oldest queued command for the agent, marked running.
-    Returns (command_dict_or_None, agent_known_bool)."""
+    Returns (command_dict_or_None, agent_known_bool). Ephemeral relay
+    commands (device Ollama) come first — they never touch agents.json."""
     with _AGENT_LOCK:
         st = _agents_load()
         cur = st["agents"].get(str(agent_id))
         if not cur:
             return None, False
         cur["last_seen"] = time.time()
+        relay_cmd = relay.take_pending(agent_id)
+        if relay_cmd is not None:
+            _agents_save(st)
+            return relay_cmd, True
         nxt = None
         for c in st["commands"].values():
             if str(c.get("agent_id")) == str(agent_id) and c.get("status") == "queued":
@@ -8123,6 +8280,22 @@ def _agent_notify(agent_id):
             ev.set()
         except Exception:
             pass
+
+
+def _relay_agent_info(agent_id):
+    """relay.py's view of an agent: online flag, display name, capabilities."""
+    with _AGENT_LOCK:
+        st = _agents_load()
+        a = st["agents"].get(str(agent_id))
+        if not a:
+            return None
+        return {"online": _agent_online(a),
+                "name": a.get("name") or a.get("hostname") or str(agent_id),
+                "caps": a.get("caps") or []}
+
+
+relay.set_notifier(_agent_notify)
+relay.set_agent_info(_relay_agent_info)
 
 
 @app.post("/api/agents/pairing")
@@ -8264,6 +8437,10 @@ async def agents_delete(request: Request, agent_id: str):
         del st["agents"][str(agent_id)]
         st["commands"] = {k: c for k, c in st["commands"].items() if str(c.get("agent_id")) != str(agent_id)}
         _agents_save(st)
+    try:
+        relay.drop_agent(agent_id)
+    except Exception:
+        pass
     _audit("agent.remove", user["username"], f"agent={agent_id}")
     return {"status": "ok"}
 
@@ -8341,10 +8518,20 @@ async def agent_claim(request: Request):
 
 
 @app.get("/api/agent/pending")
-async def agent_pending(request: Request):
+async def agent_pending(request: Request, caps: str = ""):
     a = _agent_from_token(request)
     if not a:
         return JSONResponse(status_code=401, content={"error": "Bad agent token"})
+    if caps:
+        # Capability handshake: new companions announce e.g. ?caps=ollama on
+        # every poll; old ones never send it and stay un-relay-capable.
+        with _AGENT_LOCK:
+            st = _agents_load()
+            cur = st["agents"].get(str(a["id"]))
+            if cur:
+                cur["caps"] = sorted({c for c in str(caps).split(",") if c})
+                cur["last_seen"] = time.time()
+                _agents_save(st)
     nxt, known = _agent_take_queued(a["id"])
     if not known:
         return JSONResponse(status_code=401, content={"error": "Unknown agent"})
@@ -8404,22 +8591,44 @@ async def agent_result(request: Request):
     return {"status": "ok"}
 
 
+@app.post("/api/agent/relay")
+async def agent_relay(request: Request):
+    """Companion -> host: one seq-numbered batch of an Ollama relay stream.
+    HTTP 410 means the stream is gone (finished, dropped, or cancelled):
+    abort the local Ollama read immediately."""
+    a = _agent_from_token(request)
+    if not a:
+        return JSONResponse(status_code=401, content={"error": "Bad agent token"})
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    if not relay.attach(a["id"], data or {}):
+        return JSONResponse(status_code=410, content={"error": "stream gone"})
+    return {"status": "ok"}
+
+
 AGENT_CLIENT_PY = '''#!/usr/bin/env python3
 """Omniilink pairing agent: runs shell commands from your Omniilink server.
 Usage: python omniilink-agent.py --server https://YOUR-SERVER --code ABC123 [--name my-pc]
 Needs only the Python standard library. Polls every few seconds; press Ctrl+C to stop.
+Also relays a local Ollama (http://127.0.0.1:11434, override with --ollama-url
+or OMNIILINK_OLLAMA_URL) so its models can be used through the server.
 """
 import argparse
 import json
+import os
 import platform
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 
 SERVER = "__SERVER__"
+OLLAMA_URL = (os.environ.get("OMNIILINK_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
+RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions", "/api/version")
 
 
 def api(method, path, token=None, payload=None):
@@ -8440,14 +8649,105 @@ def api(method, path, token=None, payload=None):
         raise Exception("HTTP %s: %s" % (e.code, detail.strip() or e.reason))
 
 
+def _relay_status(token, payload):
+    """POST one relay batch; returns the HTTP status (410 = stream gone)."""
+    req = urllib.request.Request(SERVER + "/api/agent/relay", method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OmniilinkAgent/1.0"},
+                                 data=json.dumps(payload).encode())
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.getcode()
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def run_relay(token, cmd, ollama_url):
+    """Service one kind=ollama command against the local Ollama, streaming
+    seq-numbered batches back to the host."""
+    cid = cmd.get("id")
+    payload = cmd.get("payload") or {}
+    path = str(payload.get("path") or "")
+    body = payload.get("body")
+    state = {"seq": 0}
+
+    def send(**fields):
+        fields["command_id"] = cid
+        fields["seq"] = state["seq"]
+        state["seq"] += 1
+        st = _relay_status(token, fields)
+        if st in (404, 410):
+            raise RuntimeError("gone")
+        if st and st != 200:
+            raise RuntimeError("relay rejected (HTTP %s)" % st)
+        if not st:
+            raise RuntimeError("host unreachable")
+
+    if path not in RELAY_PATHS:
+        send(error="relay path not allowed: " + path)
+        return
+    url = (ollama_url or "http://127.0.0.1:11434").rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=300)
+    except Exception as e:
+        send(error="Ollama unreachable on this computer: " + str(e)[:300])
+        return
+    try:
+        status = resp.getcode() or 200
+        headers = {"content-type": resp.headers.get("Content-Type") or "application/json"}
+        stream_intent = isinstance(body, dict) and body.get("stream") is True
+        if status != 200 or not stream_intent:
+            raw = resp.read(8 * 1024 * 1024)
+            send(status=status, headers=headers, body=raw.decode("utf-8", "replace"),
+                 done=True)
+            return
+        send(status=status, headers=headers)
+        buf, size = [], 0
+        while True:
+            line = resp.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip("\r\n")
+            if not text:
+                continue
+            buf.append(text)
+            size += len(text)
+            if size >= 32768:
+                send(lines=buf)
+                buf, size = [], 0
+        if buf:
+            send(lines=buf)
+        send(done=True)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        try:
+            send(error="relay failed: " + str(e)[:300])
+        except Exception:
+            pass
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
 def main():
+    global SERVER
     ap = argparse.ArgumentParser(description="Omniilink pairing agent")
     ap.add_argument("--server", default=SERVER, help="Omniilink server URL")
     ap.add_argument("--code", required=True, help="6-character pairing code from Admin > Agents")
     ap.add_argument("--name", default=socket.gethostname(), help="Display name for this computer")
+    ap.add_argument("--ollama-url", default=OLLAMA_URL, help="Local Ollama URL for model relay")
     args = ap.parse_args()
-    global SERVER
     SERVER = args.server.rstrip("/")
+    ollama_url = (args.ollama_url or "").rstrip("/")
     hostname = socket.gethostname()
     plat = platform.system() + " " + platform.release()
     print("pairing with " + SERVER + " ...")
@@ -8461,9 +8761,12 @@ def main():
     print("paired as agent " + str(d["agent_id"]) + " - polling for commands (Ctrl+C to stop)")
     while True:
         try:
-            p = api("GET", "/api/agent/pending", token)
+            p = api("GET", "/api/agent/pending?caps=ollama", token)
             cmd = p.get("command")
-            if cmd:
+            if cmd and cmd.get("kind") == "ollama":
+                threading.Thread(target=run_relay, args=(token, cmd, ollama_url),
+                                 daemon=True).start()
+            elif cmd:
                 print("$ " + cmd["command"])
                 try:
                     proc = subprocess.run(cmd["command"], shell=True, capture_output=True,

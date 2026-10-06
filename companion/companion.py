@@ -28,11 +28,12 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.6"
+COMPANION_VERSION = "1.0.9"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 DEFAULT_PROJECTS = os.path.join(os.path.expanduser("~"), "Documents", "OmniilinkProjects")
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 POLL_SECONDS = 1
 CMD_TIMEOUT = 300
 READ_MAX = 256 * 1024
@@ -42,7 +43,8 @@ WRITE_MAX = 1024 * 1024
 # ---------------- config ----------------
 def default_config():
     return {"server": "", "token": "", "agent_id": "",
-            "name": socket.gethostname(), "projects_root": DEFAULT_PROJECTS}
+            "name": socket.gethostname(), "projects_root": DEFAULT_PROJECTS,
+            "ollama_url": DEFAULT_OLLAMA_URL}
 
 
 def load_config():
@@ -220,13 +222,154 @@ def do_shell(cmd, root=None, timeout=CMD_TIMEOUT, cwd=None):
         return 1, "agent error: " + str(e)
 
 
+# ---------------- ollama relay ----------------
+# The host queues kind=ollama commands; we perform the local HTTP call
+# against our own Ollama (localhost only — no firewall changes needed) and
+# stream seq-numbered batches back to POST /api/agent/relay. Runs in worker
+# threads so the poll loop keeps serving shell/file commands meanwhile.
+_RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions",
+                "/api/version")
+_RELAY_BODY_MAX = 8 * 1024 * 1024
+_RELAY_FLUSH_BYTES = 32768
+_RELAY_FLUSH_SECONDS = 0.05
+_RELAY_WORKERS = 4
+_relay_exec = None
+_relay_exec_lock = threading.Lock()
+
+
+def relay_executor():
+    global _relay_exec
+    with _relay_exec_lock:
+        if _relay_exec is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _relay_exec = ThreadPoolExecutor(max_workers=_RELAY_WORKERS,
+                                             thread_name_prefix="ollama-relay")
+        return _relay_exec
+
+
+class RelayGone(Exception):
+    """Host dropped the stream (410): stop the local Ollama read."""
+
+
+class _RelaySender(object):
+    """Seq-numbered batch poster; retries transient failures, treats 410
+    as the host saying 'this stream no longer exists'."""
+
+    def __init__(self, server, token, cid):
+        self.server = server
+        self.token = token
+        self.cid = cid
+        self.seq = 0
+
+    def send(self, **fields):
+        fields["command_id"] = self.cid
+        fields["seq"] = self.seq
+        self.seq += 1
+        last = None
+        for attempt in range(3):
+            try:
+                api(self.server, "POST", "/api/agent/relay", self.token, fields)
+                return
+            except ApiError as e:
+                if e.status in (404, 410):
+                    raise RelayGone()
+                last = e
+                time.sleep(0.5 * (attempt + 1))
+            except Exception as e:
+                last = e
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError("relay post failed: " + str(last))
+
+
+def do_ollama_relay(server, token, cmd):
+    """Service one kind=ollama command against the local Ollama."""
+    cid = cmd.get("id")
+    payload = cmd.get("payload") or {}
+    path = str(payload.get("path") or "")
+    body = payload.get("body")
+    sender = _RelaySender(server, token, cid)
+    try:
+        if path not in _RELAY_PATHS:
+            sender.send(error="relay path not allowed: " + path)
+            return
+        cfg = load_config()
+        base = (cfg.get("ollama_url") or DEFAULT_OLLAMA_URL).strip().rstrip("/")
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            base + path, data=data, method="POST" if data else "GET",
+            headers={"Content-Type": "application/json", "Accept": "*/*"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+        except urllib.error.HTTPError as he:
+            # Ollama answers errors as one JSON body even when stream=true.
+            try:
+                raw = he.read(_RELAY_BODY_MAX)
+            except Exception:
+                raw = b""
+            headers = {"content-type":
+                       he.headers.get("Content-Type") or "application/json"}
+            sender.send(status=he.code, headers=headers,
+                        body=raw.decode("utf-8", "replace"), done=True)
+            return
+        except Exception as e:
+            sender.send(error="Ollama is not reachable on this computer ("
+                        + str(e)[:240] + ")")
+            return
+        try:
+            status = getattr(resp, "status", None) or resp.getcode() or 200
+            headers = {"content-type":
+                       resp.headers.get("Content-Type") or "application/json"}
+            stream_intent = isinstance(body, dict) and body.get("stream") is True
+            if status != 200 or not stream_intent:
+                raw = resp.read(_RELAY_BODY_MAX + 1)
+                if len(raw) > _RELAY_BODY_MAX:
+                    sender.send(error="Ollama response too large")
+                    return
+                sender.send(status=status, headers=headers,
+                            body=raw.decode("utf-8", "replace"), done=True)
+                return
+            sender.send(status=status, headers=headers)
+            buf = []
+            size = 0
+            last_flush = time.time()
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace").rstrip("\r\n")
+                if not text:
+                    continue
+                buf.append(text)
+                size += len(text)
+                if (size >= _RELAY_FLUSH_BYTES
+                        or time.time() - last_flush >= _RELAY_FLUSH_SECONDS):
+                    sender.send(lines=buf)
+                    buf, size = [], 0
+                    last_flush = time.time()
+            if buf:
+                sender.send(lines=buf)
+            sender.send(done=True)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+    except RelayGone:
+        pass
+    except Exception as e:
+        try:
+            sender.send(error=str(e)[:300])
+        except Exception:
+            pass
+
+
 # ---------------- sync loop ----------------
 def poll_once(server, token, root, status_cb=None):
     """One heartbeat: fetch a queued command, run it, post the result.
     Returns 'idle' | 'ran' | 'error' | 'unauthorized' (dead/removed token —
     the caller should reload config instead of retrying blindly)."""
     try:
-        p = api(server, "GET", "/api/agent/pending", token)
+        p = api(server, "GET", "/api/agent/pending?caps=ollama", token)
     except ApiError as e:
         if status_cb:
             status_cb(False, str(e))
@@ -241,6 +384,20 @@ def poll_once(server, token, root, status_cb=None):
             status_cb(True, "")
         return "idle"
     kind = cmd.get("kind") or "shell"
+    if kind == "ollama":
+        # Model relay runs in a worker: streams can take minutes, and the
+        # poll loop must keep picking up shell/file commands meanwhile.
+        # The worker posts batches directly; no result entry is written
+        # here (the relay endpoint tracks the stream lifecycle).
+        try:
+            relay_executor().submit(do_ollama_relay, server, token, cmd)
+        except Exception:
+            if status_cb:
+                status_cb(False, "could not start relay worker")
+            return "error"
+        if status_cb:
+            status_cb(True, "")
+        return "ran"
     try:
         if kind == "file":
             res = do_file_op(root, cmd.get("payload") or {})
@@ -656,8 +813,12 @@ def _setup_page():
             "<input id=\"name\" value=\"" + esc(cfg.get("name", "") or socket.gethostname()) + "\" />"
             "<label for=\"projects\">Projects folder</label>"
             "<input id=\"projects\" value=\"" + esc(cfg.get("projects_root", "") or DEFAULT_PROJECTS) + "\" />"
+            "<label for=\"ollama\">Ollama URL (shared models)</label>"
+            "<input id=\"ollama\" value=\"" + esc(cfg.get("ollama_url", "") or DEFAULT_OLLAMA_URL) + "\" "
+            "placeholder=\"http://127.0.0.1:11434\" autocomplete=\"off\" />"
             "<button class=\"btn\" id=\"pair\">Pair this computer</button>"
             "<div class=\"btnrow\"><button class=\"btn\" id=\"open\">Open projects folder</button>"
+            "<button class=\"btn\" id=\"ollamatest\">Test Ollama</button>"
             "<button class=\"btn\" id=\"diag\">Run diagnostics</button></div>"
             "<div id=\"diagout\" style=\"margin-top:4px\"></div>"
             "<p class=\"hint\">Get a code from the web app: Admin &gt; Agents &gt; + New pairing code.<br>"
@@ -677,13 +838,23 @@ def _setup_page():
             "body:JSON.stringify({server:document.getElementById('server').value,"
             "code:document.getElementById('code').value,"
             "name:document.getElementById('name').value,"
-            "projects:document.getElementById('projects').value})})"
+            "projects:document.getElementById('projects').value,"
+            "ollama_url:document.getElementById('ollama').value})})"
             ".then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})"
             ".then(function(x){b.disabled=false;"
             "if(x.ok&&x.d.ok){dot.style.background='#34c77b';msg.className='';"
             "sub.textContent='Paired as agent '+x.d.agent_id+'. Close this window — the tray icon handles the rest.';}"
             "else{show((x.d&&x.d.error)||'Pairing failed',0);}})"
             ".catch(function(e){b.disabled=false;show('Pairing failed: '+e,0);});});"
+            "document.getElementById('ollamatest').addEventListener('click',function(){"
+            "var b=this;b.disabled=true;msg.className='';"
+            "fetch('api/ollama',{method:'POST',headers:{'Content-Type':'application/json'},"
+            "body:JSON.stringify({url:document.getElementById('ollama').value})})"
+            ".then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})"
+            ".then(function(x){b.disabled=false;"
+            "if(x.d&&x.d.ok){show('Ollama reachable at '+x.d.url+' \\u2014 '+x.d.models.length+' model(s).',1);}"
+            "else{show((x.d&&x.d.error)||'Ollama not reachable',0);}})"
+            ".catch(function(e){b.disabled=false;show('Test failed: '+e,0);});});"
             "document.getElementById('code').addEventListener('input',function(){"
             "this.value=this.value.toUpperCase();});"
             "document.getElementById('open').addEventListener('click',function(){"
@@ -775,14 +946,42 @@ class _SetupHandler(_http_server.BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "Pairing failed: " + str(e)}, 502)
             try:
                 c = load_config()
+                ou = (data.get("ollama_url", "") or "").strip().rstrip("/")
                 c.update({"server": server, "token": token, "agent_id": aid,
                           "name": name, "projects_root": proot})
+                if ou:
+                    c["ollama_url"] = ou
                 save_config(c)
                 os.makedirs(proot, exist_ok=True)
             except Exception as e:
                 return self._json({"ok": False,
                                    "error": "Paired, but could not save: " + str(e)}, 500)
             return self._json({"ok": True, "agent_id": aid})
+        if path == "/api/ollama":
+            data = self._body_json()
+            url = (data.get("url", "") or "").strip().rstrip("/")
+            if url and not url.startswith(("http://", "https://")):
+                return self._json({"ok": False,
+                                   "error": "URL must start with http:// or https://"}, 400)
+            try:
+                if url:
+                    c = load_config()
+                    c["ollama_url"] = url
+                    save_config(c)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 500)
+            target = url or (load_config().get("ollama_url")
+                             or DEFAULT_OLLAMA_URL).rstrip("/")
+            try:
+                req = urllib.request.Request(target + "/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=4) as r:
+                    tags = json.loads(r.read().decode() or "{}")
+                models = [m.get("name") for m in (tags.get("models") or [])
+                          if isinstance(m, dict) and m.get("name")]
+                return self._json({"ok": True, "url": target, "models": models})
+            except Exception as e:
+                return self._json({"ok": False, "url": target,
+                                   "error": "Ollama not reachable: " + str(e)[:200]})
         if path == "/api/open-folder":
             folder = load_config()["projects_root"]
             try:
@@ -888,6 +1087,17 @@ def run_doctor():
             out.append(("token accepted", False, str(e)))
     except Exception as e:
         out.append(("token accepted", False, str(e)))
+    ollama_url = (cfg.get("ollama_url") or DEFAULT_OLLAMA_URL).rstrip("/")
+    try:
+        req = urllib.request.Request(ollama_url + "/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=4) as r:
+            tags = json.loads(r.read().decode() or "{}")
+        models = [m for m in (tags.get("models") or []) if isinstance(m, dict)]
+        out.append(("ollama reachable", True,
+                    ollama_url + " — " + str(len(models)) + " model(s)"))
+    except Exception as e:
+        out.append(("ollama reachable", False,
+                    ollama_url + " — " + str(e)[:120]))
     proot = cfg.get("projects_root") or DEFAULT_PROJECTS
     try:
         os.makedirs(proot, exist_ok=True)

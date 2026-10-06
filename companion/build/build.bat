@@ -27,25 +27,25 @@ if errorlevel 1 (
 echo === Building OmniilinkServer.exe ===
 pyinstaller --noconfirm --noconsole --onefile --name OmniilinkServer --clean ^
   --exclude-module tkinter --icon "%~dp0icon.ico" --version-file "%~dp0version.txt" ^
-  --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0" companion.py
+  --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0." companion.py
 if errorlevel 1 (
   echo PYINSTALLER FAILED.
   pause
   exit /b 1
 )
 echo === Building OmniilinkServerSetup.msi ===
-"%WIXBIN%\candle.exe" -nologo -arch x64 "-dExeSourceDir=%~dp0dist" "-dIconDir=%~dp0" -o "%~dp0msi\companion.wixobj" "%~dp0companion.wxs"
+"%WIXBIN%\candle.exe" -nologo -arch x64 "-dExeSourceDir=%~dp0dist" "-dIconDir=%~dp0." -o "%~dp0msi\companion.wixobj" "%~dp0companion.wxs"
 if errorlevel 1 (
   echo CANDLE FAILED.
   pause
   exit /b 1
 )
-"%WIXBIN%\light.exe" -nologo -o "..\OmniilinkServerSetup.msi" "%~dp0msi\companion.wixobj" -ext "%WIXBIN%\WixUIExtension.dll"
+"%WIXBIN%\light.exe" -nologo -o "%~dp0..\OmniilinkServerSetup.msi" "%~dp0msi\companion.wixobj" -ext "%WIXBIN%\WixUIExtension.dll"
 if errorlevel 1 (
   echo LIGHT FAILED.
   pause
   exit /b 1
 )
 echo.
-echo Built ..\OmniilinkServerSetup.msi
+echo Built %~dp0..\OmniilinkServerSetup.msi
 pause

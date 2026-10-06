@@ -9,6 +9,8 @@ import logging
 import threading
 from dotenv import load_dotenv
 
+from modellink import relay
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("Omniilink")
 
@@ -793,8 +795,15 @@ def load_all_keys():
     return provider_keys
 
 
-def scan_ollama_models(base_url=None):
-    """List local Ollama models. base_url overrides OLLAMA_BASE_URL."""
+def scan_ollama_models(base_url=None, agent_id=None, force=False):
+    """List Ollama models. base_url overrides OLLAMA_BASE_URL; agent_id scans
+    a paired device through the relay instead of the server's own Ollama.
+
+    The relay variant never raises on soft refreshes: a stale cache (or an
+    empty list) keeps the model menu stable while the device is offline. With
+    force=True the relay error propagates so status probes can show it."""
+    if agent_id is not None:
+        return _relay_scan_models(agent_id, force=force)
     url = (base_url or "").strip().rstrip("/") or OLLAMA_BASE_URL
     try:
         resp = requests.get(f"{url}/api/tags", timeout=3)
@@ -818,8 +827,49 @@ _ollama_caps = {"ts": 0.0, "base": "", "caps": {}}
 OLLAMA_CAPS_TTL = 300
 
 
-def ollama_model_capabilities(force=False):
-    """{tag: {"vision": bool}} for installed models (cached, best-effort)."""
+# Per-device relay scan cache: {agent_id: {"ts","caps_ts","tags","vision"}}.
+# Tags refresh fast (menu + the per-request installed check); vision follows
+# the same 300s TTL as the direct scan. Offline devices keep serving the
+# last-known list so their menu entries stay put.
+_relay_scan = {}
+RELAY_SCAN_TTL = 60
+
+
+def _relay_scan_models(agent_id, force=False):
+    aid = str(agent_id)
+    now = time.time()
+    cached = _relay_scan.get(aid) or {}
+    if (not force and cached.get("ts")
+            and now - cached["ts"] < RELAY_SCAN_TTL):
+        return list(cached.get("tags") or [])
+    try:
+        resp = relay.open_response(aid, "/api/tags", None,
+                                   read_timeout=20.0, first_timeout=12.0)
+        try:
+            if resp.status_code != 200:
+                raise relay.RelayError(f"HTTP {resp.status_code}")
+            data = resp.json()
+            tags = [m.get("name") for m in data.get("models", [])
+                    if isinstance(m, dict) and m.get("name")]
+        finally:
+            resp.close()
+    except (relay.RelayError, relay.RelayTimeout) as e:
+        if force:
+            raise
+        logger.info(f"[RELAY] tag scan for device {aid} failed: {e}")
+        return list(cached.get("tags") or [])
+    _relay_scan[aid] = dict(cached, ts=now, tags=tags)
+    return list(tags)
+
+
+def ollama_model_capabilities(force=False, agent_id=None):
+    """{tag: {"vision": bool}} for installed models (cached, best-effort).
+
+    With agent_id, capabilities are probed on that paired device through the
+    relay (same TTL); soft refreshes fall back to the cache when the device
+    is unreachable, force=True propagates the error."""
+    if agent_id is not None:
+        return _relay_capabilities(agent_id, force=force)
     base = OLLAMA_BASE_URL
     now = time.time()
     if (not force and _ollama_caps["base"] == base
@@ -837,6 +887,38 @@ def ollama_model_capabilities(force=False):
         except Exception:
             pass
     _ollama_caps.update(ts=now, base=base, caps=caps)
+    return caps
+
+
+def _relay_capabilities(agent_id, force=False):
+    aid = str(agent_id)
+    now = time.time()
+    cached = _relay_scan.get(aid) or {}
+    if (not force and cached.get("caps_ts")
+            and now - cached["caps_ts"] < OLLAMA_CAPS_TTL):
+        return dict(cached.get("vision") or {})
+    caps = {}
+    try:
+        for tag in _relay_scan_models(aid, force=force):
+            caps[tag] = {"vision": False}
+            try:
+                r = relay.open_response(aid, "/api/show", {"name": tag},
+                                        read_timeout=20.0, first_timeout=12.0)
+                try:
+                    if r.status_code == 200:
+                        info = r.json()
+                        have = info.get("capabilities") or []
+                        caps[tag]["vision"] = any(
+                            str(x).lower() == "vision" for x in have)
+                finally:
+                    r.close()
+            except Exception:
+                pass
+    except (relay.RelayError, relay.RelayTimeout):
+        if force:
+            raise
+        return dict(cached.get("vision") or {})
+    _relay_scan[aid] = dict(cached, caps_ts=now, vision=caps)
     return caps
 
 
@@ -894,6 +976,19 @@ def _ollama_error_text(resp):
     if txt:
         return txt[:300]
     return f"HTTP {getattr(resp, 'status_code', '?')}"
+
+
+def _relay_guard(gen, resp):
+    """Wrap a relay-backed stream generator so the relay is closed when the
+    consumer finishes, errors, or abandons it (client disconnect)."""
+    try:
+        for chunk in gen:
+            yield chunk
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
 
 
 def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None, opts=None):
@@ -1337,6 +1432,14 @@ class MultiProviderBalancer:
         if isinstance(model, str) and model.startswith("ollama/"):
             return self._ollama_chat(model.split("/", 1)[1], messages, temperature,
                                      max_tokens, stream, opts=opts)
+        # Paired-device Ollama: "device/<agent_id>/<tag>" relays through the
+        # companion app on that computer — never the cloud fallback.
+        if isinstance(model, str) and model.startswith("device/"):
+            parts = model.split("/", 2)
+            if len(parts) == 3 and parts[1] and parts[2]:
+                return self._ollama_chat(parts[2], messages, temperature,
+                                         max_tokens, stream, opts=opts,
+                                         agent_id=parts[1])
         for provider_name, provider_cfg in PROVIDERS.items():
             models = provider_cfg.get("models", [])
             if model in models:
@@ -1391,18 +1494,24 @@ class MultiProviderBalancer:
         result["model"] = label
         return result, label
 
-    def _ollama_chat(self, tag, messages, temperature, max_tokens, stream, opts=None):
+    def _ollama_chat(self, tag, messages, temperature, max_tokens, stream, opts=None, agent_id=None):
         """First-class Ollama call for an explicitly chosen installed model.
 
         Plain requests use the native /api/chat endpoint (text + images[],
         options.num_predict, boolean think). Requests carrying OpenAI tools go
         through Ollama's OpenAI-compatible /v1/chat/completions so function
         calling, vision image_urls and SSE reuse the shared normalisers.
-        Raises RuntimeError with a clean, actionable message on any failure.
-        Returns (result, "ollama/<tag>") with the generate() contract.
+
+        With agent_id the HTTP hop is relayed through the companion app on a
+        paired device (its Ollama, its localhost) instead of the server's own
+        Ollama — everything else, including streaming and error handling, is
+        identical. Raises RuntimeError with a clean, actionable message on any
+        failure. Returns (result, "ollama/<tag>") or (result,
+        "device/<agent_id>/<tag>") with the generate() contract.
         """
         scope = (opts or {}).get("health_scope") or "server"
-        label = f"ollama/{tag}"
+        device = str(agent_id) if agent_id is not None else None
+        label = f"device/{device}/{tag}" if device else f"ollama/{tag}"
         if opts:
             o_temp = opts.get("temperature", temperature)
             o_mt = opts.get("max_tokens", max_tokens)
@@ -1410,10 +1519,20 @@ class MultiProviderBalancer:
                 temperature = max(0.0, min(2.0, float(o_temp)))
             if isinstance(o_mt, int) and not isinstance(o_mt, bool) and o_mt > 0:
                 max_tokens = min(int(o_mt), 32000)
-        installed = scan_ollama_models()
+        if device:
+            dev_name = relay.device_name(device)
+            installed = scan_ollama_models(agent_id=device)
+        else:
+            dev_name = None
+            installed = scan_ollama_models()
         if tag not in installed:
             record_model_outcome(scope, "ollama", label, "fail", "not installed")
             avail = ", ".join(installed[:6]) + ("..." if len(installed) > 6 else "")
+            if device:
+                hint = f" Installed there: {avail}." if avail else " Nothing is installed on it yet."
+                raise RuntimeError(
+                    f"Ollama model '{tag}' is not installed on {dev_name}.{hint}"
+                    f" Run `ollama pull {tag}` on that device, then try again.")
             hint = f" Installed here: {avail}." if avail else " Nothing is installed here yet."
             raise RuntimeError(
                 f"Ollama model '{tag}' is not installed on the server.{hint}"
@@ -1423,14 +1542,19 @@ class MultiProviderBalancer:
         base = OLLAMA_BASE_URL
         sess = self._session_for("ollama")
         use_tools = bool((opts or {}).get("tools"))
+        resp = None
         try:
             if use_tools:
                 # OpenAI-compatible path: tools + vision + SSE.
                 body = {"model": tag, "messages": messages, "stream": stream,
                         "temperature": temperature, "max_tokens": max_tokens}
                 _add_tools_to_body("ollama", body, (opts or {})["tools"])
-                resp = sess.post(base + "/v1/chat/completions", json=body,
-                                 stream=True, timeout=(10, 180))
+                if device:
+                    resp = relay.open_response(device, "/v1/chat/completions", body,
+                                               read_timeout=180.0)
+                else:
+                    resp = sess.post(base + "/v1/chat/completions", json=body,
+                                     stream=True, timeout=(10, 180))
             else:
                 body = {"model": tag, "messages": _ollama_native_messages(messages),
                         "stream": stream,
@@ -1439,29 +1563,64 @@ class MultiProviderBalancer:
                 level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
                 if level != "auto":
                     body["think"] = level != "minimum"
-                resp = sess.post(base + "/api/chat", json=body,
-                                 stream=stream, timeout=(10, 300))
+                if device:
+                    resp = relay.open_response(device, "/api/chat", body,
+                                               read_timeout=300.0)
+                else:
+                    resp = sess.post(base + "/api/chat", json=body,
+                                     stream=stream, timeout=(10, 300))
             if resp.status_code == 200:
                 self.rate_limiter.record_request(label)
                 record_model_outcome(scope, "ollama", label, "ok")
                 if stream:
                     if use_tools:
-                        return (self._stream_response(resp, "ollama", label), label)
-                    return (self._stream_ollama(resp, label), label)
+                        gen = self._stream_response(resp, "ollama", label)
+                    else:
+                        gen = self._stream_ollama(resp, label)
+                    if device:
+                        # The guard closes the relay when the consumer
+                        # finishes or abandons the stream (-> 410 to the
+                        # companion, which stops the local Ollama read).
+                        gen = _relay_guard(gen, resp)
+                    return (gen, label)
                 if use_tools:
-                    return (self._collect_response(resp, "ollama", label), label)
-                data = resp.json()
-                content = data.get("message", {}).get("content", "")
-                return (self._make_response(content, label), label)
+                    result = self._collect_response(resp, "ollama", label)
+                else:
+                    data = resp.json()
+                    content = data.get("message", {}).get("content", "")
+                    result = self._make_response(content, label)
+                if device:
+                    resp.close()
+                return (result, label)
             if resp.status_code == 429:
                 self.rate_limiter.set_cooldown(label, 60)
             elif resp.status_code >= 500:
                 self.rate_limiter.set_cooldown(label, 30)
             detail = _ollama_error_text(resp)
-            record_model_outcome(scope, "ollama", label, "fail", f"http {resp.status_code}")
-            raise RuntimeError(f"Ollama model '{tag}' failed (HTTP {resp.status_code}): {detail}")
+            status = resp.status_code
+            if device:
+                resp.close()
+                resp = None
+            record_model_outcome(scope, "ollama", label, "fail", f"http {status}")
+            raise RuntimeError(f"Ollama model '{tag}' failed (HTTP {status}): {detail}")
         except RuntimeError:
+            if device and resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
             raise
+        except (relay.RelayError, relay.RelayTimeout) as e:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            self.rate_limiter.set_cooldown(label, 30)
+            record_model_outcome(scope, "ollama", label, "fail", str(e)[:80])
+            if getattr(e, "ready", False):
+                raise RuntimeError(str(e))
+            raise RuntimeError(f"Ollama on {dev_name} failed: {e}")
         except requests.exceptions.ConnectionError:
             self.rate_limiter.set_cooldown(label, 60)
             record_model_outcome(scope, "ollama", label, "fail", "connection failed")
@@ -1548,6 +1707,10 @@ class MultiProviderBalancer:
                                     return
                             except json.JSONDecodeError:
                                 continue
+            except (relay.RelayError, relay.RelayTimeout):
+                # Surface the relay's clean message (device offline,
+                # stalled) as a real stream error, not placeholder text.
+                raise
             except Exception as e:
                 logger.warning(f"[STREAM] {provider_name}/{model} error: {e}")
                 yield f"\n[Stream error from {provider_name}/{model}]"
@@ -1565,6 +1728,8 @@ class MultiProviderBalancer:
                                 yield content
                         except json.JSONDecodeError:
                             continue
+            except (relay.RelayError, relay.RelayTimeout):
+                raise
             except Exception as e:
                 logger.warning(f"[OLLAMA STREAM] error: {e}")
                 yield f"\n[Ollama stream error]"
