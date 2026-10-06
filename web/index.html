@@ -2033,7 +2033,7 @@ async function sendMessage(){
     if(!seenDone){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateMessage(assistantEl,fullText)}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
-    chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat');
+    chatHistory.push({role:'assistant',content:fullText.trim()});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat');
   }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   settleSpinners(assistantEl);
   if(!assistantEl.textContent.trim()&&!assistantEl.querySelector('.message-content'))assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';
@@ -2085,7 +2085,7 @@ function editAndResend(editIdx,newText,keepImgs){
   .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='',seenDone=false;
     function read(){reader.read().then(({done,value})=>{
-      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText,model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();return}
+      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText.trim(),model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();return}
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
@@ -3232,7 +3232,7 @@ async function sendCodingMessage(){
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText.trim()});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
@@ -3624,7 +3624,7 @@ async function processCodingActions(text,msgEl){
           for(let s=0;s+want.length<=lines.length;s++){let ok=true;for(let k=0;k<want.length;k++)if(lines[s+k].replace(/\s+$/,'')!==want[k]){ok=false;break}if(ok){at=s;break}}
           if(at!==-1)patched=lines.slice(0,at).join('\n')+'\n'+newText+'\n'+lines.slice(at+want.length).join('\n');
         }
-        if(patched==null)previewErr='Old text not found in current file';
+        if(patched==null)previewErr='Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300);
         else await fillFileDiff(toolDiv,path,patched,'Patch');
       }
     }catch(e){previewErr=e.message}
@@ -3912,6 +3912,23 @@ function harvestCodingResults(){
   }
   return{text,hasExecuted:executed};
 }
+function codingErrorHint(resultsText){
+  // Short, pattern-triggered guidance appended to the next auto-continue
+  // prompt so a small model stops repeating the same doomed action.
+  const t=String(resultsText||'');
+  const hints=[];
+  if(/document is not defined|window is not defined|reading 'getElementById'|getElementById/i.test(t))
+    hints.push('BROWSER CODE CANNOT RUN UNDER NODE: document, window and canvas do not exist in node, and require worker_threads does not provide them — never shim them. Validate browser JavaScript with node --check <file> (syntax only, never execute it) and verify runtime behavior by opening the HTML page in a browser.');
+  if(/parentPort|worker_threads/i.test(t)&&!/document is not defined|window is not defined/i.test(t))
+    hints.push('worker_threads has no DOM and parentPort is null in the main thread — drop that approach entirely and follow the browser-code rule above.');
+  const ref=/ReferenceError:\s*([A-Za-z_$][\w$]*) is not defined/.exec(t);
+  if(ref&&!/^(document|window|navigator)$/.test(ref[1]))
+    hints.push(ref[1]+' is not defined: every node file runs in its own module scope. require() the file that defines it (with module.exports) or keep the code in a single file.');
+  if(/Old text not found/i.test(t))
+    hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-10 unique lines.');
+  if(!hints.length)return '';
+  return '\nHINTS (do not repeat the failing action blindly):\n- '+hints.join('\n- ');
+}
 function extractTodoFiles(text){
   // Filenames a todo claims as deliverables: `backticked` or name.ext tokens
   const files=new Set();
@@ -4006,7 +4023,7 @@ async function streamCodingTurn(messages){
   if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
   contentEl._streamArgs=null;contentEl._streamRaf=0;
   contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-  codingHistory.push({role:'assistant',content:fullText});
+  codingHistory.push({role:'assistant',content:fullText.trim()});
   persistCodingChat();
   scanPlanSteps(fullText);
   const actions=await processCodingActions(fullText,assistantEl);
@@ -4217,7 +4234,7 @@ async function codingAutoContinue(){
         }
         const stepsLeft=Math.max(0,codingPlanSteps-codingRounds);
         const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — batch every independent action (several file blocks and/or commands) into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+budgetNote+truncNote+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -4497,7 +4514,7 @@ async function codingPatchFile(path,oldText,newText){
     if(isRemote()){
       let current;try{current=await codingReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
       const idx=current.indexOf(oldText);
-      if(idx===-1)return{ok:false,error:'Old text not found in current file'};
+      if(idx===-1)return{ok:false,error:'Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300)};
       const patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
       const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
       let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
@@ -4510,7 +4527,7 @@ async function codingPatchFile(path,oldText,newText){
       let current;
       try{current=await fsReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
       const idx=current.indexOf(oldText);
-      if(idx===-1)return{ok:false,error:'Old text not found in current file'};
+      if(idx===-1)return{ok:false,error:'Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300)};
       const patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
       await fsWriteFile(path,patched);
       const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
@@ -4521,7 +4538,7 @@ async function codingPatchFile(path,oldText,newText){
     const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
     const data=await r.json();
     if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
-    return{ok:false,error:data.error||'patch failed'};
+    return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
   }catch(e){return{ok:false,error:e.message}}
 }
 async function codingRunCmd(command){if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
@@ -6310,6 +6327,14 @@ async function restoreFileVersion(path,ts){
 function codingChatToMarkdown(history){
   const out=['# Omniilink Coding Session','','> Exported '+new Date().toLocaleString(),''];
   const fence=(label,body)=>'```'+label+'\n'+String(body||'').replace(/\n$/,'')+'\n```';
+  // Shared logs stay readable: code bodies become a one-line marker and
+  // long tool outputs collapse to their per-action summary lines.
+  const stripCode=s=>String(s||'').replace(/```[^\n]*\n[\s\S]*?(?:\n```|$)/g,'[code omitted]');
+  const collapseTools=s=>{
+    if(s.indexOf('Tool results:')!==0)return s;
+    const lines=s.split('\n'),keep=lines.filter(l=>/^- /.test(l));
+    return 'Tool results:\n'+keep.join('\n')+(lines.length>keep.length+1?'\n[output details omitted]':'');
+  };
   for(const m of (history||[])){
     const role=String(m.role||'user').toLowerCase();
     out.push('## '+(role==='user'?'You':'Assistant'),'');
@@ -6324,8 +6349,12 @@ function codingChatToMarkdown(history){
       c=c.replace(/WEB_FETCH:([ \t]*\r?\n?[^\n]+?)(?:\nEND_WEB_FETCH|$)/g,(x,u)=>fence('web: '+String(u).trim(),''));
       c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,(x,items)=>fence('todo\n'+items,''));
       c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,(x,q,opts)=>fence('question: '+q+'\n'+opts,''));
+      c=stripCode(c);
+    }else{
+      c=collapseTools(c);
     }
-    out.push(c.trim(),'');
+    c=c.replace(/\n{3,}/g,'\n\n').trim();
+    out.push(c||'(empty response)','');
   }
   return out.join('\n');
 }

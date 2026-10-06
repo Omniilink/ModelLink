@@ -5463,7 +5463,9 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
                     found_at = s
                     break
             if found_at == -1:
-                return JSONResponse(status_code=404, content={"error": "Old text not found in file — it may have changed; re-read it first"})
+                return JSONResponse(status_code=404, content={
+                    "error": "Old text not found in file — it may have changed; re-read it first",
+                    "hint": "Current file starts with:\n" + current[:300]})
             end_line = found_at + len(want)
             patched = "\n".join(cur_lines[:found_at] + [new] + cur_lines[end_line:])
         else:
