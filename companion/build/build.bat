@@ -18,14 +18,17 @@ if not exist "%WIXBIN%\candle.exe" (
   pause
   exit /b 1
 )
-where pyinstaller >nul 2>&1
+REM NOTE: PyInstaller must run under the same interpreter the packages were
+REM installed for ("python -m pip install ..."). A bare pyinstaller.exe from
+REM another install on PATH will silently miss modules (e.g. pystray).
+python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
   echo PyInstaller not found. Run:  python -m pip install pyinstaller pystray pillow
   pause
   exit /b 1
 )
 echo === Building OmniilinkServer.exe ===
-pyinstaller --noconfirm --noconsole --onefile --name OmniilinkServer --clean ^
+python -m PyInstaller --noconfirm --noconsole --onefile --name OmniilinkServer --clean ^
   --exclude-module tkinter --icon "%~dp0icon.ico" --version-file "%~dp0version.txt" ^
   --distpath "%~dp0dist" --workpath "%~dp0work" --specpath "%~dp0." companion.py
 if errorlevel 1 (

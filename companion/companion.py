@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.9"
+COMPANION_VERSION = "1.0.10"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
