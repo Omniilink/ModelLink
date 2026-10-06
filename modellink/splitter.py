@@ -1592,6 +1592,22 @@ class MultiProviderBalancer:
                 if device:
                     resp.close()
                 return (result, label)
+            if resp.status_code == 400 and use_tools:
+                detail = _ollama_error_text(resp)
+                if "does not support tools" in detail.lower():
+                    # Small models (e.g. smollm2) reject tool definitions
+                    # outright: answer directly instead of failing the turn.
+                    # Recursion is safe: tools are stripped, so use_tools is
+                    # False on the retry and this branch cannot re-trigger.
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    logger.info(f"[OLLAMA] {label} does not support tools; retrying plain")
+                    no_tools = dict(opts or {})
+                    no_tools.pop("tools", None)
+                    return self._ollama_chat(tag, messages, temperature, max_tokens,
+                                             stream, opts=no_tools, agent_id=agent_id)
             if resp.status_code == 429:
                 self.rate_limiter.set_cooldown(label, 60)
             elif resp.status_code >= 500:

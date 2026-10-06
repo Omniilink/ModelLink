@@ -2027,9 +2027,10 @@ async function sendMessage(){
   try{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
-    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model;
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
+    if(!seenDone){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateMessage(assistantEl,fullText)}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
     chatHistory.push({role:'assistant',content:fullText});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat');
@@ -2081,12 +2082,12 @@ function editAndResend(editIdx,newText,keepImgs){
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   const sendModel=(keepImgs&&keepImgs.length)?(resolveVisionModel()||selectedModel):selectedModel;
   authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:sendModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
-  .then(r=>r.body.getReader()).then(reader=>{
-    const decoder=new TextDecoder();let buffer='',fullText='';
+  .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
+    const decoder=new TextDecoder();let buffer='',fullText='',seenDone=false;
     function read(){reader.read().then(({done,value})=>{
-      if(done){chatHistory.push({role:'assistant',content:fullText,model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();return}
+      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText,model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();return}
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
   }).catch(e=>{const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false});
 }
@@ -3224,9 +3225,10 @@ async function sendCodingMessage(){
   let next={blocks:false,actionable:false};
   try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;maybeAttachReport(assistantEl,errMsg,selectedModel,'coding');codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
-    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDoneCoding=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDoneCoding=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+    if(!seenDoneCoding){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateStreamingContent(chat,contentEl,fullText)}
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
@@ -3973,9 +3975,10 @@ async function streamCodingTurn(messages){
   const pump=async(msgs)=>{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:msgs})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}return errMsg}
-    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='';
+    const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]')continue;try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+    if(!seenDone){const note='[Connection interrupted — the reply may be incomplete. Please retry.]';updateStreamingContent(chat,contentEl,(fullText?fullText+'\n\n':'')+note);return note}
     return null;
   };
   const firstErr=await pump(messages);
