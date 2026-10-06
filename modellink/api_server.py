@@ -2178,6 +2178,232 @@ async def ollama_models(request: Request):
             "base_url": _ollama_current_url()}
 
 
+# ---- Ollama library browser + hardware-aware recommendations ----
+_OLLAMA_CATALOG = {"ts": 0.0, "models": []}
+
+def _load_ollama_catalog():
+    """Curated catalog of official Ollama library models (family/sizes/use).
+    Cached for an hour; ships in the repo so browsing works offline."""
+    now = time.time()
+    if _OLLAMA_CATALOG["models"] and now - _OLLAMA_CATALOG["ts"] < 3600:
+        return _OLLAMA_CATALOG["models"]
+    models = []
+    try:
+        p = os.path.join(APP_DIR, "modellink", "ollama_catalog.json")
+        with open(p, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for m in raw:
+            sizes = []
+            for s in m.get("sizes", []):
+                size_gb = float(s.get("size_gb") or 0)
+                tag = str(s.get("tag") or "latest")
+                sizes.append({
+                    "tag": tag,
+                    "params_b": float(s.get("params_b") or 0),
+                    "size_gb": size_gb,
+                    "ram_gb": round(size_gb * 1.2 + 2, 1),
+                    "full": f"{m['name']}:{tag}",
+                })
+            if not sizes:
+                continue
+            models.append({
+                "name": m["name"],
+                "family": m.get("family") or "other",
+                "use": m.get("use") or ["chat"],
+                "vision": bool(m.get("vision")),
+                "description": m.get("description") or "",
+                "sizes": sizes,
+                "min_gb": min(s["size_gb"] for s in sizes),
+                "max_gb": max(s["size_gb"] for s in sizes),
+                "min_params": min(s["params_b"] for s in sizes),
+                "max_params": max(s["params_b"] for s in sizes),
+            })
+    except Exception as e:
+        logger.warning(f"[OLLAMA] catalog load failed: {e}")
+    _OLLAMA_CATALOG.update(ts=now, models=models)
+    return models
+
+
+@app.get("/api/ollama/library")
+async def ollama_library(request: Request, family: str = "", use: str = "",
+                         q: str = "", max_params: float = 0):
+    """Every catalogued Ollama model, filterable by family / use / size / text."""
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    models = _load_ollama_catalog()
+    families = sorted({m["family"] for m in models})
+    uses = sorted({u for m in models for u in m["use"]})
+    ql = (q or "").strip().lower()
+    out = []
+    for m in models:
+        if family and m["family"] != family:
+            continue
+        if use and use not in m["use"]:
+            continue
+        if ql and ql not in m["name"].lower() and ql not in m["description"].lower():
+            continue
+        if max_params and m["min_params"] > max_params:
+            continue
+        out.append(m)
+    return {"models": out, "families": families, "uses": uses, "count": len(out)}
+
+
+def _pick_best(models, want_use, budget_gb, exclude=None):
+    """The largest single size that fits `budget_gb` for a use-case."""
+    exclude = exclude or set()
+    best = None
+    for m in models:
+        if want_use not in m["use"] or m["name"] in exclude:
+            continue
+        for s in m["sizes"]:
+            if s["ram_gb"] <= budget_gb and (best is None or s["ram_gb"] > best["ram_gb"]):
+                best = dict(s)
+                best.update(name=m["name"], family=m["family"], use=m["use"],
+                            vision=m["vision"], description=m["description"])
+    return best
+
+
+@app.post("/api/ollama/recommend")
+async def ollama_recommend(request: Request):
+    """Pick the best-fitting models for a machine's specs (chat/coding/...)."""
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
+    body = body or {}
+    def _num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    ram_gb, vram_gb = _num(body.get("ram_gb")), _num(body.get("vram_gb"))
+    gpu = str(body.get("gpu") or "").strip()
+    models = _load_ollama_catalog()
+    # A real GPU's VRAM is the hard ceiling for what runs well; otherwise the
+    # system RAM (minus ~2GB for the OS) is the budget.
+    if gpu and vram_gb > 0:
+        budget, source = vram_gb, "GPU VRAM"
+    else:
+        budget, source = max(0.0, ram_gb - 2.0), "system RAM"
+    picks, used = [], set()
+    for want, label in (("coding", "Best for coding"), ("chat", "Best for chat"),
+                        ("reasoning", "Best for reasoning"), ("vision", "Best for images")):
+        p = _pick_best(models, want, budget, used)
+        if p:
+            used.add(p["name"])
+            picks.append({"label": label, "use": want, "tag": p["full"], "name": p["name"],
+                          "size_gb": p["size_gb"], "ram_gb": p["ram_gb"],
+                          "reason": f"{p['size_gb']:.1f} GB fits your {budget:.0f} GB of {source}"})
+    small = _pick_best(models, "chat", 3.0)
+    if small and small["name"] not in used:
+        picks.append({"label": "Fast / low-resource", "use": "chat", "tag": small["full"],
+                      "name": small["name"], "size_gb": small["size_gb"], "ram_gb": small["ram_gb"],
+                      "reason": "Small and quick — safe on almost any machine"})
+    return {"budget_gb": round(budget, 1), "source": source, "picks": picks,
+            "specs": {"ram_gb": ram_gb, "vram_gb": vram_gb, "gpu": gpu,
+                      "cpu": str(body.get("cpu") or ""), "os": str(body.get("os") or "")}}
+
+
+def _sysinfo_command(platform_str):
+    """Shell command that prints OMNI_CPU / OMNI_RAM_GB / OMNI_GPU / OMNI_VRAM_GB
+    lines for the device's OS."""
+    p = (platform_str or "").lower()
+    # Check macOS first: "darwin" contains "win" and must not hit the Windows
+    # branch.
+    if "darwin" in p or "mac" in p:
+        return ("echo OMNI_CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null);"
+                "echo OMNI_RAM_GB=$(( $(sysctl -n hw.memsize 2>/dev/null) / 1073741824 ));"
+                "echo OMNI_GPU=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 'Chipset Model' | cut -d: -f2)")
+    if "win" in p:
+        return ('powershell -NoProfile -Command "'
+                '$c=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name;'
+                '$r=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB);'
+                '$v=Get-CimInstance Win32_VideoController | Select-Object -First 1;'
+                'Write-Output (\'OMNI_CPU=\'+$c);Write-Output (\'OMNI_RAM_GB=\'+$r);'
+                'Write-Output (\'OMNI_GPU=\'+$v.Name);'
+                'Write-Output (\'OMNI_VRAM_GB=\'+[math]::Round($v.AdapterRAM/1GB,1))"')
+    return ("echo OMNI_CPU=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2);"
+            "echo OMNI_RAM_GB=$(awk '/MemTotal/{printf \"%d\", $2/1048576}' /proc/meminfo 2>/dev/null);"
+            "echo OMNI_GPU=$( (nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null "
+            "|| lspci 2>/dev/null | grep -i -m1 vga) | head -1)")
+
+
+def _parse_sysinfo(output):
+    """Parse the OMNI_* lines into a specs dict (best-effort)."""
+    specs = {"cpu": "", "ram_gb": 0.0, "gpu": "", "vram_gb": 0.0, "os": ""}
+    for line in str(output or "").splitlines():
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip().upper(), v.strip()
+        if k == "OMNI_CPU":
+            specs["cpu"] = v[:120]
+        elif k == "OMNI_GPU":
+            specs["gpu"] = v[:120]
+        elif k in ("OMNI_RAM_GB", "OMNI_VRAM_GB"):
+            try:
+                num = float(re.sub(r"[^0-9.]", "", v) or 0)
+            except ValueError:
+                num = 0.0
+            specs["ram_gb" if k == "OMNI_RAM_GB" else "vram_gb"] = num
+    return specs
+
+
+@app.post("/api/agents/{agent_id}/sysinfo")
+async def agent_sysinfo(request: Request, agent_id: str):
+    """Run a hardware scan on a paired computer and return cpu/ram/gpu."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        a = _agents_load()["agents"].get(str(agent_id))
+    if a is None or not _agent_visible(user, a):
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    platform_str = a.get("platform") or ""
+    cid, err2 = _queue_agent_command(user, agent_id, _sysinfo_command(platform_str), "shell", None)
+    if err2:
+        return err2
+    _agent_notify(agent_id)
+    out = ""
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        await asyncio.sleep(0.5)
+        with _AGENT_LOCK:
+            c = _agents_load()["commands"].get(str(cid))
+        if c and c.get("status") == "done":
+            out = c.get("output") or ""
+            break
+    specs = _parse_sysinfo(out)
+    specs["os"] = platform_str
+    if not (specs["ram_gb"] or specs["cpu"]):
+        return JSONResponse(status_code=502, content={
+            "error": "Could not read hardware specs from that computer", "raw": out[:400]})
+    return {"status": "ok", "specs": specs, "raw": out[:800]}
+
+
+@app.post("/api/agents/{agent_id}/ollama/pull")
+async def agent_ollama_pull(request: Request, agent_id: str):
+    """Queue `ollama pull <tag>` on a paired computer."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    body, jerr = await _safe_json(request)
+    if jerr:
+        return jerr
+    tag = str((body or {}).get("tag") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:\-/]{1,120}", tag):
+        return JSONResponse(status_code=400, content={"error": "Invalid model tag"})
+    cid, err2 = _queue_agent_command(user, agent_id, "ollama pull " + tag, "shell", None)
+    if err2:
+        return err2
+    _agent_notify(agent_id)
+    _audit("agent.ollama_pull", user["username"], f"agent={agent_id} tag={tag}")
+    return {"status": "ok", "command_id": cid, "tag": tag}
+
+
 @app.get("/api/ollama/config")
 async def ollama_config_get(request: Request):
     """Server-wide Ollama status (configured in the admin panel, not per user)."""
