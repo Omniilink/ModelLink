@@ -550,10 +550,12 @@
     imgRow.appendChild(fileInput);
     this.refThumb = h('div', 'mpg-ref-thumb');
     imgRow.appendChild(this.refThumb);
-    this.composer.appendChild(this.composerInput);
-    this.composer.appendChild(imgRow);
-    this.composer.appendChild(send);
-    this.composer.appendChild(close);
+    var inputRow = h('div', 'mpg-input-row');
+    inputRow.appendChild(this.composerInput);
+    inputRow.appendChild(imgRow);
+    inputRow.appendChild(send);
+    inputRow.appendChild(close);
+    this.composer.appendChild(inputRow);
     wrap.appendChild(this.composer);
 
     var cols = h('div', 'mpg-cols');

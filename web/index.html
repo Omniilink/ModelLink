@@ -787,9 +787,11 @@ pre{max-width:100%}
 .mpg-empty-title{font-size:14px;color:var(--text-primary);margin-bottom:4px}
 .mpg-empty-sub{font-size:12px;margin-bottom:12px}
 /* chat bar */
-.mpg-composer{display:flex;gap:8px;align-items:flex-end;padding:10px 12px;border:1px solid var(--border-light);border-radius:var(--radius-sm);background:var(--bg-secondary);box-shadow:0 6px 22px rgba(0,0,0,.35)}
+.mpg-composer{display:flex;flex-direction:column;gap:8px;align-items:stretch;padding:12px;border:1px solid var(--border-light);border-radius:var(--radius-sm);background:var(--bg-secondary);box-shadow:0 6px 22px rgba(0,0,0,.35)}
+.mpg-input-row{display:flex;gap:8px;align-items:flex-end}
+.mpg-input-row .mpg-img-row{flex-shrink:0}
 .mpg-composer[hidden]{display:none}
- .mpg-composer-input{flex:1;min-height:76px;max-height:200px;resize:vertical;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 11px;color:var(--text-primary);font-size:13.5px;font-family:var(--font);line-height:1.45;outline:none}
+ .mpg-composer-input{flex:1;min-height:104px;max-height:320px;resize:vertical;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:13.5px;font-family:var(--font);line-height:1.5;outline:none}
 .mpg-composer-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
 .mpg-composer-input:disabled{opacity:.6}
 .mpg-composer-send{height:38px;padding:0 18px;white-space:nowrap}
@@ -799,7 +801,7 @@ pre{max-width:100%}
 .mpg-del{color:var(--error) !important}
 .mpg-del:hover{border-color:var(--error) !important}
 /* model selector row in the chat bar */
-.mpg-selrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.mpg-selrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .mpg-sel-label{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);font-weight:700}
 .mpg-model-sel{min-width:190px;max-width:320px}
 .mpg-sel-hint{font-size:11.5px;color:var(--text-muted)}
