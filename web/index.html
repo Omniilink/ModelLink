@@ -2769,7 +2769,7 @@ function closeFilePreview(){const f=document.getElementById('file-preview-frame'
 
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
-function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
+function updateAtIndicator(){invalidateCodingSysPrompt();const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
 var omniiignorePatterns=[];
 async function loadOmniiignore(){try{const r=await authFetch(API+'/api/coding/omniiignore');if(r.ok){const d=await r.json();omniiignorePatterns=d.patterns||[]}}catch(e){}}
 function omniiignoreMatches(rel,patterns){rel=String(rel||'').replace(/\\/g,'/');const parts=rel.split('/').filter(Boolean);const name=parts[parts.length-1]||'';return (patterns||[]).some(pat=>{const p=String(pat||'').trim().replace(/\/+$/,'');if(!p)return false;if(/[*?[]/.test(p)){const esc=p.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.');const re=new RegExp('^'+esc+'$');return parts.some(part=>re.test(part))||re.test(name)||re.test(rel)}return rel===p||rel.startsWith(p+'/')||name===p||parts.some(part=>part===p)})}
@@ -2783,8 +2783,8 @@ async function attachAllFiles(){
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error(data.error||'no files');tree=data.tree}
     const chosen=[];
     const ignoredFolders=[];
-    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n)}}})(tree);
-    chosen.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n.path)}}})(tree);
+    chosen.sort((a,b)=>a.split('/').length-b.split('/').length);
     codingIgnoredFolders=ignoredFolders;
     codingAtFiles=chosen;
     updateAtIndicator();
@@ -2865,7 +2865,16 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';{const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
-  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
+  if(codingAtFiles.length>0){
+    // Read attached files in PARALLEL (was one awaited request per file — with
+    // many files attached that blocked the UI for ~10s). Cap the total size so
+    // the prompt can't balloon.
+    sysPrompt+='\nThe user has attached these files:\n';
+    const picked=(codingAtFiles||[]).slice(0,200);
+    const loaded=await Promise.all(picked.map(async fname=>{try{const content=await codingReadFile(fname);return content?{fname:fname,content:content}:null}catch(e){return null}}));
+    let budget=400000;
+    for(const it of loaded){if(!it)continue;if(budget<=0)break;budget-=it.content.length;sysPrompt+='\n--- FILE: '+it.fname+' ---\n'+it.content+'\n--- END FILE: '+it.fname+' ---\n'}
+  }
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
   if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
   // The server prompt already carries this block (api_server.py
@@ -3860,7 +3869,16 @@ function postCodingAssistant(text){
   codingHistory.push({role:'assistant',content:text});persistCodingChat();
 }
 function reportCodingLoopCrash(e){try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
-async function getCodingSysPrompt(){try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}}
+var _sysPromptCache=null;
+function invalidateCodingSysPrompt(){_sysPromptCache=null}
+async function getCodingSysPrompt(){
+  // buildCodingSystemPrompt re-reads every attached file; the agentic loop
+  // calls this once PER ROUND, so cache it for the turn (invalidated when the
+  // user sends, attaches/removes files, or opens another project).
+  if(_sysPromptCache)return _sysPromptCache;
+  _sysPromptCache=(async()=>{try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}})();
+  return _sysPromptCache;
+}
 function setCodingLoopUI(on){
   const btn=document.getElementById('coding-send-btn');
   if(!btn)return;
