@@ -2935,12 +2935,12 @@ function streamVisibleParts(fullText){
   // while it reasons, "plan" once it declares steps, "building" when file and
   // command blocks start landing. The most recent marker wins, so the note
   // tracks the real phase instead of freezing on the first one.
-  let label='thinking…';
+  let label='planning…';
   const marks=[...fullText.matchAll(/^[ \t]*(TODO_LIST:|PLAN-STEPS\s*:|FILE_CREATE:|FILE_EDIT:|FILE_PATCH:|FILE_DELETE:|RUN_COMMAND:|WEB_FETCH:|QUESTION:)[^\n]*/gm)];
   const last=marks.length?marks[marks.length-1]:null;
   if(last){
     const marker=last[1],line=last[0];
-    if(marker.startsWith('TODO_LIST')||marker.startsWith('PLAN-STEPS'))label='plan…';
+    if(marker.startsWith('TODO_LIST')||marker.startsWith('PLAN-STEPS'))label='planning…';
     else if(marker.startsWith('QUESTION'))label='asking a question…';
     else if(marker.startsWith('RUN_COMMAND')){
       const rm=line.match(/^RUN_COMMAND:[ \t]*\n?([^\n]{1,60})/);
@@ -2954,13 +2954,10 @@ function streamVisibleParts(fullText){
     else label='building…';
   }
   else if(merged.length)label='building…';
-  let out='',pos=0;
-  for(const s of merged){out+=fullText.slice(pos,s[0]);pos=s[1]}
-  out+=fullText.slice(pos);
-  // Everything visible so far may be protocol only (plan/verdict lines) —
-  // never render an empty bubble.
-  const body=out.trim()?renderContent(out):'<span style="color:var(--text-muted);font-size:11.5px">…</span>';
-  return{body,label};
+  // A code/tool block is streaming: show ONLY the status spinner — never the
+  // raw code, and not the model's prose either. The finished message is
+  // rendered (code stripped, diffs collapsed) once the turn settles.
+  return{body:'',label};
 }
 function streamVisibleHTML(fullText){
   const p=streamVisibleParts(fullText);
