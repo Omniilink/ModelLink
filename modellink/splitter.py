@@ -793,17 +793,49 @@ def load_all_keys():
     return provider_keys
 
 
-def scan_ollama_models(base_url=None):
-    """List local Ollama models. base_url overrides OLLAMA_BASE_URL."""
+_ollama_scan_cache = {"ts": 0.0, "url": "", "models": []}
+
+
+def scan_ollama_models(base_url=None, ttl=10):
+    """List installed Ollama models from the server's Ollama. base_url overrides
+    OLLAMA_BASE_URL. Cached briefly so the model menu, the router and
+    /api/discover don't each pay a network round-trip per request."""
     url = (base_url or "").strip().rstrip("/") or OLLAMA_BASE_URL
+    now = time.time()
+    if (not base_url and _ollama_scan_cache["url"] == url
+            and (now - _ollama_scan_cache["ts"]) < ttl):
+        return list(_ollama_scan_cache["models"])
+    models = []
     try:
         resp = requests.get(f"{url}/api/tags", timeout=3)
         if resp.status_code == 200:
-            data = resp.json()
-            return [m["name"] for m in data.get("models", [])]
+            models = [m["name"] for m in resp.json().get("models", []) if m.get("name")]
     except Exception:
-        pass
-    return []
+        models = []
+    if not base_url:
+        _ollama_scan_cache.update({"ts": now, "url": url, "models": models})
+    return models
+
+
+def resolve_ollama_model(model):
+    """Map a requested model id to an installed Ollama model name, or None.
+
+    Accepts an explicit "ollama/<name>" prefix, or any name that matches a
+    currently-installed model (case-insensitive, so "Llama3" works)."""
+    m = (model or "").strip()
+    if not m:
+        return None
+    if m.lower().startswith("ollama/"):
+        return m.split("/", 1)[1].strip() or None
+    low = m.lower()
+    try:
+        models = scan_ollama_models()
+    except Exception:
+        models = []
+    for name in models:
+        if name == m or name.lower() == low:
+            return name
+    return None
 
 
 def get_backup_model():
@@ -1246,9 +1278,11 @@ class MultiProviderBalancer:
         return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
     def _direct_generate(self, messages, model, temperature, max_tokens, stream, user_keys=None, opts=None):
+        matched_provider = False
         for provider_name, provider_cfg in PROVIDERS.items():
             models = provider_cfg.get("models", [])
             if model in models:
+                matched_provider = True
                 resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
                 if resp is not None:
                     used_model = f"{provider_name}/{model}"
@@ -1259,6 +1293,15 @@ class MultiProviderBalancer:
                 # The picked model failed: fall through to the other
                 # providers instead of giving up while working keys exist.
                 break
+
+        # A local Ollama model is not in PROVIDERS (they are discovered at
+        # runtime). Route the user's pick straight to that exact Ollama model.
+        if not matched_provider:
+            om = resolve_ollama_model(model)
+            if om:
+                logger.info(f"[ROUTING] Using ollama/{om}")
+                return self._ollama_fallback(messages, temperature, max_tokens, stream,
+                                             opts=opts, prefer_model=om)
 
         fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
         return self._fallback_generate(messages, fallback_order, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
@@ -1291,10 +1334,15 @@ class MultiProviderBalancer:
         result["model"] = label
         return result, label
 
-    def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None):
+    def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None, prefer_model=None):
         ollama_models = scan_ollama_models()
         if ollama_models:
-            target_model = OLLAMA_MODEL if OLLAMA_MODEL in ollama_models else ollama_models[0]
+            if prefer_model and prefer_model in ollama_models:
+                target_model = prefer_model
+            elif OLLAMA_MODEL in ollama_models:
+                target_model = OLLAMA_MODEL
+            else:
+                target_model = ollama_models[0]
             scope = (opts or {}).get("health_scope") or "server"
             try:
                 if opts:

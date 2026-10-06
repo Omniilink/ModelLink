@@ -81,6 +81,11 @@ services:
       # layers; they revive on next use, and opening a project preview
       # transparently starts them again). 0 = keep running forever.
       - OMNIILINK_PROJ_IDLE_MIN=5
+    # Lets the container reach Ollama running on the Docker host via
+    # http://host.docker.internal:11434 (the default when no URL is set).
+    # Works out of the box on Docker Desktop; this line adds it on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - omniilink-net
 

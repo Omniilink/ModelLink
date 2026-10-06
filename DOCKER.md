@@ -227,6 +227,28 @@ misconfigured and you are locked out, set `OMNIILINK_ALLOW_PASSWORD=1` in
 `.env` and restart the API to re-enable the password forms. The username
 `admin` (and the owner handle) is always a full admin.
 
+## Ollama (local models)
+
+The server auto-discovers whatever models are installed on the machine running
+Ollama and lists them in the model menu (under **Ollama (local)**), selectable
+in both Chat and Coding. Selecting one routes straight to that exact model.
+
+Because the API runs in a container while Ollama runs on the host, the default
+address is `http://host.docker.internal:11434` (set automatically when the API
+detects it is containerized). Two things must be true:
+
+1. **Ollama must listen on all interfaces.** By default it binds `127.0.0.1`
+   only, which the container cannot reach. Set `OLLAMA_HOST=0.0.0.0:11434` in
+   Ollama's environment and restart it (on Windows: quit Ollama, set the
+   `OLLAMA_HOST` user environment variable, start it again).
+2. **`host.docker.internal` must resolve.** Docker Desktop does this already;
+   the compose file adds `host.docker.internal:host-gateway` for Linux too.
+
+Change the address any time in **Admin → Overview → Ollama (server)**: type the
+URL, **Test**, **Save**. It is stored in `.env` (`OMNIILINK_OLLAMA_URL`) so it
+survives restarts. Running the API natively (`py run-server.py`) instead of in
+Docker? Then `http://localhost:11434` is correct.
+
 ## Useful commands
 
 ```powershell

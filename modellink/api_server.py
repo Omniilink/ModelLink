@@ -90,6 +90,7 @@ from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
     load_all_keys, MODEL_RATE_LIMITS,
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL, set_ollama_base_url,
+    resolve_ollama_model,
     get_language, set_language, normalize_level, EFFORT_LEVELS,
     provider_health,
     web_search, WEB_SEARCH_TOOL, _add_tools_to_body, _extract_tool_calls,
@@ -116,8 +117,23 @@ def _ollama_url_from_dotenv() -> str:
         return ""
 
 
+def _in_container_now() -> bool:
+    try:
+        if os.path.exists("/.dockerenv"):
+            return True
+    except Exception:
+        pass
+    return os.environ.get("OMNIILINK_IN_CONTAINER", "").strip().lower() in ("1", "true", "yes")
+
+
 def _resolve_ollama_url() -> str:
-    return (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
+    v = (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
+    if not v and _in_container_now():
+        # Ollama runs on the Docker HOST; inside the container "localhost" is
+        # the container itself, so the host's Ollama is unreachable there.
+        # host.docker.internal is Docker's alias for the host machine.
+        v = "http://host.docker.internal:11434"
+    return v
 
 
 # Apply the server-wide Ollama address at boot (.env/env), so the fallback and
@@ -2375,7 +2391,8 @@ async def chat_completions(request: Request):
     max_tokens = body.get("max_tokens", 1000)
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
-    if not isinstance(req_model, str) or not re.fullmatch(r"[a-zA-Z0-9._/-]{1,80}", req_model):
+    # Allow ':' for local Ollama tags (llama3.2:3b) and '/' for namespaced ids.
+    if not isinstance(req_model, str) or not re.fullmatch(r"[a-zA-Z0-9._/:-]{1,120}", req_model):
         return JSONResponse(status_code=400, content={"error": "Invalid model name"})
     try:
         temp = max(0.0, min(2.0, float(temp)))
@@ -2396,9 +2413,11 @@ async def chat_completions(request: Request):
     if body.get("tools"):
         req_opts["tools"] = body.get("tools")
 
-    # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
+    # Key policy: admin uses the server's .env keys; everyone else must use
+    # their own. A local Ollama model needs no key, so it bypasses the check.
+    is_ollama_req = bool(resolve_ollama_model(req_model))
     user_keys = None
-    if not user.get("is_admin"):
+    if not user.get("is_admin") and not is_ollama_req:
         db_keys = get_user_provider_keys(user["id"])
         db_customs = get_custom_providers(user["id"])
         if not db_keys and not db_customs:
