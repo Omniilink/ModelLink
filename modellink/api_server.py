@@ -1267,6 +1267,43 @@ def _save_user_pref(user_id: str, key: str, value):
     except Exception:
         pass
 
+
+# ---- cloud chat history (per account, syncs across devices) ----
+_CHAT_ID_RE = re.compile(r"[A-Za-z0-9._:\-]{1,80}")
+_CHAT_MAX_BYTES = 3_000_000
+
+def _user_chats_path(user_id: str) -> str:
+    return os.path.join(_user_data_dir(user_id), "chats.json")
+
+def _load_user_chats(user_id: str) -> dict:
+    try:
+        p = _user_chats_path(user_id)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    return {}
+
+def _save_user_chats(user_id: str, chats: dict):
+    try:
+        p = _user_chats_path(user_id)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(chats, f)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+def _prune_chats(chats: dict, limit: int = 300) -> dict:
+    items = sorted(chats.items(),
+                   key=lambda kv: float((kv[1] or {}).get("updated") or 0),
+                   reverse=True)
+    return dict(items[:limit])
+
 # The language value is interpolated into the system prompt, so it is
 # validated against a strict alphabet instead of being trusted.
 _LANGUAGE_RE = re.compile(r"[A-Za-z]{3,20}")
@@ -2429,6 +2466,58 @@ async def set_language_setting(http_request: Request, request: LanguageRequest):
     return {"status": "ok", "language": lang}
 
 
+@app.get("/api/chats")
+async def list_chats(request: Request):
+    """All saved conversations for the account (cloud-synced)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return {"chats": _load_user_chats(_safe_username(user["username"]))}
+
+class ChatSaveRequest(BaseModel):
+    id: str
+    title: str = ""
+    history: list = []
+    model: str = ""
+    updated: float = 0.0
+
+@app.post("/api/chats")
+async def save_chat(request: Request, req: ChatSaveRequest):
+    """Upsert one conversation so it follows the account across devices."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    if not _CHAT_ID_RE.fullmatch(req.id or ""):
+        return JSONResponse(status_code=400, content={"error": "Invalid chat id"})
+    if not isinstance(req.history, list) or len(req.history) > 1000:
+        return JSONResponse(status_code=400, content={"error": "Invalid history"})
+    uid = _safe_username(user["username"])
+    entry = {"title": str(req.title or "")[:200],
+             "history": req.history,
+             "model": str(req.model or "")[:80],
+             "updated": float(req.updated or time.time())}
+    if len(json.dumps(entry)) > _CHAT_MAX_BYTES:
+        return JSONResponse(status_code=413, content={"error": "Chat too large to sync"})
+    chats = _load_user_chats(uid)
+    chats[req.id] = entry
+    _save_user_chats(uid, _prune_chats(chats))
+    return {"status": "ok", "id": req.id, "updated": entry["updated"]}
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(request: Request, chat_id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    if not _CHAT_ID_RE.fullmatch(chat_id or ""):
+        return JSONResponse(status_code=400, content={"error": "Invalid chat id"})
+    uid = _safe_username(user["username"])
+    chats = _load_user_chats(uid)
+    if chat_id in chats:
+        del chats[chat_id]
+        _save_user_chats(uid, chats)
+    return {"status": "ok"}
+
+
 @app.get("/api/timezone")
 async def get_timezone_setting(http_request: Request):
     """The account's saved IANA timezone plus the live local time it maps to."""
@@ -2978,6 +3067,11 @@ def _build_file_tree(root_path, prefix="", patterns=None):
 
 
 OMNIIIGNORE_NAME = ".omniiignore"
+# Coding conversation lives inside the project under this hidden folder (the
+# file tree and auto-attach skip dotfiles, so it never shows up or gets sent
+# to the model). Storing it in the project makes it travel with the project.
+CODING_CHAT_DIR = ".omniilink"
+CODING_CHAT_FILE = "coding-chat.json"
 
 
 def _read_omniiignore(folder):
@@ -3267,6 +3361,66 @@ async def coding_list_files(request: Request):
         return JSONResponse(status_code=400, content={"error": "No folder open"})
     tree = _build_file_tree(folder, patterns=_read_omniiignore(folder))
     return {"folder": folder, "tree": tree}
+
+
+@app.get("/api/coding/chat")
+async def coding_get_chat(request: Request):
+    """Coding conversation for the open project, stored INSIDE the project
+    folder (.omniilink/coding-chat.json) so it follows the project across
+    devices. Dotfiles are hidden from the file tree and auto-attach."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    if _folder_access_error(user, folder) or not folder or not os.path.isdir(folder):
+        return {"history": [], "stored": False}
+    path = os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+    if not _is_within(folder, path):
+        return {"history": [], "stored": False}
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            hist = d.get("history") if isinstance(d, dict) else None
+            if isinstance(hist, list):
+                return {"history": hist, "stored": True}
+    except Exception:
+        pass
+    return {"history": [], "stored": False}
+
+class CodingChatSave(BaseModel):
+    history: list = []
+
+@app.post("/api/coding/chat")
+async def coding_save_chat(request: Request, req: CodingChatSave):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    if not isinstance(req.history, list) or len(req.history) > 500:
+        return JSONResponse(status_code=400, content={"error": "Invalid history"})
+    raw = json.dumps({"updated": time.time(), "history": req.history})
+    if len(raw) > _CHAT_MAX_BYTES:
+        return JSONResponse(status_code=413, content={"error": "Chat too large"})
+    path = os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+    if not _is_within(folder, path):
+        return JSONResponse(status_code=403, content={"error": "Path outside project"})
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(raw)
+        os.replace(tmp, path)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok"}
 
 
 @app.get("/api/coding/omniiignore")

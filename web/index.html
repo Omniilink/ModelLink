@@ -17,6 +17,7 @@ body{overflow-x:clip}
   --text-primary:#e8eaed;--text-secondary:#9aa1ab;--text-muted:#646c78;
   --accent:#2f6fed;--accent-light:#5b8def;--accent-dim:#16294f;--accent-glow:rgba(47,111,237,0.10);
   --success:#34c77b;--error:#e5534b;--warning:#d9a021;
+  --user-bubble-bg:#16294f;--user-bubble-fg:#fff;
   --radius:10px;--radius-sm:8px;--radius-xs:6px;
   --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,Helvetica,Arial,sans-serif;
   --mono:ui-monospace,'Cascadia Code','Fira Code',Consolas,monospace;
@@ -28,6 +29,7 @@ body{overflow-x:clip}
   --text-primary:#16181d;--text-secondary:#4d545e;--text-muted:#8a919b;
   --accent:#245fd1;--accent-light:#2f6fed;--accent-dim:#dbe7fd;--accent-glow:rgba(36,95,209,0.08);
   --success:#1a9e5c;--error:#cf3f37;--warning:#a97a12;
+  --user-bubble-bg:#245fd1;--user-bubble-fg:#fff;
 }
 html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color:var(--text-primary);overflow:hidden;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:var(--accent);color:#fff}
@@ -142,7 +144,7 @@ a:hover{text-decoration:underline}
 .message.user .message-avatar{background:var(--accent);color:#fff}
 .message.assistant .message-avatar{background:var(--bg-tertiary);color:var(--accent-light);border:1px solid var(--border)}
 .message-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;overflow-wrap:break-word;min-width:0;width:fit-content;max-width:100%}
-.message.user .message-content{background:var(--accent-dim);border-color:var(--accent);color:#fff;max-width:min(640px,85%)}
+.message.user .message-content{background:var(--user-bubble-bg);border-color:var(--accent);color:var(--user-bubble-fg);max-width:min(640px,85%)}
 .message-meta{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px}
 .message-actions{display:flex;gap:4px;opacity:0;margin-top:4px}
 .message:hover .message-actions{opacity:1}
@@ -253,7 +255,7 @@ a:hover{text-decoration:underline}
 .coding-msg.assistant .coding-msg-avatar{background:var(--bg-tertiary);color:var(--accent-light);border:1px solid var(--border)}
 .coding-msg-content{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;min-width:0}
 .coding-msg-model{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.coding-msg.user .coding-msg-content{background:var(--accent-dim);border-color:var(--accent);color:#fff}
+.coding-msg.user .coding-msg-content{background:var(--user-bubble-bg);border-color:var(--accent);color:var(--user-bubble-fg)}
 .coding-msg.sys .coding-msg-avatar{display:none}
 .coding-msg.sys .coding-msg-content{background:none;border:none;padding:1px 0 1px 36px;font-size:11.5px;line-height:1.55;color:var(--text-muted)}
 .coding-msg-tool{margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);font-family:var(--mono);font-size:11px;color:var(--text-muted);overflow:hidden}
@@ -717,6 +719,13 @@ pre{max-width:100%}
 .tool-result img{width:100%;max-width:300px}
 .tools-grid{grid-template-columns:1fr}
 .compare-bar select{max-width:50vw}
+/* Model picker becomes a bottom sheet so it never overflows off-screen. */
+.chatbar-tools .model-menu,.coding-controls .model-menu,.model-menu{position:fixed;left:10px;right:10px;bottom:10px;top:auto;min-width:0;max-width:none;max-height:min(70vh,560px);z-index:260;border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.55)}
+.model-group-label{top:0}
+/* Coding controls wrap instead of overflowing. */
+.coding-controls{flex-wrap:wrap}
+.coding-controls .level-sel{flex:1 1 90px;min-width:0}
+.coding-input-box textarea{font-size:16px}
 }
 @media(max-width:480px){
 .header{padding:0 8px;gap:4px;overflow-x:auto;scrollbar-width:none}
@@ -935,7 +944,7 @@ pre{max-width:100%}
       </button>
       <div class="crumbs"><span id="crumb-view">Chat</span></div>
       <div class="header-spacer"></div>
-      <button class="header-btn" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
+      <button class="header-btn hide-mobile" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <span>Ctrl+K</span>
       </button>
@@ -1508,7 +1517,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
-<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="btn btn-ghost btn-sm" id="preview-share-btn" onclick="sharePreview()" title="Copy a share link (live until 10 minutes after first open)">Share</button><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" allow="pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
+<div class="modal-overlay" id="file-preview-modal" onclick="if(event.target===this)closeFilePreview()"><div class="modal" style="max-width:min(1000px,94vw);width:1000px"><div class="modal-header"><h2 id="file-preview-title">Preview</h2><button class="btn btn-ghost btn-sm" id="preview-share-btn" onclick="sharePreview()" title="Copy a share link (live until 10 minutes after first open)">Share</button><button class="modal-close" onclick="closeFilePreview()">&times;</button></div><div class="modal-body" style="padding:0"><iframe id="file-preview-frame" sandbox="allow-scripts allow-pointer-lock" title="HTML preview" style="width:100%;height:70vh;border:none;border-radius:0 0 8px 8px;background:#fff"></iframe></div></div></div>
 <div class="modal-overlay" id="file-edit-modal" onclick="if(event.target===this){event.stopPropagation();closeFileEditor()}"><div class="modal" style="max-width:96vw;width:1200px"><div class="modal-header"><h2 id="file-edit-title">Edit file</h2><span id="file-edit-meta" class="tool-result-sub"></span><button class="btn btn-ghost btn-sm" onclick="fileEditUndo()" title="Undo (Ctrl+Z)">&#x21B6; Undo</button><button class="btn btn-ghost btn-sm" onclick="fileEditRedo()" title="Redo (Ctrl+Y)">&#x21B7; Redo</button><button class="modal-close" onclick="closeFileEditor()">&times;</button></div><div class="modal-body" style="display:flex;flex-direction:column"><textarea id="file-edit-area" spellcheck="false" onkeydown="fileEditKey(event)"></textarea></div><div class="modal-actions"><span id="file-edit-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeFileEditor()">Cancel</button><button class="btn btn-primary" id="file-edit-save" onclick="saveFileEditor()">Save</button></div></div></div>
 <div class="modal-overlay" id="projects-modal"><div class="modal"><div class="modal-header"><h2>Projects</h2><button class="modal-close" onclick="closeProjectsModal()">&times;</button></div><div class="modal-body"><div class="modal-tabs"><button class="modal-tab active" onclick="showProjectTab('list',this)">My Projects</button><button class="modal-tab" onclick="showProjectTab('create',this)">New Blank</button><button class="modal-tab" onclick="showProjectTab('import',this)">Import Folder</button></div><div id="project-tab-list"><div class="project-list" id="project-list"></div></div><div id="project-tab-create" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="new-project-name" placeholder="my-project" /><div class="hint">Creates an empty project folder</div></div><div class="modal-field"><label>Create On</label><select id="new-project-target" style="width:100%"><option value="cloud">Omniilink cloud</option></select><div class="hint">Pick one of your paired computers to create it there instead</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="createBlankProject()">Create</button></div></div><div id="project-tab-import" style="display:none"><div class="modal-field"><label>Project Name</label><input type="text" id="import-project-name" placeholder="my-project" /></div><div class="modal-field"><label>Source Folder</label><div style="display:flex;gap:6px"><input type="text" id="import-project-path" placeholder="C:\Users\You\existing-project" style="flex:1" /><button class="btn btn-ghost" onclick="browseImportFolder()" style="white-space:nowrap">Browse</button></div><div class="hint">Copies folder contents into projects (ignores node_modules, .git, etc.)</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="importProject()">Import</button></div></div></div></div></div>
 <div class="modal-overlay" id="newfile-modal"><div class="modal" style="max-width:400px"><div class="modal-header"><h2>New File</h2><button class="modal-close" onclick="closeNewFileModal()">&times;</button></div><div class="modal-body"><div class="modal-field"><label>File path</label><input type="text" id="new-file-name" placeholder="src/utils/helper.ts" style="width:100%" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmNewFile()}" /><div class="hint">Directories are created automatically</div></div><div class="modal-actions"><button class="btn btn-primary" onclick="confirmNewFile()">Create</button></div></div></div></div>
@@ -1561,6 +1570,30 @@ function storeKey(base){
 }
 function getChats(){try{return JSON.parse(localStorage.getItem(storeKey('modellink_chats'))||'{}')}catch(e){return{}}}
 function saveChats(c){localStorage.setItem(storeKey('modellink_chats'),JSON.stringify(c))}
+// ---- cloud sync: conversations follow the account across devices ----
+function pushChatToServer(id,entry){
+  if(!(window.__user&&window.__user.username)||!id||!entry)return;
+  try{authFetch(API+'/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,title:entry.title||'',history:entry.history||[],model:entry.model||'',updated:entry.updated||Date.now()})}).catch(()=>{})}catch(e){}
+}
+async function syncChatsFromServer(){
+  if(!(window.__user&&window.__user.username))return;
+  try{
+    const r=await authFetch(API+'/api/chats');if(!r.ok)return;
+    const d=await r.json();const server=d.chats||{};
+    const local=getChats();const merged=Object.assign({},local);
+    // Server copy wins when it is at least as fresh (another device edited it).
+    for(const id of Object.keys(server)){
+      const sc=server[id],lc=local[id];
+      if(!lc||((sc.updated||0)>=(lc.updated||0)))merged[id]=sc;
+    }
+    // Push anything local-only or newer than the server up.
+    for(const id of Object.keys(local)){
+      const lc=local[id],sc=server[id];
+      if(!sc||((lc.updated||0)>(sc.updated||0)))pushChatToServer(id,lc);
+    }
+    saveChats(merged);renderChatList();
+  }catch(e){}
+}
 function getChatTitle(h){const f=h.find(m=>m.role==='user');const t=msgTextContent(f?f.content:'');return t?t.slice(0,40)+(t.length>40?'...':''):'New Chat'}
 function getPrompts(){try{return JSON.parse(localStorage.getItem('omnilink_prompts')||'[]')}catch(e){return[]}}
 function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p))}
@@ -1609,6 +1642,7 @@ function saveCurrentChat(){
   if(!currentChatId||chatHistory.length===0)return;
   const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:stripImagesForStore(chatHistory),model:selectedModel,updated:Date.now()};
   try{saveChats(chats)}catch(e){}
+  pushChatToServer(currentChatId,chats[currentChatId]);
   renderChatList();
 }
 
@@ -1635,7 +1669,7 @@ function loadChat(id){
   for(const msg of chatHistory){if(msg.role==='user'||msg.role==='assistant')appendMessage(msg.role,msg.content,false,msg.model)}
   renderChatList();area.scrollTop=area.scrollHeight;
 }
-function deleteChat(id){const chats=getChats();delete chats[id];saveChats(chats);if(id===currentChatId){currentChatId=null;chatHistory=[];document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML}renderChatList()}
+function deleteChat(id){const chats=getChats();delete chats[id];saveChats(chats);try{authFetch(API+'/api/chats/'+encodeURIComponent(id),{method:'DELETE'}).catch(()=>{})}catch(e){}if(id===currentChatId){currentChatId=null;chatHistory=[];document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML}renderChatList()}
 
 window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
@@ -3864,6 +3898,7 @@ function scanPlanSteps(text){
 }
 let codingTodoGen=0;
 function codingChatKey(){if(isRemote())return'remote:'+remoteCtx.id+':'+(remoteCtx.path||'');return(fsHandle?'local:':'srv:')+(codingFolder||'lobby')}
+function codingIsServerProject(){return !fsHandle&&!isRemote()&&!!codingFolder}
 function persistCodingChat(){
   try{
     if(!codingHistory||codingHistory.length===0)return;
@@ -3879,6 +3914,9 @@ function persistCodingChat(){
     const keys=Object.keys(all).sort((a,b)=>(all[a].updated||0)-(all[b].updated||0));
     while(keys.length>20)delete all[keys.shift()];
     localStorage.setItem(storeKey('omnilink_coding_chats'),JSON.stringify(all));
+    // Cloud projects also save the conversation INSIDE the project folder so
+    // it syncs across devices (stored under .omniilink/, hidden from the tree).
+    if(codingIsServerProject()){try{authFetch(API+'/api/coding/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})}).catch(()=>{})}catch(e){}}
   }catch(e){}
 }
 function appendCodingHistoryMsg(m){
@@ -3918,10 +3956,14 @@ function appendHarnessRow(chat,full){
   box.onclick=function(){if(box.dataset.open){delete box.dataset.open;box.textContent=collapsed}else{box.dataset.open='1';box.textContent=full}};
   chat.appendChild(el);
 }
-function restoreCodingChat(){
+async function restoreCodingChat(){
   const chat=document.getElementById('coding-chat');chat.innerHTML='';
   let saved=null;
-  try{const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');saved=all[codingChatKey()]}catch(e){}
+  // Cloud project: the conversation lives inside the project on the server.
+  if(codingIsServerProject()){
+    try{const r=await authFetch(API+'/api/coding/chat');if(r.ok){const d=await r.json();if(d&&Array.isArray(d.history)&&d.history.length)saved={history:d.history}}}catch(e){}
+  }
+  if(!saved){try{const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');saved=all[codingChatKey()]}catch(e){}}
   if(saved&&saved.history&&saved.history.length){
     codingHistory=[...saved.history];
     for(const m of saved.history)appendCodingHistoryMsg(m);
@@ -4888,7 +4930,7 @@ function showAuthSignin(){if(authGoogleOnly){applyAuthMode();return}document.get
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 function applyAdminNav(){try{var el=document.getElementById('nav-admin');if(el)el.style.display=(window.__user&&window.__user.is_admin)?'':'none'}catch(_){}}
-async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
+async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();try{syncChatsFromServer()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
 
