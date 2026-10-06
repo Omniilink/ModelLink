@@ -397,7 +397,7 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode", "opencode-go"}
+_OPENAI_TOOL_PROVIDERS = {"openai", "groq", "mistral", "together", "deepseek", "openrouter", "opencode", "opencode-go", "ollama"}
 
 
 def _add_tools_to_body(provider_name, body, tools):
@@ -793,53 +793,107 @@ def load_all_keys():
     return provider_keys
 
 
-_ollama_scan_cache = {"ts": 0.0, "url": "", "models": []}
-
-
-def scan_ollama_models(base_url=None, ttl=10):
-    """List installed Ollama models from the server's Ollama. base_url overrides
-    OLLAMA_BASE_URL. Cached briefly so the model menu, the router and
-    /api/discover don't each pay a network round-trip per request."""
+def scan_ollama_models(base_url=None):
+    """List local Ollama models. base_url overrides OLLAMA_BASE_URL."""
     url = (base_url or "").strip().rstrip("/") or OLLAMA_BASE_URL
-    now = time.time()
-    if (not base_url and _ollama_scan_cache["url"] == url
-            and (now - _ollama_scan_cache["ts"]) < ttl):
-        return list(_ollama_scan_cache["models"])
-    models = []
     try:
         resp = requests.get(f"{url}/api/tags", timeout=3)
         if resp.status_code == 200:
-            models = [m["name"] for m in resp.json().get("models", []) if m.get("name")]
+            data = resp.json()
+            return [m["name"] for m in data.get("models", [])]
     except Exception:
-        models = []
-    if not base_url:
-        _ollama_scan_cache.update({"ts": now, "url": url, "models": models})
-    return models
-
-
-def resolve_ollama_model(model):
-    """Map a requested model id to an installed Ollama model name, or None.
-
-    Accepts an explicit "ollama/<name>" prefix, or any name that matches a
-    currently-installed model (case-insensitive, so "Llama3" works)."""
-    m = (model or "").strip()
-    if not m:
-        return None
-    if m.lower().startswith("ollama/"):
-        return m.split("/", 1)[1].strip() or None
-    low = m.lower()
-    try:
-        models = scan_ollama_models()
-    except Exception:
-        models = []
-    for name in models:
-        if name == m or name.lower() == low:
-            return name
-    return None
+        pass
+    return []
 
 
 def get_backup_model():
     return OLLAMA_MODEL
+
+
+# Vision-capability cache: {tag: {"vision": bool}}, refreshed from /api/show.
+# Basis for the vision flags in /api/discover so the UI only offers image
+# input on models that can actually see. Short TTL so freshly pulled models
+# show up without a restart.
+_ollama_caps = {"ts": 0.0, "base": "", "caps": {}}
+OLLAMA_CAPS_TTL = 300
+
+
+def ollama_model_capabilities(force=False):
+    """{tag: {"vision": bool}} for installed models (cached, best-effort)."""
+    base = OLLAMA_BASE_URL
+    now = time.time()
+    if (not force and _ollama_caps["base"] == base
+            and now - _ollama_caps["ts"] < OLLAMA_CAPS_TTL):
+        return _ollama_caps["caps"]
+    caps = {}
+    for tag in scan_ollama_models():
+        caps[tag] = {"vision": False}
+        try:
+            r = requests.post(f"{base}/api/show", json={"name": tag}, timeout=5)
+            if r.status_code == 200:
+                info = r.json()
+                have = info.get("capabilities") or []
+                caps[tag]["vision"] = any(str(x).lower() == "vision" for x in have)
+        except Exception:
+            pass
+    _ollama_caps.update(ts=now, base=base, caps=caps)
+    return caps
+
+
+def _ollama_native_messages(messages):
+    """OpenAI-style messages -> Ollama /api/chat messages.
+
+    Flattens text parts to a plain string and moves data:-URL image parts
+    into the native `images` list (raw base64, no data: prefix). Remote
+    http(s) image URLs can't be fetched by Ollama, so they are folded into
+    the text as a reference instead of being dropped silently.
+    """
+    out = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role", "user")
+        if role not in ("system", "user", "assistant"):
+            role = "user"
+        entry = {"role": role, "content": _content_text(m.get("content", ""))}
+        imgs = [b64 for _mime, b64 in _content_images(m.get("content", ""))]
+        if imgs and role in ("user", "system"):
+            entry["images"] = imgs
+        refs = []
+        if isinstance(m.get("content"), list):
+            for p in m["content"]:
+                if not isinstance(p, dict):
+                    continue
+                iu = p.get("image_url")
+                url = (iu.get("url", "") if isinstance(iu, dict) else "")
+                if url and not url.startswith("data:"):
+                    refs.append(url)
+        if refs:
+            entry["content"] = (entry["content"] + "\n[Attached image URLs Ollama cannot fetch: "
+                                + ", ".join(refs[:4]) + "]").strip()
+        out.append(entry)
+    return out or [{"role": "user", "content": ""}]
+
+
+def _ollama_error_text(resp):
+    """Best-effort readable message out of an Ollama error response."""
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])[:300]
+        if isinstance(err, str) and err.strip():
+            return err.strip()[:300]
+    try:
+        txt = (resp.text or "").strip()
+    except Exception:
+        txt = ""
+    if txt:
+        return txt[:300]
+    return f"HTTP {getattr(resp, 'status_code', '?')}"
 
 
 def generate(messages, model="modellink", temperature=0.7, max_tokens=4000, stream=True, user_keys=None, opts=None):
@@ -1278,11 +1332,14 @@ class MultiProviderBalancer:
         return self._ollama_fallback(messages, temperature, max_tokens, stream, opts=opts)
 
     def _direct_generate(self, messages, model, temperature, max_tokens, stream, user_keys=None, opts=None):
-        matched_provider = False
+        # First-class Ollama selection: "ollama/<tag>" always goes to the
+        # server's Ollama with exactly that model — never the cloud fallback.
+        if isinstance(model, str) and model.startswith("ollama/"):
+            return self._ollama_chat(model.split("/", 1)[1], messages, temperature,
+                                     max_tokens, stream, opts=opts)
         for provider_name, provider_cfg in PROVIDERS.items():
             models = provider_cfg.get("models", [])
             if model in models:
-                matched_provider = True
                 resp = self._try_provider(provider_name, provider_cfg, messages, model, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
                 if resp is not None:
                     used_model = f"{provider_name}/{model}"
@@ -1294,14 +1351,14 @@ class MultiProviderBalancer:
                 # providers instead of giving up while working keys exist.
                 break
 
-        # A local Ollama model is not in PROVIDERS (they are discovered at
-        # runtime). Route the user's pick straight to that exact Ollama model.
-        if not matched_provider:
-            om = resolve_ollama_model(model)
-            if om:
-                logger.info(f"[ROUTING] Using ollama/{om}")
-                return self._ollama_fallback(messages, temperature, max_tokens, stream,
-                                             opts=opts, prefer_model=om)
+        # Legacy: a bare installed tag from an older menu ("llama3.1:8b").
+        if isinstance(model, str) and "/" not in model and model:
+            try:
+                if model in scan_ollama_models():
+                    return self._ollama_chat(model, messages, temperature,
+                                             max_tokens, stream, opts=opts)
+            except Exception:
+                pass
 
         fallback_order = ["groq", "gemini", "openai", "anthropic", "openrouter", "mistral", "together", "deepseek", "cohere"]
         return self._fallback_generate(messages, fallback_order, temperature, max_tokens, stream, user_keys=user_keys, opts=opts)
@@ -1334,48 +1391,99 @@ class MultiProviderBalancer:
         result["model"] = label
         return result, label
 
-    def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None, prefer_model=None):
-        ollama_models = scan_ollama_models()
-        if ollama_models:
-            if prefer_model and prefer_model in ollama_models:
-                target_model = prefer_model
-            elif OLLAMA_MODEL in ollama_models:
-                target_model = OLLAMA_MODEL
+    def _ollama_chat(self, tag, messages, temperature, max_tokens, stream, opts=None):
+        """First-class Ollama call for an explicitly chosen installed model.
+
+        Plain requests use the native /api/chat endpoint (text + images[],
+        options.num_predict, boolean think). Requests carrying OpenAI tools go
+        through Ollama's OpenAI-compatible /v1/chat/completions so function
+        calling, vision image_urls and SSE reuse the shared normalisers.
+        Raises RuntimeError with a clean, actionable message on any failure.
+        Returns (result, "ollama/<tag>") with the generate() contract.
+        """
+        scope = (opts or {}).get("health_scope") or "server"
+        label = f"ollama/{tag}"
+        if opts:
+            o_temp = opts.get("temperature", temperature)
+            o_mt = opts.get("max_tokens", max_tokens)
+            if isinstance(o_temp, (int, float)) and not isinstance(o_temp, bool):
+                temperature = max(0.0, min(2.0, float(o_temp)))
+            if isinstance(o_mt, int) and not isinstance(o_mt, bool) and o_mt > 0:
+                max_tokens = min(int(o_mt), 32000)
+        installed = scan_ollama_models()
+        if tag not in installed:
+            record_model_outcome(scope, "ollama", label, "fail", "not installed")
+            avail = ", ".join(installed[:6]) + ("..." if len(installed) > 6 else "")
+            hint = f" Installed here: {avail}." if avail else " Nothing is installed here yet."
+            raise RuntimeError(
+                f"Ollama model '{tag}' is not installed on the server.{hint}"
+                f" Run `ollama pull {tag}` on the server, then try again.")
+        if not self.rate_limiter.can_request(label):
+            raise RuntimeError(f"Ollama model '{tag}' is cooling down after a recent failure — try again shortly.")
+        base = OLLAMA_BASE_URL
+        sess = self._session_for("ollama")
+        use_tools = bool((opts or {}).get("tools"))
+        try:
+            if use_tools:
+                # OpenAI-compatible path: tools + vision + SSE.
+                body = {"model": tag, "messages": messages, "stream": stream,
+                        "temperature": temperature, "max_tokens": max_tokens}
+                _add_tools_to_body("ollama", body, (opts or {})["tools"])
+                resp = sess.post(base + "/v1/chat/completions", json=body,
+                                 stream=True, timeout=(10, 180))
             else:
-                target_model = ollama_models[0]
-            scope = (opts or {}).get("health_scope") or "server"
-            try:
-                if opts:
-                    o_temp = opts.get("temperature", temperature)
-                    o_mt = opts.get("max_tokens", max_tokens)
-                    if isinstance(o_temp, (int, float)) and not isinstance(o_temp, bool):
-                        temperature = max(0.0, min(2.0, float(o_temp)))
-                    if isinstance(o_mt, int) and not isinstance(o_mt, bool) and o_mt > 0:
-                        max_tokens = min(int(o_mt), 32000)
-                body = {
-                    "model": target_model,
-                    "messages": messages,
-                    "stream": stream,
-                    "options": {"temperature": temperature, "num_predict": max_tokens}
-                }
+                body = {"model": tag, "messages": _ollama_native_messages(messages),
+                        "stream": stream,
+                        "options": {"temperature": temperature, "num_predict": max_tokens}}
                 # Ollama's reasoning knob is a boolean `think` flag.
                 level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
                 if level != "auto":
                     body["think"] = level != "minimum"
-                resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=body, stream=stream, timeout=120)
-                if resp.status_code == 200:
-                    record_model_outcome(scope, "ollama", target_model, "ok")
-                    used_model = f"ollama/{target_model}"
-                    if stream:
-                        return (self._stream_ollama(resp, target_model), used_model)
-                    else:
-                        data = resp.json()
-                        content = data.get("message", {}).get("content", "")
-                        return (self._make_response(content, target_model), used_model)
-                record_model_outcome(scope, "ollama", target_model, "fail", f"http {resp.status_code}")
-            except Exception as e:
-                record_model_outcome(scope, "ollama", target_model, "fail", str(e))
-                logger.warning(f"[OLLAMA] Fallback failed: {e}")
+                resp = sess.post(base + "/api/chat", json=body,
+                                 stream=stream, timeout=(10, 300))
+            if resp.status_code == 200:
+                self.rate_limiter.record_request(label)
+                record_model_outcome(scope, "ollama", label, "ok")
+                if stream:
+                    if use_tools:
+                        return (self._stream_response(resp, "ollama", label), label)
+                    return (self._stream_ollama(resp, label), label)
+                if use_tools:
+                    return (self._collect_response(resp, "ollama", label), label)
+                data = resp.json()
+                content = data.get("message", {}).get("content", "")
+                return (self._make_response(content, label), label)
+            if resp.status_code == 429:
+                self.rate_limiter.set_cooldown(label, 60)
+            elif resp.status_code >= 500:
+                self.rate_limiter.set_cooldown(label, 30)
+            detail = _ollama_error_text(resp)
+            record_model_outcome(scope, "ollama", label, "fail", f"http {resp.status_code}")
+            raise RuntimeError(f"Ollama model '{tag}' failed (HTTP {resp.status_code}): {detail}")
+        except RuntimeError:
+            raise
+        except requests.exceptions.ConnectionError:
+            self.rate_limiter.set_cooldown(label, 60)
+            record_model_outcome(scope, "ollama", label, "fail", "connection failed")
+            raise RuntimeError(
+                f"Could not reach Ollama at {base} — is `ollama serve` running on the server?")
+        except requests.exceptions.Timeout:
+            self.rate_limiter.set_cooldown(label, 30)
+            record_model_outcome(scope, "ollama", label, "fail", "timeout")
+            raise RuntimeError(
+                f"Ollama model '{tag}' timed out — the model may still be loading (first run pulls it into memory). Try again in a minute.")
+        except Exception as e:
+            record_model_outcome(scope, "ollama", label, "fail", str(e))
+            raise RuntimeError(f"Ollama model '{tag}' failed: {e}")
+
+    def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None):
+        try:
+            ollama_models = scan_ollama_models()
+            if ollama_models:
+                target = OLLAMA_MODEL if OLLAMA_MODEL in ollama_models else ollama_models[0]
+                return self._ollama_chat(target, messages, temperature, max_tokens, stream, opts=opts)
+        except Exception as e:
+            logger.warning(f"[OLLAMA] Fallback failed: {e}")
 
         if stream:
             def error_gen():

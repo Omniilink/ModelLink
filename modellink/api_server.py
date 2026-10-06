@@ -90,7 +90,7 @@ from modellink.splitter import (
     generate, PROVIDERS, MODEL_NAME, lb,
     load_all_keys, MODEL_RATE_LIMITS,
     scan_ollama_models, get_backup_model, OLLAMA_BASE_URL, set_ollama_base_url,
-    resolve_ollama_model,
+    ollama_model_capabilities,
     get_language, set_language, normalize_level, EFFORT_LEVELS,
     provider_health,
     web_search, WEB_SEARCH_TOOL, _add_tools_to_body, _extract_tool_calls,
@@ -117,23 +117,8 @@ def _ollama_url_from_dotenv() -> str:
         return ""
 
 
-def _in_container_now() -> bool:
-    try:
-        if os.path.exists("/.dockerenv"):
-            return True
-    except Exception:
-        pass
-    return os.environ.get("OMNIILINK_IN_CONTAINER", "").strip().lower() in ("1", "true", "yes")
-
-
 def _resolve_ollama_url() -> str:
-    v = (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
-    if not v and _in_container_now():
-        # Ollama runs on the Docker HOST; inside the container "localhost" is
-        # the container itself, so the host's Ollama is unreachable there.
-        # host.docker.internal is Docker's alias for the host machine.
-        v = "http://host.docker.internal:11434"
-    return v
+    return (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
 
 
 # Apply the server-wide Ollama address at boot (.env/env), so the fallback and
@@ -2015,9 +2000,15 @@ async def discover_models(request: Request):
     ollama_models = scan_ollama_models()
     if ollama_models:
         discovered["ollama"] = ollama_models
+        try:
+            _ollama_caps = ollama_model_capabilities()
+        except Exception:
+            _ollama_caps = {}
         for m in ollama_models:
-            if not any(x["id"] == m for x in all_models):
-                all_models.append({"id": m, "provider": "ollama", "source": "local"})
+            mid = "ollama/" + m
+            if not any(x["id"] == mid for x in all_models):
+                all_models.append({"id": mid, "provider": "ollama", "source": "local",
+                                   "vision": bool((_ollama_caps.get(m) or {}).get("vision"))})
     for cp in get_custom_providers(_user["id"]):
         mid = "custom/" + cp["name"]
         discovered.setdefault("custom", []).append(mid)
@@ -2045,7 +2036,14 @@ async def ollama_models(request: Request):
     if err:
         return err
     models = scan_ollama_models()
-    return {"models": models, "available": len(models) > 0,
+    try:
+        caps = ollama_model_capabilities()
+    except Exception:
+        caps = {}
+    return {"models": ["ollama/" + m for m in models],
+            "tags": models,
+            "vision": {m: bool((caps.get(m) or {}).get("vision")) for m in models},
+            "available": len(models) > 0,
             "base_url": _ollama_current_url()}
 
 
@@ -2056,8 +2054,14 @@ async def ollama_config_get(request: Request):
     if err:
         return err
     models = scan_ollama_models()
+    try:
+        caps = ollama_model_capabilities()
+    except Exception:
+        caps = {}
     return {"base_url": _ollama_current_url(), "available": len(models) > 0,
-            "models": models, "is_admin": bool(_user.get("is_admin"))}
+            "models": models,
+            "vision": {m: bool((caps.get(m) or {}).get("vision")) for m in models},
+            "is_admin": bool(_user.get("is_admin"))}
 
 
 def _set_env_var(key_name: str, key_value: str):
@@ -2315,6 +2319,8 @@ def _resolve_request_model(req_model):
     """
     if not req_model or req_model in (MODEL_NAME, "omnilink"):
         return "unknown", req_model or "unknown"
+    if req_model.startswith("ollama/"):
+        return "ollama", req_model.split("/", 1)[1]
     for prov_name, prov_cfg in PROVIDERS.items():
         if req_model in prov_cfg.get("models", []):
             return prov_name, req_model
@@ -2391,8 +2397,7 @@ async def chat_completions(request: Request):
     max_tokens = body.get("max_tokens", 1000)
     is_stream = body.get("stream", False)
     req_model = body.get("model", MODEL_NAME)
-    # Allow ':' for local Ollama tags (llama3.2:3b) and '/' for namespaced ids.
-    if not isinstance(req_model, str) or not re.fullmatch(r"[a-zA-Z0-9._/:-]{1,120}", req_model):
+    if not isinstance(req_model, str) or not re.fullmatch(r"[a-zA-Z0-9._/:-]{1,80}", req_model):
         return JSONResponse(status_code=400, content={"error": "Invalid model name"})
     try:
         temp = max(0.0, min(2.0, float(temp)))
@@ -2413,14 +2418,12 @@ async def chat_completions(request: Request):
     if body.get("tools"):
         req_opts["tools"] = body.get("tools")
 
-    # Key policy: admin uses the server's .env keys; everyone else must use
-    # their own. A local Ollama model needs no key, so it bypasses the check.
-    is_ollama_req = bool(resolve_ollama_model(req_model))
+    # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
-    if not user.get("is_admin") and not is_ollama_req:
+    if not user.get("is_admin"):
         db_keys = get_user_provider_keys(user["id"])
         db_customs = get_custom_providers(user["id"])
-        if not db_keys and not db_customs:
+        if not db_keys and not db_customs and not req_model.startswith("ollama/"):
             return JSONResponse(status_code=403, content={"error": "No API keys configured. Add your providers under Providers."})
         user_keys = db_keys
 
@@ -2669,6 +2672,13 @@ async def list_models(request: Request):
             for m in prov_cfg.get("fallback_models", []):
                 if not any(existing["id"] == m for existing in models):
                     models.append({"id": m})
+    try:
+        for m in scan_ollama_models():
+            mid = "ollama/" + m
+            if not any(existing["id"] == mid for existing in models):
+                models.append({"id": mid})
+    except Exception:
+        pass
     return {"data": models}
 
 # ==========================================

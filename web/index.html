@@ -1291,7 +1291,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <h4 id="setup-deepseek" style="margin:16px 0 6px">DeepSeek</h4><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Open <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" style="color:var(--accent)">platform.deepseek.com</a> and sign in</li><li>Click <strong>Create API key</strong>, name it, and copy it — it starts with <code>sk-</code></li><li>Paste it into Providers &rarr; Add &rarr; DeepSeek</li><li>Prepaid balance required (very cheap per token) — top up or calls fail</li><li>Use <code>deepseek-chat</code> for everyday work, <code>deepseek-reasoner</code> when you want it to think longer</li></ol>
           <h4 id="setup-cohere" style="margin:16px 0 6px">Cohere</h4><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Open <a href="https://dashboard.cohere.com/api-keys" target="_blank" rel="noopener" style="color:var(--accent)">dashboard.cohere.com</a> and sign in</li><li>Copy the trial key, or click <strong>Create API key</strong> for a production one</li><li>Paste it into Providers &rarr; Add &rarr; Cohere</li><li>Trial keys are rate-limited — fine for testing, upgrade to a plan for real use</li><li><code>command-r-plus</code> is the capable one, <code>command-r</code> the lighter one</li></ol>
           <h4 id="setup-opencode" style="margin:16px 0 6px">OpenCode Zen</h4><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Open <a href="https://opencode.ai" target="_blank" rel="noopener" style="color:var(--accent)">opencode.ai</a> and sign in</li><li>Copy your Zen API key</li><li>Paste it into Providers &rarr; Add &rarr; OpenCode Zen</li><li>Usage draws from your OpenCode balance/plan — check their pricing page for current rates</li><li>If models list as unavailable, the key usually expired: generate a fresh one</li></ol>
-          <h4 id="setup-custom" style="margin:16px 0 6px">Custom (OpenAI-compatible)</h4><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Pick any OpenAI-compatible endpoint and note its base URL — it must end in <code>/v1</code>: Ollama is <code>http://localhost:11434/v1</code>, LM Studio is <code>http://localhost:1234/v1</code>, vLLM is <code>http://your-host:8000/v1</code></li><li>Note the exact model name (<code>ollama list</code> shows yours — spelling and tags must match exactly)</li><li>Go to Providers &rarr; Add &rarr; Custom and fill in a short lowercase name, the API link, a key (any string works for local servers with no auth), and the model</li><li>Pick <code>custom/your-name</code> from the model menu</li><li>Test it from a terminal first: <code>curl $BASE/chat/completions -H "Authorization: Bearer $KEY" -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'</code> — if curl fails, Omniilink fails the same way</li><li>Gotchas: <code>localhost</code> means the server machine, not your phone — use the machine's LAN IP for other devices; self-signed HTTPS endpoints are rejected, use plain HTTP locally or a valid cert</li></ol>
+          <h4 id="setup-ollama" style="margin:16px 0 6px">Ollama (local)</h4><p style="color:var(--text-secondary);margin-bottom:10px">Run models on the server machine itself — no API key, no cloud. The server connects to Ollama, auto-detects your installed models, and lists each one in the model menu.</p><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Install Ollama on the <strong>server machine</strong> (<a href="https://ollama.com/download" target="_blank" rel="noopener" style="color:var(--accent)">ollama.com/download</a>) and make sure <code>ollama serve</code> is running</li><li>Pull at least one model there, e.g. <code>ollama pull llama3.1:8b</code> (<code>ollama list</code> shows what is installed)</li><li>Point the server at it below, press <strong>Test</strong> until it reports connected, then <strong>Save</strong> — installed models appear in the model menu under <strong>Ollama (local)</strong> automatically</li><li>Gotchas: the URL is resolved by the <strong>server</strong>, not your browser — <code>localhost</code> means the server machine. From another device use the server's LAN IP, e.g. <code>http://192.168.1.50:11434</code></li></ol><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><input id="setup-ollama-url" placeholder="http://localhost:11434" style="flex:1;min-width:220px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none" spellcheck="false" /><button class="btn btn-ghost btn-sm" onclick="setupOllamaTest()">Test</button><button class="btn btn-primary btn-sm" id="setup-ollama-save" onclick="setupOllamaSave()">Save</button></div><div class="tool-status" id="setup-ollama-status" style="margin-bottom:8px">Checking Ollama…</div><div id="setup-ollama-models" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+          <h4 id="setup-custom" style="margin:16px 0 6px">Custom (OpenAI-compatible)</h4><ol style="color:var(--text-secondary);padding-left:20px;margin-bottom:12px"><li>Pick any OpenAI-compatible endpoint and note its base URL — it must end in <code>/v1</code>: LM Studio is <code>http://localhost:1234/v1</code>, vLLM is <code>http://your-host:8000/v1</code>. (Ollama needs no Custom entry — use <strong>Ollama (local)</strong> above instead.)</li><li>Note the exact model name (<code>ollama list</code> shows yours — spelling and tags must match exactly)</li><li>Go to Providers &rarr; Add &rarr; Custom and fill in a short lowercase name, the API link, a key (any string works for local servers with no auth), and the model</li><li>Pick <code>custom/your-name</code> from the model menu</li><li>Test it from a terminal first: <code>curl $BASE/chat/completions -H "Authorization: Bearer $KEY" -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'</code> — if curl fails, Omniilink fails the same way</li><li>Gotchas: <code>localhost</code> means the server machine, not your phone — use the machine's LAN IP for other devices; self-signed HTTPS endpoints are rejected, use plain HTTP locally or a valid cert</li></ol>
         </div>
       </div>
       <div class="view-panel" id="projects-view">
@@ -1743,7 +1744,7 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
@@ -1798,7 +1799,9 @@ function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
 var webSearchEnabled=false;
 function toggleWebSearch(){webSearchEnabled=!webSearchEnabled;var b=document.getElementById('websearch-toggle');if(b){b.classList.toggle('on',webSearchEnabled);b.setAttribute('aria-pressed',webSearchEnabled?'true':'false')}}
-    function selectModel(id){selectedModel=id;document.getElementById('model-btn-text').textContent=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt)cmt.textContent=id;document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}}
+    function shortModelId(id){id=String(id||'');const i=id.indexOf('/');return(providerOf(id)==='ollama'&&i>-1)?id.slice(i+1):id}
+    function providerOf(id){id=String(id||'');const i=id.indexOf('/');return i<0?'':id.slice(0,i)}
+    function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
 const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
@@ -1846,7 +1849,7 @@ function renderModelMenuInto(menu,models,backupModel){
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[0]);const bi=providerOrder.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[provider,pm]of sorted){
     const label=document.createElement('div');label.className='model-group-label';label.textContent=provider==='ollama'?'Ollama (local)':provider;menu.appendChild(label);
-    pm.forEach(m=>{const item=document.createElement('div');item.className='model-option';item.dataset.id=m.id;const tag=provider==='ollama'?'local':provider;item.innerHTML='<span class="pick">✓</span><span class="mname">'+m.id+'</span><span class="prov">'+tag+'</span>';item.onclick=()=>selectModel(m.id);menu.appendChild(item)});
+    pm.forEach(m=>{const item=document.createElement('div');item.className='model-option';item.dataset.id=m.id;item.title=m.id;const tag=provider==='ollama'?('local'+(m.vision?' · vision':'')):provider;item.innerHTML='<span class="pick">✓</span><span class="mname">'+escapeHtml(shortModelId(m.id))+'</span><span class="prov">'+escapeHtml(tag)+'</span>';item.onclick=()=>selectModel(m.id);menu.appendChild(item)});
   }
   const nohit=document.createElement('div');nohit.className='model-empty';nohit.style.display='none';nohit.textContent='No models match';menu.appendChild(nohit);
 }
@@ -1940,7 +1943,7 @@ const VISION_OK=[/gemini/i,/gpt-4o/i,/gpt-4\.1/i,/claude/i,/o1/i,/o3/i,/sonar/i]
 const VISION_NO=[/gpt-oss/i,/llama/i,/qwen/i,/mistral/i,/mixtral/i,/deepseek/i,/gemma/i,/command/i,/nemo/i,/qwq/i,/granite/i,/phi/i,/aya/i];
 function msgTextContent(c){if(typeof c==='string')return c;if(Array.isArray(c))return c.filter(p=>p&&p.type==='text').map(p=>p.text||'').join('\n');return ''}
 function msgImages(c){return Array.isArray(c)?c.filter(p=>p&&p.type==='image_url').map(p=>(p.image_url||{}).url).filter(Boolean):[]}
-function modelSupportsVision(id){id=String(id||'');if(id==='omniilink'||id==='custom'||id.indexOf('custom/')===0)return 'auto';if(VISION_OK.some(re=>re.test(id)))return true;if(VISION_NO.some(re=>re.test(id)))return false;return 'unknown'}
+function modelSupportsVision(id){id=String(id||'');if(id==='omniilink'||id==='custom'||id.indexOf('custom/')===0)return 'auto';if(providerOf(id)==='ollama'){const hit=(allModels||[]).find(m=>m.id===id);if(hit)return hit.vision===false?false:true;return true}if(VISION_OK.some(re=>re.test(id)))return true;if(VISION_NO.some(re=>re.test(id)))return false;return 'unknown'}
 function resolveVisionModel(){
   const v=modelSupportsVision(selectedModel);
   if(v===true)return selectedModel;
@@ -2769,7 +2772,7 @@ function closeFilePreview(){const f=document.getElementById('file-preview-frame'
 
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
-function updateAtIndicator(){invalidateCodingSysPrompt();const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
+function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
 var omniiignorePatterns=[];
 async function loadOmniiignore(){try{const r=await authFetch(API+'/api/coding/omniiignore');if(r.ok){const d=await r.json();omniiignorePatterns=d.patterns||[]}}catch(e){}}
 function omniiignoreMatches(rel,patterns){rel=String(rel||'').replace(/\\/g,'/');const parts=rel.split('/').filter(Boolean);const name=parts[parts.length-1]||'';return (patterns||[]).some(pat=>{const p=String(pat||'').trim().replace(/\/+$/,'');if(!p)return false;if(/[*?[]/.test(p)){const esc=p.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.');const re=new RegExp('^'+esc+'$');return parts.some(part=>re.test(part))||re.test(name)||re.test(rel)}return rel===p||rel.startsWith(p+'/')||name===p||parts.some(part=>part===p)})}
@@ -2783,8 +2786,8 @@ async function attachAllFiles(){
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error(data.error||'no files');tree=data.tree}
     const chosen=[];
     const ignoredFolders=[];
-    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n.path)}}})(tree);
-    chosen.sort((a,b)=>a.split('/').length-b.split('/').length);
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n)}}})(tree);
+    chosen.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
     codingIgnoredFolders=ignoredFolders;
     codingAtFiles=chosen;
     updateAtIndicator();
@@ -2865,16 +2868,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',sandboxOn=false;try{c
   let sysPrompt=basePrompt+'\n';if(sandboxOn)sysPrompt+='SANDBOX: your shell commands run inside a minimal Linux container (sh), NOT Windows. Use Linux commands only: ls, cat, mkdir, rm, python3, node, pip, npm. Never use dir/type/del/cmd syntax.\n';{const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
-  if(codingAtFiles.length>0){
-    // Read attached files in PARALLEL (was one awaited request per file — with
-    // many files attached that blocked the UI for ~10s). Cap the total size so
-    // the prompt can't balloon.
-    sysPrompt+='\nThe user has attached these files:\n';
-    const picked=(codingAtFiles||[]).slice(0,200);
-    const loaded=await Promise.all(picked.map(async fname=>{try{const content=await codingReadFile(fname);return content?{fname:fname,content:content}:null}catch(e){return null}}));
-    let budget=400000;
-    for(const it of loaded){if(!it)continue;if(budget<=0)break;budget-=it.content.length;sysPrompt+='\n--- FILE: '+it.fname+' ---\n'+it.content+'\n--- END FILE: '+it.fname+' ---\n'}
-  }
+  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
   if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
   // The server prompt already carries this block (api_server.py
@@ -3869,16 +3863,7 @@ function postCodingAssistant(text){
   codingHistory.push({role:'assistant',content:text});persistCodingChat();
 }
 function reportCodingLoopCrash(e){try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
-var _sysPromptCache=null;
-function invalidateCodingSysPrompt(){_sysPromptCache=null}
-async function getCodingSysPrompt(){
-  // buildCodingSystemPrompt re-reads every attached file; the agentic loop
-  // calls this once PER ROUND, so cache it for the turn (invalidated when the
-  // user sends, attaches/removes files, or opens another project).
-  if(_sysPromptCache)return _sysPromptCache;
-  _sysPromptCache=(async()=>{try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}})();
-  return _sysPromptCache;
-}
+async function getCodingSysPrompt(){try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}}
 function setCodingLoopUI(on){
   const btn=document.getElementById('coding-send-btn');
   if(!btn)return;
@@ -6507,6 +6492,28 @@ async function admLoadOllama(){
   }catch(e){st.textContent='Could not read Ollama status: '+e.message}
 }
 async function admOllamaTest(){const st=document.getElementById('adm-ollama-status');if(st)st.textContent='Testing…';await admLoadOllama()}
+async function setupOllamaRender(d){
+  const st=document.getElementById('setup-ollama-status');if(!st)return;
+  const inp=document.getElementById('setup-ollama-url');if(inp&&!inp.dataset.touched)inp.value=d.base_url||'';
+  st.textContent=d.available?('Connected — '+d.models.length+' model'+(d.models.length===1?'':'s')+' at '+d.base_url+'. Pick one from the model menu under Ollama (local).'):('Not reachable at '+(d.base_url||'default')+'. Install Ollama on the server machine, run `ollama serve`, pull a model, then Test again.');
+  const save=document.getElementById('setup-ollama-save');
+  if(save){if(d.is_admin){save.style.display='';save.title=''}else{save.style.display='none'}}
+  const list=document.getElementById('setup-ollama-models');list.innerHTML='';
+  (d.models||[]).forEach(m=>{const b=document.createElement('span');b.className='chip';const v=!!((d.vision||{})[m]);b.title=(v?'Vision-capable · ':'')+m;b.textContent=v?(m+'  [vision]'):m;list.appendChild(b)});
+}
+async function setupOllamaLoad(){const st=document.getElementById('setup-ollama-status');if(!st)return;try{const r=await authFetch(API+'/api/ollama/config');if(!r.ok)throw new Error('HTTP '+r.status);setupOllamaRender(await r.json())}catch(e){st.textContent='Could not read Ollama status: '+e.message}}
+async function setupOllamaTest(){const st=document.getElementById('setup-ollama-status');if(st)st.textContent='Testing…';await setupOllamaLoad()}
+async function setupOllamaSave(){
+  const inp=document.getElementById('setup-ollama-url');if(!inp)return;
+  const url=inp.value.trim();inp.dataset.touched='1';
+  try{
+    const r=await authFetch(API+'/api/ollama/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:url})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+    showToast('Ollama URL saved on the server','success');
+    await setupOllamaLoad();try{loadModels()}catch(e){}
+  }catch(e){showToast('Save failed: '+e.message,'error')}
+}
 async function admOllamaSave(){
   const inp=document.getElementById('adm-ollama-url');if(!inp)return;
   const url=inp.value.trim();inp.dataset.touched='1';
