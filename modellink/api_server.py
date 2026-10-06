@@ -933,22 +933,43 @@ def _check_quota(user, user_id: str, incoming_bytes: int = 0):
     return None
 
 def _ensure_dir(path: str) -> str:
-    """mkdir -p that never raises FileExistsError from a non-directory.
+    """mkdir -p that never raises because a file sits where a directory goes.
 
-    os.makedirs(path, exist_ok=True) raises FileExistsError when `path`
-    already exists as a file/symlink rather than a directory. A file sitting at
-    user_data/<username> is never valid user data (a user's files always live
-    inside a directory named after them), so it is removed and the folder is
-    created. Without this, one stray file 500s every endpoint that touches the
-    account (e.g. GET /api/projects)."""
-    try:
-        os.makedirs(path, exist_ok=True)
-    except FileExistsError:
+    os.makedirs(path, exist_ok=True) raises FileExistsError when `path` exists
+    as a file/symlink rather than a directory, and NotADirectoryError when an
+    ancestor component is a file. A file at user_data/<username> (or anywhere
+    on that path) is never valid user data — a user's files always live inside
+    a directory named after them — so the offending file is removed and the
+    folder is created. Without this, one stray file 500s every endpoint that
+    touches the account (GET /api/projects, POST /api/projects/create, ...).
+    """
+    for _ in range(4):
         try:
-            os.remove(path)
             os.makedirs(path, exist_ok=True)
-        except Exception:
-            pass
+            return path
+        except FileExistsError:
+            # `path` itself is a file/symlink, not a directory.
+            try:
+                os.remove(path)
+            except Exception:
+                return path
+        except NotADirectoryError:
+            # An ancestor component is a file; clear the nearest one.
+            offender = None
+            p = path
+            while p and p != os.path.dirname(p):
+                if os.path.isfile(p):
+                    offender = p
+                    break
+                p = os.path.dirname(p)
+            if not offender:
+                return path
+            try:
+                os.remove(offender)
+            except Exception:
+                return path
+        except OSError:
+            return path
     return path
 
 
