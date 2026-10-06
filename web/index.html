@@ -1505,14 +1505,14 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
     </div>
   </div>
 </div>
-<div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()">
 <nav class="tabbar" id="tabbar" aria-label="Primary">
 <button class="tab-item active" data-tab="chat" onclick="navigate('chat')" aria-label="Chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Chat</button>
 <button class="tab-item" data-tab="coding" onclick="navigate('coding')" aria-label="Code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Code<span class="beta-tag">Beta</span></button>
 <button class="tab-item" data-tab="more" onclick="navigate('more')" aria-label="Tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Tools</button>
 <button class="tab-item" data-tab="usage" onclick="navigate('usage')" aria-label="Usage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Usage</button>
 <button class="tab-item" data-tab="menu" onclick="toggleSidebar()" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
-</nav><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
+</nav>
+<div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
 <div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
@@ -1600,6 +1600,7 @@ function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p
 function getTheme(){return localStorage.getItem('omnilink_theme')||'dark'}
 function setTheme(t){localStorage.setItem('omnilink_theme',t);document.documentElement.setAttribute('data-theme',t);document.body.style.transition='background-color .35s ease,color .35s ease';const moon=document.getElementById('theme-icon-moon');const sun=document.getElementById('theme-icon-sun');if(moon)moon.style.display=t==='dark'?'':'none';if(sun)sun.style.display=t==='light'?'':'none'}
 
+function focusDesktop(id){try{if(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)return;const el=document.getElementById(id);if(el)el.focus()}catch(e){}}
 function escapeHtml(s){if(s==null||s===false)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 async function authFetch(url,opts={}){opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
@@ -2092,7 +2093,7 @@ async function sendMessage(){
   }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   settleSpinners(assistantEl);
   if(!assistantEl.textContent.trim()&&!assistantEl.querySelector('.message-content'))assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';
-  isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();
+  isStreaming=false;document.getElementById('send-btn').disabled=false;focusDesktop('chat-input');
 }
 
 function appendMessage(role,content,streaming=false,savedModel){
@@ -2140,7 +2141,7 @@ function editAndResend(editIdx,newText,keepImgs){
   .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='',seenDone=false;
     function read(){reader.read().then(({done,value})=>{
-      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText.trim(),model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;document.getElementById('chat-input').focus();return}
+      if(done){if(!seenDone)fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';if(fullText.trim())updateMessage(assistantEl,fullText);else assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';chatHistory.push({role:'assistant',content:fullText.trim(),model:selectedModel});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;focusDesktop('chat-input');return}
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
@@ -3333,7 +3334,7 @@ async function sendCodingMessage(){
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText.trim()});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
-  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;document.getElementById('coding-input').focus();
+  }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;focusDesktop('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -4478,7 +4479,7 @@ async function codingAutoContinue(){
   codingAutoLoop=false;codingStream=false;codingAbort=null;setCodingLoopUI(false);
   settleSpinners(document.getElementById('coding-chat'));
   document.getElementById('coding-send-btn').disabled=false;
-  document.getElementById('coding-input').focus();
+  focusDesktop('coding-input');
   await maybeOfferPendingFiles().catch(()=>{});
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
