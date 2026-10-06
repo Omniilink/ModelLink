@@ -1972,6 +1972,23 @@ function handleCodingImageFiles(files){
     img.src=url;
   });
 }
+function imageFilesFromClipboard(e){
+  try{
+    const items=(e.clipboardData&&e.clipboardData.items)||[];
+    const files=[];
+    for(let i=0;i<items.length;i++){const it=items[i];if(it&&it.kind==='file'&&it.type&&it.type.indexOf('image/')===0){const f=it.getAsFile();if(f)files.push(f)}}
+    return files;
+  }catch(err){return []}
+}
+// Paste an image straight from the clipboard (screenshot, copied image, …)
+// into whichever chat input is focused.
+document.addEventListener('paste',function(e){
+  const files=imageFilesFromClipboard(e);
+  if(!files.length)return;
+  const t=e.target;
+  if(t&&t.id==='coding-input'){e.preventDefault();handleCodingImageFiles(files)}
+  else if(t&&t.id==='chat-input'){e.preventDefault();handleImageFiles(files)}
+});
 function handleImageFiles(files){
   const list=[...files||[]].filter(f=>f&&f.type.indexOf('image/')===0);
   if(!list.length){showToast('Only image files can be attached','error');return}
@@ -3564,17 +3581,19 @@ async function processCodingActions(text,msgEl){
   if(autoFile+autoCmd>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=autoFile+' file action'+(autoFile!==1?'s':'')+' + '+autoCmd+' command'+(autoCmd!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
      if(contentEl&&hasToolBlocks){const cleaned=stripCodeForChat(cleanCodingProse(text));if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
-  for(const match of fileCreates){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
+  const seenBlocks=new Set();
+  for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
-  for(const match of fileEdits){const path=match[1].trim();const content=match[2];const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
+  for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Written!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
     const path=match[1].trim();
     const oldText=(match[2]||'').replace(/\n$/,''),newText=(match[3]||'').replace(/\n$/,'');
+    if(seenBlocks.has('P|'+path+'|'+oldText+'|'+newText))continue;seenBlocks.add('P|'+path+'|'+oldText+'|'+newText);
     const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';
     if(!oldText){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">Malformed patch block (need OLD: then NEW: sections)</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
@@ -3919,6 +3938,15 @@ async function verifyTodosAgainstReality(){
   }
   return{ok:missing.length===0,missing};
 }
+function dedupeSeamOverlap(tail,added){
+  // Find the longest suffix of `tail` that the model repeated as the prefix of
+  // the continuation and drop it. Ignores short coincidental overlaps.
+  const max=Math.min(tail.length,added.length,8000);
+  for(let k=max;k>=12;k--){
+    if(tail.slice(tail.length-k)===added.slice(0,k))return added.slice(k);
+  }
+  return added;
+}
 async function streamCodingTurn(messages){
   // Compact everything after the system message: callers assemble the window,
   // this is the single choke point where stale file bodies get elided.
@@ -3950,9 +3978,17 @@ async function streamCodingTurn(messages){
   while(!codingStopRequested&&codingTruncatedAt(fullText)>=0&&cont<CODING_MAX_CONTINUES){
     cont++;
     try{addCodingSystemMsg('Reply hit the output limit — auto-continuing the file (part '+(cont+1)+')…')}catch(e){}
+    const seam=fullText.length;
     const contErr=await pump([...messages,{role:'assistant',content:fullText},
       {role:'user',content:'Your previous reply was cut off by the output limit in the middle of a file block. Continue EXACTLY from the last character you wrote: output ONLY the remaining content, do NOT repeat anything already written, do NOT add a new FILE_CREATE/EDIT header (the block is already open), and close the open block with the correct matching END_ tag when the file is complete.'}]);
     if(contErr)break;
+    // Models routinely re-emit the last line(s) they already wrote. Left in,
+    // that duplicates file/patch fragments and corrupts the file (a doubled
+    // FILE_PATCH then fails with "old text not found", or applies twice).
+    // Strip the repeated overlap at the seam before keeping the continuation.
+    const tail=fullText.slice(0,seam), added=fullText.slice(seam);
+    const fixed=dedupeSeamOverlap(tail,added);
+    if(fixed!==added){fullText=tail+fixed;updateStreamingContent(chat,contentEl,fullText)}
   }
   const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);
   if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
