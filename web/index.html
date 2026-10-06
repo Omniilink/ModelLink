@@ -2184,6 +2184,21 @@ function renderSettings(){
   ['English','Spanish','French','German','Italian','Portuguese','Dutch','Russian','Chinese','Japanese','Korean','Arabic','Hindi','Turkish','Polish','Vietnamese','Thai','Indonesian','Swedish','Norwegian','Danish','Finnish','Czech','Romanian','Hungarian','Greek','Hebrew','Ukrainian','Malay','Tagalog','Swahili','Persian'].forEach(l=>{const o=document.createElement('option');o.value=l;o.textContent=l;if(l===(settingsData.language||'English'))o.selected=true;lsel.appendChild(o)});
   lsel.onchange=()=>{authFetch(API+'/api/language',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lsel.value})}).then(()=>showToast('Language set to '+lsel.value,'success'))};
   lr.appendChild(ll);lr.appendChild(lsel);ls.appendChild(lr);body.appendChild(ls);
+  // Time & Region: the AI is told the real local date and time each turn.
+  const tz=document.createElement('div');tz.className='settings-section';tz.innerHTML='<h3>Time &amp; Region</h3>';
+  const tr=document.createElement('div');tr.className='key-row';
+  const tl=document.createElement('label');tl.textContent='Timezone';tl.style.minWidth='170px';
+  const ti=document.createElement('input');ti.type='text';ti.id='settings-timezone';ti.placeholder='e.g. Europe/London';ti.autocomplete='off';ti.spellcheck=false;ti.value=(settingsData.timezone||'');
+  const td=document.createElement('button');td.className='btn btn-ghost';td.style.fontSize='11px';td.textContent='Detect';
+  td.onclick=()=>{try{const z=Intl.DateTimeFormat().resolvedOptions().timeZone;if(z){ti.value=z;showToast('Detected '+z,'info')}else showToast('Could not detect your timezone','error')}catch(e){showToast('Could not detect your timezone','error')}};
+  const tb=document.createElement('button');tb.className='btn btn-primary';tb.style.fontSize='11px';tb.textContent='Save';
+  const tp=document.createElement('div');tp.id='settings-tz-preview';tp.style.cssText='font-size:12px;color:var(--text-muted);margin-top:8px';
+  const refreshTz=()=>{authFetch(API+'/api/timezone').then(r=>r.json()).then(d=>{tp.textContent='AI will be told: '+((d&&d.local)||'—')}).catch(()=>{})};
+  tb.onclick=()=>{authFetch(API+'/api/timezone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({timezone:ti.value.trim()})}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok){showToast(d.error||'Could not save timezone','error');return}settingsData.timezone=d.timezone||'';showToast(d.timezone?('Timezone set to '+d.timezone):'Timezone cleared (server clock)','success');refreshTz()})};
+  tr.appendChild(tl);tr.appendChild(ti);tr.appendChild(td);tr.appendChild(tb);tz.appendChild(tr);
+  const tnote=document.createElement('p');tnote.style.cssText='font-size:12px;color:var(--text-muted);margin-top:8px';
+  tnote.textContent='Use an IANA timezone name (e.g. Europe/London, America/New_York, Asia/Tokyo). The AI is given the exact current date and time in this zone on every message. Leave empty to use the server clock.';
+  tz.appendChild(tnote);tz.appendChild(tp);body.appendChild(tz);refreshTz();
   // Account: change username (keeps the Google link and all data)
   const acct=document.createElement('div');acct.className='settings-section';acct.innerHTML='<h3>Account</h3>';
   const ar=document.createElement('div');ar.className='key-row';

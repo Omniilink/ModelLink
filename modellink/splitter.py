@@ -468,6 +468,93 @@ def _extract_tool_calls(provider_name, response):
     return calls
 
 
+def _first_json_object(text):
+    """First balanced {...} block in `text` that parses as JSON, or None."""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except Exception:
+                        break
+        start = text.find("{", start + 1)
+    return None
+
+
+def _extract_text_tool_call(response):
+    """Some models emit a tool call as PLAIN TEXT content instead of a real
+    message.tool_calls entry — notably Llama 3.2 through Ollama's OpenAI
+    endpoint returns finish_reason "stop" with content like:
+
+        {"name": "web_search", "parameters": {"query": "..."}}
+
+    (Llama uses `parameters`; OpenAI-style uses `arguments`.) Detect that
+    shape — and nothing looser, so ordinary JSON answers are untouched —
+    and turn it into a normal call. Returns [] when it is not a tool call.
+    """
+    if not response or not isinstance(response, dict):
+        return []
+    choices = response.get("choices", []) or []
+    if not choices:
+        return []
+    msg = choices[0].get("message", {}) or {}
+    content = msg.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return []
+    text = content.strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if m:
+        text = m.group(1).strip()
+    try:
+        obj = json.loads(text)
+    except Exception:
+        obj = _first_json_object(text)
+    if not isinstance(obj, dict):
+        return []
+    name = obj.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return []
+    if set(obj.keys()) - {"name", "parameters", "arguments", "id", "type"}:
+        return []
+    if "arguments" not in obj and "parameters" not in obj:
+        return []
+    args = obj.get("arguments", obj.get("parameters"))
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return [{"id": obj.get("id", "") or "", "name": name.strip(), "args": args}]
+
+
+def _looks_like_text_tool_call(content):
+    if not isinstance(content, str) or not content.strip():
+        return False
+    return bool(_extract_text_tool_call(
+        {"choices": [{"message": {"content": content}}]}))
+
+
 def _response_to_openai_message(response):
     """Best-effort conversion of a provider response into an OpenAI assistant message."""
     if not response or not isinstance(response, dict):
@@ -523,7 +610,10 @@ def run_tool_loop(messages, model="modellink", temperature=0.7, max_tokens=4000,
         last_response = response
         last_used = used_model
         provider = used_model.split("/", 1)[0] if "/" in used_model else "unknown"
+        # Real tool_calls first; then models that emit the call as text.
         calls = _extract_tool_calls(provider, response)
+        if not calls:
+            calls = _extract_text_tool_call(response)
         if not calls:
             return response, used_model
         result_texts = []
@@ -540,7 +630,10 @@ def run_tool_loop(messages, model="modellink", temperature=0.7, max_tokens=4000,
         content = last_response["choices"][0]["message"].get("content") or ""
     except Exception:
         pass
-    if not content.strip():
+    # Regenerate without tools when there is no answer, or when the "answer"
+    # is really just another text-form tool call (some models keep emitting
+    # the JSON forever) — otherwise the raw call would leak to the user.
+    if not content.strip() or _looks_like_text_tool_call(content):
         clean_opts = {k: v for k, v in (opts or {}).items() if k != "tools"}
         response, used_model = generate(
             messages=msgs, model=model, temperature=temperature,

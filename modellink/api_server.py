@@ -3,6 +3,7 @@ import os
 import re
 import io
 import base64
+import datetime
 import logging
 import asyncio
 import hmac
@@ -1276,6 +1277,46 @@ def _user_language(user_id: str) -> str:
         return lang.strip()
     return get_language()
 
+
+def _zoneinfo(name):
+    """ZoneInfo for an IANA name, or None when unknown/unavailable."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(str(name))
+    except Exception:
+        return None
+
+
+def _valid_timezone(name) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    if len(name) > 64 or any(c in name for c in "\n\r\0"):
+        return False
+    return _zoneinfo(name.strip()) is not None
+
+
+def _user_timezone(user_id: str) -> str:
+    """Saved IANA timezone for the account, or '' (use the server clock)."""
+    tz = _load_user_prefs(user_id).get("timezone")
+    if isinstance(tz, str) and tz.strip() and _valid_timezone(tz):
+        return tz.strip()
+    return ""
+
+
+def _localized_now(user_id: str):
+    """(formatted, iso) local date/time for the account's timezone."""
+    tz = _user_timezone(user_id)
+    zone = _zoneinfo(tz) if tz else None
+    now = datetime.datetime.now(zone) if zone is not None else datetime.datetime.now()
+    label = tz or "server local time"
+    return now.strftime("%A, %d %B %Y, %H:%M") + f" ({label})", now.isoformat()
+
+
+def _time_line(user_id: str) -> str:
+    """Fresh 'Current date and time' line injected into prompts so the model
+    always knows the real time (computed per request, never cached)."""
+    return "Current date and time: " + _localized_now(user_id)[0] + "."
+
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
         settings = _load_coding_settings(user_id, {
@@ -2232,6 +2273,7 @@ async def get_settings(request: Request):
         "backup_model": get_backup_model(),
         "ollama_url": _ollama_current_url(),
         "language": _user_language(_safe_username(user["username"])),
+        "timezone": _user_timezone(_safe_username(user["username"])),
         "is_admin": bool(user.get("is_admin")),
     }
     for prov_name, prov_cfg in PROVIDERS.items():
@@ -2385,6 +2427,37 @@ async def set_language_setting(http_request: Request, request: LanguageRequest):
     _save_user_pref(_safe_username(user["username"]), "language", lang)
     logger.info(f"Language set to: {lang} user={user['username']}")
     return {"status": "ok", "language": lang}
+
+
+@app.get("/api/timezone")
+async def get_timezone_setting(http_request: Request):
+    """The account's saved IANA timezone plus the live local time it maps to."""
+    user, err = _require_auth(http_request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    localized, iso = _localized_now(uid)
+    return {"timezone": _user_timezone(uid), "local": localized, "iso": iso,
+            "server": datetime.datetime.now().strftime("%A, %d %B %Y, %H:%M")}
+
+class TimezoneRequest(BaseModel):
+    timezone: str
+
+@app.post("/api/timezone")
+async def set_timezone_setting(http_request: Request, request: TimezoneRequest):
+    """Region/timezone is stored per account and used to give the AI the real
+    local date and time. Empty string clears it (fall back to server clock)."""
+    user, err = _require_auth(http_request)
+    if err:
+        return err
+    tz = (request.timezone or "").strip()
+    if tz and not _valid_timezone(tz):
+        return JSONResponse(status_code=400, content={"error": "Unknown timezone — use an IANA name like Europe/London"})
+    uid = _safe_username(user["username"])
+    _save_user_pref(uid, "timezone", tz)
+    localized, iso = _localized_now(uid)
+    logger.info(f"Timezone set to: {tz or '(server)'} user={user['username']}")
+    return {"status": "ok", "timezone": tz, "local": localized, "iso": iso}
 
 def _split_used_model(used_model: str):
     """'groq/openai/gpt-oss-120b' -> ('groq', 'openai/gpt-oss-120b').
@@ -2567,9 +2640,21 @@ async def chat_completions(request: Request):
     # House system prompt (identity + web_search/DuckDuckGo contract) when
     # the caller did not supply its own system message. Coding turns always
     # carry one, so they are unaffected.
-    if not any(isinstance(m, dict) and m.get("role") == "system" and m.get("content")
-               for m in messages):
-        messages = [{"role": "system", "content": _chat_system_prompt()}] + list(messages)
+    _sys_uid = _safe_username(user["username"])
+    _has_system = any(isinstance(m, dict) and m.get("role") == "system" and m.get("content")
+                      for m in messages)
+    if not _has_system:
+        messages = [{"role": "system", "content": _chat_system_prompt(_sys_uid)}] + list(messages)
+    else:
+        # A caller-supplied prompt (coding, or a custom system message): append
+        # the live clock so the model always knows the exact time and date.
+        messages = list(messages)
+        for _i, _m in enumerate(messages):
+            if isinstance(_m, dict) and _m.get("role") == "system" and _m.get("content"):
+                _m = dict(_m)
+                _m["content"] = str(_m["content"]).rstrip() + "\n" + _time_line(_sys_uid)
+                messages[_i] = _m
+                break
     prompt_chars = sum(len(m.get("content", "")) for m in messages)
     est_prompt_tokens = max(1, prompt_chars // 4)
     start_ts = time.time()
@@ -2952,15 +3037,17 @@ def _count_tree_files(entries):
             n += 1
     return n
 
-def _chat_system_prompt():
+def _chat_system_prompt(user_id=""):
     """Default system prompt for /v1/chat/completions, used only when the
     caller did not supply its own system message. Short on purpose — small
     local models degrade with long preambles. Teaches the web_search tool
     contract (name + query argument) and how to treat DuckDuckGo results."""
-    today = time.strftime("%Y-%m-%d")
+    now = _localized_now(user_id)[0] if user_id else \
+        datetime.datetime.now().strftime("%A, %d %B %Y, %H:%M")
     return (
         "You are Omniilink, a helpful AI assistant. Answer directly and concisely.\n"
-        f"Today is {today}.\n"
+        f"Current date and time: {now}. Use this as the exact present moment — "
+        "your training data is older, so never assume the date from memory.\n"
         "If a web_search tool is offered and the question needs current or external "
         "facts (news, prices, recent events, anything past your training), call it as "
         "{\"query\": \"<search terms>\"} and answer from the returned results. "
