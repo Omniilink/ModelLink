@@ -2564,6 +2564,12 @@ async def chat_completions(request: Request):
     if auth_header.startswith("Bearer ml-"):
         api_key_id = get_api_key_id_by_key(auth_header[7:])
 
+    # House system prompt (identity + web_search/DuckDuckGo contract) when
+    # the caller did not supply its own system message. Coding turns always
+    # carry one, so they are unaffected.
+    if not any(isinstance(m, dict) and m.get("role") == "system" and m.get("content")
+               for m in messages):
+        messages = [{"role": "system", "content": _chat_system_prompt()}] + list(messages)
     prompt_chars = sum(len(m.get("content", "")) for m in messages)
     est_prompt_tokens = max(1, prompt_chars // 4)
     start_ts = time.time()
@@ -2662,13 +2668,17 @@ async def chat_completions(request: Request):
             logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
             prov, mname = _resolve_request_model(req_model)
             _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
+            # NOTE: capture the text NOW — `except ... as e` deletes `e`
+            # when the block exits, so a closure reading str(e) later would
+            # raise NameError mid-stream (empty 200, connection killed).
+            err_text = str(e)
             async def error_event_gen():
                 chat_id = "chatcmpl-" + str(int(time.time()))
                 created_time = int(time.time())
                 error_chunk = {
                     "id": chat_id, "object": "chat.completion.chunk",
                     "created": created_time, "model": req_model,
-                    "choices": [{"index": 0, "delta": {"content": f"Error: {str(e)}"}, "finish_reason": "stop"}]
+                    "choices": [{"index": 0, "delta": {"content": f"Error: {err_text}"}, "finish_reason": "stop"}]
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
                 finish_chunk = {
@@ -2941,6 +2951,27 @@ def _count_tree_files(entries):
         else:
             n += 1
     return n
+
+def _chat_system_prompt():
+    """Default system prompt for /v1/chat/completions, used only when the
+    caller did not supply its own system message. Short on purpose — small
+    local models degrade with long preambles. Teaches the web_search tool
+    contract (name + query argument) and how to treat DuckDuckGo results."""
+    today = time.strftime("%Y-%m-%d")
+    return (
+        "You are Omniilink, a helpful AI assistant. Answer directly and concisely.\n"
+        f"Today is {today}.\n"
+        "If a web_search tool is offered and the question needs current or external "
+        "facts (news, prices, recent events, anything past your training), call it as "
+        "{\"query\": \"<search terms>\"} and answer from the returned results. "
+        "Never claim to have browsed when you have not.\n"
+        "Web results (when provided) come from the DuckDuckGo instant-answer API as "
+        "title/snippet lines: synthesize them in your own words, prefer recent sources "
+        "for time-sensitive questions, and say plainly when the results do not answer it.\n"
+        "With no web tool offered, answer from your own knowledge; when unsure or the "
+        "facts may have changed, say so instead of guessing."
+    )
+
 
 DEFAULT_CODING_PROMPT = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
 
@@ -8665,20 +8696,49 @@ def api(method, path, token=None, payload=None):
         raise Exception("HTTP %s: %s" % (e.code, detail.strip() or e.reason))
 
 
+_relay_conn = None
+_relay_conn_path = "/api/agent/relay"
+_relay_conn_lock = threading.Lock()
+
+
 def _relay_status(token, payload):
-    """POST one relay batch; returns the HTTP status (410 = stream gone)."""
-    req = urllib.request.Request(SERVER + "/api/agent/relay", method="POST",
-                                 headers={"Content-Type": "application/json",
-                                          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OmniilinkAgent/1.0"},
-                                 data=json.dumps(payload).encode())
-    req.add_header("Authorization", "Bearer " + token)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.getcode()
-    except urllib.error.HTTPError as e:
-        return e.code
-    except Exception:
-        return 0
+    """POST one relay batch; returns the HTTP status (410 = stream gone).
+
+    Reuses one keep-alive connection: a streamed reply is dozens of small
+    batches, and a fresh TCP+TLS handshake per batch dominates the round
+    trip. A server-side close just triggers one transparent reconnect.
+    """
+    global _relay_conn, _relay_conn_path
+    body = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json",
+               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OmniilinkAgent/1.0",
+               "Content-Length": str(len(body)), "Connection": "keep-alive",
+               "Authorization": "Bearer " + token}
+    with _relay_conn_lock:
+        for attempt in (0, 1):
+            if _relay_conn is None:
+                import http.client
+                from urllib.parse import urlparse
+                u = urlparse(SERVER.rstrip("/") + "/api/agent/relay")
+                port = u.port or (443 if u.scheme == "https" else 80)
+                cls = (http.client.HTTPSConnection if u.scheme == "https"
+                       else http.client.HTTPConnection)
+                _relay_conn = cls(u.hostname or "", port, timeout=30)
+                _relay_conn_path = u.path or "/api/agent/relay"
+            try:
+                _relay_conn.request("POST", _relay_conn_path, body=body, headers=headers)
+                r = _relay_conn.getresponse()
+                r.read()
+                return r.status
+            except Exception:
+                try:
+                    _relay_conn.close()
+                except Exception:
+                    pass
+                _relay_conn = None
+                if attempt == 0:
+                    continue
+                return 0
 
 
 def run_relay(token, cmd, ollama_url):

@@ -1473,6 +1473,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 </div>
                 <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
                 <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+                <button class="ws-toggle" id="coding-websearch-toggle" onclick="toggleCodingWebSearch()" title="Let the model search the web for current information" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Web</span></button>
               </div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
@@ -1643,7 +1644,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
-  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelControls();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
+  const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
  document.addEventListener('click',e=>{if(!document.getElementById('coding-model-dropdown').contains(e.target))document.getElementById('coding-model-menu').classList.remove('open')});
@@ -1800,9 +1801,11 @@ function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
 var webSearchEnabled=false;
 function toggleWebSearch(){webSearchEnabled=!webSearchEnabled;var b=document.getElementById('websearch-toggle');if(b){b.classList.toggle('on',webSearchEnabled);b.setAttribute('aria-pressed',webSearchEnabled?'true':'false')}}
+var codingWebSearch=false;
+function toggleCodingWebSearch(){codingWebSearch=!codingWebSearch;var b=document.getElementById('coding-websearch-toggle');if(b){b.classList.toggle('on',codingWebSearch);b.setAttribute('aria-pressed',codingWebSearch?'true':'false')}}
     function shortModelId(id){id=String(id||'');const p=providerOf(id);if(p==='device'){const i=id.indexOf('/');const j=i<0?-1:id.indexOf('/',i+1);return j>-1?id.slice(j+1):id}const i=id.indexOf('/');return(p==='ollama'&&i>-1)?id.slice(i+1):id}
     function providerOf(id){id=String(id||'');const i=id.indexOf('/');return i<0?'':id.slice(0,i)}
-    function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}}
+    function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}try{syncLevelLock()}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
 const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
@@ -1823,6 +1826,24 @@ function syncLevelControls(){
       if(el&&el.value!==v)el.value=v;
     });
   });
+}
+// Ollama (local or paired-device) exposes no effort/thinking scale — a
+// non-auto level makes Ollama reject the request. Lock all four selects
+// to auto while such a model is picked.
+function ollamaModelLocked(){const m=String((typeof selectedModel!=='undefined'&&selectedModel)||'');return /^(ollama|device)\//.test(m)}
+function syncLevelLock(){
+  const locked=ollamaModelLocked();
+  if(locked){try{localStorage.setItem('omnilink_effort','auto');localStorage.setItem('omnilink_thinking','auto')}catch(e){}}
+  ['effort','thinking'].forEach(kind=>{
+    ['chat','coding'].forEach(prefix=>{
+      const el=document.getElementById(prefix+'-'+kind);
+      if(!el)return;
+      if(el.dataset.lockTitle===undefined)el.dataset.lockTitle=el.title||'';
+      el.disabled=locked;
+      el.title=locked?'Locked to auto for Ollama models (they use their own default reasoning)':el.dataset.lockTitle;
+    });
+  });
+  syncLevelControls();
 }
 function requestLevels(){return{effort:getLevel('effort'),thinking:getLevel('thinking')}}
 
@@ -2901,6 +2922,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
   let sysPrompt=basePrompt+'\n';const osBlock=codingOsBlock(execOs);if(osBlock)sysPrompt+=osBlock+'\n';
   if(execOs==='linux'&&csMode==='docker')sysPrompt+='NOTE: every command runs in a FRESH container — files outside the project folder and installed packages do not persist between commands; reinstall per command when needed.\n';
   else if(execOs==='linux'&&csMode==='project')sysPrompt+='NOTE: commands share one persistent container for this project — pip/npm installs survive between commands.\n';
+  if(typeof codingWebSearch!=='undefined'&&codingWebSearch)sysPrompt+='WEB SEARCH is enabled for this turn: call the web_search tool whenever current docs or facts would help, then answer from the results.\n';
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
@@ -3252,7 +3274,7 @@ async function sendCodingMessage(){
   let fullText='';
   let aborted=false;
   let next={blocks:false,actionable:false};
-  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
+  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;maybeAttachReport(assistantEl,errMsg,selectedModel,'coding');codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDoneCoding=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -4019,7 +4041,7 @@ async function streamCodingTurn(messages){
   // One streaming request, appending its deltas to fullText. Returns an error
   // string (or null), so the caller can retry as a continuation.
   const pump=async(msgs)=>{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),messages:msgs})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:selectedModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:msgs})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}return errMsg}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();

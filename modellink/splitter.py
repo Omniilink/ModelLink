@@ -884,6 +884,7 @@ def ollama_model_capabilities(force=False, agent_id=None):
                 info = r.json()
                 have = info.get("capabilities") or []
                 caps[tag]["vision"] = any(str(x).lower() == "vision" for x in have)
+                caps[tag]["thinking"] = any(str(x).lower() == "thinking" for x in have)
         except Exception:
             pass
     _ollama_caps.update(ts=now, base=base, caps=caps)
@@ -910,6 +911,8 @@ def _relay_capabilities(agent_id, force=False):
                         have = info.get("capabilities") or []
                         caps[tag]["vision"] = any(
                             str(x).lower() == "vision" for x in have)
+                        caps[tag]["thinking"] = any(
+                            str(x).lower() == "thinking" for x in have)
                 finally:
                     r.close()
             except Exception:
@@ -920,6 +923,17 @@ def _relay_capabilities(agent_id, force=False):
         return dict(cached.get("vision") or {})
     _relay_scan[aid] = dict(cached, caps_ts=now, vision=caps)
     return caps
+
+
+def _ollama_supports_thinking(tag, agent_id=None):
+    """True when the (possibly device-relayed) model reports reasoning
+    support. Best-effort and cached: unknown means False (never send the
+    `think` flag blind — models without it HTTP 400)."""
+    try:
+        caps = ollama_model_capabilities(agent_id=agent_id)
+        return bool((caps.get(tag) or {}).get("thinking"))
+    except Exception:
+        return False
 
 
 def _ollama_native_messages(messages):
@@ -1559,9 +1573,12 @@ class MultiProviderBalancer:
                 body = {"model": tag, "messages": _ollama_native_messages(messages),
                         "stream": stream,
                         "options": {"temperature": temperature, "num_predict": max_tokens}}
-                # Ollama's reasoning knob is a boolean `think` flag.
+                # Ollama's reasoning knob is a boolean `think` flag — but only
+                # thinking-capable models accept it (others HTTP 400). Look
+                # at the model's capabilities; without thinking support the
+                # effort/thinking levels are silently ignored.
                 level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
-                if level != "auto":
+                if level != "auto" and _ollama_supports_thinking(tag, device):
                     body["think"] = level != "minimum"
                 if device:
                     resp = relay.open_response(device, "/api/chat", body,

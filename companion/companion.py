@@ -251,6 +251,72 @@ class RelayGone(Exception):
     """Host dropped the stream (410): stop the local Ollama read."""
 
 
+_relay_conns = {}
+_relay_conns_lock = threading.Lock()
+
+
+def _relay_post(server, token, fields, timeout=30):
+    """POST one relay batch over a pooled keep-alive connection.
+
+    A streamed reply is dozens of small batches; a fresh TCP+TLS handshake
+    per batch (what api() does) dominates the round trip. Reusing one
+    HTTP/1.1 connection per host removes it. Raises ApiError exactly like
+    api() so the sender's retry/410 handling is unchanged. A server that
+    closes idle connections just triggers one transparent reconnect.
+    """
+    import http.client
+    from urllib.parse import urlparse
+    u = urlparse(server.rstrip("/") + "/api/agent/relay")
+    port = u.port or (443 if u.scheme == "https" else 80)
+    key = (u.scheme, (u.hostname or "").lower(), port)
+    path = u.path or "/api/agent/relay"
+    body = json.dumps(fields).encode()
+    headers = {"Content-Type": "application/json", "User-Agent": COMPANION_UA,
+               "Content-Length": str(len(body)), "Connection": "keep-alive"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    with _relay_conns_lock:
+        for attempt in (0, 1):
+            conn = _relay_conns.get(key)
+            if conn is None:
+                cls = (http.client.HTTPSConnection if u.scheme == "https"
+                       else http.client.HTTPConnection)
+                conn = cls(u.hostname or "", port, timeout=timeout)
+                _relay_conns[key] = conn
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                r = conn.getresponse()
+                raw = r.read()
+                status = r.status
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _relay_conns.pop(key, None)
+                if attempt == 0:
+                    continue
+                raise
+            break
+    try:
+        text = raw.decode("utf-8", "replace")
+    except Exception:
+        text = ""
+    if status in (404, 410):
+        raise ApiError(status, (text or "gone").strip()[:300])
+    if status < 200 or status >= 300:
+        try:
+            parsed = json.loads(text or "{}")
+            detail = parsed.get("error", "") or text
+        except Exception:
+            detail = text
+        raise ApiError(status, (detail or "relay post failed").strip()[:300])
+    try:
+        return json.loads(text or "{}")
+    except Exception:
+        return {}
+
+
 class _RelaySender(object):
     """Seq-numbered batch poster; retries transient failures, treats 410
     as the host saying 'this stream no longer exists'."""
@@ -268,7 +334,7 @@ class _RelaySender(object):
         last = None
         for attempt in range(3):
             try:
-                api(self.server, "POST", "/api/agent/relay", self.token, fields)
+                _relay_post(self.server, self.token, fields)
                 return
             except ApiError as e:
                 if e.status in (404, 410):
