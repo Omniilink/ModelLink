@@ -932,45 +932,77 @@ def _check_quota(user, user_id: str, incoming_bytes: int = 0):
         return JSONResponse(status_code=413, content={"error": "Storage quota exceeded"})
     return None
 
+def _clear_path_entry(path: str) -> bool:
+    """Delete a file/symlink blocking a directory path. If deletion is refused
+    (e.g. a locked file), move it aside instead. Returns True once it's gone."""
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception:
+        pass
+    try:
+        os.rename(path, path + ".stray-" + str(int(time.time())))
+        return True
+    except Exception:
+        return False
+
+
 def _ensure_dir(path: str) -> str:
     """mkdir -p that never raises because a file sits where a directory goes.
 
     os.makedirs(path, exist_ok=True) raises FileExistsError when `path` exists
-    as a file/symlink rather than a directory, and NotADirectoryError when an
-    ancestor component is a file. A file at user_data/<username> (or anywhere
-    on that path) is never valid user data — a user's files always live inside
-    a directory named after them — so the offending file is removed and the
-    folder is created. Without this, one stray file 500s every endpoint that
-    touches the account (GET /api/projects, POST /api/projects/create, ...).
+    as a file/symlink, and NotADirectoryError when an ancestor component is a
+    file. A file anywhere on that path is never valid user data — a user's
+    files always live inside a directory named after them — so it is removed
+    (or moved aside) and the folder is created. Without this, one stray file
+    500s every endpoint that touches the account (GET /api/projects,
+    POST /api/projects/create, ...).
     """
-    for _ in range(4):
+    for _ in range(6):
         try:
             os.makedirs(path, exist_ok=True)
             return path
         except FileExistsError:
             # `path` itself is a file/symlink, not a directory.
-            try:
-                os.remove(path)
-            except Exception:
+            if not _clear_path_entry(path):
                 return path
         except NotADirectoryError:
             # An ancestor component is a file; clear the nearest one.
             offender = None
             p = path
             while p and p != os.path.dirname(p):
-                if os.path.isfile(p):
+                if os.path.lexists(p) and not os.path.isdir(p):
                     offender = p
                     break
                 p = os.path.dirname(p)
-            if not offender:
-                return path
-            try:
-                os.remove(offender)
-            except Exception:
+            if not offender or not _clear_path_entry(offender):
                 return path
         except OSError:
             return path
     return path
+
+
+def _heal_user_dirs():
+    """Startup repair: a stray file/symlink sitting at user_data/<username>
+    blocks that account's folder (and every endpoint that touches it). Clear
+    it once so the folder can be created. Only non-directories are touched —
+    a real user folder is always a directory."""
+    base = os.path.join(APP_DIR, "user_data")
+    if not os.path.isdir(base):
+        return
+    try:
+        conn = get_db()
+        names = [r["username"] for r in conn.execute("SELECT username FROM users").fetchall()]
+        conn.close()
+    except Exception:
+        return
+    for uname in names:
+        d = os.path.join(base, _safe_username(uname))
+        if os.path.lexists(d) and not os.path.isdir(d):
+            if _clear_path_entry(d):
+                logger.warning(f"[HEAL] cleared stray file blocking {d}")
 
 
 def _user_data_dir(user_id: str) -> str:
@@ -1022,6 +1054,7 @@ def _migrate_user_data_dirs():
                 logger.warning(f"[MIGRATE] Could not rename {tmp}: {e}")
 
 _migrate_user_data_dirs()
+_heal_user_dirs()
 
 # Per-user coding states: {user_key: {"folder": ..., "settings": {...}}}
 _coding_states = {}
