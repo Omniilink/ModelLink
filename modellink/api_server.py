@@ -7016,7 +7016,21 @@ async def coding_get_settings(request: Request):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     settings = dict(coding_state["settings"])
-    settings["sandbox"] = _sandbox_config() is not None
+    sb = _sandbox_config()
+    settings["sandbox"] = sb is not None
+    # Effective command-execution environment for the coding prompt: a
+    # sandbox means a Linux container no matter what the host runs.
+    settings["sandbox_mode"] = sb["mode"] if sb else ""
+    if sb is not None:
+        settings["exec_os"] = "linux"
+        settings["exec_shell"] = "sh"
+    elif sys.platform == "win32":
+        settings["exec_os"] = "windows"
+        settings["exec_shell"] = "cmd"
+    else:
+        settings["exec_os"] = "linux"
+        settings["exec_shell"] = "sh"
+    settings["host_os"] = sys.platform
     settings["upload_limit_mb"] = UPLOAD_LIMIT_MB
     settings["upload_chunk_mb"] = UPLOAD_CHUNK_BYTES // (1024 * 1024)
     return settings
