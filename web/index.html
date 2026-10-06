@@ -485,9 +485,6 @@ a:hover{text-decoration:underline}
 .project-item:hover .del{opacity:1}
 .project-item .del:hover{background:var(--error);color:#fff}
 .toast{position:fixed;bottom:20px;right:20px;padding:9px 14px;border-radius:8px;font-size:13px;z-index:200;max-width:min(340px,calc(100vw - 40px));box-shadow:0 12px 32px rgba(0,0,0,.4);border:1px solid var(--border-light);background:var(--bg-secondary);color:var(--text-primary);animation:fadeIn .15s ease}
-.hamburger-btn{display:none;align-items:center;justify-content:center;width:32px;height:32px;border-radius:var(--radius-xs);background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;flex-shrink:0}
-.hamburger-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
-.hamburger-btn svg{width:18px;height:18px}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes rise{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 @keyframes pop{from{opacity:0;transform:scale(.985) translateY(4px)}to{opacity:1;transform:none}}
@@ -679,7 +676,6 @@ pre{max-width:100%}
 .sidebar:not(.hidden){transform:translateX(0)}
 .sidebar-overlay{position:fixed;inset:0;background:rgba(4,6,10,.6);z-index:199;display:none}
 .sidebar-overlay.open{display:block}
-.hamburger-btn{display:flex !important}
 .header{padding:0 10px;gap:6px}
 #crumb-view{font-size:13px}
 .ws-x{display:flex;align-items:center;justify-content:center}
@@ -939,9 +935,6 @@ pre{max-width:100%}
   <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
   <div class="main">
     <div class="header">
-      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()" aria-label="Open navigation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
       <div class="crumbs"><span id="crumb-view">Chat</span></div>
       <div class="header-spacer"></div>
       <button class="header-btn hide-mobile" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
@@ -1542,7 +1535,6 @@ if(location.search.indexOf('diag')!==-1){
         'w='+window.innerWidth+' h='+window.innerHeight+' dpr='+(window.devicePixelRatio||1),
         'ua='+navigator.userAgent,
         'header='+(h?(getComputedStyle(h).display+' '+Math.round(r.width)+'x'+Math.round(r.height)+' @'+Math.round(r.top)+','+Math.round(r.left)):'MISSING'),
-        'hamb='+(function(){var b=document.getElementById('hamburger-btn');return b?getComputedStyle(b).display:'MISSING'})(),
         'sidebar='+(sb?(getComputedStyle(sb).display+','+getComputedStyle(sb).transform):'MISSING'),
         'jserr='+window.__lastErr
       ];
