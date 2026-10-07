@@ -2359,58 +2359,86 @@ async def ollama_recommend(request: Request):
     else:
         warning = ""
     flat = [dict(t["picks"][0], label=t["label"], use=t["use"]) for t in tasks if t["picks"]]
+    specs_out = {
+        "cpu": str(body.get("cpu") or ""),
+        "cpu_cores": int(_num(body.get("cpu_cores"))),
+        "cpu_threads": int(_num(body.get("cpu_threads"))),
+        "cpu_mhz": int(_num(body.get("cpu_mhz"))),
+        "ram_gb": ram_gb, "gpu": gpu, "vram_gb": vram_gb,
+        "gpu_driver": str(body.get("gpu_driver") or ""),
+        "os": str(body.get("os") or ""),
+    }
     return {"budget_gb": budget, "source": source, "basis": basis,
             "dedicated_gpu": dedicated, "tasks": tasks, "picks": flat, "warning": warning,
-            "specs": {"ram_gb": ram_gb, "vram_gb": vram_gb, "gpu": gpu,
-                      "cpu": str(body.get("cpu") or ""), "os": str(body.get("os") or "")}}
+            "specs": specs_out}
 
 
 def _sysinfo_command(platform_str):
-    """Shell command that prints OMNI_CPU / OMNI_RAM_GB / OMNI_GPU / OMNI_VRAM_GB
-    lines for the device's OS."""
+    """Shell command that prints OMNI_* hardware lines for the device's OS."""
     p = (platform_str or "").lower()
-    # Check macOS first: "darwin" contains "win" and must not hit the Windows
-    # branch.
+    # Check macOS first: "darwin" contains "win" and must not hit Windows.
     if "darwin" in p or "mac" in p:
         return ("echo OMNI_CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null);"
+                "echo OMNI_CPU_CORES=$(sysctl -n hw.physicalcpu 2>/dev/null);"
+                "echo OMNI_CPU_THREADS=$(sysctl -n hw.logicalcpu 2>/dev/null);"
+                "echo OMNI_CPU_MHZ=$(( $(sysctl -n hw.cpufrequency 2>/dev/null) / 1000000 ));"
                 "echo OMNI_RAM_GB=$(( $(sysctl -n hw.memsize 2>/dev/null) / 1073741824 ));"
-                "echo OMNI_GPU=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 'Chipset Model' | cut -d: -f2)")
+                "echo OMNI_GPU=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 'Chipset Model' | cut -d: -f2);"
+                "echo OMNI_OS=$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)")
     if "win" in p:
-        # Prefer nvidia-smi (accurate VRAM); Win32 AdapterRAM is a 32-bit field
-        # that caps at 4 GB. Fall back to WMI for non-NVIDIA GPUs.
+        # Prefer nvidia-smi (accurate VRAM + driver); Win32 AdapterRAM is a
+        # 32-bit field that caps at 4 GB. Fall back to WMI otherwise.
         return ('powershell -NoProfile -Command "'
-                '$cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name;'
-                '$ram=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB);'
-                '$gpu=\'\';$vram=0;'
-                '$smi=(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1);'
-                'if($smi){$p=$smi.Split(\',\');$gpu=$p[0].Trim();$vram=[math]::Round([double]$p[1]/1024,1)}'
-                'else{$v=Get-CimInstance Win32_VideoController | Select-Object -First 1;$gpu=$v.Name;$vram=[math]::Round($v.AdapterRAM/1GB,1)};'
-                'Write-Output (\'OMNI_CPU=\'+$cpu);Write-Output (\'OMNI_RAM_GB=\'+$ram);'
-                'Write-Output (\'OMNI_GPU=\'+$gpu);Write-Output (\'OMNI_VRAM_GB=\'+$vram)"')
+                '$p=Get-CimInstance Win32_Processor | Select-Object -First 1;'
+                '$cs=Get-CimInstance Win32_ComputerSystem;'
+                '$os=Get-CimInstance Win32_OperatingSystem;'
+                '$gpu=\'\';$vram=0;$drv=\'\';'
+                '$smi=(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits 2>$null | Select-Object -First 1);'
+                'if($smi){$a=$smi.Split(\',\');$gpu=$a[0].Trim();$vram=[math]::Round([double]$a[1]/1024,1);$drv=$a[2].Trim()}'
+                'else{$v=Get-CimInstance Win32_VideoController | Select-Object -First 1;$gpu=$v.Name;$vram=[math]::Round($v.AdapterRAM/1GB,1);$drv=$v.DriverVersion};'
+                'Write-Output (\'OMNI_CPU=\'+$p.Name);'
+                'Write-Output (\'OMNI_CPU_CORES=\'+$p.NumberOfCores);'
+                'Write-Output (\'OMNI_CPU_THREADS=\'+$p.NumberOfLogicalProcessors);'
+                'Write-Output (\'OMNI_CPU_MHZ=\'+$p.MaxClockSpeed);'
+                'Write-Output (\'OMNI_RAM_GB=\'+[math]::Round($cs.TotalPhysicalMemory/1GB));'
+                'Write-Output (\'OMNI_GPU=\'+$gpu);Write-Output (\'OMNI_VRAM_GB=\'+$vram);'
+                'Write-Output (\'OMNI_GPU_DRIVER=\'+$drv);'
+                'Write-Output (\'OMNI_OS=\'+$os.Caption+\' \'+$os.Version)"')
     return ("echo OMNI_CPU=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2);"
+            "echo OMNI_CPU_CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null);"
+            "echo OMNI_CPU_THREADS=$(nproc 2>/dev/null);"
+            "echo OMNI_CPU_MHZ=$(grep -m1 'cpu MHz' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | cut -d. -f1);"
             "echo OMNI_RAM_GB=$(awk '/MemTotal/{printf \"%d\", $2/1048576}' /proc/meminfo 2>/dev/null);"
             "echo OMNI_GPU=$( (nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null "
-            "|| lspci 2>/dev/null | grep -i -m1 vga) | head -1)")
+            "|| lspci 2>/dev/null | grep -i -m1 vga) | head -1);"
+            "echo OMNI_VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null "
+            "| head -1 | awk '{printf \"%.1f\", $1/1024}');"
+            "echo OMNI_GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1);"
+            "echo OMNI_OS=$(uname -sr 2>/dev/null)")
 
 
 def _parse_sysinfo(output):
     """Parse the OMNI_* lines into a specs dict (best-effort)."""
-    specs = {"cpu": "", "ram_gb": 0.0, "gpu": "", "vram_gb": 0.0, "os": ""}
+    specs = {"cpu": "", "ram_gb": 0.0, "gpu": "", "vram_gb": 0.0, "os": "",
+             "gpu_driver": "", "cpu_cores": 0, "cpu_threads": 0, "cpu_mhz": 0}
+    str_keys = {"OMNI_CPU": "cpu", "OMNI_GPU": "gpu", "OMNI_OS": "os",
+                "OMNI_GPU_DRIVER": "gpu_driver"}
+    num_keys = {"OMNI_RAM_GB": ("ram_gb", float), "OMNI_VRAM_GB": ("vram_gb", float),
+                "OMNI_CPU_CORES": ("cpu_cores", int), "OMNI_CPU_THREADS": ("cpu_threads", int),
+                "OMNI_CPU_MHZ": ("cpu_mhz", int)}
     for line in str(output or "").splitlines():
         if "=" not in line:
             continue
         k, v = line.split("=", 1)
         k, v = k.strip().upper(), v.strip()
-        if k == "OMNI_CPU":
-            specs["cpu"] = v[:120]
-        elif k == "OMNI_GPU":
-            specs["gpu"] = v[:120]
-        elif k in ("OMNI_RAM_GB", "OMNI_VRAM_GB"):
+        if k in str_keys:
+            specs[str_keys[k]] = v[:160]
+        elif k in num_keys:
+            field, cast = num_keys[k]
             try:
-                num = float(re.sub(r"[^0-9.]", "", v) or 0)
-            except ValueError:
-                num = 0.0
-            specs["ram_gb" if k == "OMNI_RAM_GB" else "vram_gb"] = num
+                specs[field] = cast(float(re.sub(r"[^0-9.]", "", v) or 0))
+            except (ValueError, TypeError):
+                pass
     return specs
 
 

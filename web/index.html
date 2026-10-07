@@ -6880,22 +6880,36 @@ async function ollamaAutoDetect(){
     if(reco)reco.innerHTML='<div class="tool-status">Detected: '+escapeHtml(specs.cpu||'CPU?')+' · '+escapeHtml(String(specs.ram_gb||'?'))+'GB RAM'+(specs.gpu?(' · '+escapeHtml(specs.gpu)+(specs.vram_gb?(' '+specs.vram_gb+'GB VRAM'):'')):' (no GPU)')+' — picking models…</div>';
     const rr=await authFetch(API+'/api/ollama/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(specs)});
     const rd=await rr.json().catch(()=>({}));if(!rr.ok)throw new Error((rd&&rd.error)||('HTTP '+rr.status));
-    ollamaRenderReco(rd);
+    ollamaRenderReco(rd,{raw:sd.raw||''});
   }catch(e){if(reco)reco.innerHTML='<div class="tool-status">Auto-detect failed: '+escapeHtml(e.message)+'</div>';showToast(e.message,'error')}
 }
-function ollamaRenderReco(rd){
+function ollamaRenderReco(rd,scan){
   const reco=document.getElementById('ollama-reco');if(!reco)return;reco.innerHTML='';
-  const sp=rd.specs||{};
+  const sp=rd.specs||{};scan=scan||{};
   const specs=document.createElement('div');specs.className='usage-activity-item';specs.style.flexWrap='wrap';
   const sline=document.createElement('div');sline.style.cssText='display:flex;gap:8px;align-items:center;width:100%;flex-wrap:wrap';
   sline.innerHTML='<span class="act-model">'+escapeHtml(sp.cpu||'Unknown CPU')+'</span>'
     +'<span class="act-provider">'+escapeHtml(String(sp.ram_gb||'?'))+' GB RAM</span>'
     +'<span class="act-provider">'+escapeHtml(sp.gpu||'No dedicated GPU')+(sp.vram_gb?(' · '+sp.vram_gb+' GB VRAM'):'')+'</span>'
     +(rd.dedicated_gpu?'<span class="act-provider" style="font-size:10px">dedicated GPU</span>':'');
-  specs.appendChild(sline);
-  const budget=document.createElement('div');budget.className='act-detail';budget.style.cssText='width:100%;white-space:normal';
-  budget.textContent='Model budget: '+rd.budget_gb+' GB — '+(rd.basis||rd.source||'');specs.appendChild(budget);
-  reco.appendChild(specs);
+  const detail=document.createElement('div');
+  detail.style.cssText='display:none;width:100%;margin-top:8px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;color:var(--text-secondary);line-height:1.7';
+  const rows=[
+    ['CPU',sp.cpu||'—'],
+    ['Cores / threads',(sp.cpu_cores||'?')+' / '+(sp.cpu_threads||'?')],
+    ['Max clock',sp.cpu_mhz?(sp.cpu_mhz+' MHz'):'—'],
+    ['RAM',(sp.ram_gb||'?')+' GB'],
+    ['GPU',(sp.gpu||'none')+(sp.vram_gb?('  ('+sp.vram_gb+' GB VRAM)'):'')],
+    ['GPU driver',sp.gpu_driver||'—'],
+    ['OS',sp.os||'—'],
+    ['Model budget',rd.budget_gb+' GB — '+(rd.basis||rd.source||'')],
+  ];
+  detail.textContent=rows.map(r=>r[0]+': '+r[1]).join('\n')+(scan.raw?('\n\nRaw scan output:\n'+scan.raw):'');
+  const btn=document.createElement('button');btn.className='btn btn-ghost btn-sm';btn.style.marginLeft='auto';btn.textContent='Details';
+  btn.title='Show the full hardware details from the scan';
+  btn.onclick=()=>{const open=detail.style.display!=='none';detail.style.display=open?'none':'';btn.textContent=open?'Details':'Hide details'};
+  sline.appendChild(btn);
+  specs.appendChild(sline);specs.appendChild(detail);reco.appendChild(specs);
   if(rd.warning){const w=document.createElement('div');w.className='tool-status';w.style.cssText='color:var(--warning);margin:8px 0';w.textContent='\u26A0 '+rd.warning;reco.appendChild(w)}
   const title=document.createElement('div');title.className='tool-result-sub';title.style.margin='10px 0 4px';title.textContent='Top recommendations per task:';reco.appendChild(title);
   for(const t of (rd.tasks||[])){
