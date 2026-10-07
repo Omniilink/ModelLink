@@ -295,6 +295,7 @@ a:hover{text-decoration:underline}
 .approve-bar .approve:hover{opacity:.85}
 .approve-bar .deny{background:var(--bg-tertiary);color:var(--text-secondary)}
 .approve-bar .deny:hover{background:var(--error);color:#fff;border-color:var(--error)}
+.at-file-dir{font-size:9px;color:var(--text-muted);opacity:.65;margin-left:5px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .at-file-tag{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:var(--radius-xs);background:var(--accent-dim);border:1px solid var(--accent);color:var(--accent-light);font-size:11px;font-family:var(--mono)}
 .at-dropdown{position:absolute;bottom:100%;left:0;right:0;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);z-index:60;display:none;margin-bottom:4px}
 .at-dropdown.open{display:block}
@@ -362,6 +363,7 @@ a:hover{text-decoration:underline}
 .coding-live-done{padding-top:5px;margin-top:7px;border-top:1px dashed var(--border);color:var(--text-muted)}
 .coding-live-time{opacity:.65;font-size:10px;margin-left:2px}
 /* ---- Optimise feature ---- */
+.opt-panel.open{display:block}
 .opt-panel{position:fixed;z-index:10000;width:390px;max-width:calc(100vw - 24px);background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);box-shadow:0 12px 40px rgba(0,0,0,.55);padding:0;overflow:hidden;display:none;font-family:var(--font)}
 .opt-head{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;border-bottom:1px solid var(--border);background:var(--bg-tertiary)}
 .opt-title{font-size:12px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:7px}
@@ -2966,7 +2968,18 @@ function closeFilePreview(){const f=document.getElementById('file-preview-frame'
 
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
-function updateAtIndicator(){const ind=document.getElementById('coding-at-files');if(!ind)return;if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none'}else{ind.style.display='flex';ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f)+'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')}}
+function updateAtIndicator(){
+  const ind=document.getElementById('coding-at-files');
+  if(!ind)return;
+  // Never render a non-string: a stray object here stringifies to
+  // "[object Object]" and the user sees that instead of a file name.
+  codingAtFiles=(codingAtFiles||[]).filter(f=>typeof f==='string'&&f);
+  if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none';return}
+  ind.style.display='flex';
+  ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f.split('/').pop())
+    +'<span class="at-file-dir">'+escapeHtml((f.indexOf('/')>-1?f.slice(0,f.lastIndexOf('/')):''))+'</span>'
+    +'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('');
+}
 var omniiignorePatterns=[];
 async function loadOmniiignore(){try{const r=await authFetch(API+'/api/coding/omniiignore');if(r.ok){const d=await r.json();omniiignorePatterns=d.patterns||[]}}catch(e){}}
 function omniiignoreMatches(rel,patterns){rel=String(rel||'').replace(/\\/g,'/');const parts=rel.split('/').filter(Boolean);const name=parts[parts.length-1]||'';return (patterns||[]).some(pat=>{const p=String(pat||'').trim().replace(/\/+$/,'');if(!p)return false;if(/[*?[]/.test(p)){const esc=p.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.');const re=new RegExp('^'+esc+'$');return parts.some(part=>re.test(part))||re.test(name)||re.test(rel)}return rel===p||rel.startsWith(p+'/')||name===p||parts.some(part=>part===p)})}
@@ -2980,10 +2993,13 @@ async function attachAllFiles(){
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error(data.error||'no files');tree=data.tree}
     const chosen=[];
     const ignoredFolders=[];
-    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n)}}})(tree);
-    chosen.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n.path)}}})(tree);
+    chosen.sort((a,b)=>a.split('/').length-b.split('/').length);
     codingIgnoredFolders=ignoredFolders;
-    codingAtFiles=chosen;
+    // Strings, never tree nodes: every consumer of codingAtFiles (the @-file
+    // chips, buildCodingSystemPrompt, removeAtFile) treats these as paths, and
+    // an object here rendered as "[object Object]" all over the composer.
+    codingAtFiles=codingAtFiles.filter(f=>typeof f==='string'&&f);
     updateAtIndicator();
     showToast('Attached '+chosen.length+' file'+(chosen.length===1?'':'s')+' to context','success');
   }catch(e){showToast('Attach failed: '+e.message,'error')}
@@ -3030,7 +3046,12 @@ function autoAttachProjectFiles(){
       if(typeof sz==='number')budget-=sz;
       if(budget<=0)break;
     }
-    if(chosen.length){codingAtFiles=chosen;updateAtIndicator()}
+    if(chosen.length){
+      // Defensive: a path, never a node object (an object here is what turns
+      // the chips into "[object Object]").
+      codingAtFiles=codingAtFiles.filter(f=>typeof f==='string'&&f).concat(chosen.filter(f=>typeof f==='string'));
+      updateAtIndicator();
+    }
   }catch(e){}
   // When Auto-Attach Files is on, attach everything (respecting .omniiignore).
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cs=>{
@@ -4419,7 +4440,10 @@ function appendCodingHistoryMsg(m){
     if(isHarnessMsg(m)){appendHarnessRow(chat,m.content);return}
     const el=document.createElement('div');el.className='coding-msg user';
     el.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content"></div></div>';
-    el.querySelector('.coding-msg-content').textContent=m.content;
+    // m.content may be a multimodal ARRAY (text + image parts). Assigning
+    // that straight to textContent stringified the objects, so a restored
+    // vision message showed "[object Object],[object Object]".
+    el.querySelector('.coding-msg-content').textContent=msgTextContent(m.content);
     chat.appendChild(el);return;
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
@@ -7044,19 +7068,28 @@ function openOptimiseMenu(ev){
     +'</div>'
     +'<div class="opt-foot"><div class="opt-est" id="opt-est"></div>'
     +'<button class="opt-run" id="opt-run-btn" onclick="startOptimise()">Start optimise</button></div>';
+  // The stylesheet ships .opt-panel with display:none so it costs nothing
+  // while closed; showing it here is what makes the button actually work.
+  p.classList.add('open');
   document.body.appendChild(p);
   optPanel=p;
-  // Anchor under the toolbar button, kept inside the viewport.
-  const r=(ev&&ev.currentTarget&&ev.currentTarget.getBoundingClientRect?ev.currentTarget.getBoundingClientRect():{left:20,right:20,bottom:20});
-  const w=p.offsetWidth,h=p.offsetHeight;
-  let left=Math.min(Math.max(8,(r.left||8)-40),window.innerWidth-w-8);
-  let top=(r.bottom||40)+6;
-  if(top+h>window.innerHeight-8)top=Math.max(8,window.innerHeight-h-8);
-  p.style.left=left+'px';p.style.top=top+'px';
+  // Anchor under the toolbar button, kept inside the viewport. Every step is
+  // defensive: one throw while measuring used to leave the panel invisible
+  // (offsetWidth 0 at display:none) and the button looking dead.
+  try{
+    const r=(ev&&ev.currentTarget&&ev.currentTarget.getBoundingClientRect)
+      ?ev.currentTarget.getBoundingClientRect():null;
+    const vw=window.innerWidth||1200,vh=window.innerHeight||800;
+    const w=p.offsetWidth||390,h=p.offsetHeight||420;
+    const left=r?Math.min(Math.max(8,r.left-40),Math.max(8,vw-w-8)):Math.max(8,(vw-w)/2);
+    let top=r?(r.bottom||40)+6:Math.max(8,(vh-h)/2);
+    if(top+h>vh-8)top=Math.max(8,vh-h-8);
+    p.style.left=left+'px';p.style.top=top+'px';
+  }catch(e){p.style.left='24px';p.style.top='64px'}
   setTimeout(()=>document.addEventListener('mousedown',optOutside,true),0);
-  optFillModels();
-  optBindPanel();
-  optUpdateEstimate();
+  try{optFillModels()}catch(e){}
+  try{optBindPanel()}catch(e){}
+  try{optUpdateEstimate()}catch(e){}
 }
 function toggleOptimiseAdvanced(){
   optCfg.advanced=!optCfg.advanced;
@@ -7070,12 +7103,23 @@ function toggleOptimiseAdvanced(){
 // the cheapest ones sit at the top: a 3B auditor and a 70B editor are picked
 // with the same dropdown, and "smallest available" is a real choice.
 function optModelOptions(){
+  // The canonical model list lives in allModels (populated by loadModels).
+  // Referencing a bare `models` identifier here threw a ReferenceError and
+  // left the panel stuck on the loading screen, so every source is guarded.
   let list=[];
-  try{list=(typeof models!=='undefined'&&Array.isArray(models))?models.slice():[]}catch(e){}
+  try{if(Array.isArray(allModels))list=allModels.slice()}catch(e){}
   if(!list.length&&typeof getModels==='function'){try{list=getModels()||[]}catch(e){}}
-  return list
-    .filter(m=>m&&m.id&&!/\b(embedding|rerank|image|whisper|tts)\b/i.test(String(m.id)))
-    .sort((a,b)=>(optModelSize(a.id)||99)-(optModelSize(b.id)||99));
+  const seen=new Set(),out=[];
+  for(const m of list){
+    if(!m)continue;
+    const id=typeof m==='string'?m:String(m.id||'');
+    if(!id||id==='omniilink')continue;
+    if(/\b(embedding|rerank|whisper|tts)\b/i.test(id))continue;
+    if(seen.has(id))continue;
+    seen.add(id);
+    out.push({id:id});
+  }
+  return out.sort((a,b)=>(optModelSize(a.id)||99)-(optModelSize(b.id)||99));
 }
 // Rough parameter count in billions, from the model id: "qwen2.5-coder:7b" -> 7.
 function optModelSize(id){
