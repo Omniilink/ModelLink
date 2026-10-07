@@ -3058,11 +3058,15 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
   // which is exactly how a run stalls after one file. Make it mandatory and
   // show the exact syntax, and require re-emitting it every round so the
   // checkmarks stay truthful.
-  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n';
+  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n';
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
+  // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
+  // for the rest of the run instead of a mid-task user message, which used to
+  // derail the model and leave half-finished work behind.
+  if(codingSplitPending)sysPrompt+='\nTODO GRANULARITY (your TODO_LIST is too coarse): split each open item into its own smaller steps — one file, one feature, or one check per item — and continue working in the SAME reply. Do NOT stop, restart, or ask anything: just emit a finer TODO_LIST with the already-done items still marked [x] and carry on with the next tool block.\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -3387,7 +3391,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -3815,18 +3819,36 @@ function codingLiveTps(chars){
   if(dt<=0)return 0;
   return Math.max(0,Math.round((dc/4)/dt));
 }
+// Read a count back out of a rendered stat chip. The chip shows ' +31' /
+// ' -1195', where the leading symbol is decoration — parsing with it would
+// yield -1195 and poison every total derived from it. Digits only, and the
+// result is clamped non-negative: a count of characters is never negative.
+function statsNum(text){
+  const m=String(text==null?'':text).match(/\d+/);
+  return m?Math.max(0,parseInt(m[0],10)||0):0;
+}
 function codingLiveHtml(added,removed,files,tps){
-  return '<span class="coding-live-stat"><b class="term-add">+'+added+'</b> <b class="term-del">-'+removed+'</b> chars'
-    +(files?' · '+files+' file'+(files!==1?'s':''):'')
-    +(tps?' · '+tps+' tok/s':'')+'</span>';
+  // A character count and a token rate are never negative. Taking the absolute
+  // value both clamps a fresh bug and repairs records persisted while the
+  // sign-parsing bug was live (those hold -1195 meaning 1195).
+  const a=Math.abs(Number(added)||0),r=Math.abs(Number(removed)||0);
+  const f=Math.abs(Number(files)||0);
+  const s=Math.abs(Math.round(Number(tps)||0));
+  return '<span class="coding-live-stat"><b class="term-add">+'+a+'</b> <b class="term-del">-'+r+'</b> chars'
+    +(f?' · '+f+' file'+(f!==1?'s':''):'')
+    +(s?' · '+s+' tok/s':'')+'</span>';
 }
 // Every stat line for a turn lives in ONE place: the wrapper div that holds
 // the message content. Streaming, finalising and restoring must all target
 // this same element or the turn ends up with two competing lines.
-function codingStatsHost(assistantEl){
-  if(!assistantEl)return null;
-  const c=assistantEl.querySelector&&assistantEl.querySelector('.coding-msg-content');
-  return (c&&c.parentElement)||assistantEl;
+// Accepts EITHER the assistant bubble or its .coding-msg-content child, so
+// callers cannot accidentally split the box across two hosts.
+function codingStatsHost(el){
+  if(!el)return null;
+  if(el.classList&&el.classList.contains&&el.classList.contains('coding-msg-content'))
+    return el.parentElement||el;
+  const c=el.querySelector&&el.querySelector('.coding-msg-content');
+  return (c&&c.parentElement)||el;
 }
 // Called from the stream renderer. Cheap guard: it only re-parses when the
 // partial text actually grew, so a long prose turn costs nothing.
@@ -3834,10 +3856,12 @@ async function codingLiveUpdate(fullText,host){
   if(!host)return;
   const text=String(fullText||'');
   const blocks=codingLiveBlocks(text);
-  const tps=codingLiveTps(text.length);
-  if(!blocks.length&&!codingLive.el){
+  const tps=Math.max(0,codingLiveTps(text.length));
+  // Nothing written yet: show the stream speed alone, never a "+0 -0" line.
+  if(!blocks.length){
     if(tps&&host._liveTps!==tps){
       host._liveTps=tps;
+      if(!host._liveBox||host._liveBox._done){return}
       if(!host._liveSpeed){host._liveSpeed=document.createElement('div');host._liveSpeed.className='coding-live';host.appendChild(host._liveSpeed)}
       host._liveSpeed.innerHTML=codingLiveHtml(0,0,0,tps);
     }
@@ -3850,26 +3874,42 @@ async function codingLiveUpdate(fullText,host){
   for(const b of blocks){
     if(b.path===codingLive.lastPath&&host._livePending)break;
     const s=await codingLiveBlockStats(b);
-    if(s){added+=s.added;removed+=s.removed}
+    if(s){added+=Math.max(0,s.added||0);removed+=Math.max(0,s.removed||0)}
   }
   codingLive.added=added;codingLive.removed=removed;codingLive.files=blocks.length;
+  // Every block currently reads as unchanged (a file that already matched, or
+  // a patch whose OLD text has not streamed yet): show nothing rather than a
+  // misleading "+0 -0".
+  if(!added&&!removed){
+    if(host._liveBox){host._liveBox.remove();host._liveBox=null}
+    return;
+  }
   let box=host._liveBox;
-  if(!box){box=document.createElement('div');box.className='coding-live';host.appendChild(box);host._liveBox=box}
+  if(!box||!box.isConnected){box=document.createElement('div');box.className='coding-live';host.appendChild(box);host._liveBox=box}
   box.innerHTML=codingLiveHtml(added,removed,blocks.length,tps);
 }
 // Final numbers for a finished turn, pinned under the message.
+// A turn that changed nothing gets NO line at all: "+0 -0 chars" beside a
+// message is noise, and it is the common case for a reply that only ran a
+// command or answered in prose.
 function codingLiveFinish(host,added,removed,files,tpsMs){
-  if(!host)return;
+  if(!host)return null;
+  added=Math.max(0,Number(added)||0);
+  removed=Math.max(0,Number(removed)||0);
+  files=Math.max(0,Number(files)||0);
+  if(!added&&!removed){
+    if(host._liveBox){host._liveBox.remove();host._liveBox=null}
+    if(host._liveSpeed){host._liveSpeed.remove();host._liveSpeed=null}
+    return null;
+  }
   const secs=tpsMs>0?tpsMs/1000:0;
-  const rate=secs>0?Math.round((added+removed)/4/secs):0;
-  const total=added+removed;
-  // Always keep a box once a turn produced real numbers, so the line stays
-  // pinned beside its message instead of vanishing when it changes nothing.
+  const rate=secs>0?Math.max(0,Math.round((added+removed)/4/secs)):0;
   let box=host._liveBox;
-  if(!box){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
+  if(!box||!box.isConnected){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
   if(host._liveSpeed){host._liveSpeed.remove();host._liveSpeed=null}
-  box.innerHTML=codingLiveHtml(added,removed,files,rate)+'<span class="coding-live-time">'+codingStatsStamp()+'</span>';
-  return{added:added,removed:removed,files:files,tps:rate,when:codingStatsStamp()};
+  const when=codingStatsStamp();
+  box.innerHTML=codingLiveHtml(added,removed,files,rate)+'<span class="coding-live-time">'+when+'</span>';
+  return{added:added,removed:removed,files:files,tps:rate,when:when};
 }
 // "3:04 PM" style stamp so a permanent stat line carries a time too.
 function codingStatsStamp(){
@@ -3894,8 +3934,11 @@ function finishCodingLiveStats(host,elapsedMs,histMsg){
       const pathEl=w.querySelector('.diff-path');
       const addEl=w.querySelector('.term-add'),delEl=w.querySelector('.term-del');
       if(!addEl||!delEl)continue;
-      added+=parseInt(String(addEl.textContent).replace(/[^\d-]/g,''),10)||0;
-      removed+=parseInt(String(delEl.textContent).replace(/[^\d-]/g,''),10)||0;
+      // The card renders ' +31' and ' -1195' — the dash is a LABEL, not a
+      // sign. parseInt would read ' -1195' as -1195 and turn the whole total
+      // (and the tok/s derived from it) negative, so strip to digits only.
+      added+=statsNum(addEl.textContent);
+      removed+=statsNum(delEl.textContent);
     }
     const stats=codingLiveFinish(host,added,removed,cards.length,elapsedMs);
     if(stats&&histMsg){histMsg.stats=stats;persistCodingChat()}
@@ -3905,11 +3948,11 @@ function finishCodingLiveStats(host,elapsedMs,histMsg){
 // simply have no stats and render as they always did.
 function renderCodingStats(saved,host){
   if(!saved)return;
-  const added=Number(saved.added)||0,removed=Number(saved.removed)||0;
-  const files=Number(saved.files)||0,tps=Number(saved.tps)||0;
+  const added=Math.abs(Number(saved.added)||0),removed=Math.abs(Number(saved.removed)||0);
+  const files=Math.abs(Number(saved.files)||0),tps=Math.abs(Math.round(Number(saved.tps)||0));
   if(!added&&!removed)return;
   let box=host._liveBox;
-  if(!box){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
+  if(!box||!box.isConnected){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
   box.innerHTML=codingLiveHtml(added,removed,files,tps)+'<span class="coding-live-time">'+(saved.when?escapeHtml(saved.when):'')+'</span>';
 }
 function renderCodingTodos(){
@@ -3936,6 +3979,10 @@ function completeAllTodos(){
   },2400);
 }
 let codingSplitNudgeSig='';
+// Set when the model's TODO_LIST is too coarse. Consumed by
+// buildCodingSystemPrompt() as a standing rule — deliberately NOT a user
+// message, which would interrupt the run and corrupt the work in flight.
+let codingSplitPending=false;
 function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g)];
   if(blocks.length===0)return false;
   const last=blocks[blocks.length-1][1];
@@ -3955,12 +4002,15 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
   if(fresh.length>0)codingTodos=fresh;
   const open=fresh.filter(f=>!f.done);
   const longest=open.reduce((m,f)=>Math.max(m,f.text.length),0);
+  // Coarse items: ask for a split — but as a STANDING RULE in the system
+  // prompt, never as a user turn. Injecting a mid-task user message makes the
+  // model drop what it was doing and restart, which is what produced broken
+  // work; a system-prompt rule applies to the whole run without interrupting.
   if(open.length>0&&(longest>150||(open.length<3&&longest>80))){
     const sig=open.map(f=>norm(f.text)).sort().join('|');
     if(sig!==codingSplitNudgeSig){
       codingSplitNudgeSig=sig;
-      codingHistory.push({role:'user',content:'Break this TODO_LIST into smaller steps before continuing: one file, one feature, or one check per item. Re-emit the full split list with the items already done marked [x].'});
-      persistCodingChat();
+      codingSplitPending=true;
     }
   }
   // True when THIS message introduced open work the loop should pursue,
@@ -4318,7 +4368,9 @@ function appendCodingHistoryMsg(m){
   try{renderCodingStats(m.stats,el.querySelector('.coding-msg-content').parentElement)}catch(e){}
   chat.appendChild(el);
 }
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos'];
+// Every harness-injected turn must be listed here, otherwise it renders as a
+// normal "You" bubble and the user sees words they never typed.
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: '];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -4329,6 +4381,12 @@ function harnessLabel(content){
   if(content.indexOf('Your previous reply was cut off')===0)return 'Cut-off reply: asked to re-send in smaller blocks';
   if(content.indexOf('Your HTML references files')===0)return 'Missing-asset warning sent';
   if(content.indexOf('Validation FAILED')===0)return 'Validation failure sent back for fixes';
+  if(content.indexOf('Verification FAILED: ')===0)return 'Verification failure sent back for fixes';
+  if(content.indexOf('Claim rejected')===0)return 'Completion claim rejected by file check';
+  if(content.indexOf('No progress')===0)return 'No-progress stop: missing files remain';
+  if(content.indexOf('Before this counts as finished')===0)return 'Completion audit sent';
+  if(content.indexOf('Plan extended to ')===0)return 'Plan extended — continuing';
+  if(content.indexOf('Not done yet: ')===0)return 'Improve request sent';
   return 'Review note sent';
 }
 function appendHarnessRow(chat,full){
