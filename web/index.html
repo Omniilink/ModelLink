@@ -332,6 +332,10 @@ a:hover{text-decoration:underline}
 #coding-output-body .term-target{color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #coding-output-body .term-add{color:#34c77b}
 #coding-output-body .term-del{color:#e5534b}
+/* The +/- counts now live in the chat tool cards (the terminal panel that
+   used to scope these rules is gone), so colour them there too. */
+.coding-msg-tool .term-add{color:#34c77b;font-weight:650}
+.coding-msg-tool .term-del{color:#e5534b;font-weight:650}
 .diff-wrap{margin:4px 0}
 .diff-head{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:2px 0}
 .diff-head:hover .diff-path{color:var(--text-primary)}
@@ -348,6 +352,12 @@ a:hover{text-decoration:underline}
 .dg-row.dg-del{background:rgba(229,83,75,.08)}
 .dg-row.dg-del code{color:#f19994}
 .dg-row.dg-hunk{background:var(--bg-tertiary);color:var(--accent-light);font-weight:650;padding:2px 8px;grid-template-columns:1fr}
+.diff-expand{font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:9px;padding:0 6px;flex-shrink:0;text-transform:uppercase;letter-spacing:.4px}
+.diff-head:hover .diff-expand{color:var(--text-secondary);border-color:var(--border-light)}
+.coding-live{margin-top:6px;font-size:11px;font-family:var(--mono);color:var(--text-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.coding-live-stat{display:inline-flex;align-items:center;gap:5px}
+.coding-live .term-add{color:#34c77b;font-weight:650}
+.coding-live .term-del{color:#e5534b;font-weight:650}
 #upload-progress .up-row{margin-bottom:12px}
 #upload-progress .up-row:last-child{margin-bottom:0}
 .up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
@@ -3041,6 +3051,14 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
   // for identical output. Only add it when it is genuinely missing.
   if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block. Split it SMALL: one file, one feature, or one check per item — one giant item covering the whole task is wrong, break it into its parts so progress is verifiable step by step.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- PACK every round: emit all independent actions in ONE reply — several FILE_CREATE/FILE_EDIT blocks and several RUN_COMMANDs together. Spending a whole round on one action wastes the budget you declared.\n- Never end a round with prose only while steps remain and any [ ] todo is open: either send the next tool blocks or say plainly what blocks you.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
+  // A model that never writes a TODO_LIST leaves the harness nothing to track,
+  // which is exactly how a run stalls after one file. Make it mandatory and
+  // show the exact syntax, and require re-emitting it every round so the
+  // checkmarks stay truthful.
+  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n';
+  // The repeated-failure pattern: the same doomed command re-run every round.
+  // State the rule up front instead of only hinting after the fact.
+  if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   return sysPrompt}
 
@@ -3175,6 +3193,7 @@ function renderStreamingContent(chat,contentEl,fullText){
     contentEl._streamBody=body;
     contentEl._streamNote=null;
   }
+  try{codingLiveUpdate(fullText,contentEl.parentElement)}catch(e){}
   body.innerHTML=p.body;
   let note=contentEl._streamNote;
   if(p.label){
@@ -3375,7 +3394,8 @@ async function sendCodingMessage(){
   }
   codingHistory.push({role:'user',content:userContent});persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
-  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
+  codingLiveReset();
+  let liveT0=Date.now();  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
@@ -3403,6 +3423,7 @@ async function sendCodingMessage(){
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
+  finishCodingLiveStats(assistantEl,Date.now()-liveT0);
   if(!aborted&&(!next.actionable||await isPlanMode()))await codingNotifyDone(fullText).catch(()=>{});
 }
 
@@ -3537,11 +3558,87 @@ function cmdResultClass(result){
   var hasOut=(result.stdout||'').trim()||(result.stderr||'').trim();
   return hasOut?'fail':'neutral';
 }
+// Foreground servers/ watchers never return, so running one just burns the
+// whole command timeout and returns nothing useful. Recognise the common ones
+// and hand the model an explicit reason instead of a silent 60s stall.
+const BLOCKING_CMD_PATTERNS=[
+  /(^|[&\s])python3?\s+-m\s+http\.server/i,
+  /(^|[&\s])(node|npx|bun|deno)\s+serve(\.[a-z]+)?(\s|$)/i,
+  /(^|[&\s])npx\s+(serve|http-server|json-server|live-server)/i,
+  /(^|[&\s])(http-server|json-server|live-server|serve)(\s|$)/i,
+  /(^|[&\s])(npm|yarn|pnpm)\s+(start|serve)\b/i,
+  /(^|[&\s])(vite|nuxt\s+dev|webpack-dev-server|parcel)(\s|$)/i,
+  /(^|[&\s])next\s+dev(\s|$)/i,
+  /(^|[&\s])(uvicorn|gunicorn|flask\s+run|httpd)(\s|$)/i,
+  /manage\.py\s+runserver/i,
+  /(^|[&\s])(nodemon|forever)(\s|$)/i,
+  /(^|[&\s])ts-node[^\n]*--watch/i,
+  /(^|[&\s])(--watch|-w)(\s|$)/,
+  /(^|[&\s])tail\s+-f/,
+  /(^|[&\s])(watch|watchdog)(\s|$)/i
+];
+function blockingCommandReason(cmd){
+  const c=String(cmd||'').trim();
+  if(!c)return '';
+  // A trailing &, nohup, or Windows `start /b` means the author backgrounded
+  // it on purpose: let it run. Note `npm start` ends in the word "start" but
+  // is not a background launch, so only the explicit forms count.
+  if(/(&|\bnohup\b)\s*$/.test(c))return '';
+  if(/\bstart\s+\/b\b/i.test(c))return '';
+  for(const re of BLOCKING_CMD_PATTERNS){
+    if(re.test(c))return 'Blocked: this starts a long-running server or watcher that never exits, so the command would hang until the timeout and tell you nothing. Run it in the background (end the command with &) or verify the code another way.';
+  }
+  return '';
+}
 function fmtCmdResult(result){
   var t=(result.stdout||'')+(result.stderr?'\n'+result.stderr:'');
   t=t.trim();
   if(!t)return (result.exit_code===0?'(no output)':'(no matches — exit '+result.exit_code+')');
   return escapeHtml(t);
+}
+function diffCharStats(oldText,newText){
+  // Character-level added/removed counts for a whole-file edit. Cheap LCS with
+  // a hard size cap: past it the totals are estimated from line counts so a
+  // huge file can never stall the UI. Returns {added,removed} in CHARACTERS.
+  const a=String(oldText==null?'':oldText),b=String(newText==null?'':newText);
+  if(a===b)return{added:0,removed:0};
+  const MAX=600000;
+  if(a.length+b.length>MAX){
+    // Too big to diff exactly: approximate by line membership.
+    const oldSet=new Map(),la=a.split('\n'),lb=b.split('\n');
+    for(const ln of la)oldSet.set(ln,(oldSet.get(ln)||0)+1);
+    let removed=0;
+    for(const ln of la)removed++;
+    for(const ln of lb){
+      const c=oldSet.get(ln)||0;
+      if(c>0)oldSet.set(ln,c-1);else removed--;
+    }
+    removed=Math.max(0,removed);
+    let added=0;
+    for(const ln of lb)added++;
+    for(const ln of la){const c=oldSet.get(ln)||0;if(c>0)added--;}
+    return{added:Math.max(0,added),removed};
+  }
+  const n=a.length,m=b.length;
+  // Trim the common prefix/suffix first — edits touch one region, so this
+  // shrinks the DP from the whole file to just the changed window.
+  let p=0;const pmax=Math.min(n,m);
+  while(p<pmax&&a.charCodeAt(p)===b.charCodeAt(p))p++;
+  let s=0;const smax=Math.min(n,m)-p;
+  while(s<smax&&a.charCodeAt(n-1-s)===b.charCodeAt(m-1-s))s++;
+  if(p===n&&s===m)return{added:0,removed:0};
+  const A=a.slice(p,n-s),B=b.slice(p,m-s);
+  if(!A.length)return{added:B.length,removed:0};
+  if(!B.length)return{added:0,removed:A.length};
+  const W=A.length+1,H=B.length+1;
+  const dp=new Uint32Array(W*H);
+  for(let i=A.length-1;i>=0;i--){
+    for(let j=B.length-1;j>=0;j--){
+      dp[i*W+j]=A.charCodeAt(i)===B.charCodeAt(j)?dp[(i+1)*W+j+1]+1
+        :Math.max(dp[(i+1)*W+j],dp[i*W+j+1]);
+    }
+  }
+  return{added:B.length-dp[0],removed:A.length-dp[0]};
 }
 function diffLineOps(oldLines,newLines){
   // LCS diff -> [{t:' '|'-'|'+',text,an,bn}]. Null when too big (caller falls back).
@@ -3593,24 +3690,38 @@ async function fetchOldProjectFile(path){
 async function fillFileDiff(toolDiv,path,content,kind){
   // Replaces raw code dumps with a collapsed opencode-style row:
   // Edit <path> +A -R, expanding to a line-numbered red/green diff.
+  // The +/- numbers are CHARACTERS added/removed (what users actually ask
+  // about: "how much code did it write"), with line counts in the tooltip.
   const old=await fetchOldProjectFile(path);
   const oldLines=old?old.split('\n'):[];
   const newLines=String(content||'').split('\n');
   const ops=diffLineOps(oldLines,newLines);
-  let added=0,removed=0;
-  if(ops)for(const o of ops){if(o.t==='+')added++;else if(o.t==='-')removed++}
-  else{added=newLines.length;removed=oldLines.length}
+  let lineAdd=0,lineDel=0;
+  if(ops)for(const o of ops){if(o.t==='+')lineAdd++;else if(o.t==='-')lineDel++}
+  else{lineAdd=newLines.length;lineDel=oldLines.length}
+  const stats=diffCharStats(old||'',String(content||''));
+  // A block whose content already equals the file on disk changed nothing.
+  // Models loop on these ("Edit index.html +0 -0" nine times in a row), so the
+  // loop needs to be told rather than left harvesting a fake success.
+  const isNoop=stats.added===0&&stats.removed===0&&old!==null;
+  if(isNoop)codingNoopWrites++;
   const wrap=document.createElement('div');wrap.className='diff-wrap';
   const head=document.createElement('div');head.className='tool-label diff-head';
+  head.title='Click to expand — '+lineAdd+' line(s) added, '+lineDel+' removed';
   const kindEl=document.createElement('span');kindEl.textContent=kind;
   const pathEl=document.createElement('span');pathEl.className='diff-path';pathEl.textContent=path;
-  const addEl=document.createElement('span');addEl.className='term-add';addEl.textContent=' +'+added;
-  const delEl=document.createElement('span');delEl.className='term-del';delEl.textContent=' -'+removed;
+  const addEl=document.createElement('span');addEl.className='term-add';addEl.textContent=' +'+stats.added;
+  const delEl=document.createElement('span');delEl.className='term-del';delEl.textContent=' -'+stats.removed;
   const chev=document.createElement('span');chev.className='diff-chev';chev.textContent='▾';
+  const exp=document.createElement('span');exp.className='diff-expand';exp.textContent='expand';
   head.appendChild(kindEl);
   head.appendChild(document.createTextNode(' '));head.appendChild(pathEl);
-  head.appendChild(addEl);head.appendChild(delEl);head.appendChild(chev);
-  head.onclick=()=>wrap.classList.toggle('open');
+  head.appendChild(addEl);head.appendChild(delEl);
+  head.appendChild(exp);head.appendChild(chev);
+  head.onclick=()=>{
+    const open=wrap.classList.toggle('open');
+    exp.textContent=open?'hide':'expand';
+  };
   wrap.appendChild(head);
   const body=document.createElement('div');body.className='diff-body';
   const hunks=unifiedDiffHunks(oldLines,newLines,3);
@@ -3639,6 +3750,132 @@ async function fillFileDiff(toolDiv,path,content,kind){
   }
   wrap.appendChild(body);
   toolDiv.appendChild(wrap);
+}
+// ---- Live coding stats -------------------------------------------------
+// While the model streams we parse whatever file blocks have arrived SO FAR
+// and diff them against the file on disk. That yields a running
+// "+added -removed" character counter that ticks up in real time instead of
+// appearing only once the turn is over. Tokens/sec is measured over a sliding
+// window so it reads as a live speed, not a whole-turn average.
+const codingLive={added:0,removed:0,files:0,t0:0,win:[],el:null,lastPath:'',cache:{}};
+function codingLiveReset(){
+  codingLive.added=0;codingLive.removed=0;codingLive.files=0;
+  codingLive.t0=Date.now();codingLive.win=[];codingLive.cache={};
+  codingLive.lastPath='';
+}
+// Cache of file bodies read during the turn: one read per path, reused by
+// every later re-diff so live counting never re-fetches.
+async function codingLiveOld(path){
+  const k=String(path||'');
+  if(!k)return null;
+  if(Object.prototype.hasOwnProperty.call(codingLive.cache,k))return codingLive.cache[k];
+  codingLive.cache[k]=null;              // in-flight / unknown
+  let body=null;
+  try{body=await codingReadFile(k)}catch(e){body=null}
+  codingLive.cache[k]=body;
+  return body;
+}
+function codingLiveBlocks(text){
+  // Every file-ish block visible in the partial text, including the one still
+  // streaming (matched by the `$` alternative on the END marker).
+  const out=[];const t=String(text||'');
+  for(const m of t.matchAll(/FILE_(?:CREATE|EDIT):([ \t]*\r?\n?)([^\n]+)\n([\s\S]*?)(?:\nEND_FILE_(?:CREATE|EDIT)|$)/g))
+    out.push({kind:m[0].startsWith('FILE_EDIT')?'Edit':'Create',path:m[2].trim(),body:m[3]});
+  for(const m of t.matchAll(/FILE_PATCH:([ \t]*\r?\n?)([^\n]+)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:\nEND_FILE_PATCH|$)/g))
+    out.push({kind:'Patch',path:m[2].trim(),old:m[3],body:m[4]});
+  return out;
+}
+// How many characters a streamed block represents once it lands. Patches need
+// the current file to apply against; without it we report the replacement
+// text as added and the OLD block as removed, which is the honest estimate.
+async function codingLiveBlockStats(b){
+  const old=await codingLiveOld(b.path);
+  if(b.kind!=='Patch')return diffCharStats(old||'',b.body||'');
+  const oT=old===null?null:String(old);
+  const oldText=b.old==null?'':String(b.old),newText=String(b.body||'');
+  if(oT===null)return{added:newText.length,removed:oldText.length};
+  let idx=oT.indexOf(oldText);
+  if(idx===-1)return{added:newText.length,removed:oldText.length};
+  const patched=oT.slice(0,idx)+newText+oT.slice(idx+oldText.length);
+  return diffCharStats(oT,patched);
+}
+function codingLiveTps(chars){
+  // Sliding 4s window over streamed characters; ~4 chars per token is the
+  // standard rule of thumb, and it tracks real throughput closely enough to
+  // read as a live speed.
+  const now=Date.now();
+  codingLive.win.push([now,chars]);
+  while(codingLive.win.length&&now-codingLive.win[0][0]>4000)codingLive.win.shift();
+  if(codingLive.win.length<2)return 0;
+  const dt=(now-codingLive.win[0][0])/1000;
+  const dc=codingLive.win[codingLive.win.length-1][1]-codingLive.win[0][1];
+  if(dt<=0)return 0;
+  return Math.max(0,Math.round((dc/4)/dt));
+}
+function codingLiveHtml(added,removed,files,tps){
+  return '<span class="coding-live-stat"><b class="term-add">+'+added+'</b> <b class="term-del">-'+removed+'</b> chars'
+    +(files?' · '+files+' file'+(files!==1?'s':''):'')
+    +(tps?' · '+tps+' tok/s':'')+'</span>';
+}
+// Called from the stream renderer. Cheap guard: it only re-parses when the
+// partial text actually grew, so a long prose turn costs nothing.
+async function codingLiveUpdate(fullText,host){
+  if(!host||!host.isConnected)return;
+  const text=String(fullText||'');
+  const blocks=codingLiveBlocks(text);
+  const tps=codingLiveTps(text.length);
+  if(!blocks.length&&!codingLive.el){
+    if(tps&&host._liveTps!==tps){
+      host._liveTps=tps;
+      if(!host._liveSpeed){host._liveSpeed=document.createElement('div');host._liveSpeed.className='coding-live';host.appendChild(host._liveSpeed)}
+      host._liveSpeed.innerHTML=codingLiveHtml(0,0,0,tps);
+    }
+    return;
+  }
+  const sig=blocks.length+'|'+text.length;
+  if(sig===host._liveSig&&host._liveTps===tps)return;
+  host._liveSig=sig;host._liveTps=tps;
+  let added=0,removed=0;
+  for(const b of blocks){
+    if(b.path===codingLive.lastPath&&host._livePending)break;
+    const s=await codingLiveBlockStats(b);
+    if(s){added+=s.added;removed+=s.removed}
+  }
+  codingLive.added=added;codingLive.removed=removed;codingLive.files=blocks.length;
+  let box=host._liveBox;
+  if(!box){box=document.createElement('div');box.className='coding-live';host.appendChild(box);host._liveBox=box}
+  box.innerHTML=codingLiveHtml(added,removed,blocks.length,tps);
+}
+// Final numbers for a finished turn, pinned under the message.
+function codingLiveFinish(host,added,removed,files,tpsMs){
+  if(!host||!host.isConnected)return;
+  const secs=tpsMs>0?tpsMs/1000:0;
+  const rate=secs>0?Math.round((added+removed)/4/secs):0;
+  let box=host._liveBox;
+  if(!box){box=document.createElement('div');box.className='coding-live';host.appendChild(box);host._liveBox=box}
+  if(host._liveSpeed){host._liveSpeed.remove();host._liveSpeed=null}
+  const total=added+removed;
+  box.innerHTML=total?codingLiveHtml(added,removed,files,rate):'';
+  if(!total)box.remove();
+}
+// Freeze the live counter once the turn's tool cards exist: the cards are the
+// authoritative per-file numbers, so sum those rather than the streamed guess.
+function finishCodingLiveStats(host,elapsedMs){
+  try{
+    const cards=[...host.querySelectorAll('.coding-msg-tool .diff-wrap')];
+    let added=0,removed=0;
+    const seen=new Set();
+    for(const w of cards){
+      if(seen.has(w))continue;
+      seen.add(w);
+      const pathEl=w.querySelector('.diff-path');
+      const addEl=w.querySelector('.term-add'),delEl=w.querySelector('.term-del');
+      if(!addEl||!delEl)continue;
+      added+=parseInt(String(addEl.textContent).replace(/[^\d-]/g,''),10)||0;
+      removed+=parseInt(String(delEl.textContent).replace(/[^\d-]/g,''),10)||0;
+    }
+    codingLiveFinish(host,added,removed,cards.length,elapsedMs);
+  }catch(e){}
 }
 function renderCodingTodos(){
   const bar=document.getElementById('coding-todo-bar'),list=document.getElementById('coding-todo-list');
@@ -3700,6 +3937,44 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
 function addCodingFeed(){
   // The terminal panel is gone: activity lives in the chat cards now.
 }
+// ---- TODO list resilience ----------------------------------------------
+// Plenty of small models never emit a TODO_LIST block at all. Without one the
+// loop has no idea what is still outstanding, so it either stops after the
+// first file or spins. These helpers derive a list from what the model DID
+// say (plan steps + the files it touched), so the harness always has something
+// concrete to point the next round at.
+function todoFromPlanSteps(text){
+  // PLAN-STEPS: N is a count, not content — it can't become a todo on its own,
+  // but its presence means the model intended a multi-step run.
+  const m=String(text||'').match(/PLAN-STEPS\s*:\s*(\d{1,3})/i);
+  return m?Math.max(1,parseInt(m[1],10)||1):0;
+}
+function todoItemsFromFiles(paths){
+  return[...new Set((paths||[]).filter(Boolean))].map(p=>'Finish and verify '+p);
+}
+function synthesizeCodingTodos(text,filePaths){
+  // Called when a turn produced real work but no TODO_LIST. Keeps any list the
+  // model already gave us, otherwise builds one from the files in play and
+  // marks the ones this turn already created as done.
+  if((codingTodos||[]).length)return false;
+  const touched=[...new Set((filePaths||[]).filter(Boolean))];
+  if(!touched.length)return false;
+  const items=todoItemsFromFiles(touched);
+  if(items.length===0)return false;
+  // Anything already written this turn counts as finished.
+  codingTodos=items.map(t=>({done:true,text:t}));
+  // The plan promised more rounds than these files: leave an open item so the
+  // loop has something to chase instead of declaring victory immediately.
+  const planned=todoFromPlanSteps(text);
+  if(planned>items.length){
+    codingTodos.push({done:false,text:'Complete the remaining work (plan said '+planned+' steps, '+items.length+' files written so far)'});
+  }else{
+    codingTodos.push({done:false,text:'Verify the finished files still work and nothing else is missing'});
+  }
+  codingTodosNew=true;
+  renderCodingTodos();
+  return true;
+}
 async function answerCodingQuestion(toolDiv,bar,qtext,opt){
   if(toolDiv.dataset.answered)return;
   toolDiv.dataset.answered='1';
@@ -3738,6 +4013,7 @@ function codingTruncatedAt(text){
 }
 async function processCodingActions(text,msgEl){
   codingTodosNew=false;
+  codingNoopWrites=0;
   let shownFallback=0;
   const truncFrom=codingTruncatedAt(text);
   const parseText=truncFrom>=0?text.slice(0,truncFrom):text;
@@ -3746,7 +4022,12 @@ async function processCodingActions(text,msgEl){
   const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const webFetches=[...parseText.matchAll(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g)].map(m=>({url:m[0].replace(/^WEB_FETCH:[ \t]*\r?\n?/,'').replace(/\nEND_WEB_FETCH$/,'').trim()}));
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
-  parseCodingTodos(parseText);
+  const hadTodos=parseCodingTodos(parseText);
+  // A turn that writes files but never declared a TODO_LIST leaves the loop
+  // blind. Derive one from the files it touched so the next round has real
+  // "open work" to refer to.
+  const filePathsHere=[...fileCreates,...fileEdits,...filePatches].map(m=>m[1].trim()).filter(Boolean);
+  if(!hadTodos)synthesizeCodingTodos(parseText,filePathsHere);
   const autoFile=fileCreates.length+fileEdits.length+filePatches.length,autoCmd=commands.length;
   if(autoFile+autoCmd>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=autoFile+' file action'+(autoFile!==1?'s':'')+' + '+autoCmd+' command'+(autoCmd!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
@@ -3929,6 +4210,9 @@ async function processCodingActions(text,msgEl){
 let codingAutoLoop=false,codingStopRequested=false;
 let codingAbort=null;
 let codingWrittenPaths=[];
+// Counts file blocks that matched the file on disk exactly (+0 -0). Reset each
+// turn; a turn that only produces these has made no progress at all.
+let codingNoopWrites=0;
 // STEP BUDGET: the model counts what its own plan needs and declares it with
 // `PLAN-STEPS: N` (one step = one tool round). The loop runs exactly that many
 // steps; when they run out with work still open it asks the model to RECOUNT
@@ -4077,7 +4361,23 @@ function harvestCodingResults(){
     if(!/cancelled|skipped/i.test(outcome))executed=true;
     text+='- '+label+': '+outcome+'\n';
   }
-  return{text,hasExecuted:executed};
+  return{text,hasExecuted:executed,noops:codingNoopWrites};
+}
+// Detect a reply that is byte-identical (or near-identical) to one the model
+// already sent. The session log shows a small model repeating the same
+// "Now we have implemented the reactions..." paragraph nine times; without
+// this the loop happily pays for every repeat.
+function codingReplyFingerprint(text){
+  const s=String(text||'').replace(/```[\s\S]*?```/g,'').replace(/\s+/g,' ').trim();
+  return s.slice(0,600);
+}
+function codingIsRepeatReply(text){
+  const fp=codingReplyFingerprint(text);
+  if(fp.length<40)return false;
+  const past=codingHistory.filter(m=>m&&m.role==='assistant'&&typeof m.content==='string').slice(-6);
+  let hits=0;
+  for(const m of past)if(codingReplyFingerprint(m.content)===fp)hits++;
+  return hits>=1;
 }
 function codingErrorHint(resultsText){
   // Short, pattern-triggered guidance appended to the next auto-continue
@@ -4093,6 +4393,25 @@ function codingErrorHint(resultsText){
     hints.push(ref[1]+' is not defined: every node file runs in its own module scope. require() the file that defines it (with module.exports) or keep the code in a single file.');
   if(/Old text not found/i.test(t))
     hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-10 unique lines.');
+// Wrong shell for the environment: the exact failure in the session log —
+// `dir /b` typed into a Linux container. Each branch keys off the failing
+// program's OWN error style, which identifies the shell unambiguously:
+// GNU coreutils ("dir: cannot access") vs cmd.exe ("not recognized as an
+// internal or external command").
+if(/(^|\W)(dir|ls|cat|type|del|mkdir|rm)\s*:\s*(cannot access|No such file|not found|is a directory)/i.test(t))
+    hints.push('You are mixing shells. '+(/\bdir\b|\btype\b|\bdel\b/i.test(t)&&/cannot access|No such file/i.test(t)?'You are using a WINDOWS command in a LINUX container: use ls (list), cat file (read), mkdir -p name (folder), rm name (delete).':'You are using a LINUX command in a Windows or minimal container: check the shell with `pwd` and stick to one set of commands.')+' Do not mix them.');
+  if(/is not recognized as an internal or external command/i.test(t))
+    hints.push('That command does not exist on this Windows shell — check the exact name with `where <tool>` before using it again (common: python3 is `python` here, and use `dir` / `type` / `del`, not ls / cat / rm).');
+  if(/command not found/i.test(t))
+    hints.push('That command does not exist in this container — check with `which <tool>` before using it again (common: python is `python3` here, and use `ls` / `cat` / `rm`, not dir / type / del).');
+  if(/timed out|Command timed out|never exits|^Blocked:/i.test(t))
+    hints.push('That command was blocked or hit the time limit because it never exits. Never start a foreground server or watcher (python -m http.server, node serve.js, npm start, npx serve, vite, next dev, tail -f, --watch) — background it by ending the command with &, or skip it and verify the code another way.');
+  if(/EADDRINUSE|address already in use/i.test(t))
+    hints.push('That port is already taken — pick another port number instead of retrying the same command.');
+  if(/ModuleNotFoundError|ImportError/i.test(t))
+    hints.push('A module is missing — install it first (pip install <name> / npm install <name>) or import something that exists. Do not retry the import unchanged.');
+  if(/SyntaxError|JSONDecodeError/i.test(t))
+    hints.push('The file does not parse. Fix the syntax with a small FILE_PATCH (OLD: exact broken lines, NEW: corrected lines) — do not rewrite the whole file.');
   if(!hints.length)return '';
   return '\nHINTS (do not repeat the failing action blindly):\n- '+hints.join('\n- ');
 }
@@ -4152,6 +4471,8 @@ async function streamCodingTurn(messages){
   assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>';
   chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;
 const contentEl=assistantEl.querySelector('.coding-msg-content');if(isOllamaModel(selectedModel))try{contentEl.innerHTML=loadingModelHtml()}catch(e){}
+  codingLiveReset();
+  const liveT0=Date.now();
   let actualModel=selectedModel,fullText='';
   let turnCtrl=new AbortController();codingAbort=turnCtrl;
   // One streaming request, appending its deltas to fullText. Returns an error
@@ -4202,6 +4523,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');if(isOllamaMode
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
+  finishCodingLiveStats(assistantEl,Date.now()-liveT0);
   return{fullText,actualModel,actions};
 }
 function offerCreateMissingFiles(missing){
@@ -4314,6 +4636,12 @@ async function codingAutoContinue(){
       if(results.hasExecuted){
         codingRounds++;
         planJustExtended=false;
+        // Every file block this round matched disk byte for byte: nothing was
+        // written. Re-running the same edit will not help, so say so loudly
+        // instead of letting the loop pay for another identical round.
+        if(results.noops>0&&!results.text.match(/Ran:|Ran \(exit/)){
+          addCodingSystemMsg('Skipped '+results.noops+' no-op write'+(results.noops!==1?'s':'')+' — that content was already in the file, so nothing changed.');
+        }
         // No-progress guard: identical tool results keep coming back. Force a
         // new approach after the FIRST repeat, stop only as a backstop.
         const sig=results.text||'';
@@ -4401,7 +4729,12 @@ async function codingAutoContinue(){
         }
         const stepsLeft=Math.max(0,codingPlanSteps-codingRounds);
         const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — batch every independent action (several file blocks and/or commands) into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        // Writes that changed nothing, and a reply the model already sent.
+        // Both are dead ends; naming them stops the exact loop in the logs.
+        const noopNote=results.noops>0?'\nNOTE: '+results.noops+' of the file blocks you sent this round (+0 -0) matched the file EXACTLY — they wrote nothing. Those features are NOT implemented. Write the missing code (do not resend what is already there), or state plainly that you are stuck.':'';
+        const echoed=codingIsRepeatReply((codingHistory[codingHistory.length-1]||{}).content);
+        const echoNote=echoed?'\nWARNING: your last reply was IDENTICAL to one you already sent. Repeating a message changes nothing. Either emit the tool blocks that do the next piece of work, or reply with a genuinely different summary — do not repeat yourself.':'';
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -4708,7 +5041,12 @@ async function codingPatchFile(path,oldText,newText){
     return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
   }catch(e){return{ok:false,error:e.message}}
 }
-async function codingRunCmd(command){if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
+async function codingRunCmd(command){
+  const blocked=blockingCommandReason(command);
+  if(blocked)return{stdout:'',stderr:blocked,exit_code:1};
+  if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
+  try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}
+}
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){

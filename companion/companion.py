@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.12"
+COMPANION_VERSION = "1.0.13"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -83,7 +83,21 @@ class ApiError(Exception):
         self.body = body
 
 
-def api(server, method, path, token=None, payload=None):
+class ApiTimeout(Exception):
+    """The socket read deadline elapsed. Almost always transient: the server
+    long-polls /api/agent/pending for up to ~25s, so a timeout that fires here
+    means the network was slow, not that the pairing is broken."""
+
+
+# The server holds GET /api/agent/pending open for up to 25s waiting for work.
+# The client deadline must clear that with real headroom, or a healthy long-poll
+# trips the socket read timeout on a slow link and the tray shows a scary red
+# "The read operation timed out" for a connection that is actually fine.
+HTTP_TIMEOUT = 75
+LONG_TIMEOUT = 120
+
+
+def api(server, method, path, token=None, payload=None, timeout=None):
     req = urllib.request.Request(server.rstrip("/") + path, method=method,
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": COMPANION_UA})
@@ -91,7 +105,8 @@ def api(server, method, path, token=None, payload=None):
         req.add_header("Authorization", "Bearer " + token)
     body = json.dumps(payload).encode() if payload is not None else None
     try:
-        with urllib.request.urlopen(req, data=body, timeout=30) as r:
+        with urllib.request.urlopen(req, data=body,
+                                    timeout=timeout or HTTP_TIMEOUT) as r:
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -104,6 +119,14 @@ def api(server, method, path, token=None, payload=None):
         except Exception:
             pass
         raise ApiError(e.code, (detail or e.reason or "").strip())
+    except (socket.timeout, TimeoutError) as e:
+        # socket.timeout IS TimeoutError on 3.10+; both spellings covered for
+        # older builds. urllib wraps some of these in URLError.
+        raise ApiTimeout(str(e) or "socket read timed out")
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise ApiTimeout("socket read timed out")
+        raise
 
 
 def pair(server, code, name):
@@ -255,7 +278,7 @@ _relay_conns = {}
 _relay_conns_lock = threading.Lock()
 
 
-def _relay_post(server, token, fields, timeout=30):
+def _relay_post(server, token, fields, timeout=None):
     """POST one relay batch over a pooled keep-alive connection.
 
     A streamed reply is dozens of small batches; a fresh TCP+TLS handshake
@@ -281,7 +304,7 @@ def _relay_post(server, token, fields, timeout=30):
             if conn is None:
                 cls = (http.client.HTTPSConnection if u.scheme == "https"
                        else http.client.HTTPConnection)
-                conn = cls(u.hostname or "", port, timeout=timeout)
+                conn = cls(u.hostname or "", port, timeout=timeout or HTTP_TIMEOUT)
                 _relay_conns[key] = conn
             try:
                 conn.request("POST", path, body=body, headers=headers)
@@ -435,11 +458,21 @@ def poll_once(server, token, root, status_cb=None):
     Returns 'idle' | 'ran' | 'error' | 'unauthorized' (dead/removed token —
     the caller should reload config instead of retrying blindly)."""
     try:
-        p = api(server, "GET", "/api/agent/pending?caps=ollama", token)
+        # The server long-polls this endpoint for ~25s waiting for work, so it
+        # needs a deadline well clear of that; a short one reports a healthy
+        # idle connection as a read timeout.
+        p = api(server, "GET", "/api/agent/pending?caps=ollama", token,
+                timeout=LONG_TIMEOUT)
     except ApiError as e:
         if status_cb:
             status_cb(False, str(e))
         return "unauthorized" if e.status == 401 else "error"
+    except ApiTimeout:
+        # Transient: the link stalled. Stay green-ish and retry on the next
+        # tick instead of painting a permanent error the user cannot clear.
+        if status_cb:
+            status_cb(True, "reconnecting…")
+        return "idle"
     except Exception as e:
         if status_cb:
             status_cb(False, str(e))
@@ -601,7 +634,11 @@ def run_tray():
             state["icon"].title = APP_NAME + " — " + state["msg"]
 
     def status_cb(ok, msg):
-        state["ok"] = bool(ok)
+        # A trailing "…" marks a TRANSIENT state (reconnecting, backoff):
+        # show amber, never the red dot the user cannot clear. A hard error is
+        # a real failure and stays red.
+        transient = bool(ok and msg and msg.endswith("…"))
+        state["ok"] = None if transient else bool(ok)
         state["msg"] = "connected" if ok and not msg else ("error: " + msg if msg else "connected")
         redraw()
 

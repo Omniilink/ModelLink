@@ -9279,8 +9279,15 @@ SERVER = "__SERVER__"
 OLLAMA_URL = (os.environ.get("OMNIILINK_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
 RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions", "/api/version", "/api/pull")
 
+# Socket deadlines. The server holds GET /api/agent/pending open for up to
+# ~25s waiting for a command, so every deadline here must clear that with
+# headroom: a shorter one reports a perfectly healthy idle poll as
+# "The read operation timed out".
+HTTP_TIMEOUT = 75
+LONG_TIMEOUT = 120
 
-def api(method, path, token=None, payload=None):
+
+def api(method, path, token=None, payload=None, timeout=None):
     req = urllib.request.Request(SERVER + path, method=method,
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OmniilinkAgent/1.0"})
@@ -9288,7 +9295,11 @@ def api(method, path, token=None, payload=None):
         req.add_header("Authorization", "Bearer " + token)
     body = json.dumps(payload).encode() if payload is not None else None
     try:
-        with urllib.request.urlopen(req, data=body, timeout=30) as r:
+        # The server long-polls /api/agent/pending for ~25s, so the default
+        # deadline must clear that with headroom or a healthy idle poll
+        # surfaces as a socket read timeout.
+        with urllib.request.urlopen(req, data=body,
+                                    timeout=timeout or HTTP_TIMEOUT) as r:
             return json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -9296,6 +9307,12 @@ def api(method, path, token=None, payload=None):
         except Exception:
             detail = ""
         raise Exception("HTTP %s: %s" % (e.code, detail.strip() or e.reason))
+    except (socket.timeout, TimeoutError):
+        raise TimeoutError("socket read timed out")
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise TimeoutError("socket read timed out")
+        raise
 
 
 _relay_conn = None
@@ -9325,7 +9342,7 @@ def _relay_status(token, payload):
                 port = u.port or (443 if u.scheme == "https" else 80)
                 cls = (http.client.HTTPSConnection if u.scheme == "https"
                        else http.client.HTTPConnection)
-                _relay_conn = cls(u.hostname or "", port, timeout=30)
+                _relay_conn = cls(u.hostname or "", port, timeout=HTTP_TIMEOUT)
                 _relay_conn_path = u.path or "/api/agent/relay"
             try:
                 _relay_conn.request("POST", _relay_conn_path, body=body, headers=headers)
@@ -9439,7 +9456,8 @@ def main():
     print("paired as agent " + str(d["agent_id"]) + " - polling for commands (Ctrl+C to stop)")
     while True:
         try:
-            p = api("GET", "/api/agent/pending?caps=ollama", token)
+            p = api("GET", "/api/agent/pending?caps=ollama", token,
+                    timeout=LONG_TIMEOUT)
             cmd = p.get("command")
             if cmd and cmd.get("kind") == "ollama":
                 threading.Thread(target=run_relay, args=(token, cmd, ollama_url),
@@ -9465,6 +9483,11 @@ def main():
         except KeyboardInterrupt:
             print("stopped")
             return 0
+        except TimeoutError:
+            # A stalled read is a network hiccup, not a broken pairing: back
+            # off briefly and keep polling rather than printing an alarming
+            # read-timeout error on every cycle.
+            time.sleep(3)
         except Exception as e:
             print("poll error: " + str(e))
             time.sleep(10)
