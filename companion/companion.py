@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.11"
+COMPANION_VERSION = "1.0.12"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -228,7 +228,7 @@ def do_shell(cmd, root=None, timeout=CMD_TIMEOUT, cwd=None):
 # stream seq-numbered batches back to POST /api/agent/relay. Runs in worker
 # threads so the poll loop keeps serving shell/file commands meanwhile.
 _RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions",
-                "/api/version")
+                "/api/version", "/api/pull")
 _RELAY_BODY_MAX = 8 * 1024 * 1024
 _RELAY_FLUSH_BYTES = 32768
 _RELAY_FLUSH_SECONDS = 0.05

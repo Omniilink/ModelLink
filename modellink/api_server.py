@@ -2476,7 +2476,11 @@ async def agent_sysinfo(request: Request, agent_id: str):
 
 @app.post("/api/agents/{agent_id}/ollama/pull")
 async def agent_ollama_pull(request: Request, agent_id: str):
-    """Queue `ollama pull <tag>` on a paired computer."""
+    """Download a model onto a paired computer, streaming live progress.
+
+    Proxies Ollama's own `/api/pull` NDJSON (status/total/completed per layer)
+    through the relay so the browser can show a real progress bar, speed and
+    total size instead of waiting blindly for a shell command to finish."""
     user, err = _require_auth(request)
     if err:
         return err
@@ -2486,12 +2490,49 @@ async def agent_ollama_pull(request: Request, agent_id: str):
     tag = str((body or {}).get("tag") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._:\-/]{1,120}", tag):
         return JSONResponse(status_code=400, content={"error": "Invalid model tag"})
-    cid, err2 = _queue_agent_command(user, agent_id, "ollama pull " + tag, "shell", None)
-    if err2:
-        return err2
-    _agent_notify(agent_id)
+    with _AGENT_LOCK:
+        a = _agents_load()["agents"].get(str(agent_id))
+    if a is None or not _agent_visible(user, a):
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    if "ollama" not in (a.get("caps") or []):
+        return JSONResponse(status_code=400, content={
+            "error": "That computer does not share Ollama models — update its companion app."})
+    try:
+        resp = relay.open_response(str(agent_id), "/api/pull",
+                                   {"name": tag, "stream": True},
+                                   read_timeout=3600.0, first_timeout=60.0)
+    except relay.RelayError as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+
+    async def gen():
+        _it = resp.iter_lines()
+        _sentinel = object()
+        try:
+            while True:
+                line = await asyncio.to_thread(next, _it, _sentinel)
+                if line is _sentinel:
+                    break
+                if not line:
+                    continue
+                text = line.decode("utf-8", "replace") if isinstance(line, bytes) else str(line)
+                text = text.strip()
+                if not text:
+                    continue
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    continue
+                yield json.dumps(obj) + "\n"
+        except (relay.RelayError, relay.RelayTimeout) as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
     _audit("agent.ollama_pull", user["username"], f"agent={agent_id} tag={tag}")
-    return {"status": "ok", "command_id": cid, "tag": tag}
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @app.get("/api/ollama/config")
@@ -3456,6 +3497,9 @@ def _chat_system_prompt(user_id=""):
         datetime.datetime.now().strftime("%A, %d %B %Y, %H:%M")
     return (
         "You are Omniilink, a helpful AI assistant. Answer directly and concisely.\n"
+        "Always write in proper, grammatically correct English: start every sentence "
+        "with a capital letter and end it with correct punctuation (full stop, question "
+        "mark or exclamation mark). Never reply in all-lowercase or without punctuation.\n"
         f"Current date and time: {now}. Use this as the exact present moment — "
         "your training data is older, so never assume the date from memory.\n"
         "If a web_search tool is offered and the question needs current or external "
@@ -3471,6 +3515,7 @@ def _chat_system_prompt(user_id=""):
 
 
 DEFAULT_CODING_PROMPT = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
+Write in proper, grammatically correct English: capitalise the first word of every sentence and end with correct punctuation. Never reply in all-lowercase.
 
 ENVIRONMENT (memorize this):
 - The server runs on WINDOWS. Commands execute in cmd.exe, already a shell.
@@ -9232,7 +9277,7 @@ import urllib.request
 
 SERVER = "__SERVER__"
 OLLAMA_URL = (os.environ.get("OMNIILINK_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
-RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions", "/api/version")
+RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions", "/api/version", "/api/pull")
 
 
 def api(method, path, token=None, payload=None):

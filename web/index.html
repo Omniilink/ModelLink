@@ -500,6 +500,15 @@ a:hover{text-decoration:underline}
 .nav-item{position:relative}
 .typing-indicator{display:inline-flex;padding:2px 0;align-items:center}
 .typing-indicator .chat-spinner{width:16px;height:16px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+.loading-model{display:inline-flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12.5px}
+.loading-model .chat-spinner{width:15px;height:15px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+.dl-wrap{padding:4px 2px}
+.dl-name{font-size:12px;font-weight:650;margin-bottom:8px;color:var(--text-primary);font-family:var(--mono)}
+.dl-bar{position:relative;height:24px;border-radius:12px;background:var(--bg-tertiary);border:1px solid var(--border);overflow:hidden}
+.dl-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent-light));transition:width .25s ease;border-radius:12px}
+.dl-label{position:absolute;top:50%;left:26px;transform:translate(-50%,-50%);font-size:11px;font-weight:700;white-space:nowrap;pointer-events:none;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.65);transition:left .25s ease}
+.dl-meta{font-size:11px;color:var(--text-secondary);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono)}
+.dl-meta b{color:var(--text-primary)}
 .loading-shimmer{background:var(--bg-tertiary);animation:pulse 1.4s infinite}
 .cmd-overlay{position:fixed;inset:0;background:rgba(4,6,10,.62);z-index:300;display:none;align-items:flex-start;justify-content:center;padding:14vh 16px 16px}
 .cmd-overlay.open{display:flex}
@@ -1650,6 +1659,8 @@ function renderContent(text){
 }
 function copyCodeBlock(id){const el=document.getElementById(id);if(el)navigator.clipboard.writeText(el.textContent).then(()=>showToast('Copied!','success'))}
 
+function isOllamaModel(m){return /^(ollama|device)\//.test(String(m||''))}
+function loadingModelHtml(){return '<div class="loading-model"><span class="chat-spinner"></span><span>Loading model…</span></div>'}
 function showToast(msg,type='info'){
   const t=document.createElement('div');t.className='toast';
   if(type==='error')t.style.borderColor='var(--error)';else if(type==='success')t.style.borderColor='var(--success)';
@@ -2124,6 +2135,7 @@ async function sendMessage(){
   appendMessage('user',content);chatHistory.push({role:'user',content});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
+  if(isOllamaModel(model))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
   const startTime=Date.now();
   try{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
@@ -2181,6 +2193,7 @@ function editAndResend(editIdx,newText,keepImgs){
   const area=document.getElementById('chat-area');const msgs=area.querySelectorAll('.message');
   msgs.forEach(m=>{const mi=parseInt(m.dataset.msgIndex);if(mi>=editIdx)m.remove()});
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
+  if(isOllamaModel(selectedModel))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
   const sendModel=(keepImgs&&keepImgs.length)?(resolveVisionModel()||selectedModel):selectedModel;
   authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:sendModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
   .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
@@ -3007,7 +3020,7 @@ function codingDefaultPrompt(kind){
   // Built-in prompt when nothing custom is saved. Mirrors the Windows
   // default, with a Linux twin for container execution.
   const blocks='You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nFILE_PATCH:path\nOLD:\nexact lines to replace\nNEW:\nfixed lines\nEND_FILE_PATCH\nTo ask the user a blocking question (max 3 per turn):\nQUESTION:What background color?\nOPTION:Warm cream\nOPTION:Deep charcoal\nEND_QUESTION\nPrefer FILE_PATCH for small fixes (never rewrite whole files to fix a few lines). ';
-  const tail='One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always explain what you are doing.';
+  const tail='One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Always write in proper, grammatically correct English (capitalise sentences, use full stops). Always explain what you are doing.';
   if(kind==='linux')return 'You are Omniilink Coding Assistant. Commands run in a minimal Linux container (sh shell — NEVER prefix with sh -c, NEVER quote commands). '+blocks+'Useful commands: ls (list), cat <file> (read), mkdir -p, rm, python3 file.py, node file.js. '+tail;
   return 'You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). '+blocks+'Useful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. '+tail;
 }
@@ -4138,7 +4151,7 @@ async function streamCodingTurn(messages){
   assistantEl.className='coding-msg assistant';
   assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>';
   chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;
-  const contentEl=assistantEl.querySelector('.coding-msg-content');
+const contentEl=assistantEl.querySelector('.coding-msg-content');if(isOllamaModel(selectedModel))try{contentEl.innerHTML=loadingModelHtml()}catch(e){}
   let actualModel=selectedModel,fullText='';
   let turnCtrl=new AbortController();codingAbort=turnCtrl;
   // One streaming request, appending its deltas to fullText. Returns an error
@@ -6856,22 +6869,51 @@ async function ollamaDownload(tag){
   const dev=ollamaTargetDevice();if(!dev){showToast('Pick a computer in the Run command box first','error');return}
   const out=document.getElementById('ollama-pull-out');
   document.getElementById('ollama-pull-title').style.display='';document.getElementById('ollama-pull-wrap').style.display='';
-  if(out)out.textContent='Starting download of '+tag+'…';
+  if(out)out.innerHTML='<div class="dl-wrap"><div class="dl-name">'+escapeHtml(tag)+'</div>'
+    +'<div class="dl-bar"><div class="dl-fill" id="dl-fill"></div><div class="dl-label" id="dl-label">0%</div></div>'
+    +'<div class="dl-meta" id="dl-meta"><span>Starting…</span></div></div>';
+  const fill=document.getElementById('dl-fill'),label=document.getElementById('dl-label'),meta=document.getElementById('dl-meta');
+  const layers={};let lastBytes=0,lastT=Date.now(),speed=0,statusText='starting';
+  const fmt=n=>{const u=['B','KB','MB','GB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>1?2:0)+' '+u[i]};
+  const totals=()=>{let t=0,d=0;for(const k in layers){t+=layers[k].total;d+=Math.min(layers[k].completed,layers[k].total)}return{t:t,d:d}};
+  const paint=()=>{
+    const{t,d}=totals();const pct=t?Math.min(100,d/t*100):0;
+    if(fill)fill.style.width=pct.toFixed(1)+'%';
+    if(label){label.textContent=pct.toFixed(0)+'%';label.style.left='clamp(26px,'+pct.toFixed(1)+'%,calc(100% - 26px))'}
+    if(meta)meta.innerHTML='<span><b>'+fmt(d)+'</b> / '+fmt(t)+'</span>'
+      +'<span><b>'+(speed/1048576).toFixed(2)+'</b> MB/s</span>'
+      +'<span><b>'+(speed*8/1048576).toFixed(1)+'</b> Mb/s</span>'
+      +'<span style="color:var(--text-muted)">'+escapeHtml(statusText)+'</span>';
+  };
   try{
     const r=await authFetch(API+'/api/agents/'+dev+'/ollama/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tag})});
-    const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    showToast('Downloading '+tag+' on the device…','info');ollamaPollPull(dev,String(d.command_id),tag);
-  }catch(e){if(out)out.textContent='Download failed: '+e.message;showToast(e.message,'error')}
-}
-async function ollamaPollPull(dev,cid,tag){
-  const out=document.getElementById('ollama-pull-out');const t0=Date.now();
-  while(Date.now()-t0<3600000){
-    await new Promise(res=>setTimeout(res,2500));
-    try{const rr=await authFetch(API+'/api/agents/'+dev+'/commands?limit=25');if(!rr.ok)continue;
-      const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
-      if(c&&out)out.textContent=tag+'\n'+(c.output||'').slice(-4000);
-      if(c&&c.status==='done'){if(out)out.textContent=tag+' — '+(c.exit_code===0?'downloaded':'finished (exit '+c.exit_code+')')+'\n'+(c.output||'').slice(-4000);showToast(c.exit_code===0?('Downloaded '+tag):(tag+' finished with errors'),c.exit_code===0?'success':'error');ollamaCatalog=null;ollamaLibraryLoad();return}
-    }catch(e){}
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error((e&&e.error)||('HTTP '+r.status))}
+    const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
+    while(true){
+      const{done:d,value}=await reader.read();if(d)break;
+      buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop();
+      for(const line of lines){
+        if(!line.trim())continue;let obj;try{obj=JSON.parse(line)}catch(e){continue}
+        if(obj.error)throw new Error(obj.error);
+        if(obj.status)statusText=obj.status;
+        if(obj.digest&&obj.total){
+          layers[obj.digest]={total:obj.total,completed:obj.completed||0};
+          const now=Date.now();const dt=(now-lastT)/1000;
+          const dn=totals().d;
+          if(dt>0.3){const inst=(dn-lastBytes)/dt;if(inst>=0)speed=speed?speed*0.6+inst*0.4:inst;lastBytes=dn;lastT=now}
+        }
+        paint();
+      }
+    }
+    if(fill)fill.style.width='100%';if(label){label.textContent='Done';label.style.left='calc(100% - 26px)'}
+    if(meta)meta.innerHTML='<span><b>'+fmt(totals().t)+'</b> downloaded</span><span style="color:var(--success)">complete</span>';
+    showToast('Downloaded '+tag,'success');
+    // Real-time model selector: force a fresh device scan, then reload models.
+    try{await authFetch(API+'/api/devices/'+dev+'/ollama')}catch(e){}
+    try{await loadModels()}catch(e){}
+  }catch(e){
+    if(meta)meta.innerHTML='<span style="color:var(--error)">'+escapeHtml(e.message)+'</span>';
+    showToast(e.message,'error');
   }
 }
 async function ollamaAutoDetect(){
