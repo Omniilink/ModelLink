@@ -3061,6 +3061,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
   if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n';
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
+  if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
@@ -4099,6 +4100,7 @@ function codingTruncatedAt(text){
 async function processCodingActions(text,msgEl){
   codingTodosNew=false;
   codingNoopWrites=0;
+  patchMissFails=0;
   let shownFallback=0;
   const truncFrom=codingTruncatedAt(text);
   const parseText=truncFrom>=0?text.slice(0,truncFrom):text;
@@ -4141,16 +4143,11 @@ async function processCodingActions(text,msgEl){
       else{const rr=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));if(rr.ok){const dd=await rr.json();current=dd.content}}
       if(current==null)previewErr='File not found — create it first';
       else{
-        let idx=current.indexOf(oldText),patched=null;
-        if(idx!==-1)patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
-        else{
-          const want=oldText.split('\n').map(l=>l.replace(/\s+$/,''));
-          const lines=current.split('\n');let at=-1;
-          for(let s=0;s+want.length<=lines.length;s++){let ok=true;for(let k=0;k<want.length;k++)if(lines[s+k].replace(/\s+$/,'')!==want[k]){ok=false;break}if(ok){at=s;break}}
-          if(at!==-1)patched=lines.slice(0,at).join('\n')+'\n'+newText+'\n'+lines.slice(at+want.length).join('\n');
-        }
-        if(patched==null)previewErr='Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300);
-        else await fillFileDiff(toolDiv,path,patched,'Patch');
+        // Same matcher the real apply uses, so the preview can never show a
+        // diff that the write then refuses (or hide one that would land).
+        const res=applyPatchText(current,oldText,newText);
+        if(!res.ok)previewErr=res.error;
+        else await fillFileDiff(toolDiv,path,res.patched,'Patch');
       }
     }catch(e){previewErr=e.message}
     if(previewErr){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
@@ -4298,6 +4295,9 @@ let codingWrittenPaths=[];
 // Counts file blocks that matched the file on disk exactly (+0 -0). Reset each
 // turn; a turn that only produces these has made no progress at all.
 let codingNoopWrites=0;
+// Consecutive "Old text not found" failures this run; drives the escalation
+// that stops the model resending an identical OLD block.
+let patchMissFails=0;
 // STEP BUDGET: the model counts what its own plan needs and declares it with
 // `PLAN-STEPS: N` (one step = one tool round). The loop runs exactly that many
 // steps; when they run out with work still open it asks the model to RECOUNT
@@ -4492,7 +4492,7 @@ function codingErrorHint(resultsText){
   if(ref&&!/^(document|window|navigator)$/.test(ref[1]))
     hints.push(ref[1]+' is not defined: every node file runs in its own module scope. require() the file that defines it (with module.exports) or keep the code in a single file.');
   if(/Old text not found/i.test(t))
-    hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-10 unique lines.');
+    hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-8 unique lines. Re-read the file first if you have not seen it this session; never rebuild OLD from memory.');
 // Wrong shell for the environment: the exact failure in the session log —
 // `dir /b` typed into a Linux container. Each branch keys off the failing
 // program's OWN error style, which identifies the shell unambiguously:
@@ -4835,7 +4835,20 @@ async function codingAutoContinue(){
         const noopNote=results.noops>0?'\nNOTE: '+results.noops+' of the file blocks you sent this round (+0 -0) matched the file EXACTLY — they wrote nothing. Those features are NOT implemented. Write the missing code (do not resend what is already there), or state plainly that you are stuck.':'';
         const echoed=codingIsRepeatReply((codingHistory[codingHistory.length-1]||{}).content);
         const echoNote=echoed?'\nWARNING: your last reply was IDENTICAL to one you already sent. Repeating a message changes nothing. Either emit the tool blocks that do the next piece of work, or reply with a genuinely different summary — do not repeat yourself.':'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        // Repeating the SAME failed OLD block is the classic patch loop. After
+        // the second miss on a file, force a re-read instead of another guess.
+        const patchMisses=(results.text.match(/Old text not found/gi)||[]).length;
+        let patchNote='';
+        if(patchMisses>0){
+          patchMissFails=(patchMissFails||0)+patchMisses;
+          if(patchMissFails>=2)
+            patchNote='\nSTOP RE-SENDING THE SAME PATCH: '+patchMissFails+' patches have now failed to match. Your OLD text is not what is in the file. Before patching again you MUST read the file in THIS round (RUN_COMMAND `cat <path>`, or a WEB_FETCH/FILE_EDIT that shows the exact current lines) and copy OLD character-for-character from that output. If the file is too big to read, use FILE_CREATE with the full corrected content instead of FILE_PATCH.';
+          else
+            patchNote='\nA patch did not match the file, so NOTHING was changed. Do not resend the same OLD text — read the file again and copy the exact current lines.';
+        }else if(patchMissFails){
+          patchMissFails=0;
+        }
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -5109,37 +5122,123 @@ async function validateWrittenFiles(){
   }
   return{ok:errors.length===0,errors,files:paths};
 }
+// ---- FILE_PATCH target location ---------------------------------------
+// "Old text not found" is the single most common coding failure, and it used
+// to have THREE different implementations with different forgiveness levels:
+// the server endpoint retried with trailing-whitespace ignored, while the
+// browser-local and paired-device paths did a bare indexOf and gave up. A
+// patch that applied on a server project therefore failed on a local one.
+// This is the single matcher every path uses.
+//
+// Tiers, strictest first:
+//   1 exact                     4 whitespace-insensitive (unique match only)
+//   2 CRLF/LF equivalent        5 surrounding blank lines ignored
+//   3 trailing space ignored
+// Returns {start,end,how} char offsets into `current`, or null.
+function patchLineOffsets(lines){const o=[0];for(let i=0;i<lines.length;i++)o.push(o[i]+lines[i].length+1);return o}
+function patchTrim(s){return String(s==null?'':s).replace(/^\uFEFF/,'')}
+// Key functions, strictest first. Each tier must find exactly ONE match.
+const PATCH_KEY_EXACT=l=>l;
+const PATCH_KEY_RTRIM=l=>l.replace(/\s+$/,'');
+const PATCH_KEY_INDENT=l=>l.replace(/^[ \t]+/,'').replace(/\s+$/,'');
+function patchUniqueLineMatch(curLines,wantKeys,keyFn){
+  const hits=[];
+  for(let s=0;s+wantKeys.length<=curLines.length;s++){
+    let ok=true;
+    for(let k=0;k<wantKeys.length;k++){
+      if(keyFn(curLines[s+k])!==wantKeys[k]){ok=false;break}
+    }
+    if(ok){hits.push(s);if(hits.length>1)return null}
+  }
+  return hits.length===1?hits[0]:null;
+}
+function locatePatchTarget(current,oldText){
+  const cur=patchTrim(current),old=patchTrim(oldText);
+  if(!old)return null;
+  // 1. exact
+  const exact=cur.indexOf(old);
+  if(exact>-1)return{start:exact,end:exact+old.length,how:'exact'};
+  // Strip the BOM and normalise CRLF on both sides so a model that emits \n
+  // can still match a file saved with \r\n.
+  const curN=cur.replace(/\r\n/g,'\n').split('\n');
+  const oldN=old.replace(/\r\n/g,'\n').split('\n');
+  const off=patchLineOffsets(curN);
+  const tiers=[
+    ['line-endings',PATCH_KEY_EXACT,oldN],
+    ['trailing-spaces',PATCH_KEY_RTRIM,oldN],
+    ['indentation',PATCH_KEY_INDENT,oldN]
+  ];
+  for(const[how,keyFn,want]of tiers){
+    const keys=want.map(keyFn);
+    if(!keys.length)continue;
+    const s=patchUniqueLineMatch(curN,keys,keyFn);
+    if(s!=null)return{start:off[s],end:off[s+want.length],how:how};
+  }
+  // 4. the model wrapped the block in blank lines it invented
+  let a=0,b=oldN.length;
+  while(a<b&&oldN[a].trim()==='')a++;
+  while(b>a&&oldN[b-1].trim()==='')b--;
+  if(a>0||b<oldN.length){
+    const inner=oldN.slice(a,b);
+    const keys=inner.map(PATCH_KEY_INDENT);
+    const s=keys.length?patchUniqueLineMatch(curN,keys,PATCH_KEY_INDENT):null;
+    if(s!=null)return{start:off[s],end:off[s+inner.length],how:'blank-lines'};
+  }
+  return null;
+}
+// Replace OLD with NEW using the shared matcher. Returns {ok, patched, how} or
+// {ok:false, error}.
+function applyPatchText(current,oldText,newText){
+  const hit=locatePatchTarget(current,oldText);
+  if(!hit)return{ok:false,error:patchMissError(current,oldText)};
+  const cur=patchTrim(current),old=patchTrim(oldText);
+  const nt=patchTrim(newText);
+  return{ok:true,patched:cur.slice(0,hit.start)+nt+cur.slice(hit.end),how:hit.how};
+}
+// A miss must tell the model WHY, or it retries the identical OLD block.
+// Report the first line of its block and the closest thing in the file.
+function patchMissError(current,oldText){
+  const cur=patchTrim(current),old=patchTrim(oldText);
+  const first=(old.split('\n').find(l=>l.trim()!=='')||'').trim();
+  const why=[];
+  const nl=old.replace(/\r/g,'');
+  const cl=cur.replace(/\r/g,'');
+  if(nl.trim()!==old.trim())why.push('your OLD block mixes line endings');
+  if(!cl.includes(first))why.push('its first line ("'+first.slice(0,60)+'") is not in the file at all');
+  else why.push('its first line was found but the surrounding lines do not match verbatim');
+  const head=cur.slice(0,200);
+  return'Old text not found — nothing was changed. '+why.join('; ')+'.'
+    +'\nRe-read the file first, then copy OLD verbatim from that output (same indentation, same wording, no added blank lines).'
+    +'\nKeep OLD to 3-8 consecutive lines that appear exactly once in the file.'
+    +'\nFile currently starts with:\n'+head;
+}
 async function codingPatchFile(path,oldText,newText){
-  // Surgical edit via search-replace (server, browser-local, or remote).
+  // Surgical edit via search-replace (server, browser-local, or remote). All
+  // three backends share locatePatchTarget/applyPatchText, so a patch behaves
+  // identically wherever the project lives.
   try{
-    if(isRemote()){
-      let current;try{current=await codingReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
-      const idx=current.indexOf(oldText);
-      if(idx===-1)return{ok:false,error:'Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300)};
-      const patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
-      const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
-      let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
+    const remote=isRemote();
+    if(!remote&&!fsHandle){
+      const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
+      const data=await r.json();
+      if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+      return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
+    }
+    let current;
+    try{current=await codingReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
+    const res=applyPatchText(current,oldText,newText);
+    if(!res.ok)return{ok:false,error:res.error};
+    const patched=res.patched;
+    const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
+    let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
+    if(remote){
       const wres=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content:patched});
       if(!wres||!wres.ok)return{ok:false,error:(wres&&wres.error)||'Write failed'};
-      codingWrittenPaths.push(path);
-      return{ok:true,added:a,removed:r};
-    }
-    if(fsHandle){
-      let current;
-      try{current=await fsReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
-      const idx=current.indexOf(oldText);
-      if(idx===-1)return{ok:false,error:'Old text not found in current file. It starts with:\n'+String(current||'').slice(0,300)};
-      const patched=current.slice(0,idx)+newText+current.slice(idx+oldText.length);
+    }else{
       await fsWriteFile(path,patched);
-      const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
-      let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
-      codingWrittenPaths.push(path);
-      return{ok:true,added:a,removed:r};
     }
-    const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
-    const data=await r.json();
-    if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
-    return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
+    codingWrittenPaths.push(path);
+    return{ok:true,added:a,removed:r};
   }catch(e){return{ok:false,error:e.message}}
 }
 async function codingRunCmd(command){

@@ -19,8 +19,11 @@ import zipfile
 import threading
 import collections
 
+
 # ==========================================
+
 # PyInstaller path resolution
+
 # ==========================================
 def _base_path():
     """Return the base directory for resource files.
@@ -123,7 +126,9 @@ def _resolve_ollama_url() -> str:
     return (os.environ.get("OMNIILINK_OLLAMA_URL", "") or "").strip() or _ollama_url_from_dotenv()
 
 
+
 # Apply the server-wide Ollama address at boot (.env/env), so the fallback and
+
 # /api/discover use it before any admin interaction.
 try:
     set_ollama_base_url(_resolve_ollama_url())
@@ -132,7 +137,9 @@ except Exception:
 
 app = FastAPI(title="Omniilink API", version="3.0.0")
 MAX_BODY_BYTES = 15 * 1024 * 1024  # 15 MB request body cap
+
 # The one endpoint allowed past the cap: coding file uploads (the endpoint
+
 # itself enforces a hard 50 MB while streaming to disk).
 BODY_LIMIT_EXEMPT_PREFIXES = ("/api/coding/file-upload", "/api/tools/convert")
 UPLOAD_LIMIT_MB = float(os.environ.get("OMNIILINK_UPLOAD_LIMIT_MB", "50") or 50)
@@ -165,7 +172,9 @@ class BodyLimitMiddleware:
             await self._send_413(send)
             return
 
+
         # Pre-read the body (if any) so the cap is enforced even when the
+
         # endpoint returns early (e.g. 401) without reading the body.
         has_body = (cl not in ("", "0")) or "chunked" in headers.get("transfer-encoding", "").lower()
         if not has_body:
@@ -193,11 +202,17 @@ class BodyLimitMiddleware:
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": body, "more_body": False}
+
             # Body already replayed: delegate upstream and wait for the REAL
+
             # client disconnect. Returning a fake http.disconnect here makes
+
             # Starlette's StreamingResponse (spec < 2.4 path) believe the
+
             # client is gone, so listen_for_disconnect wins the race against
+
             # stream_response, the response start is never sent, and
+
             # BaseHTTPMiddleware raises RuntimeError("No response returned.").
             return await receive()
 
@@ -214,6 +229,7 @@ class BodyLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+
 # ---- Per-user bandwidth limits: 10 Mbit/s pacing + 1 GB per 6h window ----
 BW_RATE_MBPS = float(os.environ.get("OMNIILINK_BW_RATE_MBPS", "100") or 100)
 BW_WINDOW_MB = float(os.environ.get("OMNIILINK_BW_WINDOW_MB", "1000") or 1000)
@@ -225,7 +241,9 @@ BW_WINDOW_BYTES = int(BW_WINDOW_MB * 1024 * 1024)
 BW_WINDOW_SECONDS = BW_WINDOW_HOURS * 3600.0
 BW_BURST_BYTES = max(1024 * 1024, int(BW_RATE_BPS * 2))   # ~2s of burst
 BW_SPEED_SECONDS = 1.5                               # rolling window for "current speed"
+
 # Bandwidth is accounted (and limited) on file transfers only — page loads,
+
 # API polling and chat streaming must not eat the quota.
 BW_TRANSFER_PREFIXES = ("/api/coding/file-upload", "/api/coding/download-project",
                           "/api/tools/")
@@ -287,8 +305,11 @@ def _bandwidth_flush(user, n_in, n_out):
         dq = st[2]
         dq.append((time.monotonic(), int(n_in) + int(n_out)))
         if len(dq) > 32768:
+
             # Coalesce adjacent entries (sum bytes, keep the older ts) so a
+
             # long transfer cannot grow the deque without bound. The 6h sum
+
             # and the age cutoff both stay exact.
             merged = collections.deque()
             while dq:
@@ -360,6 +381,7 @@ def _bw_persist(force=False):
             else:
                 del _bw_saved[uid]
         snapshot = {str(uid): rows for uid, rows in _bw_saved.items()}
+
         # Cleared under the lock: rows recorded from here on re-set it.
         _bw_dirty = False
     try:
@@ -517,7 +539,9 @@ class BandwidthLimitMiddleware:
         transfer = path.startswith(BW_TRANSFER_PREFIXES) and not path.startswith("/api/tools/youtube/download")
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
+
         # Resolving the user is only needed for transfers; a page refresh
+
         # must not touch bandwidth state at all.
         user = _bw_resolve_user(headers) if transfer else None
         limited = bool(user) and not user.get("is_admin")
@@ -541,6 +565,7 @@ class BandwidthLimitMiddleware:
                 except Exception:
                     pass
                 if chunk and limited:
+
                     # Pace uploads too, then flush so the speed readout is live.
                     await _bandwidth_pace(user, len(chunk))
                     _bandwidth_flush(user, len(chunk), 0)
@@ -595,7 +620,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Converter origin for connect-src, refreshed slowly so .env edits take
+
 # effect without a restart and responses don't pay a file read each time.
 _csp_extra = {"value": "", "ts": 0.0}
 
@@ -625,8 +652,11 @@ def _csp_connect_extra():
 
 def _csp_policy():
     extra = _csp_connect_extra()
+
     # blob: is required by the Models viewport: three.js decodes embedded
+
     # GLB textures into blob: URLs and fetch()es them, which connect-src
+
     # blocks without it (that surfaced as "Could not load model: Failed to fetch").
     connect = "connect-src 'self' cloudflareinsights.com" + (f" {extra}" if extra else "") + " blob:"
     return ("default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
@@ -648,16 +678,22 @@ class SecurityHeadersMiddleware:
         request_headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                            for k, v in scope.get("headers", [])}
         is_https = request_headers.get("x-forwarded-proto", "").lower() == "https"
+
         # The HTML preview endpoint is MEANT to be framed (sandboxed iframe
+
         # with an opaque origin, so it cannot touch app storage). Framing
+
         # guards must not apply to it or the browser refuses to render it.
         is_preview = scope.get("path", "") in ("/api/coding/preview", "/api/coding/remote-preview")
         try:
             _qs = urllib.parse.parse_qs(scope.get("query_string", b"").decode("latin-1"))
         except Exception:
             _qs = {}
+
         # ?tab=1 is the real-tab preview: it must run EXACTLY like the file
+
         # opened from disk (pointer lock, keys, fullscreen), so neither the
+
         # sandbox nor the app-wide framing ban may apply to it.
         is_preview_tab = is_preview and _qs.get("tab") == ["1"]
 
@@ -677,13 +713,19 @@ class SecurityHeadersMiddleware:
                     if is_preview_tab:
                         pass
                     elif is_preview:
+
                         # Tight sandbox instead of the app-wide framing ban
                         headers.append((b"content-security-policy", b"sandbox allow-scripts"))
                     else:
+
                         # static.cloudflareinsights.com: Cloudflare's own RUM
+
                         # beacon auto-injected by the proxy; harmless analytics.
+
                         # connect-src also allows the configured converter API
+
                         # (in-browser YouTube downloads) and img-src the
+
                         # YouTube thumbnail CDN.
                         headers.append((b"content-security-policy",
                                         _csp_policy().encode("ascii")))
@@ -696,7 +738,9 @@ class SecurityHeadersMiddleware:
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+
 # /api/logs streams the log; /api/logs/clear manages it - neither should
+
 # log itself, or clearing would instantly re-add the clear request's line.
 _SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/logs/clear", "/api/bandwidth", "/favicon.svg", "/favicon.ico"}
 
@@ -719,6 +763,7 @@ async def access_log_middleware(request: Request, call_next):
     else:
         level = "INFO"
     msg = f"{method} {path} {status} {dur_ms}ms user={uname}"
+
     # Emulate logger format so frontend level detection works
     log_broadcaster.emit(f"{time.strftime('%H:%M:%S')} [{level}] [HTTP] {msg}")
     return response
@@ -732,8 +777,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def not_found_handler(request: Request, exc):
     return JSONResponse(status_code=404, content={"error": "Not found"})
 
+
 # ==========================================
+
 # Network Usage Tracking (persisted JSON)
+
 # ==========================================
 NETWORK_USAGE_PATH = os.path.join(APP_DIR, "network_usage.json")
 
@@ -784,6 +832,7 @@ class _NetworkUsage:
             entry = d["by_path"].get(path)
             if entry is None:
                 if len(d["by_path"]) >= 500:
+
                     # Drop the smallest entry to stay bounded
                     victim = min(d["by_path"].items(),
                                  key=lambda kv: kv[1].get("requests", 0))[0]
@@ -852,8 +901,11 @@ class NetworkUsageMiddleware:
 
 app.add_middleware(NetworkUsageMiddleware)
 
+
 # ==========================================
+
 # Per-User Data Isolation
+
 # ==========================================
 def _safe_username(username: str) -> str:
     """Filesystem-safe folder name for a username ([a-z0-9_-] only, 1-32 chars)."""
@@ -968,10 +1020,12 @@ def _ensure_dir(path: str) -> str:
             os.makedirs(path, exist_ok=True)
             return path
         except FileExistsError:
+
             # `path` itself is a file/symlink, not a directory.
             if not _clear_path_entry(path):
                 return path
         except NotADirectoryError:
+
             # An ancestor component is a file; clear the nearest one.
             offender = None
             p = path
@@ -1028,6 +1082,7 @@ def _migrate_user_data_dirs():
         rows = [(r["id"], r["username"]) for r in conn.execute("SELECT id, username FROM users").fetchall()]
     finally:
         conn.close()
+
     # Phase 1: numeric id folders -> temp names (avoids clashes with numeric usernames)
     for uid, _uname in rows:
         old = os.path.join(base, str(uid))
@@ -1037,6 +1092,7 @@ def _migrate_user_data_dirs():
                 os.rename(old, tmp)
             except OSError as e:
                 logger.warning(f"[MIGRATE] Could not rename {old}: {e}")
+
     # Phase 2: temp names -> sanitized usernames
     for uid, uname in rows:
         tmp = os.path.join(base, f"_tmpuid_{uid}")
@@ -1058,6 +1114,7 @@ def _migrate_user_data_dirs():
 
 _migrate_user_data_dirs()
 _heal_user_dirs()
+
 
 # Per-user coding states: {user_key: {"folder": ..., "settings": {...}}}
 _coding_states = {}
@@ -1120,7 +1177,9 @@ def _save_coding_folder(user_id: str, folder: Optional[str]):
         pass
 
 
+
 # ---- File version history: every coding write/patch snapshots the previous
+
 # content first, so a bad edit can be undone from the file's history. ----
 _CODING_VERSION_CAP = 25                     # versions kept per file
 _CODING_VERSION_DIR_CAP = 20 * 1024 * 1024   # 20MB total per user
@@ -1268,6 +1327,7 @@ def _save_user_pref(user_id: str, key: str, value):
         pass
 
 
+
 # ---- cloud chat history (per account, syncs across devices) ----
 _CHAT_ID_RE = re.compile(r"[A-Za-z0-9._:\-]{1,80}")
 _CHAT_MAX_BYTES = 3_000_000
@@ -1304,7 +1364,9 @@ def _prune_chats(chats: dict, limit: int = 300) -> dict:
                    reverse=True)
     return dict(items[:limit])
 
+
 # The language value is interpolated into the system prompt, so it is
+
 # validated against a strict alphabet instead of being trusted.
 _LANGUAGE_RE = re.compile(r"[A-Za-z]{3,20}")
 
@@ -1371,8 +1433,11 @@ def _get_coding_state(user_id: str) -> dict:
         }
     return _coding_states[user_id]
 
+
 # ==========================================
+
 # Provider Key Resolution
+
 # ==========================================
 def health_scope(request):
     """Health bucket for the caller's key set: admin shares the server keys,
@@ -1400,8 +1465,11 @@ def get_provider_keys(request):
         return {}
     return {}
 
+
 # ==========================================
+
 # Log Broadcasting via SSE
+
 # ==========================================
 def _log_visible_to(msg: str, username: Optional[str]) -> bool:
     """Per-user terminal filter. Admins (username None) see everything.
@@ -1418,6 +1486,7 @@ def _log_visible_to(msg: str, username: Optional[str]) -> bool:
 
 class LogBroadcaster:
     def __init__(self):
+
         # Entries are (queue, username-or-None-for-admin) tuples.
         self._queues: List[tuple] = []
         self._lock = asyncio.Lock()
@@ -1464,9 +1533,11 @@ class LogBroadcaster:
         if len(self._queues) >= 64:
             raise RuntimeError("Too many log subscriptions")
         q = queue.Queue(maxsize=200)
+
         # Seed from the persisted log file so the terminal survives restarts
         if not self._history:
             self._history = self._load_file_tail(500)[-self._history_max:]
+
         # Replay recent history so the terminal isn't empty on connect
         for msg in self._history:
             if not _log_visible_to(msg, username):
@@ -1543,8 +1614,11 @@ web_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(messag
 logging.getLogger("Omniilink").addHandler(web_handler)
 logging.getLogger().addHandler(web_handler)
 
+
 # ==========================================
+
 # Models
+
 # ==========================================
 class ChatMessage(BaseModel):
     role: str
@@ -1589,14 +1663,18 @@ class CodingGitCommit(BaseModel):
     message: str
     add: str = "all"
 
+
 # ==========================================
+
 # API Endpoints
+
 # ==========================================
 @app.get("/api/logs")
 async def stream_logs(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
+
     # Admins see the full firehose; everyone else only their own tagged lines.
     username = None if user.get("is_admin") else user.get("username")
     try:
@@ -1629,8 +1707,11 @@ async def clear_logs(request: Request):
 async def health_check():
     return {"status": "ok", "version": "3.0.0", "model": MODEL_NAME, "build": BUILD}
 
+
 # ==========================================
+
 # Authentication Endpoints
+
 # ==========================================
 class SignupRequest(BaseModel):
     username: str
@@ -1658,8 +1739,10 @@ class CustomProviderRequest(BaseModel):
 class ProviderKeyDeleteRequest(BaseModel):
     key_id: int
 
+
 # Simple login brute-force throttle: 5 failures per IP+username -> 15 min lockout
 _login_failures = {}
+
 # Signup throttle: max 5 signups per IP per hour
 _signup_attempts = {}
 
@@ -1711,13 +1794,18 @@ async def auth_signup(request: Request, req: SignupRequest):
         return JSONResponse(status_code=400, content={"error": "Username must be 3-32 chars: letters, numbers, - and _ only"})
     if len(req.password) < 6:
         return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
+
     # Reserved: allowlisted admin handles can never be registered by anyone
+
     # else. A brand-new database is exempt so the deployer can still claim
+
     # their own handle on first run.
     names = all_usernames()
     if names and _allowlisted(username):
         return JSONResponse(status_code=409, content={"error": "That username is reserved"})
+
     # Two accounts must never share one filesystem folder: "bob" and "bob_"
+
     # both sanitize to "bob", which would merge their private data.
     safe = _safe_username(username)
     if any(_safe_username(n) == safe for n in names):
@@ -1902,6 +1990,7 @@ async def auth_update_profile(request: Request, req: UpdateProfileRequest):
         if len(req.new_password) < 6:
             return JSONResponse(status_code=400, content={"error": "Password must be at least 6 characters"})
         update_user_password(user["id"], req.new_password)
+
         # Password change invalidates every other session
         current_token = request.cookies.get("omnilink_token")
         revoke_user_sessions(user["id"], keep_token=current_token)
@@ -1920,6 +2009,7 @@ async def auth_change_username(request: Request):
     new = str((data or {}).get("username", "")).strip().lower()
     if not new:
         return JSONResponse(status_code=400, content={"error": "Username is required"})
+
     # Reserved admin handles can never be claimed by another account (mirrors signup).
     if all_usernames() and _allowlisted(new) and new != (user.get("username") or "").lower():
         return JSONResponse(status_code=409, content={"error": "That username is reserved"})
@@ -1932,6 +2022,7 @@ async def auth_change_username(request: Request):
     if result.get("warning"):
         out["warning"] = result["warning"]
     return out
+
 
 # Provider API Key Management (per-user, stored in DB)
 @app.get("/api/provider-keys")
@@ -2178,6 +2269,7 @@ async def ollama_models(request: Request):
             "base_url": _ollama_current_url()}
 
 
+
 # ---- Ollama library browser + hardware-aware recommendations ----
 _OLLAMA_CATALOG = {"ts": 0.0, "models": []}
 
@@ -2275,6 +2367,7 @@ def _gpu_is_dedicated(name):
                             "arc a", "arc b", "arc pro")):
         return True
     return False
+
 
 
 # task key, label, candidate uses
@@ -2376,6 +2469,7 @@ async def ollama_recommend(request: Request):
 def _sysinfo_command(platform_str):
     """Shell command that prints OMNI_* hardware lines for the device's OS."""
     p = (platform_str or "").lower()
+
     # Check macOS first: "darwin" contains "win" and must not hit Windows.
     if "darwin" in p or "mac" in p:
         return ("echo OMNI_CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null);"
@@ -2386,7 +2480,9 @@ def _sysinfo_command(platform_str):
                 "echo OMNI_GPU=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 'Chipset Model' | cut -d: -f2);"
                 "echo OMNI_OS=$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)")
     if "win" in p:
+
         # Prefer nvidia-smi (accurate VRAM + driver); Win32 AdapterRAM is a
+
         # 32-bit field that caps at 4 GB. Fall back to WMI otherwise.
         return ('powershell -NoProfile -Command "'
                 '$p=Get-CimInstance Win32_Processor | Select-Object -First 1;'
@@ -2685,6 +2781,7 @@ async def get_settings(request: Request):
                 "has_value": True,
             })
         elif user.get("is_admin"):
+
             # Server .env keys are only visible to the admin
             for i in range(1, 6):
                 key_env = f"{prefix}_{i}"
@@ -2993,6 +3090,7 @@ async def api_usage(request: Request, range: str = "24h"):
 
 @app.get("/api/network")
 async def api_network(request: Request):
+
     # Traffic totals describe every account on the box — admin only.
     user, err = _require_admin(request)
     if err:
@@ -3019,6 +3117,7 @@ async def chat_completions(request: Request):
             if len(content) > 500000:
                 return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
         elif isinstance(content, list):
+
             # Multimodal content (text + image_url parts) — must be non-empty.
             if not content:
                 return JSONResponse(status_code=400, content={"error": "Invalid message entry"})
@@ -3038,7 +3137,9 @@ async def chat_completions(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
     is_stream = bool(is_stream)
 
+
     # Paired-device models are owner-only: strictly the account that paired
+
     # the device may use it — not even an admin. Reject before anything runs.
     if req_model.startswith("device/"):
         parts = req_model.split("/", 2)
@@ -3057,7 +3158,9 @@ async def chat_completions(request: Request):
             return JSONResponse(status_code=403, content={
                 "error": "This device's models belong to the account that paired it."})
 
+
     # Optional generation controls from the UI menus: invalid values are
+
     # coerced to "auto" (provider default) instead of rejecting the request.
     effort = normalize_level(body.get("effort"), "auto")
     thinking = normalize_level(body.get("thinking"), "auto")
@@ -3068,6 +3171,7 @@ async def chat_completions(request: Request):
         req_opts["response_modalities"] = body.get("response_modalities")
     if body.get("tools"):
         req_opts["tools"] = body.get("tools")
+
 
     # Key policy: admin uses the server's .env keys; everyone else must use their own keys.
     user_keys = None
@@ -3083,8 +3187,11 @@ async def chat_completions(request: Request):
     if auth_header.startswith("Bearer ml-"):
         api_key_id = get_api_key_id_by_key(auth_header[7:])
 
+
     # House system prompt (identity + web_search/DuckDuckGo contract) when
+
     # the caller did not supply its own system message. Coding turns always
+
     # carry one, so they are unaffected.
     _sys_uid = _safe_username(user["username"])
     _has_system = any(isinstance(m, dict) and m.get("role") == "system" and m.get("content")
@@ -3092,7 +3199,9 @@ async def chat_completions(request: Request):
     if not _has_system:
         messages = [{"role": "system", "content": _chat_system_prompt(_sys_uid)}] + list(messages)
     else:
+
         # A caller-supplied prompt (coding, or a custom system message): append
+
         # the live clock so the model always knows the exact time and date.
         messages = list(messages)
         for _i, _m in enumerate(messages):
@@ -3199,8 +3308,11 @@ async def chat_completions(request: Request):
             logger.error(f"[CHAT] generate() failed: {e}", exc_info=True)
             prov, mname = _resolve_request_model(req_model)
             _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
+
             # NOTE: capture the text NOW — `except ... as e` deletes `e`
+
             # when the block exits, so a closure reading str(e) later would
+
             # raise NameError mid-stream (empty 200, connection killed).
             err_text = str(e)
             async def error_event_gen():
@@ -3238,9 +3350,13 @@ async def chat_completions(request: Request):
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                 else:
+
                     # Iterate the chunk stream in a worker thread: the loop
+
                     # must stay free while we wait (device-relay batches arrive
+
                     # over HTTP on this same server, and blocking here would
+
                     # starve them until the first-timeout fires).
                     _stream_iter = iter(stream)
                     _stream_sentinel = object()
@@ -3370,8 +3486,11 @@ async def list_models(request: Request):
         pass
     return {"data": models}
 
+
 # ==========================================
+
 # Coding Mode
+
 # ==========================================
 IGNORE_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
@@ -3404,8 +3523,11 @@ def _build_file_tree(root_path, prefix="", patterns=None):
             if name not in IGNORE_DIRS and not name.startswith("."):
                 dirs.append(name)
         else:
+
             # Every file shows in the tree (archives, media, binaries included);
+
             # only dotfiles are hidden. Directories above still skip the big
+
             # generated trees (node_modules, .git, ...).
             if not name.startswith("."):
                 files.append(name)
@@ -3424,8 +3546,11 @@ def _build_file_tree(root_path, prefix="", patterns=None):
 
 
 OMNIIIGNORE_NAME = ".omniiignore"
+
 # Coding conversation lives inside the project under this hidden folder (the
+
 # file tree and auto-attach skip dotfiles, so it never shows up or gets sent
+
 # to the model). Storing it in the project makes it travel with the project.
 CODING_CHAT_DIR = ".omniilink"
 CODING_CHAT_FILE = "coding-chat.json"
@@ -3662,6 +3787,7 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   offer the closest working alternative instead of shipping it broken.
 """
 
+
 # Per-user coding states handled by _get_coding_state()
 
 def _folder_access_error(user, folder):
@@ -3684,6 +3810,7 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     if _bad_path(folder):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
+
         # Containment before existence: no oracle for probing other paths
         return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
     if not os.path.isdir(folder):
@@ -3846,8 +3973,11 @@ async def coding_file_content(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 # ---------------------------------------------------------------------------
+
 # Project archive download (the whole open project, compressed)
+
 # ---------------------------------------------------------------------------
 _ARCHIVE_SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
@@ -3970,7 +4100,9 @@ async def coding_preview(request: Request, path: str):
     from fastapi.responses import Response as _Response
     user, err = _require_auth(request)
     if err:
+
         # Same cookie-free path as assets: browsers may withhold Lax cookies
+
         # from sandboxed-frame navigations, so the frontend appends `t`.
         user = _user_from_preview_token(
             request.query_params.get("t"), request.query_params.get("path"))
@@ -3982,6 +4114,7 @@ async def coding_preview(request: Request, path: str):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+
     # Opening a preview brings the project's (idle-shut-down) container back up.
     _maybe_warm_project(user, folder)
     if _bad_path(path):
@@ -4012,11 +4145,16 @@ async def coding_preview(request: Request, path: str):
             content=content,
             media_type="text/html",
             headers={
+
                 # Navigation token: lets the frame/tab load this document even
+
                 # when the browser withholds cookies (sandboxed frame) or the
+
                 # tab was opened without a session context.
                 "X-Preview-Token": _mint_preview_token(user["id"], path),
+
                 # Real-tab mode drops the sandbox entirely (see docstring);
+
                 # the iframe keeps "sandbox allow-scripts".
                 **({} if request.query_params.get("tab") == "1"
                    else {"Content-Security-Policy": "sandbox allow-scripts"}),
@@ -4035,15 +4173,25 @@ _ASSET_MIME_OVERRIDES = {
     ".svg": "image/svg+xml",
 }
 
+
 # ==========================================
+
 # Preview asset tokens
+
 # ==========================================
+
 # The preview page runs in a sandboxed, opaque-origin iframe (CSP sandbox +
+
 # iframe sandbox attr, deliberately without allow-same-origin). Browsers treat
+
 # requests from such documents as cross-site/third-party and withhold the
+
 # SameSite=Lax session cookie, so CSS/JS/img subrequests get 401 and the page
+
 # renders unstyled. Rather than weaken the sandbox or the cookie policy,
+
 # rewritten asset URLs carry a short-lived HMAC token bound to one user +
+
 # one exact path; the asset endpoint accepts either a session or a token.
 _PREVIEW_TOKEN_TTL = 3600
 _preview_secret_cache = None
@@ -4112,6 +4260,7 @@ def _user_from_preview_token(token, path):
         exp_s, uid_s, nonce, sig = parts
         msg_tail = f":{nonce}"
     elif len(parts) == 3:
+
         # Legacy pre-nonce tokens: still honored until they expire.
         exp_s, uid_s, sig = parts
         msg_tail = ""
@@ -4186,14 +4335,20 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
             return None
         if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#|data:)", ref, re.IGNORECASE):
             return None
+
         # Cache-busting queries/fragments are meaningless to a filesystem
+
         # lookup (img.jpg?v=2 would 404); responses are no-store anyway.
         ref = ref.split("#", 1)[0].split("?", 1)[0].strip()
         if not ref:
             return None
+
         # normpath clamps ".." at the project root; the asset endpoint
+
         # re-enforces containment, so anything truly outside 403s there.
+
         # A root-absolute ref (/style.css) means the SITE root, which for a
+
         # project page is the project folder (base_root), not the server root.
         if ref.startswith("/"):
             norm = posixpath.normpath(posixpath.join("/" + (base_root or ""), ref.lstrip("/"))).lstrip("/")
@@ -4239,8 +4394,11 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
                 + m.group(3))
 
     def repl_page(m):
+
         # In-page navigation: <a href="other.html"> keeps working inside
+
         # previews by pointing at the preview endpoint (own signed token).
+
         # Anything else (external, fragments, non-HTML) is left untouched.
         if page_url_for is None:
             return m.group(0)
@@ -4322,6 +4480,7 @@ async def coding_preview_asset(request: Request, path: str):
     import mimetypes
     user, err = _require_auth(request)
     if err:
+
         # Cookie-free path: short-lived token minted during HTML rewriting.
         user = _user_from_preview_token(
             request.query_params.get("t"), request.query_params.get("path"))
@@ -4368,10 +4527,15 @@ async def coding_preview_asset(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 # ==========================================
+
 # Shared previews: copyable links that stay live forever until 10 minutes
+
 # after the first open. Token-gated (unguessable), path- and user-bound at
+
 # creation; assets ride the same share so they die with it.
+
 # ==========================================
 _SHARE_TTL_AFTER_OPEN = 600
 _SHARE_MAX_BYTES = 1024 * 1024
@@ -4583,11 +4747,17 @@ async def shared_preview_asset(request: Request, token: str, path: str):
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 # ==========================================
+
 # Remote preview: serve a project file from a paired computer. The server
+
 # reads it through the agent (read/readb64), rewrites its relative asset and
+
 # page links to tokenised remote endpoints, and serves it exactly like a
+
 # server-side preview (real tab or sandboxed frame).
+
 # ==========================================
 async def _agent_run_file_op(user, agent_id, payload, timeout=25.0):
     """Queue a file op and wait for the laptop's reply. Returns (parsed, None)
@@ -4694,8 +4864,11 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
         except Exception:
             data = None
     if data is None:
+
         # Older companion without readb64: CSS/JS/etc are text, so the normal
+
         # read op still delivers them (this is why a page could render its
+
         # HTML but look unstyled until the agent was updated).
         out2, err3 = await _agent_run_file_op(user, agent, {"op": "read", "path": path})
         if err3:
@@ -4724,10 +4897,15 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
                      headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
+
 # ==========================================
+
 # Generated 3D models: metadata + asset store per user.
+
 # Assets live under user_data/<user>/models/ with a models.json index, so a
+
 # generated model survives restarts and is fetched by the Model Gallery.
+
 # ==========================================
 _MODEL_MIME = {
     ".glb": "model/gltf-binary",
@@ -4895,8 +5073,11 @@ async def models_delete(request: Request, model_id: str):
     return {"status": "ok"}
 
 
+
 # ==========================================
+
 # Public sharing (submit -> admin review -> release)
+
 # ==========================================
 PUBLIC_SUBMIT_MAX_BYTES = 2 * 1024 * 1024
 PUBLIC_FILE_MAX_BYTES = 200 * 1024
@@ -4971,16 +5152,21 @@ async def public_submit(request: Request):
     kind = str(data.get("kind", "project")).lower()
     if kind not in PUBLIC_KINDS:
         kind = "project"
+
     # The author's username is required: shared links are /public/<username>/<slug>
+
     # and the submitter is always credited.
     show_author = 1
     allow_download = 1 if data.get("allow_download", True) else 0
     files = []
     total = 0
+
     # Remember where this came from so the owner can later "update" the
+
     # published copy to the latest version of the original project.
     source_project = ""
     source_folder = ""
+
     # Copy a 3D model from the user's own store by id.
     mid = str(data.get("model_id", "") or "").strip()
     if mid:
@@ -5007,6 +5193,7 @@ async def public_submit(request: Request):
     else:
         proj_name = str(data.get("project_name", "") or "").strip().replace("\\", "/").strip("/")
         if proj_name and not data.get("files"):
+
             # Folder-based submit: read the listed paths server-side from a saved project.
             if ".." in proj_name.split("/") or proj_name.startswith("."):
                 return JSONResponse(status_code=400, content={"error": "Bad project name"})
@@ -5060,7 +5247,9 @@ async def public_submit(request: Request):
     paths = {f["path"] for f in files}
     if main_file and main_file not in paths:
         main_file = ""
+
     # Link the source folder (publishing the currently-open folder) so an
+
     # "update" can re-read it later. Ignored when not accessible.
     if not source_project:
         raw_folder = str(data.get("folder", "") or "").strip()
@@ -5203,9 +5392,13 @@ async def public_download(request: Request, pid: int):
                 zf.writestr(f["path"], c)
     fname = re.sub(r"[^A-Za-z0-9._-]+", "_", r["name"] or "project")[:60] or "project"
     disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(fname + ".zip")
+
     # Return the bytes directly: FileResponse streams a path lazily, so any
+
     # temp file deleted here (in finally) would be gone before it is read,
+
     # giving a 500. Submissions are size-capped, so an in-memory response is
+
     # both simpler and race-free.
     from fastapi.responses import Response as _Response
     return _Response(content=buf.getvalue(), media_type="application/zip",
@@ -5366,6 +5559,7 @@ async def public_update(request: Request, pid: int):
             paths = []
         if not isinstance(paths, list):
             paths = []
+
         # Resolve the base folder to re-read from.
         base = ""
         if src_proj:
@@ -5416,7 +5610,9 @@ async def public_update(request: Request, pid: int):
         for f in new_files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
                          (pid, f["path"], f["size"], f["content"]))
+
         # An update is a new revision: send it back for re-approval so it is
+
         # never published to the world without a fresh review.
         conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ?,"
                      " status = 'pending', approved_at = NULL WHERE id = ?",
@@ -5473,8 +5669,11 @@ async def admin_public_list(request: Request, status: str = "pending"):
         conn.close()
 
 
+
 # ==========================================
+
 # Forums
+
 # ==========================================
 @app.get("/api/forums/sections")
 async def forums_sections(request: Request):
@@ -5667,6 +5866,7 @@ def _extract_zip_safely(zip_path: str, dest: str, max_files: int = 20000,
             with zf.open(info) as src, open(target, "wb") as out:
                 shutil.copyfileobj(src, out, length=1024 * 1024)
             count += 1
+
     # posixpath import kept local to this helper's original scope note
     _ = posixpath  # silence linters about the local import
     return count, total
@@ -6041,6 +6241,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
             _coding_save_version(_safe_username(user["username"]), req.path, backup)
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
+
         # Diff stats for the activity feed (opencode-style +N -M)
         try:
             import difflib
@@ -6056,6 +6257,100 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
                 "backed_up": backup is not None, "added": added, "removed": removed}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---- FILE_PATCH target location ----------------------------------------
+# "Old text not found" is the most common coding failure, and the matcher used
+# to exist in THREE copies with different forgiveness levels: this endpoint
+# retried with trailing whitespace ignored, while the browser-local and
+# paired-device paths in index.html did a bare indexOf and gave up. The same
+# patch therefore applied on a server project but failed on a local one. The
+# tiers below are duplicated verbatim in web/index.html (locatePatchTarget) so
+# every backend behaves identically. Change one, change both.
+#
+# Tiers, strictest first; a tolerant tier must match EXACTLY ONCE:
+#   1 exact   2 CRLF/LF   3 trailing spaces   4 indentation   5 blank lines
+PATCH_KEY_EXACT = lambda l: l
+PATCH_KEY_RTRIM = lambda l: l.rstrip()
+PATCH_KEY_INDENT = lambda l: l.lstrip().rstrip()
+
+
+def _patch_unique_match(cur_lines, want_keys, key_fn):
+    """Index of the only line where the block matches, else None."""
+    hits = []
+    n = len(want_keys)
+    if not n:
+        return None
+    for s in range(0, len(cur_lines) - n + 1):
+        if all(key_fn(cur_lines[s + k]) == want_keys[k] for k in range(n)):
+            hits.append(s)
+            if len(hits) > 1:
+                return None
+    return hits[0] if len(hits) == 1 else None
+
+
+def _patch_line_offsets(lines):
+    off = [0]
+    for ln in lines:
+        off.append(off[-1] + len(ln) + 1)
+    return off
+
+
+def _patch_trim(text):
+    return text.lstrip("\ufeff")
+
+
+def _locate_patch_target(current, old_text):
+    """Return (start, end, how) char offsets into current, or None."""
+    cur = _patch_trim(current)
+    old = _patch_trim(old_text)
+    if not old:
+        return None
+    idx = cur.find(old)
+    if idx != -1:
+        return (idx, idx + len(old), "exact")
+    cur_lines = cur.replace("\r\n", "\n").split("\n")
+    old_lines = old.replace("\r\n", "\n").split("\n")
+    off = _patch_line_offsets(cur_lines)
+    for how, key_fn in (("line-endings", PATCH_KEY_EXACT),
+                        ("trailing-spaces", PATCH_KEY_RTRIM),
+                        ("indentation", PATCH_KEY_INDENT)):
+        keys = [key_fn(l) for l in old_lines]
+        s = _patch_unique_match(cur_lines, keys, key_fn)
+        if s is not None:
+            return (off[s], off[s + len(old_lines)], how)
+    # The model wrapped the block in blank lines it invented.
+    a, b = 0, len(old_lines)
+    while a < b and old_lines[a].strip() == "":
+        a += 1
+    while b > a and old_lines[b - 1].strip() == "":
+        b -= 1
+    if a > 0 or b < len(old_lines):
+        inner = old_lines[a:b]
+        keys = [PATCH_KEY_INDENT(l) for l in inner]
+        s = _patch_unique_match(cur_lines, keys, PATCH_KEY_INDENT) if keys else None
+        if s is not None:
+            return (off[s], off[s + len(inner)], "blank-lines")
+    return None
+
+
+def _patch_miss_reason(current, old_text):
+    """Say WHY the OLD block missed, so the model does not resend it verbatim."""
+    cur = _patch_trim(current).replace("\r\n", "\n")
+    old = _patch_trim(old_text).replace("\r\n", "\n")
+    first = ""
+    for ln in old.split("\n"):
+        if ln.strip():
+            first = ln.strip()
+            break
+    if "\r" in old_text or "\r" in _patch_trim(current):
+        lead = "its block mixes line endings"
+    else:
+        lead = "its block matches no run of lines in the file"
+    if first and first not in cur:
+        return lead + ", and its first line (%r) is not in the file at all" % first[:60]
+    return lead + ", and its first line was found but the surrounding lines do not match verbatim"
+
 
 @app.post("/api/coding/file-patch")
 async def coding_file_patch(request: Request, req: CodingFilePatch):
@@ -6084,25 +6379,16 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         with open(full, "r", encoding="utf-8", errors="replace") as f:
             current = f.read()
         old, new = req.old_text, req.new_text
-        idx = current.find(old)
-        if idx == -1:
-            # Forgiving retry: ignore trailing-whitespace differences
-            old_stripped = "\n".join(line.rstrip() for line in old.split("\n"))
-            cur_lines = current.split("\n")
-            found_at = -1
-            want = old_stripped.split("\n")
-            for s in range(len(cur_lines) - len(want) + 1):
-                if all(cur_lines[s + k].rstrip() == want[k] for k in range(len(want))):
-                    found_at = s
-                    break
-            if found_at == -1:
-                return JSONResponse(status_code=404, content={
-                    "error": "Old text not found in file — it may have changed; re-read it first",
-                    "hint": "Current file starts with:\n" + current[:300]})
-            end_line = found_at + len(want)
-            patched = "\n".join(cur_lines[:found_at] + [new] + cur_lines[end_line:])
-        else:
-            patched = current[:idx] + new + current[idx + len(old):]
+        hit = _locate_patch_target(current, old)
+        if hit is None:
+            return JSONResponse(status_code=404, content={
+                "error": "Old text not found — nothing was changed. "
+                         + _patch_miss_reason(current, old),
+                "hint": "Re-read the file first, then copy OLD verbatim from that "
+                        "output (same indentation, same wording, no added blank lines). "
+                        "Keep OLD to 3-8 consecutive lines that appear exactly once in "
+                        "the file.\nCurrent file starts with:\n" + current[:200]})
+        patched = current[:hit[0]] + new + current[hit[1]:]
         quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
         if quota_err:
             return quota_err
@@ -6256,11 +6542,17 @@ async def coding_rename(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+
 # ==========================================
+
 # More Tools: YouTube download + file conversion
+
 # ==========================================
+
 # Everything runs on this server (your own machine) — no third-party
+
 # converter sites. Requires the yt-dlp + pypdfium2 + imageio-ffmpeg packages
+
 # in requirements.txt (ffmpeg binary via imageio-ffmpeg when missing).
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
             "music.youtube.com", "youtu.be", "www.youtu.be",
@@ -6462,7 +6754,9 @@ async def tools_converter_diagnostics(request: Request):
             http_ok, http_detail = False, str(e)[:120]
     internal = None
     if cobalt is not None and cobalt.get("present") and cobalt.get("running"):
+
         # Same docker network, no public DNS involved: proves whether the
+
         # container itself is healthy regardless of tunnel/DNS state.
         try:
             req_in = urllib.request.Request("http://cobalt:9000/",
@@ -6543,9 +6837,13 @@ async def tools_youtube_info(request: Request, req: YTInfoRequest):
             "qualities": qualities}
 
 
+
 # Default converter address: our own cobalt instance behind the nginx
+
 # sidecar on the main hostname. Same-origin for the page (no CORS issues)
+
 # and reachable over plain IPv4 (the tunnel's own *.cfargotunnel.com name
+
 # has no IPv4 record, so it is unusable from phones and IPv4-only nets).
 CONVERTER_DEFAULT_URL = "https://omniilink.dpdns.org/converter/"
 
@@ -6578,8 +6876,11 @@ async def tools_converter(request: Request):
     return {"url": url}
 
 
+
 # ---- YouTube download options (pure helpers, unit-tested) ----------------
+
 # Source-codec prefixes YouTube reports, and the ffmpeg encoder used when we
+
 # have to re-encode instead of copying the stream.
 YT_VCODEC_SRC = {"h264": "avc1", "vp9": "vp09", "av1": "av01", "h265": "hev1"}
 YT_VCODEC_ENC = {"h264": "libx264", "h265": "libx265",
@@ -6594,6 +6895,7 @@ YT_MIME = {"mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm",
            "mp3": "audio/mpeg", "m4a": "audio/mp4", "opus": "audio/ogg",
            "ogg": "audio/ogg", "wav": "audio/wav", "flac": "audio/flac",
            "zip": "application/zip"}
+
 # Lossy formats where a bitrate actually applies (the rest are already fixed).
 YT_LOSSLESS_AUDIO = ("original", "wav", "flac")
 
@@ -6636,6 +6938,7 @@ def _yt_plan(req: YTDownloadRequest) -> tuple:
     if kind == "audio":
         a_format = (req.audio_format or "").strip().lower()
         if not a_format:
+
             # Old clients only send format=mp3, so keep honouring it as mp3.
             a_format = "mp3" if legacy else "original"
         if a_format == "aac":
@@ -6739,6 +7042,7 @@ def _yt_audio_ffmpeg(ff: str, plan: dict, src: str, dst: str, cover: str = "") -
     if not _yt_have_encoder(enc):
         raise ValueError(f"this server's ffmpeg cannot write {plan['a_format'].upper()}")
     args = [ff, "-y", "-v", "error", "-i", src]
+
     # WAV cannot carry a picture, so do not even ask for one.
     use_cover = bool(cover) and plan["a_format"] != "wav" and os.path.isfile(cover)
     if use_cover:
@@ -6818,6 +7122,7 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
                                        text=True, timeout=timeout)
 
     try:
+
         # Metadata first: enforce the duration cap before any bytes move.
         proc = await _run(ytdlp + ["--dump-json", "--no-playlist",
                                    "--no-warnings", url], YT_TIMEOUT_INFO)
@@ -6844,8 +7149,10 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
         out_tpl = os.path.join(tmpdir, "media.%(ext)s")
         split = plan["split"] if plan["kind"] == "video" else False
 
+
         # ---- download ----
         if split:
+
             # Two independent pulls: video-only and audio-only, kept as-is.
             for tag, sel in (("video", plan["format_sel"]),
                              ("audio", "ba/best")):
@@ -6879,6 +7186,7 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
         if not produced:
             return JSONResponse(status_code=500, content={"error": "Nothing was downloaded"})
 
+
         # ---- package ----
         if split:
             vids = [f for f in produced if f.startswith("video.")]
@@ -6908,8 +7216,11 @@ async def tools_youtube_download(request: Request, req: YTDownloadRequest):
 
         if plan["kind"] == "video":
             dst = os.path.join(tmpdir, "out." + plan["container"])
+
             # Ladder: plain copy/re-encode first, then re-encode into the
+
             # target container, then the same without subtitle tracks a
+
             # container refuses to carry.
             attempts, build_err = [], ""
             for builder in (lambda: _yt_video_ffmpeg(ffmpeg, plan, src, dst),
@@ -7118,8 +7429,11 @@ class ScanRequest(BaseModel):
     language: Optional[str] = ""
 
 
+
 # Heuristic danger rules: (language, level, regex, message).
+
 # This is a tripwire, not a sandbox: obvious malicious patterns are
+
 # blocked/flagged, but determined obfuscation can evade static checks.
 _SCAN_RULES = [
     ("py", "danger", r"os\.system\s*\(", "os.system() shell execution"),
@@ -7212,6 +7526,8 @@ async def coding_scan(request: Request, req: ScanRequest):
                 content = f.read()
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
+
+
         if not language:
             language = _SCAN_EXTS.get(os.path.splitext(req.path)[1].lower(), "")
     if not content:
@@ -7236,24 +7552,32 @@ def _sanitize_shell_command(command: str) -> str:
     unbalanced trailing quote so the intent executes.
     """
     c = (command or "").strip()
+
     # Strip markdown code fences if the whole command is fenced
     if c.startswith("```"):
         c = re.sub(r"^```\w*\n?", "", c)
         c = re.sub(r"\n?```$", "", c).strip()
+
     # Strip one layer of surrounding matching quotes/backticks
     if len(c) >= 2 and c[0] == c[-1] and c[0] in "\"'`":
         c = c[1:-1].strip()
+
     # Drop a lone unbalanced trailing quote: the classic `dir"` bug
     for q in ("\"", "'"):
         if c.endswith(q) and c.count(q) % 2 == 1:
             c = c[:-1].rstrip()
+
     # Drop a lone unbalanced leading quote
     for q in ("\"", "'"):
         if c.startswith(q) and c.count(q) % 2 == 1:
             c = c[1:].lstrip()
+
     # subprocess runs with shell=True, i.e. already inside cmd.exe. A
+
     # redundant `cmd /c` prefix gets double-wrapped (cmd /d /s /c "cmd /c X")
+
     # and cmd.exe's /s quote handling mangles it (observed: program `dir"`).
+
     # Strip it so bare commands execute.
     c = re.sub(r"^(cmd(\.exe)?\s+/[ck]\s+)", "", c, flags=re.IGNORECASE).strip()
     return c.strip()
@@ -7324,8 +7648,11 @@ def _sandbox_config() -> Optional[dict]:
     mode = os.environ.get("OMNIILINK_SANDBOX", "").strip().lower()
     if mode not in ("docker", "project"):
         return None
+
     # Default 5: project containers stop after 5 idle minutes (their installed
+
     # layers survive and they revive on next use), so a forgotten preview never
+
     # keeps a container running forever. Set 0 to keep them running.
     try:
         idle_minutes = int(os.environ.get("OMNIILINK_PROJ_IDLE_MIN", "5") or 0)
@@ -7355,11 +7682,14 @@ def _project_container_name(user_id: str, folder: str) -> str:
     return f"omniilink-p-{user_id[:20]}-{safe}-{digest}"[:63]
 
 
+
 # name -> last-used epoch seconds (drives the idle reaper)
 _proj_containers: dict = {}
 _proj_lock = threading.Lock()
 _reaper_started = False
+
 # Mirrored to disk so idle bookkeeping survives an API restart: a container
+
 # that was busy seconds before a restart is not mistaken for a stale one.
 _PROJ_ACTIVITY_FILE = os.path.join(APP_DIR, "user_data", ".proj_activity.json")
 
@@ -7411,6 +7741,7 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
             _proj_touch(name)
             return True, ""
         if r.returncode == 0:
+
             # Exists but stopped: revive (keeps installed packages)
             r2 = subprocess.run(["docker", "start", name],
                                 capture_output=True, text=True, timeout=60)
@@ -7483,7 +7814,9 @@ def _maybe_start_reaper(idle_minutes: int):
     _reaper_started = True
 
     def _loop():
+
         # Seed from disk first so containers used shortly before a restart are
+
         # not treated as idle the moment the reaper comes back.
         for n, t in _proj_activity_load().items():
             with _proj_lock:
@@ -7541,13 +7874,21 @@ def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
     ]
 
 
+
 # Heuristic escape patterns for the restricted (non-admin) shell.
+
 # This is defense-in-depth, not a sandbox boundary: the real containment is
+
 # the forced cwd inside the user's own data dir plus authentication.
+
 # - drive-letter absolute paths (C:\, D:/) - lookbehind avoids matching http://
+
 # - UNC paths (\\server\share)
+
 # - parent (..) segments
+
 # - %VAR% expansion (leaks environment variables / escapes the folder)
+
 # - script hosts and LOLBins that can reach outside the sandbox
 _RESTRICTED_CMD_RE = re.compile(
     r"(?<![a-zA-Z/])[a-zA-Z]:[\\/]|\\\\\S|\.\."
@@ -7574,8 +7915,11 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         if not os.path.isdir(cwd):
             cwd = os.getcwd()
     else:
+
         # Restricted shell: the command always runs inside the user's own
+
         # data dir. Client-supplied cwd is validated, never trusted, and
+
         # absolute/parent paths in the command are rejected.
         base = _user_data_dir(user_id)
         if req.cwd:
@@ -7595,18 +7939,25 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         backend = "host"
         if sb is None:
             if _api_in_container():
+
                 # Never fall back to running inside the API container: it
+
                 # holds the docker socket, the database and every user's
+
                 # files - that is exactly what must stay unreachable.
                 return JSONResponse(status_code=503, content={"error": "Execution sandbox is disabled inside the API container. Set OMNIILINK_SANDBOX=project (the docker-compose default)."})
         else:
             _warn_missing_host_root()
+
             # A sandbox only ever mounts paths inside the app tree, so no
+
             # command (admin or not) can bind-mount the rest of the host.
             if not _is_within(APP_DIR, cwd):
                 cwd = folder if (folder and _is_within(APP_DIR, folder)) else _user_data_dir(user_id)
         if sb is not None and sb["mode"] == "project":
+
             # Persistent per-project container: installs survive between
+
             # commands. Fail LOUDLY if docker is missing.
             import shutil as _shutil
             if not _shutil.which("docker"):
@@ -7618,6 +7969,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
             backend = f"proj:{cname}"
             proc = _exec_project_container(cname, command, sb["timeout"])
         elif sb is not None:
+
             # Ephemeral per-command container. Fail LOUDLY if missing.
             import shutil as _shutil
             if not _shutil.which("docker"):
@@ -7651,7 +8003,9 @@ async def coding_get_settings(request: Request):
     settings = dict(coding_state["settings"])
     sb = _sandbox_config()
     settings["sandbox"] = sb is not None
+
     # Effective command-execution environment for the coding prompt: a
+
     # sandbox means a Linux container no matter what the host runs.
     settings["sandbox_mode"] = sb["mode"] if sb else ""
     if sb is not None:
@@ -7989,8 +8343,11 @@ async def coding_web_fetch(request: Request, url: str):
     return {"url": final_url[0], "content_type": ctype, "size": len(raw),
             "text": text[:100000]}
 
+
 # ==========================================
+
 # API Key Management
+
 # ==========================================
 PROVIDER_INFO = {
     "gemini": {"name": "Google Gemini", "color": "#4285F4", "env": "GEMINI_API_KEY"},
@@ -8017,7 +8374,9 @@ async def list_api_keys(request: Request):
     for prov_id, prov_info in PROVIDER_INFO.items():
         has_key = prov_id in db_provider_keys and len(db_provider_keys[prov_id]) > 10
         if not has_key and user.get("is_admin"):
+
             # Server .env keys only ever reveal themselves to an admin: a
+
             # plain account must not be able to probe which keys the host has.
             env_prefix = prov_info["env"].replace("_API_KEY", "")
             for env_key, env_val in os.environ.items():
@@ -8079,8 +8438,11 @@ async def api_keys_info(request: Request):
     except Exception as e:
         return {"base_url": base_url, "openai_base_url": f"{base_url}/v1", "models": [], "tiers": {}, "providers": {}}
 
+
 # ==========================================
+
 # Project Management
+
 # ==========================================
 def _valid_project_name(name: str) -> bool:
     if not name or len(name) > 100:
@@ -8220,7 +8582,8 @@ async def import_project(request: Request, req: ProjectImport):
     if not _valid_project_name(name):
         return JSONResponse(status_code=400, content={"error": "Invalid project name"})
     if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), source):
-        # Containment before existence: no oracle for probing other paths
+
+# Containment before existence: no oracle for probing other paths
         return JSONResponse(status_code=403, content={"error": "Access denied: you can only import folders from inside your own data directory"})
     if not os.path.isdir(source):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {source}"})
@@ -8289,6 +8652,7 @@ async def _do_delete(request: Request, path, name):
         return err
     user_id = _safe_username(user["username"])
     projects_dir = _user_projects_dir(user_id)
+
     # Hard containment: only ever delete inside this user's own projects directory
     if not _is_within(projects_dir, path):
         return JSONResponse(status_code=403, content={"error": "Access denied: path is outside your projects directory"})
@@ -8313,6 +8677,7 @@ async def _do_delete(request: Request, path, name):
                 dp = os.path.join(root, dd)
                 try: os.chmod(dp, stat.S_IWRITE)
                 except: pass
+
     # Try 1: direct rmtree with writable fix
     try:
         _mark_writable(path)
@@ -8322,6 +8687,7 @@ async def _do_delete(request: Request, path, name):
             _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
+
     # Try 2: rename then delete
     import tempfile
     tmp = os.path.join(os.path.dirname(path), f"_del_{name}_{int(time.time())}")
@@ -8334,6 +8700,7 @@ async def _do_delete(request: Request, path, name):
             _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
+
     # Try 3: cmd rmdir (synchronous)
     try:
         result = subprocess.run(
@@ -8346,7 +8713,9 @@ async def _do_delete(request: Request, path, name):
             _drop_project_container(user_id, path)
             return {"status": "ok"}
     except: pass
+
     # Folder is locked by a system process. Write a marker file in the
+
     # projects dir, then hide the folder so it doesn't show in the list.
     marker = os.path.join(os.path.dirname(path), f".pending_delete_{name}")
     try:
@@ -8361,16 +8730,25 @@ async def _do_delete(request: Request, path, name):
     except: pass
     return {"status": "ok", "hidden": True}
 
+
 # ==========================================
+
 # Admin panel — allowlisted super-admins only
+
 # ==========================================
+
 # Gating: is_admin AND username in OMNIILINK_ADMIN_USERS (default "isaac tribbe,admin").
+
 # Every mutating action is rate limited and appended to user_data/audit.log.
 
 _ADMIN_STARTED_AT = time.time()
+
 # Lives under user_data (a bind-mounted directory): it survives container
+
 # rebuilds without needing a new compose mount, and it is never served —
+
 # static files come from web/ only, and file APIs are confined to each
+
 # account's own subfolder.
 _AUDIT_FILE = os.path.join(APP_DIR, "user_data", "audit.log")
 _AUDIT_MAX_BYTES = 2 * 1024 * 1024
@@ -8456,7 +8834,9 @@ def _clip(text: str, limit: int = 64 * 1024) -> str:
 
 
 def _admin_rate_ok(username: str, limit: int = 60, window: int = 60, scope: str = "") -> bool:
+
     # Buckets are keyed by (user, scope, limit, window): endpoints that share
+
     # only limit+window would otherwise eat each other's budget.
     key = f"{username}:{scope}:{limit}:{window}"
     now = time.time()
@@ -8596,9 +8976,13 @@ def _build_updater_command(checkout: str, img: str, check: bool = False):
         parts.append("--check")
     command = " ".join(shlex.quote(p) for p in parts)
     if cli_env:
+
         # Best-effort cleanup if the api survives the run; the updater
+
         # itself deletes the file at startup, so a mid-update recreate
+
         # cannot leak it either. `$?` is preserved so the job/check exit
+
         # code still reflects the updater, not the `rm`.
         command += f"; rc=$?; rm -f {shlex.quote(cli_env)}; exit $rc"
     return command, cli_env
@@ -8802,8 +9186,11 @@ async def admin_error_report_resolve(request: Request, report_id: int):
         conn.close()
 
 
+
 # ==========================================
+
 # Remote pairing agents: run commands on a client computer
+
 # ==========================================
 _AGENTS_PATH = os.path.join(APP_DIR, "user_data", "agents.json")
 _AGENT_LOCK = threading.Lock()
@@ -9172,7 +9559,9 @@ async def agent_pending(request: Request, caps: str = ""):
     if not a:
         return JSONResponse(status_code=401, content={"error": "Bad agent token"})
     if caps:
+
         # Capability handshake: new companions announce e.g. ?caps=ollama on
+
         # every poll; old ones never send it and stay un-relay-capable.
         with _AGENT_LOCK:
             st = _agents_load()
@@ -9186,7 +9575,9 @@ async def agent_pending(request: Request, caps: str = ""):
         return JSONResponse(status_code=401, content={"error": "Unknown agent"})
     if nxt is not None:
         return {"command": nxt}
+
     # Long-poll: hold the request until a command lands (or timeout) so
+
     # pickup is instant instead of one poll interval late.
     ev = asyncio.Event()
     key = str(a["id"])
@@ -9279,9 +9670,13 @@ SERVER = "__SERVER__"
 OLLAMA_URL = (os.environ.get("OMNIILINK_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
 RELAY_PATHS = ("/api/tags", "/api/show", "/api/chat", "/v1/chat/completions", "/api/version", "/api/pull")
 
+
 # Socket deadlines. The server holds GET /api/agent/pending open for up to
+
 # ~25s waiting for a command, so every deadline here must clear that with
+
 # headroom: a shorter one reports a perfectly healthy idle poll as
+
 # "The read operation timed out".
 HTTP_TIMEOUT = 75
 LONG_TIMEOUT = 120
@@ -9295,8 +9690,11 @@ def api(method, path, token=None, payload=None, timeout=None):
         req.add_header("Authorization", "Bearer " + token)
     body = json.dumps(payload).encode() if payload is not None else None
     try:
+
         # The server long-polls /api/agent/pending for ~25s, so the default
+
         # deadline must clear that with headroom or a healthy idle poll
+
         # surfaces as a socket read timeout.
         with urllib.request.urlopen(req, data=body,
                                     timeout=timeout or HTTP_TIMEOUT) as r:
@@ -9484,8 +9882,11 @@ def main():
             print("stopped")
             return 0
         except TimeoutError:
+
             # A stalled read is a network hiccup, not a broken pairing: back
+
             # off briefly and keep polling rather than printing an alarming
+
             # read-timeout error on every cycle.
             time.sleep(3)
         except Exception as e:
@@ -9679,6 +10080,7 @@ async def admin_terminal_execute(request: Request):
     if cwd and not os.path.isdir(cwd):
         cwd = None
 
+
     # Persistent `cd` for the native backend (each command is its own shell).
     cd_match = re.fullmatch(r"\s*cd\s*(.*?)\s*", command) if mode == "native" else None
     if cd_match and ";" not in command and "&&" not in command:
@@ -9833,7 +10235,9 @@ def _admin_page(request: Request):
                         headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 
+
 # Registered BEFORE the /static mount below, so /static/admin.html can never
+
 # be served by the public static handler.
 @app.get("/static/admin.html")
 async def serve_admin_static(request: Request):
@@ -9893,7 +10297,9 @@ if os.path.isdir(web_dir):
 
 @app.get("/{path:path}")
 async def serve_spa(path: str):
+
     # Unknown API paths must be a 404, not the HTML shell - a client would
+
     # otherwise treat index.html as a successful JSON answer.
     if path == "api" or path.startswith("api/"):
         return JSONResponse(status_code=404, content={"error": "Not found"})
