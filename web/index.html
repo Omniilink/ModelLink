@@ -358,6 +358,9 @@ a:hover{text-decoration:underline}
 .coding-live-stat{display:inline-flex;align-items:center;gap:5px}
 .coding-live .term-add{color:#34c77b;font-weight:650}
 .coding-live .term-del{color:#e5534b;font-weight:650}
+/* Once a turn is over the line is a permanent record, not a live gauge. */
+.coding-live-done{padding-top:5px;margin-top:7px;border-top:1px dashed var(--border);color:var(--text-muted)}
+.coding-live-time{opacity:.65;font-size:10px;margin-left:2px}
 #upload-progress .up-row{margin-bottom:12px}
 #upload-progress .up-row:last-child{margin-bottom:0}
 .up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
@@ -3193,7 +3196,7 @@ function renderStreamingContent(chat,contentEl,fullText){
     contentEl._streamBody=body;
     contentEl._streamNote=null;
   }
-  try{codingLiveUpdate(fullText,contentEl.parentElement)}catch(e){}
+  try{codingLiveUpdate(fullText,codingStatsHost(contentEl))}catch(e){}
   body.innerHTML=p.body;
   let note=contentEl._streamNote;
   if(p.label){
@@ -3411,7 +3414,7 @@ async function sendCodingMessage(){
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);codingHistory.push({role:'assistant',content:fullText.trim()});maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
@@ -3423,7 +3426,7 @@ async function sendCodingMessage(){
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
-  finishCodingLiveStats(assistantEl,Date.now()-liveT0);
+  finishCodingLiveStats(assistantEl,Date.now()-liveT0,liveMsg);
   if(!aborted&&(!next.actionable||await isPlanMode()))await codingNotifyDone(fullText).catch(()=>{});
 }
 
@@ -3817,10 +3820,18 @@ function codingLiveHtml(added,removed,files,tps){
     +(files?' · '+files+' file'+(files!==1?'s':''):'')
     +(tps?' · '+tps+' tok/s':'')+'</span>';
 }
+// Every stat line for a turn lives in ONE place: the wrapper div that holds
+// the message content. Streaming, finalising and restoring must all target
+// this same element or the turn ends up with two competing lines.
+function codingStatsHost(assistantEl){
+  if(!assistantEl)return null;
+  const c=assistantEl.querySelector&&assistantEl.querySelector('.coding-msg-content');
+  return (c&&c.parentElement)||assistantEl;
+}
 // Called from the stream renderer. Cheap guard: it only re-parses when the
 // partial text actually grew, so a long prose turn costs nothing.
 async function codingLiveUpdate(fullText,host){
-  if(!host||!host.isConnected)return;
+  if(!host)return;
   const text=String(fullText||'');
   const blocks=codingLiveBlocks(text);
   const tps=codingLiveTps(text.length);
@@ -3848,20 +3859,32 @@ async function codingLiveUpdate(fullText,host){
 }
 // Final numbers for a finished turn, pinned under the message.
 function codingLiveFinish(host,added,removed,files,tpsMs){
-  if(!host||!host.isConnected)return;
+  if(!host)return;
   const secs=tpsMs>0?tpsMs/1000:0;
   const rate=secs>0?Math.round((added+removed)/4/secs):0;
-  let box=host._liveBox;
-  if(!box){box=document.createElement('div');box.className='coding-live';host.appendChild(box);host._liveBox=box}
-  if(host._liveSpeed){host._liveSpeed.remove();host._liveSpeed=null}
   const total=added+removed;
-  box.innerHTML=total?codingLiveHtml(added,removed,files,rate):'';
-  if(!total)box.remove();
+  // Always keep a box once a turn produced real numbers, so the line stays
+  // pinned beside its message instead of vanishing when it changes nothing.
+  let box=host._liveBox;
+  if(!box){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
+  if(host._liveSpeed){host._liveSpeed.remove();host._liveSpeed=null}
+  box.innerHTML=codingLiveHtml(added,removed,files,rate)+'<span class="coding-live-time">'+codingStatsStamp()+'</span>';
+  return{added:added,removed:removed,files:files,tps:rate,when:codingStatsStamp()};
+}
+// "3:04 PM" style stamp so a permanent stat line carries a time too.
+function codingStatsStamp(){
+  const d=new Date();
+  let h=d.getHours();const m=String(d.getMinutes()).padStart(2,'0');
+  const ap=h>=12?'PM':'AM';h=h%12;if(h===0)h=12;
+  return h+':'+m+' '+ap;
 }
 // Freeze the live counter once the turn's tool cards exist: the cards are the
 // authoritative per-file numbers, so sum those rather than the streamed guess.
-function finishCodingLiveStats(host,elapsedMs){
+// The result is written onto the message's history record so it is saved with
+// the chat (localStorage and cloud projects) and re-rendered on reload.
+function finishCodingLiveStats(host,elapsedMs,histMsg){
   try{
+    host=codingStatsHost(host)||host;
     const cards=[...host.querySelectorAll('.coding-msg-tool .diff-wrap')];
     let added=0,removed=0;
     const seen=new Set();
@@ -3874,8 +3897,20 @@ function finishCodingLiveStats(host,elapsedMs){
       added+=parseInt(String(addEl.textContent).replace(/[^\d-]/g,''),10)||0;
       removed+=parseInt(String(delEl.textContent).replace(/[^\d-]/g,''),10)||0;
     }
-    codingLiveFinish(host,added,removed,cards.length,elapsedMs);
+    const stats=codingLiveFinish(host,added,removed,cards.length,elapsedMs);
+    if(stats&&histMsg){histMsg.stats=stats;persistCodingChat()}
   }catch(e){}
+}
+// Re-render a saved stat line when a chat is restored from disk. Old chats
+// simply have no stats and render as they always did.
+function renderCodingStats(saved,host){
+  if(!saved)return;
+  const added=Number(saved.added)||0,removed=Number(saved.removed)||0;
+  const files=Number(saved.files)||0,tps=Number(saved.tps)||0;
+  if(!added&&!removed)return;
+  let box=host._liveBox;
+  if(!box){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
+  box.innerHTML=codingLiveHtml(added,removed,files,tps)+'<span class="coding-live-time">'+(saved.when?escapeHtml(saved.when):'')+'</span>';
 }
 function renderCodingTodos(){
   const bar=document.getElementById('coding-todo-bar'),list=document.getElementById('coding-todo-list');
@@ -4247,10 +4282,14 @@ function persistCodingChat(){
     if(!codingHistory||codingHistory.length===0)return;
     const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     // Truncate huge messages (e.g. viewed files) so one big file can't
-    // blow the localStorage quota and silently kill all persistence.
+    // blow the localStorage quota and silently kill all persistence. The
+    // saved `stats` ride along so the pinned +/- line survives the reload.
     const history=codingHistory.slice(-60).map(m=>{
-      if(m.content&&m.content.length>4000)
-        return{role:m.role,content:m.content.slice(0,4000)+'\n… [truncated for storage]'};
+      if(m.content&&m.content.length>4000){
+        const cut={role:m.role,content:m.content.slice(0,4000)+'\n… [truncated for storage]'};
+        if(m.stats)cut.stats=m.stats;
+        return cut;
+      }
       return m;
     });
     all[codingChatKey()]={updated:Date.now(),history};
@@ -4274,6 +4313,9 @@ function appendCodingHistoryMsg(m){
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
    el.querySelector('.coding-msg-content').innerHTML=renderContent(stripCodeForChat(cleanCodingProse((m.content||'').replace(/```(\w*)\n[\s\S]*?```/g,''))));
+  // Re-attach the pinned +/- line this turn recorded, so a reloaded or
+  // re-synced chat looks exactly like it did when it was live.
+  try{renderCodingStats(m.stats,el.querySelector('.coding-msg-content').parentElement)}catch(e){}
   chat.appendChild(el);
 }
 const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos'];
@@ -4511,7 +4553,8 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');if(isOllamaMode
   if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
   contentEl._streamArgs=null;contentEl._streamRaf=0;
   contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-  codingHistory.push({role:'assistant',content:fullText.trim()});
+  const liveMsg={role:'assistant',content:fullText.trim()};
+  codingHistory.push(liveMsg);
   persistCodingChat();
   scanPlanSteps(fullText);
   const actions=await processCodingActions(fullText,assistantEl);
@@ -4523,7 +4566,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');if(isOllamaMode
     contentEl.innerHTML=cleaned?renderContent(cleaned):'<span style="color:var(--text-muted);font-size:12px">(empty response)</span>';
   }
   settleSpinners(assistantEl);
-  finishCodingLiveStats(assistantEl,Date.now()-liveT0);
+  finishCodingLiveStats(assistantEl,Date.now()-liveT0,liveMsg);
   return{fullText,actualModel,actions};
 }
 function offerCreateMissingFiles(missing){
@@ -6859,7 +6902,16 @@ function codingChatToMarkdown(history){
       c=collapseTools(c);
     }
     c=c.replace(/\n{3,}/g,'\n\n').trim();
-    out.push(c||'(empty response)','');
+    out.push(c||'(empty response)');
+    // The pinned +/- record belongs with its message in the exported log too.
+    if(role==='assistant'&&m.stats&&((m.stats.added|0)||(m.stats.removed|0))){
+      const st=m.stats;
+      const bits=['**'+((st.added|0)>0?'+'+(st.added|0):'0')+' / '+((st.removed|0)>0?'-'+(st.removed|0):'0')+' chars'];
+      if(st.files)bits.push(st.files+' file'+(st.files!==1?'s':''));
+      if(st.tps)bits.push(st.tps+' tok/s');
+      if(st.when)bits.push(st.when);
+      out.push('> '+bits.join(' · '),'');
+    }
   }
   return out.join('\n');
 }
