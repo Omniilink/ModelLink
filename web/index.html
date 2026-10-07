@@ -6885,13 +6885,28 @@ async function ollamaAutoDetect(){
 }
 function ollamaRenderReco(rd){
   const reco=document.getElementById('ollama-reco');if(!reco)return;reco.innerHTML='';
-  const head=document.createElement('div');head.className='tool-result-sub';head.style.margin='6px 0';
-  head.textContent='Best models for this machine (budget: '+(rd.budget_gb||'?')+' GB of '+(rd.source||'memory')+'):';reco.appendChild(head);
-  for(const p of (rd.picks||[])){
-    const item=document.createElement('div');item.className='usage-activity-item';
-    const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;width:100%';
-    row.innerHTML='<span class="act-model">'+escapeHtml(p.label)+'</span><span class="act-provider">'+escapeHtml(p.tag)+'</span><span class="act-time">'+escapeHtml(p.reason||'')+'</span>';
-    const dl=document.createElement('button');dl.className='btn btn-primary btn-sm';dl.style.marginLeft='auto';dl.textContent='Download';dl.onclick=()=>ollamaDownload(p.tag);row.appendChild(dl);
+  const sp=rd.specs||{};
+  const specs=document.createElement('div');specs.className='usage-activity-item';specs.style.flexWrap='wrap';
+  const sline=document.createElement('div');sline.style.cssText='display:flex;gap:8px;align-items:center;width:100%;flex-wrap:wrap';
+  sline.innerHTML='<span class="act-model">'+escapeHtml(sp.cpu||'Unknown CPU')+'</span>'
+    +'<span class="act-provider">'+escapeHtml(String(sp.ram_gb||'?'))+' GB RAM</span>'
+    +'<span class="act-provider">'+escapeHtml(sp.gpu||'No dedicated GPU')+(sp.vram_gb?(' · '+sp.vram_gb+' GB VRAM'):'')+'</span>'
+    +(rd.dedicated_gpu?'<span class="act-provider" style="font-size:10px">dedicated GPU</span>':'');
+  specs.appendChild(sline);
+  const budget=document.createElement('div');budget.className='act-detail';budget.style.cssText='width:100%;white-space:normal';
+  budget.textContent='Model budget: '+rd.budget_gb+' GB — '+(rd.basis||rd.source||'');specs.appendChild(budget);
+  reco.appendChild(specs);
+  if(rd.warning){const w=document.createElement('div');w.className='tool-status';w.style.cssText='color:var(--warning);margin:8px 0';w.textContent='\u26A0 '+rd.warning;reco.appendChild(w)}
+  const title=document.createElement('div');title.className='tool-result-sub';title.style.margin='10px 0 4px';title.textContent='Top recommendations per task:';reco.appendChild(title);
+  for(const t of (rd.tasks||[])){
+    const item=document.createElement('div');item.className='usage-activity-item';item.style.flexWrap='wrap';
+    const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;width:100%;flex-wrap:wrap';
+    row.innerHTML='<span class="act-model" style="min-width:150px">'+escapeHtml(t.label)+'</span>';
+    for(const p of (t.picks||[])){
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.style.cssText='display:inline-flex;gap:6px;align-items:center';
+      b.innerHTML='<span>'+escapeHtml(p.tag)+'</span><span class="act-time" style="font-size:10px">'+p.size_gb.toFixed(1)+'GB</span>';
+      b.title=p.reason||'';b.onclick=()=>ollamaDownload(p.tag);row.appendChild(b);
+    }
     item.appendChild(row);reco.appendChild(item);
   }
 }

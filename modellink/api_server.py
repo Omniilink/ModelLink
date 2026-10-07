@@ -2264,9 +2264,58 @@ def _pick_best(models, want_use, budget_gb, exclude=None):
     return best
 
 
+def _gpu_is_dedicated(name):
+    """True for a discrete GPU. Integrated graphics share system RAM, so they
+    do not get a VRAM budget of their own."""
+    n = (name or "").lower()
+    if not n:
+        return False
+    if any(k in n for k in ("nvidia", "geforce", "quadro", "rtx", "gtx", "tesla",
+                            "radeon rx", "radeon pro", "radeon vii", "instinct",
+                            "arc a", "arc b", "arc pro")):
+        return True
+    return False
+
+
+# task key, label, candidate uses
+_OLLAMA_TASKS = [
+    ("coding", "Best for coding", ["coding"]),
+    ("chat", "Best for chat", ["chat", "general"]),
+    ("reasoning", "Best for reasoning", ["reasoning"]),
+    ("vision", "Best for images", ["vision"]),
+    ("3d", "Best for 3D / scene code", ["general"]),
+]
+
+
+def _pick_top(models, uses, budget_gb, n=2):
+    """Up to `n` distinct models (largest first) whose on-disk size fits the
+    budget, for any of the given uses."""
+    cands = []
+    for m in models:
+        if not any(u in m["use"] for u in uses):
+            continue
+        for s in m["sizes"]:
+            if s["size_gb"] <= budget_gb:
+                cands.append((m, s))
+    cands.sort(key=lambda ms: ms[1]["size_gb"], reverse=True)
+    out, seen = [], set()
+    for m, s in cands:
+        if m["name"] in seen:
+            continue
+        seen.add(m["name"])
+        out.append((m, s))
+        if len(out) >= n:
+            break
+    return out
+
+
 @app.post("/api/ollama/recommend")
 async def ollama_recommend(request: Request):
-    """Pick the best-fitting models for a machine's specs (chat/coding/...)."""
+    """Top-2 model picks per task for a machine's specs.
+
+    A discrete GPU is budgeted against its VRAM (~60%, leaving room for the
+    context window and the desktop). With no dedicated VRAM, only half the
+    system RAM is used. Very small machines get a slow-run warning."""
     _user, err = _require_auth(request)
     if err:
         return err
@@ -2282,27 +2331,36 @@ async def ollama_recommend(request: Request):
     ram_gb, vram_gb = _num(body.get("ram_gb")), _num(body.get("vram_gb"))
     gpu = str(body.get("gpu") or "").strip()
     models = _load_ollama_catalog()
-    # A real GPU's VRAM is the hard ceiling for what runs well; otherwise the
-    # system RAM (minus ~2GB for the OS) is the budget.
-    if gpu and vram_gb > 0:
-        budget, source = vram_gb, "GPU VRAM"
+    dedicated = bool(gpu) and vram_gb > 0 and _gpu_is_dedicated(gpu)
+    if dedicated:
+        budget = round(vram_gb * 0.6, 1)
+        source = "GPU VRAM (%g GB)" % vram_gb
+        basis = "60%% of your %g GB VRAM, leaving room for context + display" % vram_gb
     else:
-        budget, source = max(0.0, ram_gb - 2.0), "system RAM"
-    picks, used = [], set()
-    for want, label in (("coding", "Best for coding"), ("chat", "Best for chat"),
-                        ("reasoning", "Best for reasoning"), ("vision", "Best for images")):
-        p = _pick_best(models, want, budget, used)
-        if p:
-            used.add(p["name"])
-            picks.append({"label": label, "use": want, "tag": p["full"], "name": p["name"],
-                          "size_gb": p["size_gb"], "ram_gb": p["ram_gb"],
-                          "reason": f"{p['size_gb']:.1f} GB fits your {budget:.0f} GB of {source}"})
-    small = _pick_best(models, "chat", 3.0)
-    if small and small["name"] not in used:
-        picks.append({"label": "Fast / low-resource", "use": "chat", "tag": small["full"],
-                      "name": small["name"], "size_gb": small["size_gb"], "ram_gb": small["ram_gb"],
-                      "reason": "Small and quick — safe on almost any machine"})
-    return {"budget_gb": round(budget, 1), "source": source, "picks": picks,
+        budget = round(max(0.0, ram_gb) * 0.5, 1)
+        source = "system RAM (%g GB)" % ram_gb
+        basis = "half of your %g GB RAM" % ram_gb
+    tasks = []
+    for key, label, uses in _OLLAMA_TASKS:
+        picks = []
+        for m, s in _pick_top(models, uses, budget, 2):
+            picks.append({"tag": s["full"], "name": m["name"], "family": m["family"],
+                          "size_gb": s["size_gb"], "params_b": s["params_b"],
+                          "vision": m["vision"],
+                          "reason": "%.1f GB — fits in %g GB (%s)" % (s["size_gb"], budget, basis)})
+        if picks:
+            tasks.append({"key": key, "label": label, "use": uses[0], "picks": picks})
+    if budget < 4.0:
+        warning = ("This machine has very little memory for AI models (%g GB usable). "
+                   "Only the smallest models fit and they will run slowly — expect short, "
+                   "basic answers." % budget)
+    elif not tasks:
+        warning = "No catalogued model fits this machine's memory budget."
+    else:
+        warning = ""
+    flat = [dict(t["picks"][0], label=t["label"], use=t["use"]) for t in tasks if t["picks"]]
+    return {"budget_gb": budget, "source": source, "basis": basis,
+            "dedicated_gpu": dedicated, "tasks": tasks, "picks": flat, "warning": warning,
             "specs": {"ram_gb": ram_gb, "vram_gb": vram_gb, "gpu": gpu,
                       "cpu": str(body.get("cpu") or ""), "os": str(body.get("os") or "")}}
 
@@ -2318,13 +2376,17 @@ def _sysinfo_command(platform_str):
                 "echo OMNI_RAM_GB=$(( $(sysctl -n hw.memsize 2>/dev/null) / 1073741824 ));"
                 "echo OMNI_GPU=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 'Chipset Model' | cut -d: -f2)")
     if "win" in p:
+        # Prefer nvidia-smi (accurate VRAM); Win32 AdapterRAM is a 32-bit field
+        # that caps at 4 GB. Fall back to WMI for non-NVIDIA GPUs.
         return ('powershell -NoProfile -Command "'
-                '$c=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name;'
-                '$r=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB);'
-                '$v=Get-CimInstance Win32_VideoController | Select-Object -First 1;'
-                'Write-Output (\'OMNI_CPU=\'+$c);Write-Output (\'OMNI_RAM_GB=\'+$r);'
-                'Write-Output (\'OMNI_GPU=\'+$v.Name);'
-                'Write-Output (\'OMNI_VRAM_GB=\'+[math]::Round($v.AdapterRAM/1GB,1))"')
+                '$cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name;'
+                '$ram=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB);'
+                '$gpu=\'\';$vram=0;'
+                '$smi=(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1);'
+                'if($smi){$p=$smi.Split(\',\');$gpu=$p[0].Trim();$vram=[math]::Round([double]$p[1]/1024,1)}'
+                'else{$v=Get-CimInstance Win32_VideoController | Select-Object -First 1;$gpu=$v.Name;$vram=[math]::Round($v.AdapterRAM/1GB,1)};'
+                'Write-Output (\'OMNI_CPU=\'+$cpu);Write-Output (\'OMNI_RAM_GB=\'+$ram);'
+                'Write-Output (\'OMNI_GPU=\'+$gpu);Write-Output (\'OMNI_VRAM_GB=\'+$vram)"')
     return ("echo OMNI_CPU=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2);"
             "echo OMNI_RAM_GB=$(awk '/MemTotal/{printf \"%d\", $2/1048576}' /proc/meminfo 2>/dev/null);"
             "echo OMNI_GPU=$( (nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null "
