@@ -361,6 +361,49 @@ a:hover{text-decoration:underline}
 /* Once a turn is over the line is a permanent record, not a live gauge. */
 .coding-live-done{padding-top:5px;margin-top:7px;border-top:1px dashed var(--border);color:var(--text-muted)}
 .coding-live-time{opacity:.65;font-size:10px;margin-left:2px}
+/* ---- Optimise feature ---- */
+.opt-panel{position:fixed;z-index:10000;width:390px;max-width:calc(100vw - 24px);background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-sm);box-shadow:0 12px 40px rgba(0,0,0,.55);padding:0;overflow:hidden;display:none;font-family:var(--font)}
+.opt-head{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;border-bottom:1px solid var(--border);background:var(--bg-tertiary)}
+.opt-title{font-size:12px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:7px}
+.opt-title svg{width:14px;height:14px}
+.opt-x{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;line-height:1;padding:2px 5px;border-radius:4px}
+.opt-x:hover{color:var(--text-primary);background:var(--bg-input)}
+.opt-body{padding:11px 13px;max-height:min(70vh,620px);overflow-y:auto}
+.opt-row{margin-bottom:11px}
+.opt-label{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);font-weight:650;margin-bottom:5px;display:flex;justify-content:space-between;align-items:center}
+.opt-hint{font-size:10px;color:var(--text-muted);text-transform:none;letter-spacing:0;font-weight:400}
+.opt-select,.opt-input{width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:6px 8px;color:var(--text-primary);font-size:11.5px;font-family:var(--font);outline:none}
+.opt-select:focus,.opt-input:focus{border-color:var(--accent)}
+.opt-checks{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.opt-check{display:flex;align-items:flex-start;gap:6px;padding:6px 7px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-tertiary);cursor:pointer;font-size:11px;color:var(--text-secondary);transition:all .12s}
+.opt-check:hover{border-color:var(--border-light)}
+.opt-check.on{border-color:var(--accent);background:var(--accent-dim);color:var(--accent-light)}
+.opt-check input{accent-color:var(--accent);margin:2px 0 0;cursor:pointer}
+.opt-check-t{font-weight:600;display:block}
+.opt-check-d{font-size:9.5px;opacity:.75;display:block;margin-top:1px;line-height:1.35}
+.opt-adv-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 9px;margin-top:4px;border:1px dashed var(--border-light);border-radius:var(--radius-xs);background:transparent;color:var(--text-secondary);font-size:11px;cursor:pointer;font-family:var(--font);text-align:left}
+.opt-adv-toggle:hover{border-color:var(--accent);color:var(--accent-light)}
+.opt-adv-toggle.on{border-style:solid;border-color:var(--accent);background:var(--accent-dim);color:var(--accent-light)}
+.opt-adv-body{display:none;margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-tertiary)}
+.opt-adv-body.on{display:block}
+.opt-per-task{margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.opt-per-task-row{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.opt-per-task-row label{font-size:10.5px;color:var(--text-secondary);width:88px;flex-shrink:0}
+.opt-per-task-row select{flex:1;min-width:0}
+.opt-foot{display:flex;align-items:center;gap:8px;padding:10px 13px;border-top:1px solid var(--border);background:var(--bg-tertiary)}
+.opt-foot .opt-est{font-size:10px;color:var(--text-muted);flex:1;line-height:1.35}
+.opt-run{flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-xs);padding:7px 15px;font-size:11.5px;font-weight:650;cursor:pointer;font-family:var(--font)}
+.opt-run:hover{filter:brightness(1.12)}
+.opt-run:disabled{opacity:.5;cursor:not-allowed}
+.opt-view{display:none;margin-top:6px;max-height:210px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-input);padding:6px;font-family:var(--mono);font-size:10.5px;line-height:1.5}
+.opt-view.on{display:block}
+.opt-view-row{display:flex;gap:6px;padding:1px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.opt-view-path{color:var(--accent-light);flex-shrink:0}
+.opt-view-note{color:var(--text-muted)}
+.opt-view-row.bad .opt-view-path{color:var(--error)}
+.opt-view-row.fix .opt-view-path{color:#34c77b}
+.opt-progress{height:4px;background:var(--bg-input);border-radius:2px;overflow:hidden;margin-top:6px}
+.opt-progress i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
 #upload-progress .up-row{margin-bottom:12px}
 #upload-progress .up-row:last-child{margin-bottom:0}
 .up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
@@ -1508,6 +1551,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
+          <button onclick="openOptimiseMenu(event)" id="coding-optimise-btn" title="Optimise this project: audit, speed up, fix errors and add missing features">Optimise</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
            <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
@@ -1521,6 +1565,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div class="coding-main">
             <div class="coding-sticky-bar" id="coding-sticky-bar"><span>Tool actions detected</span><button onclick="copyAllCodeBlocks()">Copy All Code</button><button class="primary" onclick="applyAllToolBlocks()">Apply All</button></div>
             <div id="coding-plan-banner" style="display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px">Plan mode is ON — the model's actions are staged, nothing runs until you approve. <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="applyAllToolBlocks()">Run staged actions</button></div>
+            <div id="optimise-banner" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;background:linear-gradient(90deg,var(--accent-dim),transparent);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px"></div>
             <div class="coding-chat" id="coding-chat"></div>
             <div class="coding-input-area">
               <div id="coding-at-files" style="display:none;flex-wrap:wrap;gap:4px;padding:0 0 6px"></div>
@@ -3040,6 +3085,23 @@ function codingDefaultPrompt(kind){
 async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMode='';try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=codingExecOs(null)}
   if(!basePrompt)basePrompt=codingDefaultPrompt(execOs);
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
+  // Small local models (3B-7B) blow their context on long file bodies: they
+  // start ignoring the rules and produce malformed blocks. Past this budget,
+  // attach a compact structural summary (paths, sizes, graph) instead, and let
+  // the model read individual files through its own tool calls.
+  {const maxBytes=Number(localStorage.getItem('omnilink_attach_kb')||0)*1024;
+   const attached=codingAtFiles.slice(-12);
+   const totalBytes=attached.reduce((n,f)=>n+((allCodingFileSizes&&allCodingFileSizes[f])||0),0);
+   const useSummary=maxBytes>0&&totalBytes>maxBytes;
+   if(attached.length>0&&useSummary){
+     sysPrompt+='\nPROJECT STRUCTURE (file bodies are NOT attached - read what you need):\n';
+     const ranked=optRankFiles(attached,allCodingFileSizes);
+     for(const fname of ranked){
+       const sz=(allCodingFileSizes&&allCodingFileSizes[fname])||0;
+       sysPrompt+='- '+fname+' ('+optLangOf(fname)+', '+(sz>1024?Math.round(sz/1024)+'KB':sz+'B')+')\n';
+     }
+     sysPrompt+='Read a file before editing it (e.g. FILE_EDIT with its full content, or a command that prints it). Never patch a file you have not read.\n';
+   }}
   let sysPrompt=basePrompt+'\n';const osBlock=codingOsBlock(execOs);if(osBlock)sysPrompt+=osBlock+'\n';
   if(execOs==='linux'&&csMode==='docker')sysPrompt+='NOTE: every command runs in a FRESH container — files outside the project folder and installed packages do not persist between commands; reinstall per command when needed.\n';
   else if(execOs==='linux'&&csMode==='project')sysPrompt+='NOTE: commands share one persistent container for this project — pip/npm installs survive between commands.\n';
@@ -6873,6 +6935,800 @@ function fuzzyMatch(query,text){
   return qi===q.length?score:-1;
 }
 
+// ---- OPTIMISE ------------------------------------------------------------
+// A guided, time-boxed improvement pass over the whole project. Design goals,
+// in priority order:
+//  1. It must work on a 3B model. Every stage is one narrow job with a fixed
+//     output shape, so a weak model never has to plan — it audits, patches,
+//     verifies, and reports. Planning is done here, in code.
+//  2. Nothing is trusted. Every model claim is re-checked against the file on
+//     disk before it counts as progress.
+//  3. It degrades gracefully: with no scan backend and no git, it still runs
+//     and still improves files.
+const OPT_MODES=[
+  {k:'speed',   t:'Speed',      d:'Remove waste, cut hot-path cost'},
+  {k:'quality', t:'Quality',    d:'Fix bugs, errors and edge cases'},
+  {k:'features',t:'Features',   d:'Add missing, useful functionality'},
+  {k:'self',    t:'Self-improve',d:'Clean up structure, naming, dead code'},
+  {k:'security',t:'Security',   d:'Harden inputs, secrets and injection'},
+  {k:'a11y',    t:'A11y',       d:'Keyboard, labels, contrast, focus'},
+  {k:'perf',    t:'Performance',d:'Memory, batching, I/O, assets'},
+  {k:'docs',    t:'Docs',       d:'Comments and docstrings where they help'}
+];
+const OPT_INTENSITY={
+  light:   {label:'Light',  note:'Quick pass, obvious wins only',        maxFiles:5,  roundsPerFile:1},
+  balanced:{label:'Balanced',note:'Recommended. Real fixes, no rewrites', maxFiles:12, roundsPerFile:2},
+  deep:    {label:'Deep',   note:'Thorough. May restructure code',        maxFiles:25, roundsPerFile:3}
+};
+// Which stage model handles which job. Per-task overrides are optional; the
+// fallback is the single chosen model. Cheap jobs (audit, verify) work on the
+// smallest model and give the big one back for real editing.
+const OPT_TASKS=[
+  {k:'audit',  t:'Audit (find issues)',  fallback:'small'},
+  {k:'fix',    t:'Fix errors',           fallback:'main'},
+  {k:'feature',t:'Add functionality',    fallback:'main'},
+  {k:'verify', t:'Verify changes',       fallback:'small'}
+];
+const OPT_TIME=[
+  {k:60,  t:'1 minute'},
+  {k:180, t:'3 minutes'},
+  {k:600, t:'10 minutes'},
+  {k:1800,t:'30 minutes'},
+  {k:0,   t:'No limit'}
+];
+function optDefaults(){
+  return{modes:['speed','quality','self'],intensity:'balanced',advanced:false,
+         timeLimit:600,models:{},scan:true,liveView:true,autoRun:true};
+}
+let optCfg=optDefaults();
+let optPanel=null;
+function optStoreKey(){return storeKey('omnilink_optimise_cfg')}
+function optLoadCfg(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(optStoreKey())||'null');
+    if(raw&&typeof raw==='object')optCfg=Object.assign(optDefaults(),raw);
+  }catch(e){}
+  if(!Array.isArray(optCfg.modes)||!optCfg.modes.length)optCfg.modes=['speed','quality','self'];
+  if(!OPT_INTENSITY[optCfg.intensity])optCfg.intensity='balanced';
+  if(!optCfg.models||typeof optCfg.models!=='object')optCfg.models={};
+  return optCfg;
+}
+function optSaveCfg(){try{localStorage.setItem(optStoreKey(),JSON.stringify(optCfg))}catch(e){}}
+function closeOptimiseMenu(){if(optPanel){optPanel.remove();optPanel=null;document.removeEventListener('mousedown',optOutside,true)}}
+function optOutside(e){if(optPanel&&!optPanel.contains(e.target))closeOptimiseMenu()}
+function openOptimiseMenu(ev){
+  if(optPanel){closeOptimiseMenu();return}
+  optLoadCfg();
+  const p=document.createElement('div');p.className='opt-panel';p.id='optimise-panel';
+  const modes=OPT_MODES.map(m=>
+    '<label class="opt-check'+(optCfg.modes.indexOf(m.k)>-1?' on':'')+'" data-opt-mode="'+m.k+'">'
+    +'<input type="checkbox"'+(optCfg.modes.indexOf(m.k)>-1?' checked':'')+'>'
+    +'<span><span class="opt-check-t">'+escapeHtml(m.t)+'</span>'
+    +'<span class="opt-check-d">'+escapeHtml(m.d)+'</span></span></label>').join('');
+  const intens=Object.keys(OPT_INTENSITY).map(k=>
+    '<option value="'+k+'"'+(optCfg.intensity===k?' selected':'')+'>'+escapeHtml(OPT_INTENSITY[k].label)+' — '+escapeHtml(OPT_INTENSITY[k].note)+'</option>').join('');
+  const times=OPT_TIME.map(t=>'<option value="'+t.k+'"'+(optCfg.timeLimit===t.k?' selected':'')+'>'+escapeHtml(t.t)+'</option>').join('');
+  const perTask=OPT_TASKS.map(t=>
+    '<div class="opt-per-task-row"><label for="opt-m-'+t.k+'">'+escapeHtml(t.t)+'</label>'
+    +'<select id="opt-m-'+t.k+'" class="opt-select" data-opt-model="'+t.k+'">'
+    +'<option value="">Same as main model</option>'
+    +'<option value="__small"'+((optCfg.models[t.k]||'')==='__small'?' selected':'')+'>Smallest available</option>'
+    +'<option id="opt-models-'+t.k+'"></option></select></div>').join('');
+  p.innerHTML=
+    '<div class="opt-head"><div class="opt-title">'
+    +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>'
+    +'Optimise project</div><button class="opt-x" onclick="closeOptimiseMenu()">&times;</button></div>'
+    +'<div class="opt-body">'
+    +'<div class="opt-row"><div class="opt-label">Main model <span class="opt-hint">used for most edits</span></div>'
+    +'<select class="opt-select" id="opt-main-model"></select></div>'
+    +'<div class="opt-row"><div class="opt-label">What to improve</div><div class="opt-checks">'+modes+'</div></div>'
+    +'<div class="opt-row"><div class="opt-label">How much</div><select class="opt-select" id="opt-intensity">'+intens+'</select></div>'
+    +'<div class="opt-row"><div class="opt-label">Target time <span class="opt-hint">stops cleanly when reached</span></div>'
+    +'<select class="opt-select" id="opt-time">'+times+'</select></div>'
+    +'<button class="opt-adv-toggle'+(optCfg.advanced?' on':'')+'" id="opt-adv-toggle" onclick="toggleOptimiseAdvanced()">'
+    +'<span>Advanced mode</span><span>'+(optCfg.advanced?'ON':'off')+'</span></button>'
+    +'<div class="opt-adv-body'+(optCfg.advanced?' on':'')+'" id="opt-adv-body">'
+    +'<div class="opt-checks">'
+    +'<label class="opt-check'+(optCfg.scan?' on':'')+'" data-opt-flag="scan"><input type="checkbox"'+(optCfg.scan?' checked':'')+'>'
+    +'<span><span class="opt-check-t">Scan every file</span><span class="opt-check-d">Find all errors first</span></span></label>'
+    +'<label class="opt-check'+(optCfg.liveView?' on':'')+'" data-opt-flag="liveView"><input type="checkbox"'+(optCfg.liveView?' checked':'')+'>'
+    +'<span><span class="opt-check-t">Live project view</span><span class="opt-check-d">Watch it work</span></span></label>'
+    +'<label class="opt-check'+(optCfg.autoRun?' on':'')+'" data-opt-flag="autoRun"><input type="checkbox"'+(optCfg.autoRun?' checked':'')+'>'
+    +'<span><span class="opt-check-t">Apply automatically</span><span class="opt-check-d">Off = stage for review</span></span></label>'
+    +'<label class="opt-check"><input type="checkbox" disabled><span><span class="opt-check-t">Commit each pass</span>'
+    +'<span class="opt-check-d">Needs git</span></span></label>'
+    +'</div><div class="opt-per-task"><div class="opt-label">Models per task <span class="opt-hint">optional</span></div>'+perTask+'</div>'
+    +'</div>'
+    +'<div class="opt-view" id="opt-live-view"></div>'
+    +'<div class="opt-progress" id="opt-progress-wrap" style="display:none"><i id="opt-progress"></i></div>'
+    +'</div>'
+    +'<div class="opt-foot"><div class="opt-est" id="opt-est"></div>'
+    +'<button class="opt-run" id="opt-run-btn" onclick="startOptimise()">Start optimise</button></div>';
+  document.body.appendChild(p);
+  optPanel=p;
+  // Anchor under the toolbar button, kept inside the viewport.
+  const r=(ev&&ev.currentTarget&&ev.currentTarget.getBoundingClientRect?ev.currentTarget.getBoundingClientRect():{left:20,right:20,bottom:20});
+  const w=p.offsetWidth,h=p.offsetHeight;
+  let left=Math.min(Math.max(8,(r.left||8)-40),window.innerWidth-w-8);
+  let top=(r.bottom||40)+6;
+  if(top+h>window.innerHeight-8)top=Math.max(8,window.innerHeight-h-8);
+  p.style.left=left+'px';p.style.top=top+'px';
+  setTimeout(()=>document.addEventListener('mousedown',optOutside,true),0);
+  optFillModels();
+  optBindPanel();
+  optUpdateEstimate();
+}
+function toggleOptimiseAdvanced(){
+  optCfg.advanced=!optCfg.advanced;
+  const t=document.getElementById('opt-adv-toggle');
+  const b=document.getElementById('opt-adv-body');
+  if(t){t.classList.toggle('on',optCfg.advanced);t.lastElementChild.textContent=optCfg.advanced?'ON':'off'}
+  if(b)b.classList.toggle('on',optCfg.advanced);
+  optSaveCfg();
+}
+// Populate every model dropdown from the already-loaded model list, grouped so
+// the cheapest ones sit at the top: a 3B auditor and a 70B editor are picked
+// with the same dropdown, and "smallest available" is a real choice.
+function optModelOptions(){
+  let list=[];
+  try{list=(typeof models!=='undefined'&&Array.isArray(models))?models.slice():[]}catch(e){}
+  if(!list.length&&typeof getModels==='function'){try{list=getModels()||[]}catch(e){}}
+  return list
+    .filter(m=>m&&m.id&&!/\b(embedding|rerank|image|whisper|tts)\b/i.test(String(m.id)))
+    .sort((a,b)=>(optModelSize(a.id)||99)-(optModelSize(b.id)||99));
+}
+// Rough parameter count in billions, from the model id: "qwen2.5-coder:7b" -> 7.
+function optModelSize(id){
+  const m=String(id||'').match(/(\d+(?:\.\d+)?)\s*b\b/i);
+  if(m)return parseFloat(m[1]);
+  const g=String(id||'').match(/\b(\d+(?:\.\d+)?)\b(?=\s*-?instruct|$)/i);
+  return g?parseFloat(g[1]):null;
+}
+function optFillModels(){
+  const opts=optModelOptions();
+  const main=document.getElementById('opt-main-model');
+  if(main){
+    const chosen=optCfg.models.main||selectedModel;
+    main.innerHTML=opts.map(m=>'<option value="'+escapeHtml(m.id)+'"'+(m.id===chosen?' selected':'')+'>'
+      +escapeHtml(optModelLabel(m.id))+'</option>').join('');
+    if(!opts.length)main.innerHTML='<option value="">(no models available)</option>';
+  }
+  for(const t of OPT_TASKS){
+    const sel=document.getElementById('opt-m-'+t.k);
+    const group=document.getElementById('opt-models-'+t.k);
+    if(!sel||!group)continue;
+    const cur=optCfg.models[t.k]||'';
+    group.innerHTML=opts.map(m=>'<option value="'+escapeHtml(m.id)+'"'+(m.id===cur?' selected':'')+'>'
+      +escapeHtml(optModelLabel(m.id))+'</option>').join('');
+    sel.value=cur;
+  }
+}
+function optModelLabel(id){
+  const s=optModelSize(id);
+  const tag=s?s>=30?'big':s>=13?'mid':s>=7?'small':'tiny':'?';
+  return id+'  ['+tag+(s?' '+s+'b':'')+']';
+}
+function optBindPanel(){
+  const p=optPanel;if(!p)return;
+  p.querySelectorAll('[data-opt-mode]').forEach(el=>{
+    el.onclick=e=>{
+      e.preventDefault();
+      const k=el.dataset.optMode;
+      const i=optCfg.modes.indexOf(k);
+      if(i>-1){if(optCfg.modes.length>1)optCfg.modes.splice(i,1);else{showToast('Pick at least one thing to improve','error');return}}
+      else optCfg.modes.push(k);
+      el.classList.toggle('on',i===-1);
+      el.querySelector('input').checked=i===-1;
+      optSaveCfg();optUpdateEstimate();
+    };
+  });
+  p.querySelectorAll('[data-opt-flag]').forEach(el=>{
+    el.onclick=e=>{
+      e.preventDefault();
+      const k=el.dataset.optFlag;
+      optCfg[k]=!optCfg[k];
+      el.classList.toggle('on',optCfg[k]);
+      el.querySelector('input').checked=optCfg[k];
+      optSaveCfg();optUpdateEstimate();
+    };
+  });
+  const main=document.getElementById('opt-main-model');
+  if(main)main.onchange=()=>{optCfg.models.main=main.value;optSaveCfg();optUpdateEstimate()};
+  const inten=document.getElementById('opt-intensity');
+  if(inten)inten.onchange=()=>{optCfg.intensity=inten.value;optSaveCfg();optUpdateEstimate()};
+  const time=document.getElementById('opt-time');
+  if(time)time.onchange=()=>{optCfg.timeLimit=parseInt(time.value,10)||0;optSaveCfg();optUpdateEstimate()};
+  p.querySelectorAll('[data-opt-model]').forEach(sel=>{
+    sel.onchange=()=>{optCfg.models[sel.dataset.optModel]=sel.value;optSaveCfg();optUpdateEstimate()};
+  });
+}
+function optUpdateEstimate(){
+  const el=document.getElementById('opt-est');if(!el)return;
+  const inten=OPT_INTENSITY[optCfg.intensity]||OPT_INTENSITY.balanced;
+  const n=(optCfg.advanced&&optCfg.scan)?'scanning all files':'auditing key files';
+  const per=inten.maxFiles+' files x '+inten.roundsPerFile+' round'+(inten.roundsPerFile!==1?'s':'');
+  const lim=optCfg.timeLimit?(optCfg.timeLimit<60?optCfg.timeLimit+'s':Math.round(optCfg.timeLimit/60)+' min'):'no limit';
+  el.textContent=inten.label+' - '+n+', up to '+per+'. Stops at '+lim+' or when nothing improves.';
+}
+// Resolve the model for one stage, honouring per-task overrides.
+function optModelFor(task){
+  const want=(optCfg.models&&optCfg.models[task])||'';
+  if(want&&want!=='__small')return want;
+  if(want==='__small'){
+    const opts=optModelOptions();
+    if(opts.length)return opts[0].id;   // sorted smallest-first
+    return optCfg.models.main||selectedModel;
+  }
+  return optCfg.models.main||selectedModel;
+}
+// ---- OPTIMISE system prompt --------------------------------------------
+// Deliberately short, numbered and shape-locked. A 3B model follows a strict
+// output contract far better than it follows prose, so every instruction below
+// is imperative, singular, and paired with an exact required format. It also
+// runs at low effort by default: an audit is pattern work, not deep reasoning.
+function buildOptimisePrompt(cfg,ctx){
+  const inten=OPT_INTENSITY[cfg.intensity]||OPT_INTENSITY.balanced;
+  const want=OPT_MODES.filter(m=>cfg.modes.indexOf(m.k)>-1).map(m=>m.t);
+  const L=[];
+  L.push('You are the Omniilink Optimiser. You improve an existing project. You are fast, precise and never waste a round.');
+  L.push('');
+  L.push('RULES (follow every one):');
+  L.push('1. Work on ONE file per reply unless the task says otherwise.');
+  L.push('2. NEVER rewrite a whole file. Use FILE_PATCH with 3-8 lines of OLD copied verbatim from the file.');
+  L.push('3. Change nothing unless it is one of the requested improvements. No renames, no reformatting, no new dependencies, no comment-only edits.');
+  L.push('4. If a file is already good, say exactly: NO CHANGES. That is a valid, useful answer.');
+  L.push('5. If you are unsure, leave the code alone. A wrong change is worse than no change.');
+  L.push('6. Never claim something works unless you ran it or read it.');
+  L.push('7. Keep your reply under 120 words of prose. Actions and results only.');
+  L.push('');
+  L.push('TARGETS FOR THIS RUN: '+want.join(', ')+'.');
+  L.push('EFFORT: '+inten.label+' ('+inten.note+').');
+  if(ctx&&ctx.timeBudget)L.push('TIME LEFT: about '+ctx.timeBudget+' - spend it on the highest-value fix, not on polish.');
+  if(cfg.advanced)L.push('A full scan of the project has already run. Use the reported findings; do not re-scan.');
+  L.push('');
+  L.push('FILE GRAPH (what refers to what):');
+  L.push(ctx&&ctx.graph?ctx.graph:'(unavailable - read the file before assuming anything)');
+  L.push('');
+  L.push('CURRENT FINDINGS:');
+  L.push(ctx&&ctx.findings?ctx.findings:'(none reported - audit the file you are given)');
+  L.push('');
+  L.push('');
+  L.push('Reply in EXACTLY this shape, with nothing else around it:');
+  L.push('');
+  L.push('FILE: <path you are working on>');
+  L.push('WHY: <one sentence, max 15 words>');
+  L.push('then either:');
+  L.push('NO CHANGES');
+  L.push('or one or more tool blocks (FILE_PATCH / FILE_CREATE) that make the change, each closed with its END_ tag.');
+  L.push('');
+  L.push('After the blocks, one line:');
+  L.push('DONE: <what changed, max 20 words>');
+  return L.join('\n');
+}
+// The audit prompt asks for machine-readable findings instead of prose, so a
+// weak model still produces something the harness can act on.
+function buildAuditPrompt(cfg,path,content,lang){
+  const want=OPT_MODES.filter(m=>cfg.modes.indexOf(m.k)>-1).map(m=>m.t);
+  return[
+    'You are auditing ONE file for problems. Do not edit anything. Report only what is really there.',
+    'CHECK FOR: '+(want.length?want.join(', '):'errors and obvious waste')+'.',
+    'Be strict: a finding must point at a real line with a real problem. Never invent one.',
+    '',
+    'FILE: '+path,
+    'LANGUAGE: '+(lang||'unknown'),
+    'SIZE: '+(content?content.length:0)+' chars',
+    '',
+    '--- FILE START ---',
+    String(content||'').slice(0,12000),
+    '--- FILE END ---',
+    '',
+    'Reply with ONLY these lines, no prose, no code fence, nothing else:',
+    'FINDINGS: <count>',
+    'Then one line per finding, exactly:',
+    'FIND: <line number> | <speed|quality|feature|self|security|a11y|perf|docs> | <one short sentence> ',
+    'If there is nothing wrong, reply with exactly:',
+    'FINDINGS: 0'
+  ].join('\n');
+}
+// The verify prompt is intentionally the shortest prompt in the app: it runs
+// on the smallest model and only has to say yes or no.
+function buildVerifyPrompt(path,before,after,claimed){
+  return[
+    'Check whether this change actually did what it claimed. Answer with one line.',
+    '',
+    'FILE: '+path,
+    'CLAIMED: '+(claimed||'(not stated)'),
+    '',
+    'BEFORE:',
+    String(before||'').slice(0,2500),
+    '',
+    'AFTER:',
+    String(after||'').slice(0,2500),
+    '',
+    'Reply with EXACTLY one of these lines and nothing else:',
+    'VERDICT: PASS <short reason>',
+    'VERDICT: FAIL <short reason>'
+  ].join('\n');
+}
+// ---- Optimise: project graph + findings --------------------------------
+// The audit is far more effective when the model knows what depends on what,
+// so this builds a cheap reference graph from the file list and the imports
+// each file declares. It is regex work, not parsing: a wrong edge costs a
+// little context, a missing edge costs accuracy, so err toward including.
+const OPT_EXT_HINTS={
+  js:['import ','require(','export ','from '],py:['import ','from '],
+  html:['<script','<link','<img'],css:['@import','url(']
+};
+function optLangOf(path){
+  const e=String(path||'').split('.').pop().toLowerCase();
+  if(['js','jsx','ts','tsx','mjs','cjs'].indexOf(e)>-1)return'js';
+  if(['py','pyw'].indexOf(e)>-1)return'py';
+  if(['html','htm'].indexOf(e)>-1)return'html';
+  if(['css'].indexOf(e)>-1)return'css';
+  if(['md','txt'].indexOf(e)>-1)return'docs';
+  if(['json','yml','yaml','toml','ini','xml','lock'].indexOf(e)>-1)return'config';
+  if(['png','jpg','jpeg','gif','svg','webp','ico','woff','woff2','ttf','otf','mp3','mp4','webm','pdf','zip'].indexOf(e)>-1)return'asset';
+  return'e other'.trim();
+}
+function optIsCode(path){
+  const l=optLangOf(path);
+  return l==='js'||l==='py'||l==='html'||l==='css';
+}
+// Rank files by how much they matter: entry points and big files first, so a
+// time-boxed run spends its budget where a win is visible.
+function optRankFiles(files,sizes){
+  const scored=files.map(p=>{
+    const b=p.split('/').pop().toLowerCase();
+    let s=0;
+    if(b==='index.html'||b==='index.js'||b==='main.py'||b==='app.py'||b==='main.js'||b==='server.py'||b==='index.jsx'||b==='app.js')s+=60;
+    if(b.indexOf('test')===0||b.indexOf('spec')===0)s-=40;   // fix tests last
+    if(optIsCode(p))s+=25;else if(optLangOf(p)==='docs')s-=10;else if(optLangOf(p)==='asset')s-=25;else s-=100;
+    const sz=(sizes&&sizes[p])||0;
+    s+=Math.min(30,Math.round(Math.log10(Math.max(10,sz))*4));
+    if(/\.(min|bundle|dist|vendor)\./.test(b))s-=80;
+    return{p:p,s:s};
+  });
+  return scored.sort((a,b)=>b.s-a.s).map(x=>x.p);
+}
+// A compact "who references what" map: only edges between files that are
+// actually being optimised, so the prompt stays small.
+function optBuildGraph(targets,contents){
+  const names=new Map();
+  for(const p of targets)names.set(p.split('/').pop().toLowerCase(),p);
+  const out=[];
+  for(const p of targets){
+    const body=contents[p]||'';
+    const deps=new Set();
+    const hints=OPT_EXT_HINTS[optLangOf(p)]||[];
+    for(const m of body.matchAll(/["'`]([^"'`\n]{1,80}\.[a-z0-9]{1,6})["'`]/gi)){
+      const base=m[1].split('/').pop().toLowerCase();
+      if(names.has(base)&&names.get(base)!==p)deps.add(names.get(base));
+    }
+    if(optLangOf(p)==='html'){
+      for(const m of body.matchAll(/<(?:script|link)[^>]*(?:src|href)=["']([^"']+)["']/gi)){
+        const base=m[1].split('/').pop().toLowerCase();
+        if(names.has(base)&&names.get(base)!==p)deps.add(names.get(base));
+      }
+    }
+    if(deps.size)out.push(p+' -> '+[...deps].join(', '));
+  }
+  return out.length?out.join('\n'):'(no cross-file references found among the selected files)';
+}
+// One server-side scan pass over the whole project. Falls back to an empty
+// result if the backend is unavailable: optimisation must still run.
+async function optScanProject(paths){
+  const findings=[];
+  let scanned=0;
+  for(const p of paths){
+    if(!optIsCode(p))continue;
+    let content=null;
+    try{content=await codingReadFile(p)}catch(e){continue}
+    try{
+      const r=await authFetch(API+'/api/coding/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(fsHandle||isRemote()?{content:content,language:optLangOf(p)}:{path:p})});
+      const d=await r.json();
+      if(r.ok&&d&&Array.isArray(d.findings)){
+        scanned++;
+        for(const f of d.findings){
+          findings.push({path:p,line:f.line,level:f.level,rule:f.rule,detail:f.detail});
+          if(findings.length>=200)break;
+        }
+      }
+    }catch(e){}
+    if(findings.length>=200)break;
+  }
+  return{findings:findings,scanned:scanned};
+}
+// Render findings as the compact, model-friendly list the prompt expects.
+function optFormatFindings(list,limit){
+  if(!list||!list.length)return'(no automated findings)';
+  const rows=list.slice(0,limit||40).map(f=>f.path+':'+f.line+' ['+f.level+'] '+f.rule);
+  const more=(list.length>limit)?'\n... and '+(list.length-limit)+' more':'';
+  return rows.join('\n')+more;
+}
+// Append findings to the live project view.
+function optViewRender(list){
+  const v=document.getElementById('opt-live-view');
+  if(!v)return;
+  v.innerHTML=list.map(r=>'<div class="opt-view-row '+(r.cls||'')+'">'
+    +'<span class="opt-view-path">'+escapeHtml(r.p)+'</span>'
+    +'<span class="opt-view-note">'+escapeHtml(r.n)+'</span></div>').join('');
+  v.scrollTop=v.scrollHeight;
+}
+function optViewClear(){
+  const v=document.getElementById('opt-live-view');
+  if(v){v.classList.remove('on');v.innerHTML=''}
+}
+function optBanner(html){
+  const b=document.getElementById('optimise-banner');
+  if(!b)return;
+  b.style.display=html?'flex':'none';
+  if(html)b.innerHTML=html;
+}
+function optProgress(pct,label){
+  const w=document.getElementById('opt-progress-wrap');
+  const bar=document.getElementById('opt-progress');
+  if(!w||!bar)return;
+  w.style.display='';
+  bar.style.width=Math.max(0,Math.min(100,pct))+'%';
+  const b=document.getElementById('optimise-banner');
+  if(b&&label)b.innerHTML=label;
+}
+// ---- Optimise: the run loop -------------------------------------------
+// Shape of a run:
+//   1. rank + shortlist the files worth touching
+//   2. (advanced) scan everything once for concrete findings
+//   3. per file: audit -> patch -> verify against disk, with a time budget
+//   4. report
+// Each model call is a narrow, shape-locked job, so a 3B model can do the
+// whole thing; the loop, not the model, decides what happens next.
+const OPT_MAX_ROUNDS=3;
+let optRunning=false,optAbort=null;
+function optTimeLeft(started,limit){
+  if(!limit)return null;
+  return Math.max(0,limit-(Date.now()-started));
+}
+function optFormatLeft(ms){
+  const s=Math.round(ms/1000);
+  if(s<60)return s+'s';
+  const m=Math.floor(s/60);
+  return m+'m'+(s%60?' '+(s%60)+'s':'');
+}
+// Read one file, tolerating every backend. Returns null when unreadable.
+async function optReadFile(path){
+  try{const c=await codingReadFile(path);return typeof c==='string'?c:null}catch(e){return null}
+}
+async function optRunModel(model,prompt,maxTokens){
+  // A plain non-streaming call with a hard cap: an optimiser reply must be
+  // short, and a stream would let a runaway model narrate forever.
+  const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:model,stream:false,temperature:0.2,max_tokens:maxTokens||1200,effort:'low',messages:[{role:'system',content:prompt}]})});
+  if(!r.ok){const t=await r.text();throw new Error('HTTP '+r.status+' '+(t||'').slice(0,120))}
+  const d=await r.json();
+  const c=d&&d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content;
+  return typeof c==='string'?c:'';
+}
+// Parse the audit reply. Small models drift, so every field is optional and
+// anything unparseable simply yields no findings rather than a crash.
+function optParseFindings(text,path){
+  const out=[];
+  const s=String(text||'');
+  const zero=/FINDINGS\s*:\s*0/i.test(s);
+  if(zero)return out;
+  const rx=/FIND\s*:\s*(\d+)\s*\|\s*([a-z]+)\s*\|\s*([^\n]+)/gi;
+  let m;const seen=new Set();
+  while((m=rx.exec(s))){
+    const line=parseInt(m[1],10)||0;
+    const kind=m[2].toLowerCase();
+    const text2=m[3].trim();
+    if(!text2||text2.length>200)continue;
+    const key=line+'|'+text2.toLowerCase();
+    if(seen.has(key))continue;
+    seen.add(key);
+    out.push({path:path,line:line,level:'info',kind:kind,rule:text2});
+    if(out.length>=20)break;
+  }
+  return out;
+}
+// Pull the target file and the claimed reason out of a reply, falling back to
+// the file we sent so a sloppy header never misroutes the work.
+function optParseReplyTarget(text,fallback){
+  const m=String(text||'').match(/FILE\s*:\s*([^\n]+)/i);
+  const p=m?m[1].trim().replace(/^["'`]|["'`]$/g,''):'';
+  return p||fallback;
+}
+function optParseClaim(text){
+  const m=String(text||'').match(/WHY\s*:\s*([^\n]+)/i);
+  return m?m[1].trim():'';
+}
+async function startOptimise(){
+  if(optRunning)return;
+  if(!codingFolder&&!fsHandle&&!isRemote()){showToast('Open a project folder first','info');return}
+  const cfg=optLoadCfg();
+  if(!optModelOptions().length){showToast('No models available - add a provider key first','error');return}
+  closeOptimiseMenu();
+  const inten=OPT_INTENSITY[cfg.intensity]||OPT_INTENSITY.balanced;
+  const started=Date.now();
+  optRunning=true;
+  const wasAuto=codingSettings&&codingSettings.auto_edit;
+  if(cfg.autoRun)codingSettings.auto_edit=true;
+  const view=[];
+  optBanner('<b>Optimising...</b> <span id="opt-status">reading the project</span>');
+  const status=t=>{const el=document.getElementById('opt-status');if(el)el.textContent=t};
+  const done={files:0,changed:0,added:0,removed:0,fixes:[],skipped:0};
+  try{
+    // 1. shortlist
+    status('reading the project');
+    await loadAllCodingFiles(true);
+    const all=(allCodingFiles||[]).filter(p=>!/\.omniiignore$/.test(p));
+    const ranked=optRankFiles(all,allCodingFileSizes);
+    const shortlist=ranked.slice(0,inten.maxFiles);
+    if(!shortlist.length)throw new Error('no files to optimise');
+    optProgress(4,'<b>Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':'')+'</b>');
+
+    // 2. contents + graph, read once and reused by every stage
+    status('reading files');
+    const contents={};
+    for(const p of shortlist)contents[p]=await optReadFile(p);
+    const graph=optBuildGraph(shortlist,contents);
+    const mainModel=optModelFor('main');
+    optSaveCfg();
+
+    // 3. (advanced) whole-project scan
+    let findings=[];
+    if(cfg.advanced&&cfg.scan){
+      optBanner('<b>Scanning the whole project for errors...</b>');
+      const scan=await optScanProject(ranked.slice(0,120));
+      findings=scan.findings||[];
+      optCfg.lastScan=findings.slice(0,50);
+      try{localStorage.setItem(optStoreKey()+'_scan',JSON.stringify(optCfg.lastScan))}catch(e){}
+      status(foundings.length?findings.length+' issue'+(findings.length!==1?'s':'')+' found':'no issues found');
+      if(analysis){
+        optBanner('<b>Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':'')+'</b> — '
+          +findings.length+' scan finding'+(findings.length!==1?'s':'')+', '
+          +analysis.health.length+' health flag'+(analysis.health.length!==1?'s':'')
+          +(analysis.dupes.length?', '+analysis.dupes.length+' duplicate name'+(analysis.dupes.length!==1?'':'s'):'')
+          +' <span id="opt-status"></span>');
+      }
+      if(cfg.liveView){
+        const v=document.getElementById('opt-live-view');
+        if(v)v.classList.add('on');
+        optViewRender([{p:'scan',n:scanned(scan)+' file(s) checked',cls:''}]
+          .concat(findings.slice(0,60).map(f=>({p:f.path+':'+f.line,cls:f.level==='danger'?'bad':'',n:f.rule}))));
+      }
+    }
+    if(cfg.advanced&&!optCfg.lastScan){
+      try{optCfg.lastScan=JSON.parse(localStorage.getItem(optStoreKey()+'_scan')||'[]')}catch(e){}
+      findings=optCfg.lastScan||[];
+    }
+    // 2b. deterministic analysis: health markers, duplicates, package facts
+    let analysis=null;
+    if(cfg.advanced){
+      status('analysing the project');
+      analysis=await optAnalyseProject(shortlist,contents);
+      if(cfg.liveView){
+        const v=document.getElementById('opt-live-view');
+        if(v)v.classList.add('on');
+        const rows=[{p:'analysis',cls:'',n:analysis.fileCount+' files, '+Math.round(analysis.totalBytes/1024)+'KB'}];
+        if(analysis.dupes.length)for(const d of analysis.dupes.slice(0,12))
+          rows.push({p:d.name,cls:'bad',n:'defined in '+d.files.length+' files'});
+        const seen={};
+        for(const h of analysis.health)seen[h.note]=(seen[h.note]||0)+h.count;
+        for(const k of Object.keys(seen).slice(0,10))
+          rows.push({p:k,cls:h_level(h.note),n:seen[k]+' total'});
+        optViewRender(rows);
+      }
+    }
+    function h_level(note){return /warn/i.test(note)?'bad':''}
+    function scanned(s){return s&&s.scanned?s.scanned+' ':''}
+
+    // 4. per-file loop
+    for(let i=0;i<shortlist.length;i++){
+      const left=optTimeLeft(started,cfg.timeLimit);
+      if(cfg.timeLimit&&left<=0){
+        optBanner('<b>Time budget reached</b> - stopped cleanly after '+i+' file'+(i!==1?'s':'')+'.');
+        break;
+      }
+      const path=shortlist[i];
+      done.files++;
+      const before=contents[path]||'';
+      if(!before){done.skipped++;continue}
+      const perFile=optFormatFindings(findings.filter(f=>f.path===path),12);
+      const pct=Math.round(((i+0.5)/shortlist.length)*100);
+      optProgress(pct,'<b>Optimising</b> '+path+' <span style="opacity:.7">('+(i+1)+'/'+shortlist.length+')</span>');
+      status('working on '+path);
+      if(cfg.liveView)optViewRender(view.concat([{p:path,cls:'',n:'optimising...'}]).slice(-60));
+
+      // audit (small model) -> the brief the editor will actually work from
+      const auditModel=optModelFor('audit');
+      let brief='';
+      if(cfg.advanced&&perFile!=='(no automated findings)')brief=perFile;
+      else{
+        try{
+          const auditText=await optRunModel(auditModel,buildAuditPrompt(cfg,path,before,optLangOf(path)),700);
+          const found=optParseFindings(auditText,path);
+          if(found.length){
+            findings=findings.concat(found);
+            brief=found.map(f=>'line '+f.line+': '+f.rule).join('\n');
+          }
+        }catch(e){}
+      }
+
+      // edit rounds
+      const editModel=optModelFor('fix');
+      let rounds=0;
+      while(rounds<inten.roundsPerFile){
+        rounds++;
+        const rl=optTimeLeft(started,cfg.timeLimit);
+        if(cfg.timeLimit&&rl<=0)break;
+        let reply='';
+        try{
+          reply=await optRunModel(editModel,buildOptimisePrompt(cfg,{graph:graph,findings:brief,timeBudget:optFormatLeft(rl)}),1400);
+        }catch(e){break}
+        const saysNoChange=/NO\s+CHANGES/i.test(String(reply));
+        const hasBlocks=/FILE_(PATCH|CREATE|EDIT):/.test(String(reply));
+        if(saysNoChange||!hasBlocks){done.skipped++;break}
+        const target=optParseReplyTarget(reply,path);
+        const claimed=optParseClaim(reply);
+        // Apply through the normal, approval-gated coding path so optimise
+        // cannot bypass the same safety checks as any other edit.
+        const res=await optApplyBlocks(target,reply);
+        if(!res||!res.ok)break;
+        // Verify against disk: never trust the model's own claim.
+        const after=await optReadFile(target);
+        if(typeof after!=='string')break;
+        const d=diffCharStats(before,after);
+        if(!d.added&&!d.removed){done.skipped++;break}
+        let verdict='';
+        if(cfg.advanced||inten.intensity==='deep'){
+          try{verdict=await optRunModel(optModelFor('verify'),buildVerifyPrompt(target,before,after,claimed),220)}catch(e){}
+        }
+        done.changed++;
+        done.added+=d.added;
+        done.removed+=d.removed;
+        done.fixes.push({p:target,n:claimed||(d.added+' added / '+d.removed+' removed'),ok:!/FAIL/i.test(verdict)});
+        contents[target]=after;
+        if(!/PASS/i.test(verdict)&&verdict){done.fixes[done.fixes.length-1].ok=false}
+        before=after;
+        break;   // one confirmed edit per file keeps the run honest and cheap
+      }
+      if(cfg.liveView){
+        const touched=done.fixes.some(f=>f.p===path);
+        optViewRender(view.concat([{p:path,cls:touched?'fix':'',n:touched?'improved':'no changes'}]).slice(-60));
+      }
+    }
+
+    // 5. report
+    const secs=Math.round((Date.now()-started)/1000);
+    const st=Math.max(0,Math.round((done.added+done.removed)/4/Math.max(1,secs)));
+    optProgress(100,'');
+    const fixLines=done.fixes.length?('\n\nFiles improved:\n'+done.fixes.map(f=>'- '+f.p+' — '+f.n+(f.ok?'':' (verify failed)')).join('\n')):'';
+    const failed=done.fixes.filter(f=>!f.ok).length;
+    optBanner('<b>Optimise finished in '+optFormatLeft(secs*1000)+'</b> — '+done.changed+' file'+(done.changed!==1?'s':'')+' improved, '
+      +done.skipped+' unchanged, +'+done.added+'/-'+done.removed+' chars'+(st?' at ~'+st+' tok/s':'')
+      +(failed?', '+failed+' need another look':'')+fixLines
+      +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optBanner(\'\')">Dismiss</button>');
+    // Make the work visible in the chat too: the user can read exactly what
+    // changed, in order, and the normal cards carry the diffs.
+    postCodingAssistant('**Optimise finished**\n\n'
+      +'- Files examined: '+done.files
+      +'\n- Files improved: '+done.changed
+      +'\n- Left unchanged: '+done.skipped
+      +'\n- Change size: +'+done.added+' / -'+done.removed+' characters'
+      +'\n- Modes: '+OPT_MODES.filter(m=>cfg.modes.indexOf(m.k)>-1).map(m=>m.t).join(', ')
+      +'\n- Intensity: '+inten.label
+      +(analysis?('\n- Health flags: '+analysis.health.length+'\n- Duplicate function names: '+analysis.dupes.length):'')
+      +(cfg.timeLimit?'\n- Time limit: '+optFormatLeft(cfg.timeLimit):'')
+      +(failed?'\n\n**Needs another look:**\n'+done.fixes.filter(f=>!f.ok).map(f=>'- '+f.p).join('\n'):'')
+      +(done.fixes.length?'\n\n**Improved:**\n'+done.fixes.map(f=>'- '+f.p+' — '+f.n).join('\n'):''));
+    persistCodingChat();
+  }catch(e){
+    optBanner('<b>Optimise stopped:</b> '+escapeHtml(e.message||String(e))
+      +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optBanner(\'\')">Dismiss</button>');
+  }finally{
+    if(cfg.autoRun)codingSettings.auto_edit=wasAuto;
+    optRunning=false;optAbort=null;
+    refreshCodingTree();
+  }
+}
+// Execute the FILE_* blocks from one optimiser reply through the real coding
+// pipeline, so validation, versions, approvals and the diff cards all apply
+// exactly as they do for a normal turn.
+async function optApplyBlocks(path,reply){
+  const text=String(reply||'');
+  const patches=[...text.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:\nEND_FILE_PATCH|$)/g)];
+  const creates=[...text.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:\nEND_FILE_CREATE|$)/g)];
+  let applied=0;
+  for(const m of creates){
+    const r=await codingWriteFile(m[1].trim(),m[2]);
+    if(r&&r.ok)applied++;
+  }
+  for(const m of patches){
+    const r=await codingPatchFile(m[1].trim(),(m[2]||'').replace(/\n$/,''),(m[3]||'').replace(/\n$/,''));
+    if(r&&r.ok)applied++;
+  }
+  return applied?{ok:true,applied:applied}:{ok:false,applied:0};
+}
+// ---- Optimise: project analysis (no model needed) ----------------------
+// These are cheap, deterministic measurements that make the report specific
+// instead of vague, and they cost one request each rather than a model call.
+async function optReadPackageInfo(){
+  if(!codingFolder)return null;
+  try{
+    const raw=await optReadFile('package.json');
+    if(!raw)return null;
+    const j=JSON.parse(raw);
+    const deps=Object.assign({},j.dependencies||{});
+    const dev=Object.keys(j.devDependencies||{});
+    return{name:j.name||'',scripts:Object.keys(j.scripts||{}),deps:deps,devCount:dev.length};
+  }catch(e){return null}
+}
+// Health markers, each a plain regex over file content. These are the checks
+// that do not need a model to be certain about.
+const OPT_HEALTH=[
+  {k:'todos',   rx:/\b(TODO|FIXME|HACK|XXX)\b/g,              note:'unresolved TODO/FIXME markers', level:'info'},
+  {k:'console', rx:/\bconsole\.(log|debug|info)\s*\(/g,         note:'debug console calls',          level:'info'},
+  {k:'todos_c', rx:/\/\/\s*TODO\b/g,                            note:'commented-out TODO',           level:'warn'},
+  {k:'empties', rx:/\bif\s*\([^)]*\)\s*\{\s*\}/g,                note:'empty if blocks',              level:'warn'},
+  {k:'dupfunc', rx:/function\s+([A-Za-z_$][\w$]*)\s*\(/g,       note:'function declarations',        level:'none'},
+  {k:'inline',  rx:/style\s*=\s*"/g,                            note:'inline styles in markup',      level:'info'}
+];
+function optHealthOf(path,content){
+  const out=[];
+  if(!content)return out;
+  for(const h of OPT_HEALTH){
+    if(h.level==='none')continue;
+    let n=0;(content.match(h.rx)||[]).forEach(()=>n++);
+    if(n>0)out.push({path:path,count:n,note:h.note,level:h.level});
+  }
+  return out;
+}
+// What advanced mode reports up front: real measurements, no guessing.
+async function optAnalyseProject(paths,contents){
+  const health=[];
+  const dup={};
+  for(const p of paths){
+    const c=contents[p];if(!c)continue;
+    health.push.apply(health,optHealthOf(p,c));
+    const m=/function\s+([A-Za-z_$][\w$]*)\s*\(/g;let g;
+    while((g=m.exec(c))){
+      const n=g[1];
+      if(n==='if'||n==='for'||n==='while'||n==='catch'||n==='function'||n==='return')continue;
+      (dup[n]=dup[n]||[]).push(p);
+    }
+  }
+  const dupes=Object.keys(dup).filter(n=>dup[n].length>1)
+    .map(n=>({name:n,files:[...new Set(dup[n])]}));
+  const pkg=await optReadPackageInfo();
+  const sizes=(typeof allCodingFileSizes!=='undefined'&&allCodingFileSizes)||{};
+  const totalBytes=Object.keys(sizes).reduce((a,k)=>a+(sizes[k]||0),0);
+  return{health:health,dupes:dupes,pkg:pkg,fileCount:paths.length,totalBytes:totalBytes};
+}
+function optFormatHealth(an){
+  const L=[];
+  if(an.dupes.length){
+    L.push('DUPLICATE FUNCTION NAMES (possible copy-paste bugs):');
+    for(const d of an.dupes.slice(0,10))L.push('- '+d.name+': '+d.files.join(', '));
+    L.push('');
+  }
+  const grouped={};
+  for(const h of an.health)(grouped[h.note]=grouped[h.note]||[]).push(h);
+  for(const note of Object.keys(grouped).slice(0,10)){
+    const rows=grouped[note];
+    const n=rows.reduce((a,r)=>a+r.count,0);
+    L.push(note.toUpperCase()+': '+n+' across '+rows.length+' file(s)');
+    for(const r of rows.slice(0,5))L.push('  '+r.path+' ('+r.count+')');
+  }
+  if(an.pkg){
+    L.push('');
+    L.push('PACKAGE: '+(an.pkg.name||'(unnamed)')+' - '+
+      Object.keys(an.pkg.deps).length+' runtime dep(s), '+
+      an.pkg.devCount+' dev dep(s)');
+    if(!Object.keys(an.pkg.scripts).length)L.push('  WARNING: no npm scripts defined');
+  }
+  L.push('FILES: '+an.fileCount+', total '+Math.round(an.totalBytes/1024)+'KB');
+  return L.length?L.join('\n'):'(nothing measurable to report)';
+}
 // ---- Plan mode: stage every action for review, run nothing automatically ----
 let planModeCache={v:false,t:0};
 function codingPlanModeNotice(){
