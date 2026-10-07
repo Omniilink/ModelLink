@@ -2313,7 +2313,7 @@ def _pick_top(models, uses, budget_gb, n=2):
 async def ollama_recommend(request: Request):
     """Top-2 model picks per task for a machine's specs.
 
-    A discrete GPU is budgeted against its VRAM (~60%, leaving room for the
+    A discrete GPU is budgeted against its VRAM (~70%, leaving room for the
     context window and the desktop). With no dedicated VRAM, only half the
     system RAM is used. Very small machines get a slow-run warning."""
     _user, err = _require_auth(request)
@@ -2333,9 +2333,9 @@ async def ollama_recommend(request: Request):
     models = _load_ollama_catalog()
     dedicated = bool(gpu) and vram_gb > 0 and _gpu_is_dedicated(gpu)
     if dedicated:
-        budget = round(vram_gb * 0.6, 1)
+        budget = round(vram_gb * 0.7, 1)
         source = "GPU VRAM (%g GB)" % vram_gb
-        basis = "60%% of your %g GB VRAM, leaving room for context + display" % vram_gb
+        basis = "70%% of your %g GB VRAM, leaving room for context + display" % vram_gb
     else:
         budget = round(max(0.0, ram_gb) * 0.5, 1)
         source = "system RAM (%g GB)" % ram_gb

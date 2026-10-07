@@ -1192,6 +1192,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="usage-section-title" style="margin-top:16px">Ollama models</div>
               <div class="tool-row">
                 <select id="ollama-family" onchange="ollamaRenderLibrary()" title="Filter by model family"></select>
+                <select id="ollama-use" onchange="ollamaRenderLibrary()" title="Filter by what the model is best at"></select>
                 <select id="ollama-size" onchange="ollamaRenderLibrary()" title="Filter by parameter count">
                   <option value="0">Any size</option>
                   <option value="2">&le; 2B</option>
@@ -6817,12 +6818,14 @@ async function ollamaLibraryLoad(){
   const box=document.getElementById('ollama-library');if(!box)return;
   if(!ollamaCatalog){box.innerHTML='<div class="tool-status">Loading library…</div>';try{const r=await authFetch(API+'/api/ollama/library');const d=await r.json();if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));ollamaCatalog=d}catch(e){box.innerHTML='<div class="tool-status">Could not load the Ollama library: '+escapeHtml(e.message)+'</div>';return}}
   const fam=document.getElementById('ollama-family');if(fam&&!fam.dataset.filled){fam.innerHTML='<option value="">All families</option>';(ollamaCatalog.families||[]).forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;fam.appendChild(o)});fam.dataset.filled='1'}
+  const useSel=document.getElementById('ollama-use');if(useSel&&!useSel.dataset.filled){useSel.innerHTML='<option value="">All types</option>';(ollamaCatalog.uses||[]).forEach(u=>{const o=document.createElement('option');o.value=u;o.textContent=u.charAt(0).toUpperCase()+u.slice(1);useSel.appendChild(o)});useSel.dataset.filled='1'}
   ollamaRenderLibrary();
 }
-function ollamaFilterModels(models,family,maxP,q){
-  family=family||'';maxP=parseFloat(maxP||'0')||0;q=(q||'').trim().toLowerCase();
+function ollamaFilterModels(models,family,maxP,q,use){
+  family=family||'';maxP=parseFloat(maxP||'0')||0;q=(q||'').trim().toLowerCase();use=use||'';
   return (models||[]).filter(m=>{
     if(family&&m.family!==family)return false;
+    if(use&&(m.use||[]).indexOf(use)<0)return false;
     if(maxP&&m.min_params>maxP)return false;
     if(q&&m.name.toLowerCase().indexOf(q)<0&&(m.description||'').toLowerCase().indexOf(q)<0)return false;
     return true;
@@ -6831,9 +6834,10 @@ function ollamaFilterModels(models,family,maxP,q){
 function ollamaRenderLibrary(){
   const box=document.getElementById('ollama-library');if(!box||!ollamaCatalog)return;
   const fam=(document.getElementById('ollama-family')||{}).value||'';
+  const use=(document.getElementById('ollama-use')||{}).value||'';
   const maxP=(document.getElementById('ollama-size')||{}).value||'0';
   const q=(document.getElementById('ollama-search')||{}).value||'';
-  const rows=ollamaFilterModels(ollamaCatalog.models,fam,maxP,q);
+  const rows=ollamaFilterModels(ollamaCatalog.models,fam,maxP,q,use);
   const cnt=document.getElementById('ollama-count');if(cnt)cnt.textContent=rows.length+' model'+(rows.length===1?'':'s')+' — pick a size to download on the selected computer';
   box.innerHTML='';
   if(!rows.length){box.innerHTML='<div class="tool-status">No models match those filters.</div>';return}
