@@ -3020,7 +3020,7 @@ async function attachAllFiles(){
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error(data.error||'no files');tree=data.tree}
     const chosen=[];
     const ignoredFolders=[];
-    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path))chosen.push(n.path)}}})(tree);
+    (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir'){if(isIgnored(n.path))ignoredFolders.push(n.path);walk(n.children)}else if(n.name&&n.path){if(!isIgnored(n.path)&&optLangOf(n.path)!=='asset')chosen.push(n.path)}}})(tree);
     chosen.sort((a,b)=>a.split('/').length-b.split('/').length);
     codingIgnoredFolders=ignoredFolders;
     // Strings, never tree nodes: every consumer of codingAtFiles (the @-file
