@@ -1658,10 +1658,10 @@ class MultiProviderBalancer:
                 _add_tools_to_body("ollama", body, (opts or {})["tools"])
                 if device:
                     resp = relay.open_response(device, "/v1/chat/completions", body,
-                                               read_timeout=180.0)
+                                               read_timeout=900.0)
                 else:
                     resp = sess.post(base + "/v1/chat/completions", json=body,
-                                     stream=True, timeout=(10, 180))
+                                     stream=True, timeout=(10, 900))
             else:
                 body = {"model": tag, "messages": _ollama_native_messages(messages),
                         "stream": stream,
@@ -1675,10 +1675,10 @@ class MultiProviderBalancer:
                     body["think"] = level != "minimum"
                 if device:
                     resp = relay.open_response(device, "/api/chat", body,
-                                               read_timeout=300.0)
+                                               read_timeout=900.0)
                 else:
                     resp = sess.post(base + "/api/chat", json=body,
-                                     stream=stream, timeout=(10, 300))
+                                     stream=stream, timeout=(10, 900))
             if resp.status_code == 200:
                 self.rate_limiter.record_request(label)
                 record_model_outcome(scope, "ollama", label, "ok")

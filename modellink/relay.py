@@ -17,7 +17,7 @@ import json
 import threading
 import time
 
-RELAY_FIRST_TIMEOUT = 45.0    # seconds for the companion's first message
+RELAY_FIRST_TIMEOUT = 600.0   # seconds for the companion's first message (a deep-reasoning model thinks / loads for minutes before its first byte)
 RELAY_GC_TTL = 900.0          # drop orphaned streams after 15 minutes
 _RELAY_ID_BASE = 10 ** 9      # keep ids clear of persisted command ids
 _RELAY_BUFFER_MAX = 64 * 1024 * 1024

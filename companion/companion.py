@@ -388,7 +388,9 @@ def do_ollama_relay(server, token, cmd):
             base + path, data=data, method="POST" if data else "GET",
             headers={"Content-Type": "application/json", "Accept": "*/*"})
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            # Generous ceiling: a deep-reasoning model can take tens of
+            # minutes for one (especially non-streaming) response.
+            resp = urllib.request.urlopen(req, timeout=3600)
         except urllib.error.HTTPError as he:
             # Ollama answers errors as one JSON body even when stream=true.
             try:
