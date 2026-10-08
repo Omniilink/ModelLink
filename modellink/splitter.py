@@ -1649,117 +1649,131 @@ class MultiProviderBalancer:
         base = OLLAMA_BASE_URL
         sess = self._session_for("ollama")
         use_tools = bool((opts or {}).get("tools"))
-        resp = None
-        try:
-            if use_tools:
-                # OpenAI-compatible path: tools + vision + SSE.
-                body = {"model": tag, "messages": messages, "stream": stream,
-                        "temperature": temperature, "max_tokens": max_tokens}
-                _add_tools_to_body("ollama", body, (opts or {})["tools"])
-                if device:
-                    resp = relay.open_response(device, "/v1/chat/completions", body,
-                                               read_timeout=900.0)
-                else:
-                    resp = sess.post(base + "/v1/chat/completions", json=body,
-                                     stream=True, timeout=(10, 900))
-            else:
-                body = {"model": tag, "messages": _ollama_native_messages(messages),
-                        "stream": stream,
-                        "options": {"temperature": temperature, "num_predict": max_tokens}}
-                # Ollama's reasoning knob is a boolean `think` flag — but only
-                # thinking-capable models accept it (others HTTP 400). Look
-                # at the model's capabilities; without thinking support the
-                # effort/thinking levels are silently ignored.
-                level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
-                if level != "auto" and _ollama_supports_thinking(tag, device):
-                    body["think"] = level != "minimum"
-                if device:
-                    resp = relay.open_response(device, "/api/chat", body,
-                                               read_timeout=900.0)
-                else:
-                    resp = sess.post(base + "/api/chat", json=body,
-                                     stream=stream, timeout=(10, 900))
-            if resp.status_code == 200:
-                self.rate_limiter.record_request(label)
-                record_model_outcome(scope, "ollama", label, "ok")
-                if stream:
-                    if use_tools:
-                        gen = self._stream_response(resp, "ollama", label)
-                    else:
-                        gen = self._stream_ollama(resp, label)
-                    if device:
-                        # The guard closes the relay when the consumer
-                        # finishes or abandons the stream (-> 410 to the
-                        # companion, which stops the local Ollama read).
-                        gen = _relay_guard(gen, resp)
-                    return (gen, label)
+        def _run():
+            # Blocking open + status handling. For stream=True the caller
+            # below defers this into the first generator step, so the HTTP
+            # response headers reach the client before a slow model emits
+            # its first token (proxies answer 524 on a silent wait).
+            resp = None
+            try:
                 if use_tools:
-                    result = self._collect_response(resp, "ollama", label)
+                    # OpenAI-compatible path: tools + vision + SSE.
+                    body = {"model": tag, "messages": messages, "stream": stream,
+                            "temperature": temperature, "max_tokens": max_tokens}
+                    _add_tools_to_body("ollama", body, (opts or {})["tools"])
+                    if device:
+                        resp = relay.open_response(device, "/v1/chat/completions", body,
+                                                   read_timeout=900.0)
+                    else:
+                        resp = sess.post(base + "/v1/chat/completions", json=body,
+                                         stream=True, timeout=(10, 900))
                 else:
-                    data = resp.json()
-                    content = data.get("message", {}).get("content", "")
-                    result = self._make_response(content, label)
+                    body = {"model": tag, "messages": _ollama_native_messages(messages),
+                            "stream": stream,
+                            "options": {"temperature": temperature, "num_predict": max_tokens}}
+                    # Ollama's reasoning knob is a boolean `think` flag — but only
+                    # thinking-capable models accept it (others HTTP 400). Look
+                    # at the model's capabilities; without thinking support the
+                    # effort/thinking levels are silently ignored.
+                    level = resolve_level((opts or {}).get("effort"), (opts or {}).get("thinking"))
+                    if level != "auto" and _ollama_supports_thinking(tag, device):
+                        body["think"] = level != "minimum"
+                    if device:
+                        resp = relay.open_response(device, "/api/chat", body,
+                                                   read_timeout=900.0)
+                    else:
+                        resp = sess.post(base + "/api/chat", json=body,
+                                         stream=stream, timeout=(10, 900))
+                if resp.status_code == 200:
+                    self.rate_limiter.record_request(label)
+                    record_model_outcome(scope, "ollama", label, "ok")
+                    if stream:
+                        if use_tools:
+                            gen = self._stream_response(resp, "ollama", label)
+                        else:
+                            gen = self._stream_ollama(resp, label)
+                        if device:
+                            # The guard closes the relay when the consumer
+                            # finishes or abandons the stream (-> 410 to the
+                            # companion, which stops the local Ollama read).
+                            gen = _relay_guard(gen, resp)
+                        return (gen, label)
+                    if use_tools:
+                        result = self._collect_response(resp, "ollama", label)
+                    else:
+                        data = resp.json()
+                        content = data.get("message", {}).get("content", "")
+                        result = self._make_response(content, label)
+                    if device:
+                        resp.close()
+                    return (result, label)
+                if resp.status_code == 400 and use_tools:
+                    detail = _ollama_error_text(resp)
+                    if "does not support tools" in detail.lower():
+                        # Small models (e.g. smollm2) reject tool definitions
+                        # outright: answer directly instead of failing the turn.
+                        # Recursion is safe: tools are stripped, so use_tools is
+                        # False on the retry and this branch cannot re-trigger.
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                        logger.info(f"[OLLAMA] {label} does not support tools; retrying plain")
+                        no_tools = dict(opts or {})
+                        no_tools.pop("tools", None)
+                        return self._ollama_chat(tag, messages, temperature, max_tokens,
+                                                 stream, opts=no_tools, agent_id=agent_id)
+                if resp.status_code == 429:
+                    self.rate_limiter.set_cooldown(label, 60)
+                elif resp.status_code >= 500:
+                    self.rate_limiter.set_cooldown(label, 30)
+                detail = _ollama_error_text(resp)
+                status = resp.status_code
                 if device:
                     resp.close()
-                return (result, label)
-            if resp.status_code == 400 and use_tools:
-                detail = _ollama_error_text(resp)
-                if "does not support tools" in detail.lower():
-                    # Small models (e.g. smollm2) reject tool definitions
-                    # outright: answer directly instead of failing the turn.
-                    # Recursion is safe: tools are stripped, so use_tools is
-                    # False on the retry and this branch cannot re-trigger.
+                    resp = None
+                record_model_outcome(scope, "ollama", label, "fail", f"http {status}")
+                raise RuntimeError(f"Ollama model '{tag}' failed (HTTP {status}): {detail}")
+            except RuntimeError:
+                if device and resp is not None:
                     try:
                         resp.close()
                     except Exception:
                         pass
-                    logger.info(f"[OLLAMA] {label} does not support tools; retrying plain")
-                    no_tools = dict(opts or {})
-                    no_tools.pop("tools", None)
-                    return self._ollama_chat(tag, messages, temperature, max_tokens,
-                                             stream, opts=no_tools, agent_id=agent_id)
-            if resp.status_code == 429:
-                self.rate_limiter.set_cooldown(label, 60)
-            elif resp.status_code >= 500:
+                raise
+            except (relay.RelayError, relay.RelayTimeout) as e:
+                if resp is not None:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
                 self.rate_limiter.set_cooldown(label, 30)
-            detail = _ollama_error_text(resp)
-            status = resp.status_code
-            if device:
-                resp.close()
-                resp = None
-            record_model_outcome(scope, "ollama", label, "fail", f"http {status}")
-            raise RuntimeError(f"Ollama model '{tag}' failed (HTTP {status}): {detail}")
-        except RuntimeError:
-            if device and resp is not None:
-                try:
-                    resp.close()
-                except Exception:
-                    pass
-            raise
-        except (relay.RelayError, relay.RelayTimeout) as e:
-            if resp is not None:
-                try:
-                    resp.close()
-                except Exception:
-                    pass
-            self.rate_limiter.set_cooldown(label, 30)
-            record_model_outcome(scope, "ollama", label, "fail", str(e)[:80])
-            if getattr(e, "ready", False):
-                raise RuntimeError(str(e))
-            raise RuntimeError(f"Ollama on {dev_name} failed: {e}")
-        except requests.exceptions.ConnectionError:
-            self.rate_limiter.set_cooldown(label, 60)
-            record_model_outcome(scope, "ollama", label, "fail", "connection failed")
-            raise RuntimeError(
-                f"Could not reach Ollama at {base} — is `ollama serve` running on the server?")
-        except requests.exceptions.Timeout:
-            self.rate_limiter.set_cooldown(label, 30)
-            record_model_outcome(scope, "ollama", label, "fail", "timeout")
-            raise RuntimeError(
-                f"Ollama model '{tag}' timed out — the model may still be loading (first run pulls it into memory). Try again in a minute.")
-        except Exception as e:
-            record_model_outcome(scope, "ollama", label, "fail", str(e))
-            raise RuntimeError(f"Ollama model '{tag}' failed: {e}")
+                record_model_outcome(scope, "ollama", label, "fail", str(e)[:80])
+                if getattr(e, "ready", False):
+                    raise RuntimeError(str(e))
+                raise RuntimeError(f"Ollama on {dev_name} failed: {e}")
+            except requests.exceptions.ConnectionError:
+                self.rate_limiter.set_cooldown(label, 60)
+                record_model_outcome(scope, "ollama", label, "fail", "connection failed")
+                raise RuntimeError(
+                    f"Could not reach Ollama at {base} — is `ollama serve` running on the server?")
+            except requests.exceptions.Timeout:
+                self.rate_limiter.set_cooldown(label, 30)
+                record_model_outcome(scope, "ollama", label, "fail", "timeout")
+                raise RuntimeError(
+                    f"Ollama model '{tag}' timed out — the model may still be loading (first run pulls it into memory). Try again in a minute.")
+            except Exception as e:
+                record_model_outcome(scope, "ollama", label, "fail", str(e))
+                raise RuntimeError(f"Ollama model '{tag}' failed: {e}")
+        if stream:
+            # Lazy: return at once; the open + first-token wait happen on
+            # first iteration in the caller's worker thread.
+            def lazy_stream():
+                gen, _ = _run()
+                for _chunk in gen:
+                    yield _chunk
+            return (lazy_stream(), label)
+        return _run()
 
     def _ollama_fallback(self, messages, temperature, max_tokens, stream, opts=None):
         try:

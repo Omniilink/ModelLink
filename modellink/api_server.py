@@ -3351,20 +3351,49 @@ async def chat_completions(request: Request):
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                 else:
 
-                    # Iterate the chunk stream in a worker thread: the loop
-
-                    # must stay free while we wait (device-relay batches arrive
-
-                    # over HTTP on this same server, and blocking here would
-
-                    # starve them until the first-timeout fires).
+                    # Pump the blocking chunk iterator on ONE worker thread and
+                    # poll it from the loop. The relay's first batch can take
+                    # minutes (a deep-reasoning model thinks before its first
+                    # token), and proxies answer 524 when a response sends
+                    # nothing for ~100s — while the loop itself must stay free
+                    # (device-relay batches arrive over HTTP on this same
+                    # server; blocking here would starve them until the
+                    # first-timeout fires). An SSE comment keeps the
+                    # connection alive; every client ignores non-"data:" lines.
+                    # Polling (never wait_for) means no abandoned thread can
+                    # swallow a chunk.
                     _stream_iter = iter(stream)
-                    _stream_sentinel = object()
+                    _chunk_q = queue.Queue()
+
+                    def _pump_stream():
+                        try:
+                            for _c in _stream_iter:
+                                _chunk_q.put(("chunk", _c))
+                        except Exception as _pe:
+                            _chunk_q.put(("error", _pe))
+                        finally:
+                            _chunk_q.put(("done", None))
+
+                    _pump_thread = threading.Thread(target=_pump_stream, daemon=True)
+                    _pump_thread.start()
+                    yield ": connected\n\n"
+                    _idle_ticks = 0
                     while True:
-                        chunk = await asyncio.to_thread(
-                            next, _stream_iter, _stream_sentinel)
-                        if chunk is _stream_sentinel:
+                        try:
+                            _kind, _payload = _chunk_q.get_nowait()
+                        except queue.Empty:
+                            await asyncio.sleep(1)
+                            _idle_ticks += 1
+                            if _idle_ticks >= 25:
+                                _idle_ticks = 0
+                                yield ": ping\n\n"
+                            continue
+                        _idle_ticks = 0
+                        if _kind == "done":
                             break
+                        if _kind == "error":
+                            raise _payload
+                        chunk = _payload
                         text_chunk = ""
                         if hasattr(chunk, 'text'):
                             text_chunk = chunk.text
