@@ -406,6 +406,32 @@ a:hover{text-decoration:underline}
 .opt-view-row.fix .opt-view-path{color:#34c77b}
 .opt-progress{height:4px;background:var(--bg-input);border-radius:2px;overflow:hidden;margin-top:6px}
 .opt-progress i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+.opt-prog-head{flex:1 1 auto;min-width:0}
+.opt-prog-bar{flex:1 1 150px;min-width:110px;height:5px;background:var(--bg-input);border-radius:3px;overflow:hidden}
+.opt-prog-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent-light));transition:width .3s}
+.opt-prog-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--text-secondary);font-variant-numeric:tabular-nums}
+.opt-stop{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);border-radius:var(--radius-xs);padding:3px 12px;font-size:10.5px;cursor:pointer;font-family:var(--font);flex-shrink:0}
+.opt-stop:hover{color:var(--error);border-color:var(--error)}
+.opt-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
+.opt-kpi{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;min-width:0}
+.opt-kpi-l{display:block;font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-bottom:3px}
+.opt-kpi-v{display:block;font-size:15px;font-weight:650;color:var(--text-primary);font-variant-numeric:tabular-nums;word-break:break-word}
+.opt-kpi-s{display:block;font-size:9.5px;color:var(--text-muted);margin-top:2px}
+.opt-dh{font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--text-muted);margin:16px 0 7px}
+.opt-dtable{width:100%;border-collapse:collapse;font-size:11.5px}
+.opt-dtable th{text-align:left;font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);padding:5px 7px;border-bottom:1px solid var(--border);white-space:nowrap}
+.opt-dtable td{padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.05);color:var(--text-secondary);vertical-align:top}
+.opt-dtable tr:last-child td{border-bottom:none}
+.opt-dtable .fp{font-family:var(--mono);font-size:10.5px;color:var(--accent-light);word-break:break-all}
+.opt-dtable .num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.opt-chip{display:inline-block;padding:1px 7px;margin:1px 3px 1px 0;border-radius:999px;background:var(--accent-dim);color:var(--accent-light);font-size:9.5px;white-space:nowrap}
+.opt-chip.good{background:rgba(52,199,123,.15);color:#34c77b}
+.opt-chip.bad{background:rgba(255,90,90,.15);color:#ff8f8f}
+.opt-chips{margin-top:7px}
+.opt-dlist{font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--text-muted);word-break:break-word}
+.opt-dnote{font-size:11.5px;color:var(--text-muted);margin:0}
+.opt-dpos{color:#34c77b}
+.opt-dneg{color:#ff8f8f}
 #upload-progress .up-row{margin-bottom:12px}
 #upload-progress .up-row:last-child{margin-bottom:0}
 .up-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;margin-bottom:4px}
@@ -1625,6 +1651,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="modal-overlay" id="alert-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="alert-modal-title">Alert</h2></div><div class="modal-body"><p id="alert-modal-msg" style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin:0 0 16px"></p><div class="modal-actions" id="alert-modal-actions"><button class="btn btn-primary" onclick="resolveAlertModal(true)">OK</button></div></div></div></div>
 <div class="modal-overlay" id="report-modal" onclick="if(event.target===this)closeReportModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2>Send error report</h2><button class="modal-close" onclick="closeReportModal()">&times;</button></div><div class="modal-body"><p id="report-summary" class="tool-result-sub" style="margin:0 0 12px"></p><div class="modal-field"><label>Note for the admin (optional)</label><input type="text" id="report-note" placeholder="What were you trying to do?" maxlength="500" onkeydown="if(event.key==='Enter')sendReport()" /></div><div class="modal-actions"><button class="btn btn-ghost" onclick="closeReportModal()">Cancel</button><button class="btn btn-primary" id="report-send-btn" onclick="sendReport()">Send report</button></div></div></div></div>
 <div class="modal-overlay" id="adm-file-modal" onclick="if(event.target===this)closeAdmFile()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2 id="adm-file-title">File</h2><button class="modal-close" onclick="closeAdmFile()">&times;</button></div><div class="modal-body"><div class="modal-field" id="adm-file-name-wrap" style="display:none"><label>Name</label><input type="text" id="adm-file-name" placeholder="notes.txt" /></div><div class="modal-field" id="adm-file-area-wrap"><textarea id="adm-file-area" spellcheck="false" style="width:100%;min-height:40vh;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-family:var(--mono);font-size:12px;resize:vertical"></textarea></div><div class="modal-actions"><span id="adm-file-status" class="tool-result-sub" style="flex:1;text-align:left"></span><button class="btn btn-ghost" onclick="closeAdmFile()">Cancel</button><button class="btn btn-primary" id="adm-file-save" onclick="admFmSave()">Save</button></div></div></div></div>
+<div class="modal-overlay" id="opt-debrief-modal" onclick="if(event.target===this)closeOptDebrief()"><div class="modal" style="max-width:780px"><div class="modal-header"><h2>Optimise report</h2><button class="btn btn-ghost btn-sm" onclick="optCopyDebrief()">Copy report</button><button class="modal-close" onclick="closeOptDebrief()">&times;</button></div><div class="modal-body" id="opt-debrief-body" style="max-height:66vh;overflow:auto"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="closeOptDebrief()">Done</button></div></div></div>
 <div class="cmd-overlay" id="cmd-overlay" onclick="if(event.target===this)closeCmdPalette()"><div class="cmd-box"><input class="cmd-input" id="cmd-input" placeholder="Search commands, models, chats..." oninput="filterCmdPalette(this.value)" onkeydown="handleCmdKey(event)" autocomplete="off" /><div class="cmd-results" id="cmd-results"></div></div></div>
 <div class="modal-overlay" id="auth-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="auth-modal-title">Sign In</h2></div><div class="modal-body"><a class="btn btn-ghost" id="auth-google" style="display:none;justify-content:center;gap:8px;margin-bottom:10px;width:100%" href="/api/auth/google/start"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.5 12.3c0-.9-.1-1.5-.3-2.3H12v4.5h6.5c-.1 1.1-.8 2.7-2.4 3.8l3.5 2.7c2.2-2 3.9-5 3.9-8.7z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.8-2.9c-1 .7-2.4 1.2-4.1 1.2-3.2 0-5.9-2.1-6.8-5l-3.7 2.9C3.3 21.3 7.3 24 12 24z"/><path fill="#FBBC05" d="M5.2 14.4c-.2-.7-.4-1.5-.4-2.4s.1-1.7.4-2.4l-3.7-2.9C.5 8.7 0 10.2 0 12s.5 3.3 1.4 4.7l3.8-2.3z"/><path fill="#EA4335" d="M12 4.7c1.8 0 3 .8 3.7 1.4l3.3-3.2C17.9 1.1 15.2 0 12 0 7.3 0 3.3 2.7 1.4 6.7l3.8 2.9c.9-2.9 3.6-4.9 6.8-4.9z"/></svg> Sign in with Google</a><div id="auth-google-note" style="display:none;font-size:12px;color:var(--text-muted);margin-bottom:10px;text-align:center">Password sign-in is disabled on this server — continue with Google.</div><div id="auth-form-signin"><div class="modal-field"><label>Username</label><input type="text" id="auth-username" placeholder="username" autocomplete="username" onkeydown="if(event.key==='Enter')doAuth()" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth()" /></div><div id="auth-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignup()">Create account</button><button class="btn btn-primary" onclick="doAuth()">Sign In</button></div></div><div id="auth-form-signup" style="display:none"><div class="modal-field"><label>Username</label><input type="text" id="auth-signup-username" placeholder="username (3+ chars)" autocomplete="username" onkeydown="if(event.key==='Enter')doSignup()" /></div><div class="modal-field"><label>Display Name</label><input type="text" id="auth-signup-name" placeholder="Your Name (optional)" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-signup-password" placeholder="password (6+ chars)" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSignup()" /></div><div id="auth-signup-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignin()">Back to sign in</button><button class="btn btn-primary" onclick="doSignup()">Create Account</button></div></div></div></div></div>
 <div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
@@ -7470,10 +7497,12 @@ function optBuildGraph(targets,contents){
 }
 // One server-side scan pass over the whole project. Falls back to an empty
 // result if the backend is unavailable: optimisation must still run.
-async function optScanProject(paths){
+async function optScanProject(paths,onTick){
   const findings=[];
-  let scanned=0;
+  let scanned=0,seen=0;
   for(const p of paths){
+    seen++;
+    if(onTick&&(seen%5===0||seen===paths.length))try{onTick(seen,findings.length)}catch(e){}
     if(!optIsCode(p))continue;
     let content=null;
     try{content=await codingReadFile(p)}catch(e){continue}
@@ -7519,14 +7548,85 @@ function optBanner(html){
   b.style.display=html?'flex':'none';
   if(html)b.innerHTML=html;
 }
-function optProgress(pct,label){
-  const w=document.getElementById('opt-progress-wrap');
-  const bar=document.getElementById('opt-progress');
-  if(!w||!bar)return;
-  w.style.display='';
-  bar.style.width=Math.max(0,Math.min(100,pct))+'%';
+// ---- Optimise: live progress -------------------------------------------
+// The menu panel closes as soon as a run starts, so every live element lives
+// in #optimise-banner instead: a stage line, a progress bar, elapsed/ETA and
+// a Stop button. The ticker only rewrites text nodes (never innerHTML), which
+// is what keeps the status span updated by status() alive every second.
+let optProg={active:false,start:0,total:0,done:0,stage:'',pct:0,fileMs:[]};
+let optRunStats={calls:[],tin:0,tout:0,ms:0};
+let optLastDebrief=null;
+let optTickTimer=null;
+function optProgReset(total){
+  optProg={active:true,start:Date.now(),total:total||0,done:0,stage:'reading',pct:0,fileMs:[]};
+  optRunStats={calls:[],tin:0,tout:0,ms:0};
+}
+function optRenderProg(head,label,pct){
   const b=document.getElementById('optimise-banner');
-  if(b&&label)b.innerHTML=label;
+  if(!b)return;
+  if(typeof pct==='number')optProg.pct=Math.max(0,Math.min(100,pct));
+  b.style.display='flex';
+  b.innerHTML='<span class="opt-prog-head"><b>'+escapeHtml(head||'')+'</b> <span id="opt-status">'+escapeHtml(label||'')+'</span></span>'
+    +'<span class="opt-prog-bar"><i id="opt-prog-bar" style="width:'+(optProg.pct||0)+'%"></i></span>'
+    +'<span class="opt-prog-meta"><span id="opt-prog-eta"></span><span id="opt-prog-stats"></span></span>'
+    +'<button class="opt-stop" id="opt-stop-btn" onclick="optStop()">Stop</button>';
+  optTickRender();
+}
+function optFmtTok(n){
+  n=Math.max(0,Number(n)||0);
+  if(n>=1000000)return(n/1000000).toFixed(1)+'M';
+  if(n>=1000)return(n/1000).toFixed(1)+'k';
+  return String(Math.round(n));
+}
+function optEtaText(){
+  const total=Math.max(0,optProg.total|0);
+  const done=Math.max(0,optProg.done|0);
+  const el=Math.max(0,Date.now()-(optProg.start||Date.now()));
+  const left=total-done;
+  let eta='estimating...';
+  if(done>=total&&total>0)eta='finishing';
+  else if(done>0&&left>0&&optProg.fileMs.length){
+    const avg=optProg.fileMs.reduce((a,b)=>a+b,0)/optProg.fileMs.length;
+    eta='eta '+optFormatLeft(avg*left);
+  }
+  return optFormatLeft(el)+' elapsed - '+done+'/'+total+' files - '+eta;
+}
+function optStatsText(){
+  const s=optRunStats||{calls:[],tin:0,tout:0,ms:0};
+  const n=(s.calls||[]).length;
+  const tps=s.ms>0?(s.tout||0)/(s.ms/1000):0;
+  let t=n+' model call'+(n===1?'':'s');
+  if(s.tout)t+=' - '+optFmtTok(s.tin)+' in / '+optFmtTok(s.tout)+' out';
+  if(tps>0)t+=' - '+Math.round(tps)+' tok/s';
+  if(optProg.stage)t+=' - '+optProg.stage;
+  return t;
+}
+function optTickRender(){
+  if(!optProg.active)return;
+  const bar=document.getElementById('opt-prog-bar');
+  if(bar)bar.style.width=(optProg.pct||0)+'%';
+  const eta=document.getElementById('opt-prog-eta');
+  if(eta)eta.textContent=optEtaText();
+  const st=document.getElementById('opt-prog-stats');
+  if(st)st.textContent=optStatsText();
+}
+function optTickStart(){optTickStop();if(optProg.active)optTickTimer=setInterval(optTickRender,1000)}
+function optTickStop(){if(optTickTimer){clearInterval(optTickTimer);optTickTimer=null}}
+function optStop(){
+  if(!optRunning||optAbort)return;
+  optAbort=1;
+  const s=document.getElementById('opt-status');
+  if(s)s.textContent='stopping after the current step...';
+  showToast('Optimise will stop once the current step finishes','info');
+}
+function optProgress(pct,label){
+  optProg.pct=Math.max(0,Math.min(100,Number(pct)||0));
+  const bar=document.getElementById('opt-prog-bar');
+  if(bar)bar.style.width=optProg.pct+'%';
+  const w=document.getElementById('opt-progress-wrap');
+  const bw=document.getElementById('opt-progress');
+  if(w&&bw){w.style.display='';bw.style.width=optProg.pct+'%'}
+  if(label)optRenderProg(String(label).replace(/<[^>]*>/g,''),'',optProg.pct);
 }
 // ---- Optimise: the run loop -------------------------------------------
 // Shape of a run:
@@ -7552,14 +7652,25 @@ function optFormatLeft(ms){
 async function optReadFile(path){
   try{const c=await codingReadFile(path);return typeof c==='string'?c:null}catch(e){return null}
 }
-async function optRunModel(model,prompt,maxTokens){
+async function optRunModel(model,prompt,maxTokens,stage){
   // A plain non-streaming call with a hard cap: an optimiser reply must be
-  // short, and a stream would let a runaway model narrate forever.
+  // short, and a stream would let a runaway model narrate forever. Wall time
+  // and token usage land in optRunStats so the live stats and the debrief can
+  // report a real throughput instead of a guess.
+  const t0=Date.now();
   const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:model,stream:false,temperature:0.2,max_tokens:maxTokens||1200,effort:'low',messages:[{role:'system',content:prompt}]})});
   if(!r.ok){const t=await r.text();throw new Error('HTTP '+r.status+' '+(t||'').slice(0,120))}
   const d=await r.json();
   const c=d&&d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content;
+  const ms=Date.now()-t0;
+  const u=(d&&d.usage)||{};
+  const tin=Number(u.prompt_tokens)||Math.ceil(String(prompt).length/4);
+  const tout=Number(u.completion_tokens)||Math.ceil(String(c||'').length/4);
+  optRunStats.calls.push({model:model,stage:stage||'edit',ms:ms,tin:tin,tout:tout});
+  optRunStats.tin+=tin;optRunStats.tout+=tout;optRunStats.ms+=ms;
+  if(stage)optProg.stage=stage;
+  optTickRender();
   return typeof c==='string'?c:'';
 }
 // Parse the audit reply. Small models drift, so every field is optional and
@@ -7607,9 +7718,13 @@ async function startOptimise(){
   const wasAuto=codingSettings&&codingSettings.auto_edit;
   if(cfg.autoRun)codingSettings.auto_edit=true;
   const view=[];
-  optBanner('<b>Optimising...</b> <span id="opt-status">reading the project</span>');
+  // Declared outside the try so the catch path can still build a debrief.
+  let reason='completed',bytes0=0,findings=[],analysis=null,rep=null;
+  optProgReset(0);
+  optRenderProg('Optimising...','reading the project',0);
+  optTickStart();
   const status=t=>{const el=document.getElementById('opt-status');if(el)el.textContent=t};
-  const done={files:0,changed:0,added:0,removed:0,fixes:[],skipped:0};
+  const done={files:0,changed:0,added:0,removed:0,fixes:[],skipped:0,log:[]};
   try{
     // 1. shortlist
     status('reading the project');
@@ -7618,31 +7733,48 @@ async function startOptimise(){
     const ranked=optRankFiles(all,allCodingFileSizes);
     const shortlist=ranked.slice(0,inten.maxFiles);
     if(!shortlist.length)throw new Error('no files to optimise');
-    optProgress(4,'<b>Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':'')+'</b>');
+    optProg.total=shortlist.length;
+    optRenderProg('Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':''),'reading files',4);
 
     // 2. contents + graph, read once and reused by every stage
     status('reading files');
     const contents={};
     for(const p of shortlist)contents[p]=await optReadFile(p);
+    bytes0=shortlist.reduce((a,p)=>a+(contents[p]?contents[p].length:0),0);
     const graph=optBuildGraph(shortlist,contents);
     const mainModel=optModelFor('main');
     optSaveCfg();
 
+    // 2b. deterministic analysis: health markers, duplicates, package facts.
+    // Computed before the scan so the scan banner can quote its numbers.
+    if(cfg.advanced){
+      status('analysing the project');
+      analysis=await optAnalyseProject(shortlist,contents);
+    }
+    function h_level(note){return /warn/i.test(note)?'bad':''}
+    function scanned(s){return s&&s.scanned?s.scanned+' ':''}
+
     // 3. (advanced) whole-project scan
-    let findings=[];
     if(cfg.advanced&&cfg.scan){
-      optBanner('<b>Scanning the whole project for errors...</b>');
-      const scan=await optScanProject(ranked.slice(0,120));
+      optProg.stage='scan';
+      optRenderProg('Scanning the whole project for errors...','',6);
+      const scanPaths=ranked.slice(0,120);
+      const scan=await optScanProject(scanPaths,function(n,found){
+        status('scanned '+n+'/'+scanPaths.length+' file'+(n===1?'':'s')+(found?', '+found+' issue'+(found===1?'':'s'):''));
+        optProg.pct=6+Math.round(9*(n/Math.max(1,scanPaths.length)));
+        const bar=document.getElementById('opt-prog-bar');
+        if(bar)bar.style.width=optProg.pct+'%';
+      });
       findings=scan.findings||[];
       optCfg.lastScan=findings.slice(0,50);
       try{localStorage.setItem(optStoreKey()+'_scan',JSON.stringify(optCfg.lastScan))}catch(e){}
-      status(foundings.length?findings.length+' issue'+(findings.length!==1?'s':'')+' found':'no issues found');
+      status(findings.length?findings.length+' issue'+(findings.length!==1?'s':'')+' found':'no issues found');
       if(analysis){
-        optBanner('<b>Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':'')+'</b> — '
-          +findings.length+' scan finding'+(findings.length!==1?'s':'')+', '
+        optRenderProg('Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':''),
+          findings.length+' scan finding'+(findings.length!==1?'s':'')+', '
           +analysis.health.length+' health flag'+(analysis.health.length!==1?'s':'')
-          +(analysis.dupes.length?', '+analysis.dupes.length+' duplicate name'+(analysis.dupes.length!==1?'':'s'):'')
-          +' <span id="opt-status"></span>');
+          +(analysis.dupes.length?', '+analysis.dupes.length+' duplicate name'+(analysis.dupes.length!==1?'s':''):''),
+          optProg.pct);
       }
       if(cfg.liveView){
         const v=document.getElementById('opt-live-view');
@@ -7655,42 +7787,45 @@ async function startOptimise(){
       try{optCfg.lastScan=JSON.parse(localStorage.getItem(optStoreKey()+'_scan')||'[]')}catch(e){}
       findings=optCfg.lastScan||[];
     }
-    // 2b. deterministic analysis: health markers, duplicates, package facts
-    let analysis=null;
-    if(cfg.advanced){
-      status('analysing the project');
-      analysis=await optAnalyseProject(shortlist,contents);
-      if(cfg.liveView){
-        const v=document.getElementById('opt-live-view');
-        if(v)v.classList.add('on');
-        const rows=[{p:'analysis',cls:'',n:analysis.fileCount+' files, '+Math.round(analysis.totalBytes/1024)+'KB'}];
-        if(analysis.dupes.length)for(const d of analysis.dupes.slice(0,12))
-          rows.push({p:d.name,cls:'bad',n:'defined in '+d.files.length+' files'});
-        const seen={};
-        for(const h of analysis.health)seen[h.note]=(seen[h.note]||0)+h.count;
-        for(const k of Object.keys(seen).slice(0,10))
-          rows.push({p:k,cls:h_level(h.note),n:seen[k]+' total'});
-        optViewRender(rows);
-      }
+    // 2c. the analysis view renders after the scan so it is what the user
+    // sees last, matching the order the run has always shown.
+    if(cfg.advanced&&analysis&&cfg.liveView){
+      const v=document.getElementById('opt-live-view');
+      if(v)v.classList.add('on');
+      const rows=[{p:'analysis',cls:'',n:analysis.fileCount+' files, '+Math.round(analysis.totalBytes/1024)+'KB'}];
+      if(analysis.dupes.length)for(const d of analysis.dupes.slice(0,12))
+        rows.push({p:d.name,cls:'bad',n:'defined in '+d.files.length+' files'});
+      const seen={};
+      for(const h of analysis.health)seen[h.note]=(seen[h.note]||0)+h.count;
+      for(const k of Object.keys(seen).slice(0,10))
+        rows.push({p:k,cls:h_level(k),n:seen[k]+' total'});
+      optViewRender(rows);
     }
-    function h_level(note){return /warn/i.test(note)?'bad':''}
-    function scanned(s){return s&&s.scanned?s.scanned+' ':''}
 
     // 4. per-file loop
     for(let i=0;i<shortlist.length;i++){
+      if(optAbort){reason='stopped by you';break}
       const left=optTimeLeft(started,cfg.timeLimit);
       if(cfg.timeLimit&&left<=0){
+        reason='time budget reached';
         optBanner('<b>Time budget reached</b> - stopped cleanly after '+i+' file'+(i!==1?'s':'')+'.');
         break;
       }
       const path=shortlist[i];
+      const fileStart=Date.now();
+      const fixesBefore=done.fixes.length;
       done.files++;
-      const before=contents[path]||'';
-      if(!before){done.skipped++;continue}
+      const logTicks=()=>done.log.push({p:path,changed:done.fixes.length>fixesBefore,ms:Date.now()-fileStart});
+      let before=contents[path]||'';
+      if(!before){
+        done.skipped++;optProg.done++;
+        logTicks();optTickRender();
+        continue;
+      }
       const perFile=optFormatFindings(findings.filter(f=>f.path===path),12);
       const pct=Math.round(((i+0.5)/shortlist.length)*100);
-      optProgress(pct,'<b>Optimising</b> '+path+' <span style="opacity:.7">('+(i+1)+'/'+shortlist.length+')</span>');
-      status('working on '+path);
+      optProg.stage='audit';
+      optRenderProg('Optimising '+(i+1)+'/'+shortlist.length+' - '+path,'working on '+path,pct);
       if(cfg.liveView)optViewRender(view.concat([{p:path,cls:'',n:'optimising...'}]).slice(-60));
 
       // audit (small model) -> the brief the editor will actually work from
@@ -7699,7 +7834,7 @@ async function startOptimise(){
       if(cfg.advanced&&perFile!=='(no automated findings)')brief=perFile;
       else{
         try{
-          const auditText=await optRunModel(auditModel,buildAuditPrompt(cfg,path,before,optLangOf(path)),700);
+          const auditText=await optRunModel(auditModel,buildAuditPrompt(cfg,path,before,optLangOf(path)),700,'audit');
           const found=optParseFindings(auditText,path);
           if(found.length){
             findings=findings.concat(found);
@@ -7713,11 +7848,14 @@ async function startOptimise(){
       let rounds=0;
       while(rounds<inten.roundsPerFile){
         rounds++;
+        if(optAbort){reason='stopped by you';break}
         const rl=optTimeLeft(started,cfg.timeLimit);
-        if(cfg.timeLimit&&rl<=0)break;
+        if(cfg.timeLimit&&rl<=0){if(reason==='completed')reason='time budget reached';break}
         let reply='';
+        optProg.stage='edit';
+        status('optimising '+path+' (round '+rounds+')');
         try{
-          reply=await optRunModel(editModel,buildOptimisePrompt(cfg,{graph:graph,findings:brief,timeBudget:optFormatLeft(rl)}),1400);
+          reply=await optRunModel(editModel,buildOptimisePrompt(cfg,{graph:graph,findings:brief,timeBudget:optFormatLeft(rl)}),1400,'edit');
         }catch(e){break}
         const saysNoChange=/NO\s+CHANGES/i.test(String(reply));
         const hasBlocks=/FILE_(PATCH|CREATE|EDIT):/.test(String(reply));
@@ -7735,32 +7873,56 @@ async function startOptimise(){
         if(!d.added&&!d.removed){done.skipped++;break}
         let verdict='';
         if(cfg.advanced||inten.intensity==='deep'){
-          try{verdict=await optRunModel(optModelFor('verify'),buildVerifyPrompt(target,before,after,claimed),220)}catch(e){}
+          optProg.stage='verify';
+          try{verdict=await optRunModel(optModelFor('verify'),buildVerifyPrompt(target,before,after,claimed),220,'verify')}catch(e){}
         }
         done.changed++;
         done.added+=d.added;
         done.removed+=d.removed;
-        done.fixes.push({p:target,n:claimed||(d.added+' added / '+d.removed+' removed'),ok:!/FAIL/i.test(verdict)});
+        done.fixes.push({p:target,n:claimed||(d.added+' added / '+d.removed+' removed'),ok:!/FAIL/i.test(verdict),
+          added:d.added,removed:d.removed,ms:Date.now()-fileStart,model:editModel,
+          verify:!verdict?'unverified':(/PASS/i.test(verdict)?'pass':'fail'),
+          aspects:optAspectsFor(target,findings,d.added,d.removed,claimed)});
         contents[target]=after;
         if(!/PASS/i.test(verdict)&&verdict){done.fixes[done.fixes.length-1].ok=false}
         before=after;
         break;   // one confirmed edit per file keeps the run honest and cheap
       }
+      logTicks();
+      optProg.fileMs.push(Date.now()-fileStart);
+      optProg.done++;
       if(cfg.liveView){
-        const touched=done.fixes.some(f=>f.p===path);
+        const touched=done.fixes.length>fixesBefore;
         optViewRender(view.concat([{p:path,cls:touched?'fix':'',n:touched?'improved':'no changes'}]).slice(-60));
       }
+      optTickRender();
     }
 
     // 5. report
+    if(optAbort&&reason==='completed')reason='stopped by you';
     const secs=Math.round((Date.now()-started)/1000);
     const st=Math.max(0,Math.round((done.added+done.removed)/4/Math.max(1,secs)));
     optProgress(100,'');
     const fixLines=done.fixes.length?('\n\nFiles improved:\n'+done.fixes.map(f=>'- '+f.p+' — '+f.n+(f.ok?'':' (verify failed)')).join('\n')):'';
     const failed=done.fixes.filter(f=>!f.ok).length;
+    rep=optBuildDebrief({
+      reason:reason,started:started,ended:Date.now(),durationMs:Date.now()-started,
+      examined:done.files,improved:done.changed,skipped:done.skipped,
+      unchanged:shortlist.filter(p=>!done.fixes.some(f=>f.p===p)),
+      added:done.added,removed:done.removed,bytesBefore:bytes0,
+      tin:optRunStats.tin,tout:optRunStats.tout,calls:optRunStats.calls.length,
+      callList:optRunStats.calls,modelMs:optRunStats.ms,
+      fixes:done.fixes,log:done.log,
+      modes:OPT_MODES.filter(m=>cfg.modes.indexOf(m.k)>-1).map(m=>m.t),
+      intensity:inten.label,timeLimit:cfg.timeLimit,advanced:cfg.advanced,scan:cfg.scan,
+      scanFindings:findings.length,
+      health:analysis?analysis.health.length:0,dupes:analysis?analysis.dupes.length:0
+    });
     optBanner('<b>Optimise finished in '+optFormatLeft(secs*1000)+'</b> — '+done.changed+' file'+(done.changed!==1?'s':'')+' improved, '
       +done.skipped+' unchanged, +'+done.added+'/-'+done.removed+' chars'+(st?' at ~'+st+' tok/s':'')
       +(failed?', '+failed+' need another look':'')+fixLines
+      +(reason!=='completed'?' <span style="opacity:.7">('+escapeHtml(reason)+')</span>':'')
+      +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optShowDebrief()">Full report</button>'
       +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optBanner(\'\')">Dismiss</button>');
     // Make the work visible in the chat too: the user can read exactly what
     // changed, in order, and the normal cards carry the diffs.
@@ -7771,19 +7933,221 @@ async function startOptimise(){
       +'\n- Change size: +'+done.added+' / -'+done.removed+' characters'
       +'\n- Modes: '+OPT_MODES.filter(m=>cfg.modes.indexOf(m.k)>-1).map(m=>m.t).join(', ')
       +'\n- Intensity: '+inten.label
+      +'\n- Duration: '+optFormatLeft(secs*1000)
+      +(optRunStats.calls.length?('\n- Model calls: '+optRunStats.calls.length+' ('+optFmtTok(optRunStats.tin)+' tokens in, '+optFmtTok(optRunStats.tout)+' out)'):'')
+      +(rep.tps>=1?('\n- Speed: ~'+Math.round(rep.tps)+' tok/s'):'')
+      +(reason!=='completed'?('\n- Stopped early: '+reason):'')
       +(analysis?('\n- Health flags: '+analysis.health.length+'\n- Duplicate function names: '+analysis.dupes.length):'')
       +(cfg.timeLimit?'\n- Time limit: '+optFormatLeft(cfg.timeLimit):'')
       +(failed?'\n\n**Needs another look:**\n'+done.fixes.filter(f=>!f.ok).map(f=>'- '+f.p).join('\n'):'')
       +(done.fixes.length?'\n\n**Improved:**\n'+done.fixes.map(f=>'- '+f.p+' — '+f.n).join('\n'):''));
     persistCodingChat();
+    optShowDebrief(rep);
   }catch(e){
+    reason='error: '+(e.message||String(e));
     optBanner('<b>Optimise stopped:</b> '+escapeHtml(e.message||String(e))
       +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optBanner(\'\')">Dismiss</button>');
   }finally{
     if(cfg.autoRun)codingSettings.auto_edit=wasAuto;
+    optProg.active=false;
+    optTickStop();
     optRunning=false;optAbort=null;
     refreshCodingTree();
   }
+}
+// ---- Optimise: debrief --------------------------------------------------
+// Everything below is nearly pure: it turns a run record into numbers, HTML
+// or Markdown without touching the DOM, so the report is testable on its own.
+function optAspectKind(s){
+  const t=String(s||'').trim().toLowerCase();
+  if(!t)return null;
+  const named={speed:'speed',quality:'quality',feature:'features',features:'features',self:'self',
+    security:'security',a11y:'a11y',perf:'perf',docs:'docs',storage:'storage'};
+  if(named[t])return named[t];
+  if(/\b(speed|faster|fast|slow|hot[- ]?path|cache|latency)\b/.test(t))return'speed';
+  if(/\b(storage|smaller|compact|shorter|size|bytes|space|dead code|unused)\b/.test(t))return'storage';
+  if(/\b(security|secure|inject|xss|secret|saniti[sz]|auth|csrf)\b/.test(t))return'security';
+  if(/\b(a11y|accessib|aria|contrast|focus|keyboard|screen reader)\b/.test(t))return'a11y';
+  if(/\b(feature|missing|support|implement|add|create)\b/.test(t))return'features';
+  if(/\b(performance|perf|memory|batch|allocat|i\/o|network|throughput)\b/.test(t))return'perf';
+  if(/\b(doc|docs|comment|docstring|readme)\b/.test(t))return'docs';
+  if(/\b(structur|naming|refactor|organiz|duplicate|clean ?up)\b/.test(t))return'self';
+  if(/\b(fix|bug|error|wrong|broken|crash|edge case|null|undefined)\b/.test(t))return'quality';
+  return null;
+}
+function optAspectLabel(k){
+  const m={speed:'Speed',quality:'Quality',feature:'Features',features:'Features',self:'Structure',
+    security:'Security',a11y:'A11y',perf:'Performance',docs:'Docs',storage:'Storage'};
+  return m[k]||'Quality';
+}
+function optAspectsFor(path,findings,added,removed,claim){
+  const out=[];
+  for(const f of (findings||[])){
+    if(f.path!==path)continue;
+    const k=optAspectKind(f.kind||f.rule);
+    if(k&&out.indexOf(k)<0)out.push(k);
+  }
+  const ck=optAspectKind(claim);
+  if(ck&&out.indexOf(ck)<0)out.push(ck);
+  if(Number(removed)>Number(added)+20&&out.indexOf('storage')<0)out.push('storage');
+  if(!out.length)out.push('quality');
+  return out.slice(0,4);
+}
+function optGroupModels(calls){
+  const g={};
+  for(const c of (calls||[])){
+    const k=c.model||'unknown';
+    if(!g[k])g[k]={model:k,calls:0,ms:0,tin:0,tout:0,stages:{}};
+    const e=g[k];
+    e.calls++;e.ms+=c.ms||0;e.tin+=c.tin||0;e.tout+=c.tout||0;
+    const s=c.stage||'edit';
+    e.stages[s]=(e.stages[s]||0)+1;
+  }
+  return Object.keys(g).map(k=>g[k]).sort((a,b)=>b.calls-a.calls);
+}
+function optBuildDebrief(o){
+  const r=Object.assign({},o||{});
+  r.fixes=Array.isArray(r.fixes)?r.fixes:[];
+  r.added=Number(r.added)||0;
+  r.removed=Number(r.removed)||0;
+  r.bytesBefore=Number(r.bytesBefore)||0;
+  r.modelMs=Number(r.modelMs)||0;
+  r.tin=Number(r.tin)||0;
+  r.tout=Number(r.tout)||0;
+  r.calls=Number(r.calls)||0;
+  r.net=r.added-r.removed;
+  r.netPct=r.bytesBefore?Math.round(Math.abs(r.net)/r.bytesBefore*1000)/10:0;
+  r.tps=r.modelMs>0?r.tout/(r.modelMs/1000):0;
+  r.tokens=r.tin+r.tout;
+  r.verifyPassed=r.fixes.filter(f=>f.verify==='pass').length;
+  r.verifyFailed=r.fixes.filter(f=>f.verify==='fail').length;
+  r.verifyTotal=r.fixes.filter(f=>f.verify&&f.verify!=='unverified').length;
+  const ac={};
+  for(const f of r.fixes)for(const a of (f.aspects||[]))ac[a]=(ac[a]||0)+1;
+  r.aspectCounts=ac;
+  r.models=optGroupModels(o&&o.callList||[]);
+  return r;
+}
+function optDebriefKpis(r){
+  return [
+    {l:'Duration',v:optFormatLeft(r.durationMs||0)},
+    {l:'Files improved',v:r.improved+'/'+r.examined},
+    {l:'Net change',v:(r.net>=0?'+':'')+r.net+' ch',s:r.bytesBefore?((r.net>=0?'+':'')+r.netPct+'% of project'):'',neg:r.net<0},
+    {l:'Tokens',v:optFmtTok(r.tokens),s:optFmtTok(r.tin)+' in / '+optFmtTok(r.tout)+' out'},
+    {l:'Speed',v:r.tps>0?Math.round(r.tps)+' tok/s':'-',s:'model time only'},
+    {l:'Model calls',v:String(r.calls)},
+    {l:'Verify pass',v:r.verifyTotal?(r.verifyPassed+'/'+r.verifyTotal):'n/a',s:r.verifyFailed?r.verifyFailed+' failed':''},
+    {l:'Findings',v:String(r.scanFindings||0),s:(r.health||0)+' health, '+(r.dupes||0)+' dupes'}
+  ];
+}
+function optDebriefHtml(r){
+  const kpis=optDebriefKpis(r).map(k=>
+    '<div class="opt-kpi"><span class="opt-kpi-l">'+escapeHtml(k.l)+'</span>'
+    +'<span class="opt-kpi-v"'+(k.neg?' style="color:var(--error)"':'')+'>'+escapeHtml(k.v)+'</span>'
+    +(k.s?'<span class="opt-kpi-s">'+escapeHtml(k.s)+'</span>':'')+'</div>').join('');
+  const fixes=r.fixes||[];
+  const rows=fixes.map(f=>
+    '<tr><td class="fp">'+escapeHtml(f.p)+'</td>'
+    +'<td>'+(f.aspects||[]).map(a=>'<span class="opt-chip">'+escapeHtml(optAspectLabel(a))+'</span>').join('')+'</td>'
+    +'<td class="num">'+((f.added!=null)?('<span class="opt-dpos">+'+f.added+'</span> <span class="opt-dneg">-'+f.removed+'</span>'):escapeHtml(f.n||''))+'</td>'
+    +'<td>'+(f.verify==='pass'?'<span class="opt-chip good">pass</span>':f.verify==='fail'?'<span class="opt-chip bad">fail</span>':'<span style="color:var(--text-muted)">-</span>')+'</td>'
+    +'<td class="num">'+(f.ms?optFormatLeft(f.ms):'-')+'</td>'
+    +'<td>'+escapeHtml(f.model||'')+'</td></tr>').join('');
+  const unchanged=r.unchanged||[];
+  const models=(r.models||[]).map(m=>{
+    const tps=m.ms>0?m.tout/(m.ms/1000):0;
+    return '<tr><td class="fp">'+escapeHtml(m.model)+'</td><td class="num">'+m.calls+'</td>'
+      +'<td class="num">'+optFmtTok(m.tin)+' / '+optFmtTok(m.tout)+'</td>'
+      +'<td class="num">'+optFormatLeft(m.ms)+'</td>'
+      +'<td class="num">'+(tps>0?Math.round(tps)+' tok/s':'-')+'</td>'
+      +'<td>'+escapeHtml(Object.keys(m.stages||{}).map(s=>s+' '+m.stages[s]).join(', '))+'</td></tr>';
+  }).join('');
+  const aspectChips=Object.keys(r.aspectCounts||{}).map(k=>'<span class="opt-chip">'+escapeHtml(optAspectLabel(k))+' '+r.aspectCounts[k]+'</span>').join('');
+  return '<div class="opt-kpis">'+kpis+'</div>'
+    +(r.reason&&r.reason!=='completed'?'<p class="opt-dnote" style="margin:10px 0 0;color:var(--text-secondary)">Stopped early: '+escapeHtml(r.reason)+'</p>':'')
+    +'<h3 class="opt-dh">Files improved ('+fixes.length+')</h3>'
+    +(fixes.length?'<table class="opt-dtable"><thead><tr><th>File</th><th>Kind</th><th>Change</th><th>Verify</th><th>Took</th><th>Model</th></tr></thead><tbody>'+rows+'</tbody></table>':'<p class="opt-dnote">No file changed this run.</p>')
+    +(aspectChips?'<div class="opt-chips">'+aspectChips+'</div>':'')
+    +(unchanged.length?'<h3 class="opt-dh">Left unchanged ('+unchanged.length+')</h3><div class="opt-dlist">'+escapeHtml(unchanged.join(', '))+'</div>':'')
+    +((r.models||[]).length?'<h3 class="opt-dh">Models</h3><table class="opt-dtable"><thead><tr><th>Model</th><th>Calls</th><th>Tokens in/out</th><th>Time</th><th>Speed</th><th>Stages</th></tr></thead><tbody>'+models+'</tbody></table>':'')
+    +'<h3 class="opt-dh">Run details</h3><div class="opt-dlist">'+escapeHtml(
+      'Modes: '+((r.modes||[]).join(', ')||'-')
+      +' | Intensity: '+r.intensity
+      +(r.timeLimit?' | Time limit: '+optFormatLeft(r.timeLimit):'')
+      +(r.advanced?' | Advanced scan: '+(r.scan?'live':'cached only'):'')
+      +' | Examined '+r.examined+' files'
+      +' | Unchanged: '+(unchanged.length)
+      +' | Scan findings: '+(r.scanFindings||0)
+      +' | Health flags: '+(r.health||0)+' | Duplicates: '+(r.dupes||0))+'</div>';
+}
+function optDebriefMarkdown(r){
+  const L=[];
+  L.push('## Optimise report');
+  L.push('');
+  L.push('- **Result:** '+((r.reason==='completed')?'completed':r.reason));
+  L.push('- **Duration:** '+optFormatLeft(r.durationMs||0));
+  L.push('- **Files improved:** '+r.improved+' / '+r.examined+' examined, '+((r.unchanged||[]).length)+' unchanged');
+  L.push('- **Change size:** +'+r.added+' / -'+r.removed+' characters ('+(r.net>=0?'+':'')+r.net+(r.bytesBefore?', '+(r.net>=0?'+':'')+r.netPct+'% of '+r.bytesBefore+' chars':'' )+')');
+  L.push('- **Tokens:** '+optFmtTok(r.tin)+' in / '+optFmtTok(r.tout)+' out over '+(r.calls||0)+' model calls');
+  if(r.tps>0)L.push('- **Average speed:** '+Math.round(r.tps)+' tok/s');
+  if(r.verifyTotal)L.push('- **Verify:** '+r.verifyPassed+'/'+r.verifyTotal+' passed'+(r.verifyFailed?', '+r.verifyFailed+' failed':''));
+  L.push('- **Findings:** '+(r.scanFindings||0)+' scan, '+(r.health||0)+' health flags, '+(r.dupes||0)+' duplicate names');
+  L.push('- **Modes:** '+((r.modes||[]).join(', ')||'-')+' | **Intensity:** '+r.intensity+(r.timeLimit?' | **Time limit:** '+optFormatLeft(r.timeLimit):''));
+  if(r.fixes&&r.fixes.length){
+    L.push('');
+    L.push('### Files improved');
+    for(const f of r.fixes){
+      const asp=(f.aspects||[]).map(optAspectLabel).join(', ');
+      L.push('- `'+f.p+'` ['+asp+'] +'+(f.added||0)+' -'+(f.removed||0)
+        +' - '+(f.n||'')+(f.verify?(' - verify: '+f.verify):'')
+        +(f.ms?(' - '+optFormatLeft(f.ms)):'')
+        +(f.model?(' - '+f.model):''));
+    }
+  }
+  const uc=r.unchanged||[];
+  if(uc.length){
+    L.push('');
+    L.push('### Left unchanged');
+    for(const p of uc)L.push('- `'+p+'`');
+  }
+  const md=r.models||[];
+  if(md.length){
+    L.push('');
+    L.push('### Models');
+    for(const m of md){
+      const tps=m.ms>0?m.tout/(m.ms/1000):0;
+      L.push('- `'+m.model+'`: '+m.calls+' calls, '+optFmtTok(m.tin)+' in / '+optFmtTok(m.tout)+' out, '+optFormatLeft(m.ms)+(tps>0?', ~'+Math.round(tps)+' tok/s':''));
+    }
+  }
+  return L.join('\n');
+}
+function optShowDebrief(rep){
+  if(rep)optLastDebrief=rep;
+  const m=document.getElementById('opt-debrief-modal');
+  const b=document.getElementById('opt-debrief-body');
+  if(!m||!b)return;
+  const r=optLastDebrief;
+  b.innerHTML=r?optDebriefHtml(r):'<p class="opt-dnote">No optimise run has finished yet.</p>';
+  m.classList.add('open');
+}
+function closeOptDebrief(){const m=document.getElementById('opt-debrief-modal');if(m)m.classList.remove('open')}
+function optCopyDebrief(){
+  if(!optLastDebrief){showToast('Nothing to copy yet','error');return}
+  const text=optDebriefMarkdown(optLastDebrief);
+  const done=()=>showToast('Report copied','success');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>optCopyFallback(text,done));
+  }else optCopyFallback(text,done);
+}
+function optCopyFallback(text,done){
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    const ok=document.execCommand('copy');
+    document.body.removeChild(ta);
+    if(ok)done();else showToast('Copy failed - select the report manually','error');
+  }catch(e){showToast('Copy failed','error')}
 }
 // Execute the FILE_* blocks from one optimiser reply through the real coding
 // pipeline, so validation, versions, approvals and the diff cards all apply
