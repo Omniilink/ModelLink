@@ -6437,6 +6437,11 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         if os.path.isfile(full):
             with open(full, "r", encoding="utf-8", errors="replace") as f:
                 backup = f.read()
+            if backup == req.content:
+                # Byte-identical rewrite: report it as a no-op instead of a
+                # write, so the loop cannot mistake it for progress.
+                return {"status": "ok", "path": req.path, "size": len(req.content),
+                        "backed_up": True, "added": 0, "removed": 0, "noop": True}
             _coding_save_version(_safe_username(user["username"]), req.path, backup)
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
