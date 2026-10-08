@@ -3507,7 +3507,8 @@ async function sendCodingMessage(){
   let sendModel=selectedModel;
   let userContent=cleanText;
   if(cimgs.length){
-    sendModel=resolveVisionModel()||selectedModel;
+    sendModel=resolveVisionModel();
+    if(!sendModel){codingPendingImages=cimgs;renderCodingImgStrip();input.value=rawText;input.style.height='auto';return}
     userContent=[{type:'text',text:cleanText||'Describe these images'}].concat(cimgs.map(u=>({type:'image_url',image_url:{url:u}})));
   }
   codingHistory.push({role:'user',content:userContent});persistCodingChat();
@@ -4232,7 +4233,7 @@ async function processCodingActions(text,msgEl){
   const seenBlocks=new Set();
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'File created'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Written successfully'+(result.path?' · '+escapeHtml(result.path):''):result.error)+'</div>';if(result.ok)refreshCodingTree()}
@@ -5470,7 +5471,8 @@ async function codingRunCmd(command){
   if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
   try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}
 }
-async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');return await r.json()}catch(e){return{auto_create:false,auto_edit:false,auto_command:false}}}
+const CODING_SETTINGS_KEY='omnilink_coding_settings';
+async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved)return saved}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
