@@ -3475,7 +3475,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4235,8 +4235,8 @@ async function processCodingActions(text,msgEl){
     }catch(e){previewErr=e.message}
     if(previewErr){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+(result.ok?'Patched successfully':result.error)+'</div>';if(result.ok)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Patched!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok)refreshCodingTree();return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
@@ -4388,23 +4388,47 @@ let patchMissFails=0;
 // limit — real tasks are sized by the model, not by a fixed number.
 const CODING_DEFAULT_PLAN=6;   // budget until the model declares its plan
 const CODING_MIN_PLAN=6;
-const CODING_MAX_PLAN=60;      // no single plan may exceed this
+const CODING_MAX_PLAN=24;      // no single plan may exceed this
 const CODING_MAX_REPLANS=3;    // how often the plan may be recounted
 const CODING_HARD_MAX_ROUNDS=40; // absolute backstop when no todos exist
+// Absolute ceiling for ONE run. Every recount draws from this, never adds to
+// it, so the loop cannot extend itself indefinitely.
+const CODING_MAX_TOTAL_ROUNDS=32;
+// How many rounds may produce no file change before we call it a stall.
+// Generous on purpose: a few read-only rounds while orienting are normal.
+// The cycle detector is what catches a true loop quickly.
+const CODING_STALL_ROUNDS=6;
 const CODING_MAX_SETBACKS=3;
 const CODING_MAX_CONTINUES=4;   // auto-continue an output-limited file block
 let codingPlanSteps=CODING_DEFAULT_PLAN,codingRounds=0,codingReplans=0;
+// Set only by the recount flow; cleared once consumed. Without it a model
+// could inflate the budget just by mentioning PLAN-STEPS in any reply.
+let codingPlanExtendable=false;
 function scanPlanSteps(text){
-  // Pick up a PLAN-STEPS: N declaration from any assistant turn. The budget
-  // only grows inside a run (never drops below steps already taken), so a
-  // stray smaller number can never wedge the loop.
+  // Pick up a PLAN-STEPS: N declaration. Outside the recount flow the number
+  // is IGNORED for budgeting: a plan is only ever extended deliberately, by
+  // the recount branch in the loop. This is what stopped the ratchet — the old
+  // code took Math.max(current, declared), so the budget could only grow and
+  // the run never ended.
   if(!text)return codingPlanSteps;
   const m=String(text).match(/PLAN-STEPS\s*:\s*(\d{1,3})/i);
   if(!m)return codingPlanSteps;
   let n=parseInt(m[1],10);
   if(!isFinite(n)||n<1)return codingPlanSteps;
   n=Math.max(CODING_MIN_PLAN,Math.min(CODING_MAX_PLAN,n));
-  codingPlanSteps=Math.max(codingPlanSteps,n,codingRounds);
+  if(!codingPlanExtendable)return codingPlanSteps;
+  // Cap the increment, not just the total: asking for 60 gets a fixed
+  // extension, never "everything you asked for".
+  const capped=Math.min(codingPlanSteps+CODING_MIN_PLAN,
+                        CODING_MAX_TOTAL_ROUNDS,codingRounds+1+n);
+  if(capped>codingPlanSteps)codingPlanSteps=capped;
+  return codingPlanSteps;
+}
+// Grant the model a fresh slice of rounds. Called only by the recount flow.
+function extendCodingPlan(){
+  codingPlanExtendable=true;
+  try{scanPlanSteps('PLAN-STEPS: '+(codingPlanSteps+CODING_MIN_PLAN))}catch(e){}
+  codingPlanExtendable=false;
   return codingPlanSteps;
 }
 let codingTodoGen=0;
@@ -4536,6 +4560,10 @@ function harvestCodingResults(){
   // Collect freshly-executed tool outcomes (each block harvested once)
   const divs=[...document.querySelectorAll('#coding-chat .coding-msg-tool:not([data-harvested])')];
   let text='',executed=false;
+  // The distinct ACTIONS this round, for cycle detection. Two files being
+  // re-read alternately (cat a.js / cat b.js / cat a.js / ...) is a cycle the
+  // consecutive-repeat guard cannot see.
+  const actions=[];
   for(const d of divs){
     d.dataset.harvested='1';
     const label=((d.querySelector('.tool-label')||{}).textContent||'action').trim();
@@ -4545,9 +4573,40 @@ function harvestCodingResults(){
     else outcome=((d.lastElementChild||{}).textContent||'').trim().slice(0,500);
     if(!outcome)outcome='(no output)';
     if(!/cancelled|skipped/i.test(outcome))executed=true;
+    // A read-only action can never change the project.
+    const readOnly=/^\s*(Ran|Running)( \(exit \d+\))?:\s*(cat|ls|type|dir|grep|find|head|tail|wc|stat|file|which|where|pwd|echo|node --check)\b/i.test(label);
+    actions.push(readOnly?'R:'+label.replace(/^\s*(Ran|Running)( \(exit \d+\))?:\s*/i,'').slice(0,80):'W:'+label.slice(0,80));
     text+='- '+label+': '+outcome+'\n';
   }
-  return{text,hasExecuted:executed,noops:codingNoopWrites};
+  // Did this round actually change a file? codingWrittenPaths is populated by
+  // a real write/patch and consumed by validateWrittenFiles, so at harvest time
+  // it is exactly this round's successful edits.
+  const wrote=(codingWrittenPaths||[]).length>0;
+  return{text,hasExecuted:executed,noops:codingNoopWrites,actions:actions,wrote:wrote};
+}
+// Detect a repeating CYCLE of rounds that wrote nothing. Works on ROUND
+// signatures (not individual actions) so both "same command twice" and
+// "same two commands alternating" are caught, and a cycle only counts as stuck
+// when no round in it changed a file. This is what the old guard missed: it
+// compared consecutive results only, so A,B,A,B ran forever.
+function codingCycleDetected(sigs,wroteFlags,reps){
+  const n=(sigs||[]).length,r=Math.max(2,reps|0);
+  for(let len=1;len<=3;len++){
+    const need=len*r;
+    if(n<need)continue;
+    const tail=sigs.slice(-len);
+    let same=true;
+    for(let k=1;k<r&&same;k++){
+      const seg=sigs.slice(n-(k+1)*len,n-k*len);
+      for(let i=0;i<len;i++)if(seg[i]!==tail[i]){same=false;break}
+    }
+    if(!same)continue;
+    // Stuck only if nothing in the repeated span wrote a file.
+    const span=wroteFlags.slice(n-need);
+    if(span.some(Boolean))continue;
+    return true;
+  }
+  return false;
 }
 // Detect a reply that is byte-identical (or near-identical) to one the model
 // already sent. The session log shows a small model repeating the same
@@ -4579,6 +4638,12 @@ function codingErrorHint(resultsText){
     hints.push(ref[1]+' is not defined: every node file runs in its own module scope. require() the file that defines it (with module.exports) or keep the code in a single file.');
   if(/Old text not found/i.test(t))
     hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-8 unique lines. Re-read the file first if you have not seen it this session; never rebuild OLD from memory.');
+  // JSX / TypeScript run straight under node is a syntax error you cannot
+  // "fix" by patching the file: node has no JSX transform. The session log
+  // showed a model loop forever patching render(<Foo/>) for exactly this.
+  if(/(Unexpected token\s*'<'|Unexpected token <|Unexpected identifier|Expected ident|Cannot use import statement outside a module)/i.test(t)
+      &&/<[A-Za-z][\w.]*[\s/>]/.test(t))
+    hints.push('This is JSX being run directly by node, which cannot parse JSX (or ESM import syntax without "type":"module"). Do NOT keep patching the tags to fix it. Either: (a) write plain JavaScript with no JSX and no import, run it with node; or (b) if the goal was a browser app, put the code in an .html file and OPEN it in a browser — do not run it with node at all. If the task asked for a single-file HTML app, you should not be creating React components or a src/ folder.');
 // Wrong shell for the environment: the exact failure in the session log —
 // `dir /b` typed into a Linux container. Each branch keys off the failing
 // program's OWN error style, which identifies the shell unambiguously:
@@ -4803,6 +4868,11 @@ async function codingAutoContinue(){
   codingRounds=0;codingReplans=0;
   let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false;
+  // Cross-round history. `roundSigs` is one entry per round (its action list)
+  // and `roundWrote` records whether that round changed a file. Together they
+  // catch the alternating A,B,A,B loop the old consecutive-only guard missed.
+  const roundSigs=[],roundWrote=[];
+  let idleRounds=0;
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const lastAssistantTruncated=()=>{
     const last=codingHistory.length?codingHistory[codingHistory.length-1]:null;
@@ -4823,6 +4893,28 @@ async function codingAutoContinue(){
       if(results.hasExecuted){
         codingRounds++;
         planJustExtended=false;
+        // Cycle guard: a repeating sequence of rounds that wrote NOTHING
+        // (A,A / A,B,A,B / A,B,C,A,B,C) is a stall. This is the loop that
+        // used to run 30+ rounds re-reading files; stop it at the second
+        // repeat instead of waiting for the plan to run out.
+        {
+          const acts=results.actions||[];
+          roundSigs.push(acts.slice().sort().join(' | ')||'(none)');
+          roundWrote.push(!!results.wrote);
+          idleRounds=results.wrote?0:idleRounds+1;
+          if(codingCycleDetected(roundSigs,roundWrote,2)){
+            postCodingAssistant('Stopping to save time: the AI is repeating the same inspection steps without changing any files ('
+              +acts.join(', ').slice(0,160)+').\n\nNo progress is possible from here. The remaining open work is listed above — '
+              +'tell me the exact file and change you want, or say "continue" with a more specific instruction.');
+            break;
+          }
+          // Backstop for non-cyclic idling: many rounds that only read.
+          if(idleRounds>=CODING_STALL_ROUNDS){
+            postCodingAssistant('Stopping: '+idleRounds+' rounds in a row ran without writing any file — the AI is only inspecting, not progressing.'
+              +'\n\nTell it exactly which file and change you want, or say "continue" to resume.');
+            break;
+          }
+        }
         // Every file block this round matched disk byte for byte: nothing was
         // written. Re-running the same edit will not help, so say so loudly
         // instead of letting the loop pay for another identical round.
@@ -4883,11 +4975,13 @@ async function codingAutoContinue(){
           break;
         }
         if(codingRounds>codingPlanSteps&&open.length>0){
-          // The declared plan ran out while work remains: make the model
-          // RECOUNT what it needs instead of hitting a fixed cap.
+          // The declared plan ran out while work remains. Grant ONE bounded
+          // extension and move on. The model's own PLAN-STEPS number is read
+          // but the harness decides the increment, so a model that keeps
+          // "recounting" upward cannot extend the run forever.
           const beforePlan=codingPlanSteps;
           const remainTxt=open.length?('this work is still open:\n- '+open.join('\n- ')):'no todos are open, but the task is not verified yet (nothing written or validated)';
-          if(codingReplans<CODING_MAX_REPLANS){
+          if(codingReplans<CODING_MAX_REPLANS&&codingRounds<CODING_MAX_TOTAL_ROUNDS){
             codingReplans++;
             addCodingSystemMsg('Reached the '+beforePlan+'-step plan with work remaining — asking the AI to recount the steps it needs…');
             codingHistory.push({role:'user',content:'You have used all '+beforePlan+' planned steps and '+remainTxt+'\nCount how many MORE tool rounds it will take to finish, then reply FIRST with a single line: PLAN-STEPS: <TOTAL steps for this whole task> (total, not remaining), followed by the tool blocks for the next step. If the work is genuinely finished, reply with a short summary and no tool blocks.'});
@@ -4897,7 +4991,15 @@ async function codingAutoContinue(){
             codingStream=false;
             persistCodingChat();
             if(pturn.error)break;
-            if(codingPlanSteps>beforePlan){planJustExtended=true;addCodingSystemMsg('Plan extended to '+codingPlanSteps+' steps.');continue}
+            // The budget is extended by the HARNESS, capped at a fixed
+            // increment and by the absolute round ceiling — never by the
+            // number the model asked for.
+            extendCodingPlan();
+            if(codingPlanSteps>beforePlan){
+              planJustExtended=true;
+              addCodingSystemMsg('Plan extended to '+codingPlanSteps+' steps ('+codingReplans+' of '+CODING_MAX_REPLANS+' extensions used).');
+              continue;
+            }
           }
           postCodingAssistant('Stopping after '+codingPlanSteps+' planned steps with work still remaining. Say "continue" and I will recount the remaining steps and pick up where I left off.');
           break;
@@ -5279,7 +5381,12 @@ function applyPatchText(current,oldText,newText){
   if(!hit)return{ok:false,error:patchMissError(current,oldText)};
   const cur=patchTrim(current),old=patchTrim(oldText);
   const nt=patchTrim(newText);
-  return{ok:true,patched:cur.slice(0,hit.start)+nt+cur.slice(hit.end),how:hit.how};
+  const patched=cur.slice(0,hit.start)+nt+cur.slice(hit.end);
+  // OLD and NEW being the same line is the single most common model stall:
+  // it "fixes" the file with the text that was already there. Report it as a
+  // no-op so the loop can tell the difference between an edit and a stall.
+  if(patched===cur)return{ok:true,patched:patched,how:hit.how,noop:true};
+  return{ok:true,patched:patched,how:hit.how};
 }
 // A miss must tell the model WHY, or it retries the identical OLD block.
 // Report the first line of its block and the closest thing in the file.
@@ -5307,7 +5414,7 @@ async function codingPatchFile(path,oldText,newText){
     if(!remote&&!fsHandle){
       const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
       const data=await r.json();
-      if(r.ok){codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+      if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
     }
     let current;
@@ -5315,6 +5422,9 @@ async function codingPatchFile(path,oldText,newText){
     const res=applyPatchText(current,oldText,newText);
     if(!res.ok)return{ok:false,error:res.error};
     const patched=res.patched;
+    // Nothing changed: do NOT write, and do not claim success. Writing the
+    // same bytes back is what made the loop believe "+0 -0" was progress.
+    if(res.noop)return{ok:true,noop:true,added:0,removed:0};
     const dl=diffLineOps(current.split('\n'),patched.split('\n'))||[];
     let a=0,r=0;for(const o of dl){if(o.t==='+')a++;else if(o.t==='-')r++}
     if(remote){
@@ -5324,7 +5434,7 @@ async function codingPatchFile(path,oldText,newText){
       await fsWriteFile(path,patched);
     }
     codingWrittenPaths.push(path);
-    return{ok:true,added:a,removed:r};
+    return{ok:true,added:a,removed:r,noop:!a&&!r};
   }catch(e){return{ok:false,error:e.message}}
 }
 async function codingRunCmd(command){

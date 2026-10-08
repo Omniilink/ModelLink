@@ -6389,6 +6389,13 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
                         "Keep OLD to 3-8 consecutive lines that appear exactly once in "
                         "the file.\nCurrent file starts with:\n" + current[:200]})
         patched = current[:hit[0]] + new + current[hit[1]:]
+        # An OLD/NEW pair that reproduces the current text is a no-op. Writing
+        # it is harmless but reporting "ok" let the coding loop treat a stall as
+        # progress, so say so explicitly and skip the write entirely.
+        if patched == current:
+            return {"status": "ok", "noop": True, "path": req.path,
+                    "size": len(current), "added": 0, "removed": 0,
+                    "how": hit[2]}
         quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
         if quota_err:
             return quota_err
