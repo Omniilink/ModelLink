@@ -585,7 +585,8 @@ a:hover{text-decoration:underline}
 .typing-indicator{display:inline-flex;padding:2px 0;align-items:center}
 .typing-indicator .chat-spinner{width:16px;height:16px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .loading-model{display:inline-flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12.5px}
-.coding-wait{display:inline-flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12.5px}
+.coding-wait{display:inline-flex;align-items:center;gap:8px;color:var(--text-secondary);font-size:12.5px}
+.coding-wait-text{color:var(--text-secondary)}
 .coding-wait .chat-spinner{width:15px;height:15px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .loading-model .chat-spinner{width:15px;height:15px;border:2px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .dl-wrap{padding:4px 2px}
@@ -4979,7 +4980,7 @@ async function streamCodingTurn(messages){
 const contentEl=assistantEl.querySelector('.coding-msg-content');
   let modelWarmed=false;try{modelWarmed=!!(typeof window!=='undefined'&&window._warmedModels&&window._warmedModels[selectedModel])}catch(e){}
   if(isOllamaModel(selectedModel)&&!modelWarmed){try{contentEl.innerHTML=loadingModelHtml()}catch(e){}}
-  else{const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{let w=contentEl.querySelector('.coding-wait-text');if(!w){w=document.createElement('div');w.className='coding-wait-text';w.style.cssText='color:var(--text-muted);font-size:11.5px;margin-top:2px';contentEl.appendChild(w)}w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
+  else{const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{let w=contentEl.querySelector('.coding-wait-text');if(!w){w=document.createElement('div');w.className='coding-wait-text';w.style.cssText='color:var(--text-secondary);font-size:11.5px;margin-top:2px';contentEl.appendChild(w)}w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
   const stopTurnWait=()=>{try{if(contentEl._waitTimer){clearInterval(contentEl._waitTimer);contentEl._waitTimer=null}}catch(e){}};
   codingLiveReset();
   const liveT0=Date.now();
