@@ -3656,6 +3656,18 @@ function inferBlockFileName(code,lang,before,after){
   found.sort((x,y)=>((y.s-x.s)||(y.close-x.close)));
   return found[0].c;
 }
+function isDestructiveWrite(path,content){
+  // A rewrite that deletes the bulk of an existing file is almost never what
+  // was asked (session log: 37KB index.html replaced with 142 chars). Force
+  // those through manual approval even when auto-apply is on. Pure apart
+  // from the read-only size table.
+  try{
+    const sizes=(typeof allCodingFileSizes!=='undefined')?allCodingFileSizes:null;
+    const oldSz=sizes?sizes[path]:undefined;
+    if(typeof oldSz!=='number'||oldSz<=2000)return false;
+    return String(content||'').length<oldSz*0.1;
+  }catch(e){return false}
+}
 function sanitizeCommand(cmd){
   // Mirror of the backend sanitizer: models emit stray wrapping
   // quotes/backticks (e.g. cmd /c dir"), which cmd.exe misreads.
@@ -4292,12 +4304,16 @@ async function processCodingActions(text,msgEl){
      if(contentEl&&hasToolBlocks){const cleaned=stripCodeForChat(cleanCodingProse(text));if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
   const seenBlocks=new Set();
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
-    if(codingSettings.auto_create&&!planMode){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    const destructive=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
+    if(destructive){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
+    if(codingSettings.auto_create&&!planMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
-    if(codingSettings.auto_edit&&!planMode){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
+    if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
+    if(codingSettings.auto_edit&&!planMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
     const path=match[1].trim();
@@ -4324,10 +4340,11 @@ async function processCodingActions(text,msgEl){
     if(previewErr){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
     if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree()};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
-    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok)refreshCodingTree();return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok)refreshCodingTree()}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
+    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';const recordDel=()=>{if(typeof recordCodingVersion==='function')recordCodingVersion(['(deleted) '+path]).catch(()=>{})};
+    ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok){refreshCodingTree();recordDel()}return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree();recordDel()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok){refreshCodingTree();recordDel()}}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
     if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'}
@@ -4418,6 +4435,7 @@ async function processCodingActions(text,msgEl){
         const result=await codingWriteFile(p,code);
         bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
         if(result.ok)refreshCodingTree();
+        if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([p]).catch(()=>{});
       };
       const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
       cb.onclick=()=>{toolDiv.remove()};
@@ -4443,6 +4461,7 @@ async function processCodingActions(text,msgEl){
         const result=await codingWriteFile(p,code);
         bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
         if(result.ok)refreshCodingTree();
+        if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([p]).catch(()=>{});
       };
       const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
       cb.onclick=()=>{toolDiv.remove()};
@@ -4459,6 +4478,8 @@ async function processCodingActions(text,msgEl){
       if(ce&&redacted.trim())ce.innerHTML=renderContent(redacted);
     }
   }
+  const wroteNow=(typeof codingWrittenPaths!=='undefined'&&codingWrittenPaths)?codingWrittenPaths.slice():[];
+  if(wroteNow.length&&typeof recordCodingVersion==='function'){recordCodingVersion(wroteNow).catch(()=>{})}
   return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew||truncFrom>=0,truncated:truncFrom>=0};
 }
 
@@ -4612,10 +4633,13 @@ function codingVersionSummary(changes){
   if(!paragraph)paragraph='Updated '+changes.slice(0,8).join(', ');
   return {short:short,paragraph:paragraph};
 }
-async function recordCodingVersion(){
-  const changes=codingWrittenPaths?codingWrittenPaths.slice():[];
-  if(!changes.length){codingWrittenPaths=[];return}
-  if(!codingIsServerProject()){codingWrittenPaths=[];return}
+async function recordCodingVersion(changes){
+  // Snapshot this round's code state. Never clears codingWrittenPaths (the
+  // validator owns that); the server skips the write when nothing changed,
+  // so callers can record liberally after every message.
+  changes=((changes||codingWrittenPaths)||[]).slice();
+  if(!changes.length)return;
+  if(!codingIsServerProject())return;
   try{
     const sum=codingVersionSummary(changes);
     const chat=codingHistory.slice(-60).map(m=>{
@@ -4624,10 +4648,9 @@ async function recordCodingVersion(){
     });
     const r=await authFetch(API+'/api/coding/project-versions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({short:sum.short,paragraph:sum.paragraph,chat})});
     const d=await r.json().catch(()=>({}));
-    if(r.ok&&d&&d.short)showToast('Saved version: '+d.short,'success');
+    if(r.ok&&d&&!d.skipped&&d.short)showToast('Saved version: '+d.short,'success');
     else if(d&&d.error)showToast(d.error,'error');
   }catch(e){}
-  finally{codingWrittenPaths=[]}
 }
 
 // ---- Project versions UI -------------------------------------------------
@@ -5107,6 +5130,7 @@ function offerCreateMissingFiles(missing){
     }
     refreshCodingTree();
     bar.innerHTML='<span style="color:'+(failed.length?'var(--warning)':'var(--success)')+';font-size:11px">Created '+ok+' of '+missing.length+(failed.length?' (failed: '+failed.join(', ')+')':'')+'</span>';
+    if(ok>0&&typeof recordCodingVersion==='function')recordCodingVersion(missing.slice()).catch(()=>{});
   };
   const db=document.createElement('button');db.className='deny';db.textContent='Skip';
   db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
@@ -5475,7 +5499,6 @@ async function codingAutoContinue(){
   document.getElementById('coding-send-btn').disabled=false;
   settleInputAfterSend('coding-input');
   await maybeOfferPendingFiles().catch(()=>{});
-  if(typeof recordCodingVersion==='function')await recordCodingVersion().catch(()=>{});
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
 

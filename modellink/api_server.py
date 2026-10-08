@@ -1420,7 +1420,9 @@ def _project_version_prune(user_id: str, folder: str, keep: int) -> None:
 
 
 def _project_version_save(user_id: str, folder: str, short: str, paragraph: str, chat=None):
-    """Snapshot the project now. Returns (record, compressed_bytes)."""
+    """Snapshot the project now. Returns (record, compressed_bytes) — or
+    (None, 0) when the snapshot is identical to the newest version, so
+    liberal record-after-every-message callers never spam the store."""
     cur = _project_snapshot(folder)
     existing = _project_version_list(user_id, folder)
     prev = {}
@@ -1428,6 +1430,8 @@ def _project_version_save(user_id: str, folder: str, short: str, paragraph: str,
         rec0 = _project_version_load(user_id, folder, existing[0]["id"])
         if rec0:
             prev = rec0.get("files", {}) or {}
+        if prev == cur:
+            return None, 0
     stats, tot_add, tot_rem = _project_version_stats(prev, cur)
     ts = time.time()
     vid = f"{int(ts * 1000):013d}-{secrets.token_hex(3)}"
@@ -6734,6 +6738,11 @@ async def coding_project_version_create(request: Request, req: ProjectVersionCre
         rec, size = _project_version_save(uid, folder, req.short, req.paragraph, req.chat)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    if rec is None:
+        latest = _project_version_list(uid, folder)
+        return {"status": "ok", "skipped": True,
+                "id": latest[0]["id"] if latest else None,
+                "short": latest[0].get("short", "") if latest else ""}
     qerr = _check_quota(user, uid, size)
     if qerr:
         try:
