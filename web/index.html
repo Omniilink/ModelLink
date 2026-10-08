@@ -5472,7 +5472,7 @@ async function codingRunCmd(command){
   try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}
 }
 const CODING_SETTINGS_KEY='omnilink_coding_settings';
-async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved)return saved}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}
+async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved)return saved}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
