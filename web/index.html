@@ -4980,7 +4980,7 @@ async function streamCodingTurn(messages){
 const contentEl=assistantEl.querySelector('.coding-msg-content');
   let modelWarmed=false;try{modelWarmed=!!(typeof window!=='undefined'&&window._warmedModels&&window._warmedModels[selectedModel])}catch(e){}
   if(isOllamaModel(selectedModel)&&!modelWarmed){try{contentEl.innerHTML=loadingModelHtml()}catch(e){}}
-  else{const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{let w=contentEl.querySelector('.coding-wait-text');if(!w){w=document.createElement('div');w.className='coding-wait-text';w.style.cssText='color:var(--text-secondary);font-size:11.5px;margin-top:2px';contentEl.appendChild(w)}w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
+  else{contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
   const stopTurnWait=()=>{try{if(contentEl._waitTimer){clearInterval(contentEl._waitTimer);contentEl._waitTimer=null}}catch(e){}};
   codingLiveReset();
   const liveT0=Date.now();
