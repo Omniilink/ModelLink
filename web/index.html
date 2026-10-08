@@ -1578,6 +1578,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
+          <button onclick="openVersionsModal()" title="Browse and restore earlier project versions (files + chat)">Versions</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
           <button onclick="openOptimiseMenu(event)" id="coding-optimise-btn" title="Optimise this project: audit, speed up, fix errors and add missing features">Optimise</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
@@ -2397,6 +2398,14 @@ function renderSettings(){
       const sw=document.createElement('div');sw.className='toggle-switch'+(cod[t.key]?' on':'');sw.onclick=()=>{sw.classList.toggle('on');authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[t.key]:sw.classList.contains('on')})})};
       row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
     });
+    const vr=document.createElement('div');vr.className='toggle-row';vr.style.alignItems='center';
+    vr.innerHTML='<div><div class="toggle-label">Project versions to keep</div><div class="toggle-desc">How many project backups to save in cloud storage before the oldest is deleted (1–50). Each time the AI changes code a version is saved.</div></div>';
+    const vwi=document.createElement('input');vwi.type='number';vwi.min='1';vwi.max='50';vwi.step='1';vwi.id='settings-versions-keep';
+    vwi.value=String(cod.versions_to_keep||5);
+    vwi.style.cssText='width:74px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:6px 8px;color:var(--text-primary);font-size:13px;font-family:var(--mono);outline:none;text-align:center;flex-shrink:0';
+    const vw=document.createElement('div');vw.style.cssText='display:flex;align-items:center;gap:8px;flex-shrink:0';vw.appendChild(vwi);
+    vwi.onchange=()=>{let n=parseInt(vwi.value,10);if(isNaN(n))n=5;n=Math.max(1,Math.min(50,n));vwi.value=n;authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({versions_to_keep:n})}).then(()=>showToast('Saved — keeping '+n+' version'+(n===1?'':'s'),'success'))};
+    vr.appendChild(vw);cs.appendChild(vr);
     const pr=document.createElement('div');pr.style.marginTop='16px';pr.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">System Prompt</div>';
     const pa=document.createElement('textarea');pa.style.cssText='width:100%;min-height:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6';pa.value=cod.system_prompt||'';pa.id='coding-system-prompt';
     const pa2=document.createElement('div');pa2.style.cssText='display:flex;gap:8px;margin-top:8px';
@@ -3511,7 +3520,7 @@ async function sendCodingMessage(){
     if(!sendModel){codingPendingImages=cimgs;renderCodingImgStrip();input.value=rawText;input.style.height='auto';return}
     userContent=[{type:'text',text:cleanText||'Describe these images'}].concat(cimgs.map(u=>({type:'image_url',image_url:{url:u}})));
   }
-  codingHistory.push({role:'user',content:userContent});persistCodingChat();
+  const userHist={role:'user',content:userContent};codingHistory.push(userHist);userMsg._histRef=userHist;persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   codingLiveReset();
   let liveT0=Date.now();  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
@@ -3530,7 +3539,7 @@ async function sendCodingMessage(){
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
@@ -4486,6 +4495,209 @@ function persistCodingChat(){
     if(codingIsServerProject()){try{authFetch(API+'/api/coding/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history})}).catch(()=>{})}catch(e){}}
   }catch(e){}
 }
+// ---- Right-click delete on chat + coding messages ------------------------
+function closeMsgCtx(){const m=document.getElementById('msg-ctx-menu');if(m)m.remove()}
+function showMsgCtx(x,y,items){
+  closeMsgCtx();
+  const m=document.createElement('div');m.id='msg-ctx-menu';m.className='ft-context-menu';
+  items.forEach(it=>{const b=document.createElement('button');b.className='ft-context-item';b.textContent=it.label;if(it.danger)b.style.color='var(--error)';b.onclick=e=>{e.stopPropagation();closeMsgCtx();it.fn()};m.appendChild(b)});
+  document.body.appendChild(m);
+  m.style.left=Math.min(x,Math.max(8,window.innerWidth-170))+'px';
+  m.style.top=Math.min(y,Math.max(8,window.innerHeight-120))+'px';
+  setTimeout(()=>document.addEventListener('click',closeMsgCtx,{once:true}),0);
+}
+function deleteMessageElement(el){
+  if(!el)return;
+  if(el.classList.contains('coding-msg')){
+    if(el._histRef){const i=codingHistory.indexOf(el._histRef);if(i>=0)codingHistory.splice(i,1)}
+    el.remove();persistCodingChat();
+    showToast('Message deleted','info');
+    return;
+  }
+  const idx=parseInt(el.dataset.msgIndex);
+  if(!isNaN(idx)&&idx>=0&&idx<chatHistory.length)chatHistory.splice(idx,1);
+  el.remove();
+  let n=0;document.querySelectorAll('#chat-area .message').forEach(m=>{m.dataset.msgIndex=n++;});
+  messageCounter=n;
+  saveCurrentChat();
+  showToast('Message deleted','info');
+}
+document.addEventListener('contextmenu',e=>{
+  const t=e.target;
+  const target=t&&t.closest?(t.closest('#coding-chat .coding-msg')||t.closest('#chat-area .message')):null;
+  if(!target)return;
+  e.preventDefault();
+  showMsgCtx(e.clientX,e.clientY,[{label:'Delete message',danger:true,fn:()=>deleteMessageElement(target)}]);
+});
+
+// ---- Project versions: AI summary + record -------------------------------
+function codingLastAssistantText(){
+  for(let i=codingHistory.length-1;i>=0;i--){const m=codingHistory[i];
+    if(m&&m.role==='assistant'&&typeof m.content==='string'&&m.content.trim())return m.content}
+  return '';
+}
+function codingVersionSummary(changes){
+  changes=changes||[];
+  const txt=codingLastAssistantText();
+  let short='',paragraph='';
+  const sm=txt.match(/CHANGE_SUMMARY:\s*(.+)/i);
+  const pd=txt.match(/CHANGE_DETAIL:\s*([\s\S]+)/i);
+  if(sm)short=sm[1].trim().replace(/\s+/g,' ').slice(0,140);
+  if(pd)paragraph=pd[1].trim().slice(0,1200);
+  if(!paragraph){
+    let prose='';
+    try{prose=(cleanCodingProse(txt)||'').replace(/```[\s\S]*?```/g,'')}catch(e){prose=''}
+    prose=prose.replace(/\s+/g,' ').trim();
+    if(prose)paragraph=prose.slice(0,1000);
+  }
+  if(!short){
+    const first=(paragraph.split(/(?<=[.!?])\s/)[0]||'').trim();
+    short=first.slice(0,140);
+  }
+  if(!short){const n=changes.length;short='Changed '+n+' file'+(n===1?'':'s')}
+  if(!paragraph)paragraph='Updated '+changes.slice(0,8).join(', ');
+  return {short:short,paragraph:paragraph};
+}
+async function recordCodingVersion(){
+  const changes=codingWrittenPaths?codingWrittenPaths.slice():[];
+  if(!changes.length){codingWrittenPaths=[];return}
+  if(!codingIsServerProject()){codingWrittenPaths=[];return}
+  try{
+    const sum=codingVersionSummary(changes);
+    const chat=codingHistory.slice(-60).map(m=>{
+      const content=(typeof m.content==='string'&&m.content.length>4000)?m.content.slice(0,4000)+'…':m.content;
+      const o={role:m.role,content:content};if(m.stats)o.stats=m.stats;return o;
+    });
+    const r=await authFetch(API+'/api/coding/project-versions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({short:sum.short,paragraph:sum.paragraph,chat})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&d&&d.short)showToast('Saved version: '+d.short,'success');
+    else if(d&&d.error)showToast(d.error,'error');
+  }catch(e){}
+  finally{codingWrittenPaths=[]}
+}
+
+// ---- Project versions UI -------------------------------------------------
+function vEsc(s){return escapeHtml(String(s==null?'':s))}
+function vDate(ts){try{return new Date((ts||0)*1000).toLocaleString()}catch(e){return''}}
+function vDelta(a,r){return '<span style="color:#34c77b;font-variant-numeric:tabular-nums">+'+Math.round(a||0)+'</span> <span style="color:#ff8f8f;font-variant-numeric:tabular-nums">-'+Math.round(r||0)+'</span>'}
+function versionsModal(){return document.getElementById('versions-modal')}
+function closeVersionsModal(){const ov=versionsModal();if(ov)ov.remove()}
+function ensureVersionsModal(){
+  let ov=versionsModal();
+  if(ov)return ov;
+  ov=document.createElement('div');ov.id='versions-modal';ov.className='modal-overlay open';
+  ov.innerHTML='<div class="modal" style="max-width:780px;width:94vw"><div class="modal-header"><h2 id="versions-title">Project versions</h2><button class="modal-close" id="versions-close">&times;</button></div><div class="modal-body" id="versions-body" style="max-height:72vh;overflow:auto"></div></div>';
+  ov.addEventListener('click',e=>{if(e.target===ov)closeVersionsModal()});
+  document.body.appendChild(ov);
+  ov.querySelector('#versions-close').onclick=closeVersionsModal;
+  return ov;
+}
+let versionsList=[];
+async function openVersionsModal(){
+  const ov=ensureVersionsModal();
+  const body=ov.querySelector('#versions-body');
+  ov.querySelector('#versions-title').textContent='Project versions';
+  body.innerHTML='<div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions');
+    const d=await r.json();
+    if(!d||!d.available){body.innerHTML='<div style="padding:22px;color:var(--text-muted);font-size:13px">'+vEsc((d&&d.reason)||'Versions are available for cloud projects.')+'</div>';return}
+    versionsList=d.versions||[];
+    renderVersionsList(d.keep||5,d.max||50);
+  }catch(e){body.innerHTML='<div style="padding:22px;color:var(--error);font-size:13px">'+vEsc(e.message)+'</div>'}
+}
+function renderVersionsList(keep,max){
+  const body=document.querySelector('#versions-modal #versions-body');
+  document.querySelector('#versions-modal #versions-title').textContent='Project versions';
+  if(!versionsList.length){
+    body.innerHTML='<div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px">No versions yet. Each time the AI changes code, a version is saved here automatically.</div>';
+    return;
+  }
+  let h='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11.5px;color:var(--text-muted)">'
+    +'<span>'+versionsList.length+' saved · keep '+keep+' of '+max+'</span>'
+    +'<div style="flex:1"></div><button class="btn btn-ghost" id="versions-refresh" style="font-size:11px;padding:4px 10px">Refresh</button></div>';
+  h+='<div id="versions-list">';
+  versionsList.forEach(v=>{
+    h+='<div class="version-row" data-id="'+vEsc(v.id)+'" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:7px;cursor:pointer;background:var(--bg-tertiary)">'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+vEsc(v.short||'Version')+'</div>'
+      +'<div style="font-size:11px;color:var(--text-muted);margin-top:2px">'+vEsc(vDate(v.ts))+' · '+v.files+' file'+(v.files===1?'':'s')+'</div>'
+      +'</div><div style="font-size:11.5px;white-space:nowrap">'+vDelta(v.added,v.removed)+'</div>'
+      +'<div style="color:var(--text-muted)">›</div></div>';
+  });
+  h+='</div>';
+  body.innerHTML=h;
+  const rf=body.querySelector('#versions-refresh');if(rf)rf.onclick=()=>openVersionsModal();
+  body.querySelectorAll('.version-row').forEach(row=>{
+    row.onmouseenter=()=>row.style.background='var(--bg-hover)';
+    row.onmouseleave=()=>row.style.background='var(--bg-tertiary)';
+    row.onclick=()=>openVersionDetail(row.dataset.id);
+  });
+}
+async function openVersionDetail(id){
+  const ov=ensureVersionsModal();
+  const body=ov.querySelector('#versions-body');
+  ov.querySelector('#versions-title').textContent='Version';
+  body.innerHTML='<div style="padding:26px;text-align:center;color:var(--text-muted);font-size:13px">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions/detail?id='+encodeURIComponent(id));
+    const d=await r.json();
+    if(!r.ok){body.innerHTML='<div style="padding:22px;color:var(--error);font-size:13px">'+vEsc(d.error||'Not found')+'</div>';return}
+    renderVersionDetail(d);
+  }catch(e){body.innerHTML='<div style="padding:22px;color:var(--error);font-size:13px">'+vEsc(e.message)+'</div>'}
+}
+function renderVersionDetail(d){
+  const body=document.querySelector('#versions-modal #versions-body');
+  document.querySelector('#versions-modal #versions-title').textContent='Version';
+  const stats=(d.stats||[]).slice().sort((a,b)=>a.path.localeCompare(b.path));
+  let h='<div style="font-size:14px;color:var(--text-primary);font-weight:600;margin-bottom:4px">'+vEsc(d.short||'Version')+'</div>'
+    +'<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px">'+vEsc(vDate(d.ts))+' · '+d.files+' file'+(d.files===1?'':'s')+' · '+vDelta(d.added,d.removed)+'</div>';
+  if(d.paragraph)h+='<div style="font-size:12.5px;color:var(--text-secondary);line-height:1.6;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:14px;white-space:pre-wrap">'+vEsc(d.paragraph)+'</div>';
+  h+='<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">'
+    +'<button class="btn btn-primary" id="ver-restore" style="font-size:12px;padding:6px 14px">Restore this version</button>'
+    +'<button class="btn btn-ghost" id="ver-delete" style="font-size:12px;padding:6px 14px;color:var(--error)">Delete</button>'
+    +'<div style="flex:1"></div>'
+    +'<button class="btn btn-ghost" id="ver-back" style="font-size:12px;padding:6px 14px">Back to list</button></div>';
+  h+='<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Changed files</div>';
+  if(!stats.length)h+='<div style="font-size:12px;color:var(--text-muted)">No file differences recorded.</div>';
+  else{
+    h+='<div style="font-family:var(--mono);font-size:11.5px">';
+    stats.forEach(s=>{
+      const badge=s.status==='added'?'<span style="color:var(--accent-light)">new</span>':(s.status==='deleted'?'<span style="color:var(--error)">deleted</span>':'');
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05)">'
+        +'<span style="flex:1;min-width:0;word-break:break-all;color:var(--accent-light)">'+vEsc(s.path)+'</span>'
+        +badge+'<span style="white-space:nowrap">'+vDelta(s.added,s.removed)+'</span></div>';
+    });
+    h+='</div>';
+  }
+  body.innerHTML=h;
+  body.querySelector('#ver-back').onclick=()=>openVersionsModal();
+  body.querySelector('#ver-restore').onclick=()=>restoreVersion(d.id);
+  body.querySelector('#ver-delete').onclick=()=>deleteVersion(d.id);
+}
+async function restoreVersion(id){
+  if(!(await appConfirm('Restore this version? The project files AND the coding chat will revert to this point. The current state is saved as a new version first.')))return;
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    const d=await r.json();
+    if(!r.ok){showToast(d.error||'Restore failed','error');return}
+    closeVersionsModal();
+    showToast('Restored: '+d.written+' file(s), chat reverted','success');
+    try{await restoreCodingChat()}catch(e){}
+    try{await refreshCodingTree()}catch(e){}
+  }catch(e){showToast('Restore failed: '+e.message,'error')}
+}
+async function deleteVersion(id){
+  if(!(await appConfirm('Delete this version? This frees cloud storage and cannot be undone.')))return;
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions?id='+encodeURIComponent(id),{method:'DELETE'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast((d&&d.error)||'Delete failed','error');return}
+    showToast('Version deleted','success');
+    openVersionsModal();
+  }catch(e){showToast('Delete failed: '+e.message,'error')}
+}
+
 function appendCodingHistoryMsg(m){
   const chat=document.getElementById('coding-chat');
   if(m.role==='user'){
@@ -4496,10 +4708,11 @@ function appendCodingHistoryMsg(m){
     // that straight to textContent stringified the objects, so a restored
     // vision message showed "[object Object],[object Object]".
     el.querySelector('.coding-msg-content').textContent=msgTextContent(m.content);
-    chat.appendChild(el);return;
+    el._histRef=m;chat.appendChild(el);return;
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
+  el._histRef=m;
    el.querySelector('.coding-msg-content').innerHTML=renderContent(stripCodeForChat(cleanCodingProse((m.content||'').replace(/```(\w*)\n[\s\S]*?```/g,''))));
   // Re-attach the pinned +/- line this turn recorded, so a reloaded or
   // re-synced chat looks exactly like it did when it was live.
@@ -4557,7 +4770,8 @@ function postCodingAssistant(text){
   el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
   el.querySelector('.coding-msg-content').innerHTML=renderContent(text);
   chat.appendChild(el);chat.scrollTop=chat.scrollHeight;
-  codingHistory.push({role:'assistant',content:text});persistCodingChat();
+  const hist={role:'assistant',content:text};el._histRef=hist;
+  codingHistory.push(hist);persistCodingChat();
 }
 function reportCodingLoopCrash(e){try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
 async function getCodingSysPrompt(){try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}}
@@ -5202,6 +5416,7 @@ async function codingAutoContinue(){
   document.getElementById('coding-send-btn').disabled=false;
   settleInputAfterSend('coding-input');
   await maybeOfferPendingFiles().catch(()=>{});
+  if(typeof recordCodingVersion==='function')await recordCodingVersion().catch(()=>{});
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
 

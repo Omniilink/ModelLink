@@ -17,6 +17,7 @@ import tempfile
 import tarfile
 import zipfile
 import threading
+import gzip
 import collections
 
 
@@ -1300,6 +1301,166 @@ def _coding_save_version(user_id: str, path: str, content: str) -> None:
     except Exception:
         pass
 
+
+# ---- Project-wide versions: a whole-project snapshot (files + chat) taken
+# after a coding turn that changed code, named by the AI's own summary. Stored
+# gzipped under user_data/<user>/project_versions/, so it counts against the
+# cloud quota. Restoring reverts the files AND the coding chat log.
+_PROJECT_VERSION_MAX_KEEP = 50
+_PROJECT_VERSION_DEFAULT_KEEP = 5
+_PROJECT_VERSION_MAX_FILE_BYTES = 512 * 1024
+_PROJECT_VERSION_SKIP_DIRS = {
+    "node_modules", "__pycache__", ".git", ".hg", ".svn", ".venv", "venv",
+    "env", ".next", ".nuxt", ".turbo", ".cache", ".pytest_cache",
+    ".mypy_cache", "dist", "build", "out", ".omniilink", "target", "vendor",
+    "coverage", ".idea", ".vscode", "bower_components", ".eggs", ".gradle",
+}
+
+
+def _project_versions_dir(user_id: str, folder: str) -> str:
+    import hashlib
+    key = hashlib.sha1(os.path.abspath(folder or "").encode("utf-8", "replace")).hexdigest()[:24]
+    return os.path.join(_user_data_dir(user_id), "project_versions", key)
+
+
+def _project_snapshot(folder: str) -> dict:
+    """{relpath: text} for every text file, skipping heavy dirs and binaries."""
+    out = {}
+    try:
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs
+                       if d not in _PROJECT_VERSION_SKIP_DIRS and not d.startswith(".git")]
+            for name in files:
+                full = os.path.join(root, name)
+                try:
+                    if os.path.getsize(full) > _PROJECT_VERSION_MAX_FILE_BYTES:
+                        continue
+                    with open(full, "rb") as f:
+                        raw = f.read()
+                    if b"\x00" in raw[:8000]:
+                        continue
+                    out[os.path.relpath(full, folder).replace("\\", "/")] = \
+                        raw.decode("utf-8", "replace")
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
+def _project_version_stats(prev: dict, cur: dict) -> tuple:
+    """Per-file character additions/removals vs the previous snapshot."""
+    import difflib
+    paths = sorted(set(prev) | set(cur))
+    stats = []
+    tot_add = tot_rem = 0
+    for p in paths:
+        a = prev.get(p, "")
+        b = cur.get(p, "")
+        if a == b:
+            continue
+        dl = list(difflib.unified_diff(a.splitlines(), b.splitlines(), lineterm=""))
+        added = sum(len(l) for l in dl if l.startswith("+") and not l.startswith("+++"))
+        removed = sum(len(l) for l in dl if l.startswith("-") and not l.startswith("---"))
+        status = "added" if p not in prev else ("deleted" if p not in cur else "modified")
+        stats.append({"path": p, "added": added, "removed": removed, "status": status})
+        tot_add += added
+        tot_rem += removed
+    return stats, tot_add, tot_rem
+
+
+def _project_version_load(user_id: str, folder: str, vid: str):
+    try:
+        p = os.path.join(_project_versions_dir(user_id, folder),
+                         os.path.basename(vid or "") + ".json.gz")
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _project_version_list(user_id: str, folder: str) -> list:
+    out = []
+    d = _project_versions_dir(user_id, folder)
+    try:
+        for name in os.listdir(d):
+            if not name.endswith(".json.gz"):
+                continue
+            try:
+                with gzip.open(os.path.join(d, name), "rt", encoding="utf-8") as f:
+                    rec = json.load(f)
+                out.append({
+                    "id": rec.get("id", name[:-8]),
+                    "ts": rec.get("ts", 0),
+                    "short": rec.get("short", ""),
+                    "paragraph": rec.get("paragraph", ""),
+                    "files": len(rec.get("files", {})),
+                    "added": rec.get("added", 0),
+                    "removed": rec.get("removed", 0),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    out.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return out
+
+
+def _project_version_prune(user_id: str, folder: str, keep: int) -> None:
+    d = _project_versions_dir(user_id, folder)
+    try:
+        names = sorted((n for n in os.listdir(d) if n.endswith(".json.gz")), reverse=True)
+    except Exception:
+        return
+    for n in names[max(1, int(keep)):]:
+        try:
+            os.remove(os.path.join(d, n))
+        except OSError:
+            pass
+
+
+def _project_version_save(user_id: str, folder: str, short: str, paragraph: str, chat=None):
+    """Snapshot the project now. Returns (record, compressed_bytes)."""
+    cur = _project_snapshot(folder)
+    existing = _project_version_list(user_id, folder)
+    prev = {}
+    if existing:
+        rec0 = _project_version_load(user_id, folder, existing[0]["id"])
+        if rec0:
+            prev = rec0.get("files", {}) or {}
+    stats, tot_add, tot_rem = _project_version_stats(prev, cur)
+    ts = time.time()
+    vid = f"{int(ts * 1000):013d}-{secrets.token_hex(3)}"
+    rec = {
+        "id": vid,
+        "ts": ts,
+        "short": (short or "").strip()[:200] or "Code changed",
+        "paragraph": (paragraph or "").strip()[:2000],
+        "files": cur,
+        "stats": stats,
+        "added": tot_add,
+        "removed": tot_rem,
+        "chat": chat if isinstance(chat, list) else [],
+        "project": os.path.basename(os.path.normpath(folder)),
+    }
+    d = _project_versions_dir(user_id, folder)
+    os.makedirs(d, exist_ok=True)
+    raw = json.dumps(rec, ensure_ascii=False).encode("utf-8")
+    blob = gzip.compress(raw, compresslevel=6)
+    with open(os.path.join(d, vid + ".json.gz"), "wb") as f:
+        f.write(blob)
+    return rec, len(blob)
+
+
+def _project_versions_keep(user_id: str) -> int:
+    try:
+        st = _get_coding_state(user_id)
+        k = int(st.get("settings", {}).get("versions_to_keep", _PROJECT_VERSION_DEFAULT_KEEP))
+    except (TypeError, ValueError):
+        k = _PROJECT_VERSION_DEFAULT_KEEP
+    return max(1, min(_PROJECT_VERSION_MAX_KEEP, k))
+
+
 def _user_prefs_path(user_id: str) -> str:
     return os.path.join(_user_data_dir(user_id), "prefs.json")
 
@@ -1424,6 +1585,7 @@ def _get_coding_state(user_id: str) -> dict:
             "auto_command": False,
             "auto_attach": False,
             "plan_mode": False,
+            "versions_to_keep": 5,
             "max_file_size": 100000,
             "system_prompt": DEFAULT_CODING_PROMPT
         })
@@ -1658,6 +1820,14 @@ class CodingRunCommand(BaseModel):
 class CodingFileRestore(BaseModel):
     path: str
     ts: float
+
+class ProjectVersionCreate(BaseModel):
+    short: str = ""
+    paragraph: str = ""
+    chat: list = []
+
+class ProjectVersionId(BaseModel):
+    id: str
 
 class CodingGitCommit(BaseModel):
     message: str
@@ -6518,6 +6688,165 @@ async def coding_file_restore(request: Request, req: CodingFileRestore):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+def _project_versions_folder(user, folder):
+    """None when versioning is available; else a JSONResponse explaining why not."""
+    if _folder_access_error(user, folder):
+        return JSONResponse(status_code=400, content={
+            "error": "Open a cloud project to use project versions."})
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No project is open."})
+    return None
+
+
+@app.get("/api/coding/project-versions")
+async def coding_project_versions(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    if folder and os.path.isdir(folder) and not _folder_access_error(user, folder):
+        return {"available": True, "keep": _project_versions_keep(uid),
+                "max": _PROJECT_VERSION_MAX_KEEP,
+                "versions": _project_version_list(uid, folder)}
+    return {"available": False, "keep": _project_versions_keep(uid),
+            "max": _PROJECT_VERSION_MAX_KEEP, "versions": [],
+            "reason": "Versions are available for Omniilink cloud projects."}
+
+
+@app.post("/api/coding/project-versions")
+async def coding_project_version_create(request: Request, req: ProjectVersionCreate):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    bad = _project_versions_folder(user, folder)
+    if bad:
+        return bad
+    try:
+        rec, size = _project_version_save(uid, folder, req.short, req.paragraph, req.chat)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    qerr = _check_quota(user, uid, size)
+    if qerr:
+        try:
+            os.remove(os.path.join(_project_versions_dir(uid, folder), rec["id"] + ".json.gz"))
+        except OSError:
+            pass
+        return JSONResponse(status_code=413, content={
+            "error": "Not enough cloud storage for another version. Delete old versions or free space."})
+    _project_version_prune(uid, folder, _project_versions_keep(uid))
+    logger.info(f"[VERSIONS] Saved version {rec['id']} ({size} bytes) project={rec['project']}")
+    return {"status": "ok", "id": rec["id"], "short": rec["short"],
+            "files": len(rec["files"]), "added": rec["added"], "removed": rec["removed"]}
+
+
+@app.get("/api/coding/project-versions/detail")
+async def coding_project_version_detail(request: Request, id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    bad = _project_versions_folder(user, folder)
+    if bad:
+        return bad
+    rec = _project_version_load(uid, folder, id)
+    if not rec:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    return {"id": rec.get("id"), "ts": rec.get("ts"), "short": rec.get("short"),
+            "paragraph": rec.get("paragraph"), "project": rec.get("project"),
+            "added": rec.get("added", 0), "removed": rec.get("removed", 0),
+            "stats": rec.get("stats", []), "files": len(rec.get("files", {})),
+            "chat_count": len(rec.get("chat", []) or [])}
+
+
+@app.delete("/api/coding/project-versions")
+async def coding_project_version_delete(request: Request, id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    bad = _project_versions_folder(user, folder)
+    if bad:
+        return bad
+    p = os.path.join(_project_versions_dir(uid, folder),
+                     os.path.basename(id or "") + ".json.gz")
+    if not os.path.isfile(p):
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    try:
+        os.remove(p)
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok"}
+
+
+@app.post("/api/coding/project-versions/restore")
+async def coding_project_version_restore(request: Request, req: ProjectVersionId):
+    """Revert the project files AND the coding chat to a saved version. The
+    current state is snapshotted first, so restoring is itself undoable."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    bad = _project_versions_folder(user, folder)
+    if bad:
+        return bad
+    rec = _project_version_load(uid, folder, req.id)
+    if not rec:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    try:
+        _project_version_save(uid, folder, "Before restore",
+                              "Automatic snapshot taken just before restoring an earlier version.", [])
+    except Exception:
+        pass
+    want = rec.get("files", {}) or {}
+    now = _project_snapshot(folder)
+    written = deleted = 0
+    for p, content in want.items():
+        if _bad_path(p):
+            continue
+        full = os.path.join(folder, p)
+        if not _is_within(folder, full):
+            continue
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+            written += 1
+        except Exception:
+            pass
+    for p in now:
+        if p in want or _bad_path(p):
+            continue
+        full = os.path.join(folder, p)
+        if not _is_within(folder, full):
+            continue
+        try:
+            os.remove(full)
+            deleted += 1
+        except OSError:
+            pass
+    chat = rec.get("chat") or []
+    if chat:
+        try:
+            cpath = os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+            os.makedirs(os.path.dirname(cpath), exist_ok=True)
+            tmp = cpath + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"updated": time.time(), "history": chat}, f)
+            os.replace(tmp, cpath)
+        except Exception:
+            pass
+    _project_version_prune(uid, folder, _project_versions_keep(uid))
+    logger.info(f"[VERSIONS] Restored {req.id}: {written} written, {deleted} deleted")
+    return {"status": "ok", "written": written, "deleted": deleted, "chat": chat}
+
+
 @app.delete("/api/coding/file-delete")
 async def coding_file_delete(request: Request, path: str):
     user, err = _require_auth(request)
@@ -8068,8 +8397,14 @@ async def coding_update_settings(request: Request):
     if jerr:
         return jerr
     for k, v in body.items():
-        if k in coding_state["settings"]:
-            coding_state["settings"][k] = v
+        if k not in coding_state["settings"]:
+            continue
+        if k == "versions_to_keep":
+            try:
+                v = max(1, min(_PROJECT_VERSION_MAX_KEEP, int(v)))
+            except (TypeError, ValueError):
+                continue
+        coding_state["settings"][k] = v
     _save_coding_settings(_safe_username(user["username"]), coding_state["settings"])
     return {"status": "ok", "settings": coding_state["settings"]}
 
