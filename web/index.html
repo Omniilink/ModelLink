@@ -3138,7 +3138,7 @@ function codingDefaultPrompt(kind){
   // Built-in prompt when nothing custom is saved. Mirrors the Windows
   // default, with a Linux twin for container execution.
   const blocks='You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nFILE_PATCH:path\nOLD:\nexact lines to replace\nNEW:\nfixed lines\nEND_FILE_PATCH\nTo ask the user a blocking question (max 3 per turn):\nQUESTION:What background color?\nOPTION:Warm cream\nOPTION:Deep charcoal\nEND_QUESTION\nPrefer FILE_PATCH for small fixes (never rewrite whole files to fix a few lines). ';
-  const tail='One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Start every reply with AT MOST ONE short status sentence — never announce the same step twice in different words. Always write in proper, grammatically correct English (capitalise sentences, use full stops). Always explain what you are doing.';
+  const tail='One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Start every reply with AT MOST ONE short status sentence — never announce the same step twice in different words. If you show a code fence without a FILE_* block, write its filename on the line above it like File: engine.js. Always write in proper, grammatically correct English (capitalise sentences, use full stops). Always explain what you are doing.';
   if(kind==='linux')return 'You are Omniilink Coding Assistant. Commands run in a minimal Linux container (sh shell — NEVER prefix with sh -c, NEVER quote commands). '+blocks+'Useful commands: ls (list), cat <file> (read), mkdir -p, rm, python3 file.py, node file.js. '+tail;
   return 'You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). '+blocks+'Useful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. '+tail;
 }
@@ -3618,6 +3618,43 @@ function guessBareFileName(code){
   if(!/<\/?[a-z]/i.test(code)&&!/(function|=>|import|const |let |var )/.test(code)&&/\{[^}]*:[^}]*;/.test(code))return'style.css';
   if(/function\s|=>|import\s|require\s*\(|const\s+\w+\s*=|let\s+\w+\s*=/.test(code))return'script.js';
   return'';
+}
+function inferBlockFileName(code,lang,before,after){
+  // The filename the MODEL meant for this block, read from its own prose
+  // around the fence ("Save as engine.js", "File: physics.js", `main.js`).
+  // Pure: no DOM, no globals. Returns '' when nothing trustworthy is found.
+  const extsForLang={js:['js','jsx','ts','tsx','mjs','cjs'],ts:['ts','tsx','js'],jsx:['jsx','js'],tsx:['tsx','ts'],html:['html','htm'],htm:['html','htm'],css:['css'],py:['py','pyw'],json:['json'],md:['md','markdown'],sh:['sh'],sql:['sql'],java:['java'],c:['c','h'],cpp:['cpp','hpp','h','cc'],go:['go'],rs:['rs'],rb:['rb'],php:['php']};
+  const want=extsForLang[String(lang||'').toLowerCase()]||null;
+  const clean=t=>{
+    t=String(t||'').trim().replace(/^[`'"]+|[`'"]+$/g,'').replace(/^\.\//,'');
+    if(t.length<4||t.length>120)return'';
+    if(/\s|\.\.|:\/\//.test(t))return'';
+    if(/[<>:*?|]/.test(t))return'';
+    const m=t.match(/\.([a-z0-9]{1,5})$/i);
+    if(!m)return'';
+    const base=t.slice(0,t.length-m[0].length);
+    if(!/[a-z]/i.test(base))return'';
+    const e=m[1].toLowerCase();
+    if(want){if(want.indexOf(e)===-1)return''}
+    else if(e.length<2)return'';
+    return t;
+  };
+  const found=[];
+  const scan=(txt,isBefore,labeled)=>{
+    txt=String(txt||'');if(!txt)return;
+    let m;
+    const labRe=/(?:file(?:name)?|save(?:\s+as)?|creat(?:e|ing)|updat(?:e|ing)|add\s+(?:this\s+)?to|put\s+(?:this\s+)?in)\s*[:=]?\s*[`'"]?([\w\-.\\/]{1,120})/gi;
+    while((m=labRe.exec(txt))){const c=clean(m[1]);if(c)found.push({c:c,s:3,close:isBefore?(100000+m.index):(0-m.index)})}
+    const tickRe=/[`'"]([\w\-.\\/]{1,120})[`'"]/g;
+    while((m=tickRe.exec(txt))){const c=clean(m[1]);if(c)found.push({c:c,s:2,close:isBefore?(100000+m.index):(0-m.index)})}
+    const bareRe=/(?:^|[\s(\[])([\w\-.\\/]*\.[a-z0-9]{2,5})(?=[\s)\].,;:!?]|$)/gi;
+    while((m=bareRe.exec(txt))){const c=clean(m[1]);if(c)found.push({c:c,s:1,close:isBefore?(100000+m.index):(0-m.index)})}
+  };
+  scan(String(before||'').slice(-800),true);
+  scan(String(after||'').slice(0,400),false);
+  if(!found.length)return'';
+  found.sort((x,y)=>((y.s-x.s)||(y.close-x.close)));
+  return found[0].c;
 }
 function sanitizeCommand(cmd){
   // Mirror of the backend sanitizer: models emit stray wrapping
@@ -4364,11 +4401,14 @@ async function processCodingActions(text,msgEl){
       }
       if(code.trim().length<20||shown>=5)continue;
       shown++;
+      const at=(typeof m.index==='number')?m.index:0;
+      const inferred=(typeof inferBlockFileName==='function')?inferBlockFileName(code,lang,parseText.slice(0,at),parseText.slice(at+m[0].length)): '';
+      const startName=inferred||guessName[lang]||'';
       const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
-      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code block as file'+(lang?' ('+escapeHtml(lang)+')':'')+'</div><div class="file-write-diff collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+escapeHtml(code.slice(0,1500))+'</div>';
+      toolDiv.innerHTML='<div class="tool-label" style="color:var(--success)">Save code block as file'+(lang?' ('+escapeHtml(lang)+')':'')+(inferred?' → '+escapeHtml(inferred):'')+'</div><div class="file-write-diff collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+escapeHtml(code.slice(0,1500))+'</div>';
       const bar=document.createElement('div');bar.className='approve-bar';
       const nameInput=document.createElement('input');
-      nameInput.placeholder='filename (e.g. index.html)';nameInput.value=guessName[lang]||'';
+      nameInput.placeholder='filename (e.g. index.html)';nameInput.value=startName;
       nameInput.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:11px;font-family:var(--mono);outline:none;min-width:0';
       const sb=document.createElement('button');sb.className='approve';sb.textContent='Save file';
       sb.onclick=async()=>{
