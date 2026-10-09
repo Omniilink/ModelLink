@@ -9795,8 +9795,8 @@ async def agents_exec(request: Request, agent_id: str):
 @app.post("/api/agents/{agent_id}/file")
 async def agents_file(request: Request, agent_id: str):
     """Queue a file operation for a paired computer (the companion app
-    executes it jailed inside its projects folder). Ops: list, read, write,
-    mkdir, delete. The result arrives as JSON through the commands feed."""
+    executes it jailed inside its projects folder). Ops: list, tree, read,
+    write, mkdir, delete. The result arrives as JSON through the commands feed."""
     user, err = _require_auth(request)
     if err:
         return err
@@ -9807,7 +9807,7 @@ async def agents_file(request: Request, agent_id: str):
         return bad
     data = data or {}
     op = str(data.get("op", "") or "").strip().lower()
-    if op not in ("list", "read", "write", "mkdir", "delete"):
+    if op not in ("list", "tree", "read", "write", "mkdir", "delete"):
         return JSONResponse(status_code=400, content={"error": "Unknown file op"})
     rel = str(data.get("path", "") or "")
     if len(rel) > 1024:

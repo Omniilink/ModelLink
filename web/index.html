@@ -5641,7 +5641,7 @@ async function agentBuildTree(aid,base,depth){
         });
         return fix(fast.tree,base);
       }
-    }catch(e){if(!/unknown file op/.test(e.message||''))throw e}
+    }catch(e){if(!/unknown file op/i.test(e.message||''))throw e}
   }
   const out=await agentFileOp(aid,{op:'list',path:base},undefined,90000);
   const rows=(out&&out.entries)||[];
