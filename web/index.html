@@ -2655,12 +2655,28 @@ async function openCodingFolderPicker(){
   async function openCodingFolder(){await openCodingFolderPicker()}
   async function openCodingFolderDirect(path){
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
-           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
+           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();
+  // Wait for auto-attach to complete so AI has file context immediately
+  try{await autoAttachProjectFiles()}catch(e){}
+  addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
 }
 let codingTreeGen=0;
 async function refreshCodingTree(){
   if(!codingFolder&&!isRemote())return;
   const gen=++codingTreeGen;
+  // Show loading state immediately (unless a tree is already displayed, so
+  // manual refreshes do not flash it away while reloading).
+  try{
+    const container=document.getElementById('coding-filetree');
+    if(container&&!container.querySelector('.ft-header')){
+      container.innerHTML='';
+      const loading=document.createElement('div');
+      loading.className='filetree-loading';
+      loading.style.cssText='padding:24px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.7;display:flex;flex-direction:column;align-items:center;gap:8px';
+      loading.innerHTML='<div style="width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div><div>Loading files...</div>';
+      container.appendChild(loading);
+    }
+  }catch(e){}
   try{
     if(isRemote()){const tree=await agentBuildTree(remoteCtx.id,remoteCtx.path||'',0);if(gen!==codingTreeGen)return;renderFileTree(tree);return}
     if(fsHandle){const tree=await fsBuildTree(fsHandle);if(gen!==codingTreeGen)return;renderFileTree(tree)}
@@ -6299,7 +6315,10 @@ async function loadProjectList(){const list=document.getElementById('project-lis
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
+  // Wait for auto-attach to complete so AI has file context immediately
+  try{await autoAttachProjectFiles()}catch(e){}
+  addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
 if(target.indexOf('agent:')===0){const aid=target.slice(6);
