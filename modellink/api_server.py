@@ -4250,6 +4250,135 @@ async def coding_save_chat(request: Request, req: CodingChatSave):
     return {"status": "ok"}
 
 
+# ---- Chat image attachments: persisted per user, referenced by chats ----
+_CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_CHAT_IMAGE_MIME = {"image/png": "png", "image/jpeg": "jpg",
+                    "image/webp": "webp", "image/gif": "gif"}
+
+
+def _chat_images_dir(user_id: str) -> str:
+    return _ensure_dir(os.path.join(_user_data_dir(user_id), "chat_images"))
+
+
+def _chat_image_id_ok(iid: str) -> bool:
+    return bool(re.fullmatch(r"[0-9]{13}-[0-9a-f]{8}", iid or ""))
+
+
+def _chat_image_find(user_id: str, iid: str):
+    if not _chat_image_id_ok(iid):
+        return None
+    d = _chat_images_dir(user_id)
+    try:
+        for name in os.listdir(d):
+            if name.startswith(iid + "."):
+                full = os.path.join(d, name)
+                if os.path.isfile(full):
+                    return full
+    except OSError:
+        pass
+    return None
+
+
+@app.post("/api/chat-images")
+async def chat_image_upload(request: Request):
+    """Persist one chat-attached image. Chat bubbles reference the returned
+    URL (tiny) instead of a data: URL (huge), so history survives reloads
+    and localStorage quotas; the entry lives until deleted in Assets."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    durl = str((data or {}).get("data_url", "") or "")
+    m = re.match(r"^data:(image/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$", durl)
+    if not m:
+        return JSONResponse(status_code=400, content={"error": "Expected a PNG/JPEG/WebP/GIF data URL"})
+    import base64 as _b64
+    try:
+        raw = _b64.b64decode(m.group(2))
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Bad image data"})
+    if not raw or len(raw) > _CHAT_IMAGE_MAX_BYTES:
+        return JSONResponse(status_code=400, content={"error": "Image must be under 5MB"})
+    uid = _safe_username(user["username"])
+    qerr = _check_quota(user, uid, len(raw))
+    if qerr:
+        return qerr
+    iid = f"{int(time.time() * 1000):013d}-{secrets.token_hex(4)}"
+    name = f"{iid}.{_CHAT_IMAGE_MIME[m.group(1).lower()]}"
+    try:
+        with open(os.path.join(_chat_images_dir(uid), name), "wb") as f:
+            f.write(raw)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    label = str((data or {}).get("name") or "image").strip()[:80] or "image"
+    return {"status": "ok", "id": iid, "name": label, "size": len(raw),
+            "url": f"/api/chat-images/{iid}"}
+
+
+@app.get("/api/chat-images")
+async def chat_images_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    d = _chat_images_dir(_safe_username(user["username"]))
+    out = []
+    try:
+        for name in sorted(os.listdir(d), reverse=True):
+            full = os.path.join(d, name)
+            if not os.path.isfile(full):
+                continue
+            iid = name.rsplit(".", 1)[0]
+            if not _chat_image_id_ok(iid):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out.append({"id": iid, "name": name, "size": st.st_size,
+                        "created": int(st.st_mtime * 1000),
+                        "url": f"/api/chat-images/{iid}"})
+    except OSError:
+        pass
+    return {"images": out}
+
+
+@app.get("/api/chat-images/{image_id}")
+async def chat_image_get(request: Request, image_id: str):
+    from fastapi.responses import Response as _Response
+    import mimetypes
+    user, err = _require_auth(request)
+    if err:
+        return err
+    full = _chat_image_find(_safe_username(user["username"]), image_id)
+    if not full:
+        return JSONResponse(status_code=404, content={"error": "Image not found"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        media = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        return _Response(content=content, media_type=media,
+                         headers={"Cache-Control": "private, max-age=86400"})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.delete("/api/chat-images/{image_id}")
+async def chat_image_delete(request: Request, image_id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    full = _chat_image_find(_safe_username(user["username"]), image_id)
+    if not full:
+        return JSONResponse(status_code=404, content={"error": "Image not found"})
+    try:
+        os.remove(full)
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok"}
+
+
 @app.get("/api/coding/omniiignore")
 async def coding_get_omniiignore(request: Request):
     user, err = _require_auth(request)

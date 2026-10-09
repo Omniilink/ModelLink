@@ -1777,7 +1777,7 @@ function renderChatList(){
     item.appendChild(text);item.appendChild(del);item.onclick=()=>loadChat(id);list.appendChild(item);
   }
 }
-function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
+function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const kept=m.content.filter(p=>!(p&&p.type==='image_url')||String((p.image_url||{}).url||'').indexOf('data:')!==0);if(kept.some(p=>p&&p.type==='image_url'))return Object.assign({},m,{content:kept});const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
 function saveCurrentChat(){
   if(!currentChatId||chatHistory.length===0)return;
   const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:stripImagesForStore(chatHistory),model:selectedModel,updated:Date.now()};
@@ -2223,19 +2223,74 @@ function handleImageFiles(files){
     img.src=url;
   });
 }
+// ---- Chat image persistence ----------------------------------------------
+// Attached images upload to the per-user asset store at send time. History
+// and bubbles reference the small asset URL (survives reloads + quotas and
+// shows in Assets until deleted); model input always gets bytes.
+const pendingImageAssets=new Map();
+async function ensureImageAsset(dataUrl){
+  if(!dataUrl||typeof dataUrl!=='string'||dataUrl.indexOf('data:')!==0)return null;
+  if(pendingImageAssets.has(dataUrl)){const v=pendingImageAssets.get(dataUrl);return(v&&v.then)?await v:v}
+  const p=(async()=>{
+    try{
+      const r=await authFetch(API+'/api/chat-images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data_url:dataUrl})});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok&&d&&d.url){const rec={id:d.id,url:API+d.url};pendingImageAssets.set(dataUrl,rec);return rec}
+    }catch(e){}
+    return null;
+  })();
+  pendingImageAssets.set(dataUrl,p);
+  const rec=await p;
+  if(!rec)pendingImageAssets.delete(dataUrl);
+  return rec;
+}
+const imageDataCache=new Map();
+async function imageDataForModel(url){
+  // Asset URLs back to bytes for model input (Ollama needs base64, and the
+  // in-memory data URL may be long gone after a reload).
+  try{
+    if(!url||url.indexOf('data:')===0)return url;
+    if(imageDataCache.has(url))return imageDataCache.get(url);
+    const r=await authFetch(url);
+    if(!r.ok)return url;
+    const blob=await r.blob();
+    const durl=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=rej;fr.readAsDataURL(blob)});
+    imageDataCache.set(url,durl);
+    return durl;
+  }catch(e){return url}
+}
+async function resolveHistoryImages(messages){
+  const out=[];
+  for(const m of (messages||[])){
+    if(!m||!Array.isArray(m.content)){out.push(m);continue}
+    const parts=[];
+    for(const p of m.content){
+      if(p&&p.type==='image_url'&&p.image_url&&p.image_url.url&&p.image_url.url.indexOf('data:')!==0){
+        const u=await imageDataForModel(p.image_url.url);
+        parts.push({type:'image_url',image_url:{url:u}});
+      }else parts.push(p);
+    }
+    const cp={};for(const k in m)cp[k]=m[k];cp.content=parts;out.push(cp);
+  }
+  return out;
+}
 async function sendMessage(){
   if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip();if(!text&&!imgs.length)return;
   if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
   let content=text,model=selectedModel;
-  if(imgs.length){model=resolveVisionModel();if(!model){pendingImages=imgs;renderImgStrip();input.value=text;input.style.height='auto';return}content=[{type:'text',text:text||'Describe this image'}].concat(imgs.map(u=>({type:'image_url',image_url:{url:u}})))}
-  appendMessage('user',content);chatHistory.push({role:'user',content});
+  let histContent=null;
+  if(imgs.length){model=resolveVisionModel();if(!model){pendingImages=imgs;renderImgStrip();input.value=text;input.style.height='auto';return}content=[{type:'text',text:text||'Describe this image'}].concat(imgs.map(u=>({type:'image_url',image_url:{url:u}})));
+    const assets=[];for(const u of imgs){try{assets.push(await ensureImageAsset(u))}catch(e){assets.push(null)}}
+    histContent=[{type:'text',text:text||'Describe this image'}].concat(imgs.map((u,i)=>({type:'image_url',image_url:{url:(assets[i]&&assets[i].url)||u}})));
+  }
+  appendMessage('user',histContent||content);chatHistory.push({role:'user',content:histContent||content});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   if(isOllamaModel(model))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
   const startTime=Date.now();
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:await resolveHistoryImages(chatHistory),stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -2283,7 +2338,7 @@ function startEditMessage(msgEl,contentDiv){
   saveBtn.onclick=()=>{const newText=textarea.value.trim();if(!newText||newText===originalText){contentDiv.textContent=originalText;restore();return}restore();editAndResend(idx,newText,origImgs)};
   textarea.onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();saveBtn.click()}if(e.key==='Escape')cancelBtn.click()};
 }
-function editAndResend(editIdx,newText,keepImgs){
+async function editAndResend(editIdx,newText,keepImgs){
   const userMsgIdx=Math.floor(editIdx/2);const newHistory=[];
   for(let i=0;i<chatHistory.length;i+=2){if(i/2<userMsgIdx){newHistory.push(chatHistory[i]);if(chatHistory[i+1])newHistory.push(chatHistory[i+1])}else if(i/2===userMsgIdx)break}
   newHistory.push({role:'user',content:(keepImgs&&keepImgs.length)?[{type:'text',text:newText}].concat(keepImgs.map(u=>({type:'image_url',image_url:{url:u}}))):newText});chatHistory=newHistory;
@@ -2292,7 +2347,7 @@ function editAndResend(editIdx,newText,keepImgs){
   appendMessage('user',newText);const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   if(isOllamaModel(selectedModel))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
   const sendModel=(keepImgs&&keepImgs.length)?(resolveVisionModel()||selectedModel):selectedModel;
-  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:sendModel,messages:chatHistory,stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
+  authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:sendModel,messages:await resolveHistoryImages(chatHistory),stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})})
   .then(async r=>{if(!r.ok){const t=await r.text();let m='Error '+r.status;try{m=JSON.parse(t).error||m}catch(e){}throw new Error(m)}return r.body.getReader()}).then(reader=>{
     const decoder=new TextDecoder();let buffer='',fullText='',seenDone=false;
     function read(){reader.read().then(({done,value})=>{
@@ -3591,12 +3646,23 @@ async function sendCodingMessage(){
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
+  let histContent=null;
   if(cimgs.length){
     sendModel=resolveVisionModel();
     if(!sendModel){codingPendingImages=cimgs;renderCodingImgStrip();input.value=rawText;input.style.height='auto';return}
     userContent=[{type:'text',text:cleanText||'Describe these images'}].concat(cimgs.map(u=>({type:'image_url',image_url:{url:u}})));
+    // History + bubble reference persisted asset URLs (reload-safe, tiny);
+    // the model request above keeps the in-memory bytes.
+    const assets=[];
+    for(const u of cimgs){try{assets.push(await ensureImageAsset(u))}catch(e){assets.push(null)}}
+    histContent=[{type:'text',text:cleanText||'Describe these images'}].concat(cimgs.map((u,i)=>({type:'image_url',image_url:{url:(assets[i]&&assets[i].url)||u}})));
+    try{
+      const row=document.createElement('div');row.className='msg-imgs';
+      histContent.slice(1).forEach(p=>{const u=p.image_url.url;const im=document.createElement('img');im.src=u;im.alt='attached image';im.onclick=()=>window.open(u,'_blank');row.appendChild(im)});
+      userMsg.querySelector('.coding-msg-content').parentElement.appendChild(row);
+    }catch(e){}
   }
-  const userHist={role:'user',content:userContent};codingHistory.push(userHist);userMsg._histRef=userHist;persistCodingChat();
+  const userHist={role:'user',content:(histContent||userContent)};codingHistory.push(userHist);userMsg._histRef=userHist;persistCodingChat();
   const assistantEl=document.createElement('div');assistantEl.className='coding-msg assistant';assistantEl.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';chat.appendChild(assistantEl);chat.scrollTop=chat.scrollHeight;const contentEl=assistantEl.querySelector('.coding-msg-content');
   contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';
   const waitT0=Date.now();
@@ -3611,7 +3677,7 @@ async function sendCodingMessage(){
   let fullText='';
   let aborted=false;
   let next={blocks:false,actionable:false};
-  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...compactCodingMessages(codingHistory.slice(-20))]})});
+  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...await resolveHistoryImages(compactCodingMessages(codingHistory.slice(-20)))]})});
     if(!r.ok){stopWait();const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;maybeAttachReport(assistantEl,errMsg,selectedModel,'coding');codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDoneCoding=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -3806,8 +3872,21 @@ function stripProtocolLines(text){
   c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST)[^\n]*\r?\n?/gmi,'');
   return c;
 }
+function stripJunkSpec(text){
+  // Some models leak machine spec runs into prose
+  // (visual_confirmation:true breakdown:true ... label:x timeout:10000 ...).
+  // Drop lines that are mostly key:value tokens. URLs (https://...) and
+  // single tokens never trigger it; code fences rarely contain 5+ bare pairs.
+  return String(text||'').split('\n').filter(ln=>{
+    const toks=ln.match(/\b[a-z_]{2,}:(?!\/\/)[^\s]+/g)||[];
+    if(toks.length<5)return true;
+    const chars=ln.replace(/\s/g,'').length;
+    return chars===0||toks.join('').length/chars<0.5;
+  }).join('\n');
+}
 function cleanCodingProse(text){
-  return stripProtocolLines(stripToolBlocks(text)).replace(/\n{3,}/g,'\n\n').trim();
+  const s=stripProtocolLines(stripToolBlocks(text));
+  return ((typeof stripJunkSpec==='function')?stripJunkSpec(s):s).replace(/\n{3,}/g,'\n\n').trim();
 }
 function stripCodeForChat(s){
   return String(s==null?'':s).replace(/```[\s\S]*?```/g,'').replace(/`([^`]+)`/g,'$1').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
@@ -3816,6 +3895,33 @@ function cmdResultClass(result){
   if(result.exit_code===0)return 'success';
   var hasOut=(result.stdout||'').trim()||(result.stderr||'').trim();
   return hasOut?'fail':'neutral';
+}
+function cmdToolRec(cmd,result){
+  // Compact, persistable record of one executed command for chat reloads.
+  const out=String(result.stdout||'')+(result.stderr?'\n'+String(result.stderr):'');
+  return{t:'cmd',cmd:String(cmd||''),exit:(result.exit_code==null?0:result.exit_code),cls:(typeof cmdResultClass==='function'?cmdResultClass(result):''),out:out.slice(0,800)};
+}
+function fileToolRec(kind,path,result){
+  const parts=[];
+  if(result&&typeof result.added==='number'&&(result.added||result.removed))parts.push('+'+result.added+' -'+result.removed);
+  let summary='';
+  if(!result||!result.ok)summary='failed'+(result&&result.error?': '+result.error:'');
+  else if(result.noop)summary='No change';
+  else summary=({Create:'File created',Edit:'Written successfully',Patch:'Patched successfully',Delete:'Deleted'}[kind]||'done')+(parts.length?' '+parts.join(' '):'');
+  return{t:'file',kind:kind,path:String(path||''),added:result?(result.added||0):0,removed:result?(result.removed||0):0,ok:!!(result&&result.ok),summary:String(summary).slice(0,200)};
+}
+let toolPersistT=0;
+function recordToolOutcome(msgEl,tool){
+  // Attach a tool result to its turn's history entry so a reload renders
+  // the same cards. Persists throttled (turn-end persists cover the rest).
+  try{
+    const h=msgEl&&msgEl._histRef;if(!h||!tool)return;
+    h.tools=h.tools||[];
+    if(h.tools.length>=15)return;
+    h.tools.push(tool);
+    const now=Date.now();
+    if(now-toolPersistT>5000){toolPersistT=now;persistCodingChat()}
+  }catch(e){}
 }
 // Foreground servers/ watchers never return, so running one just burns the
 // whole command timeout and returns nothing useful. Recognise the common ones
@@ -4430,14 +4536,14 @@ async function processCodingActions(text,msgEl){
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     const destructive=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructive){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_create&&!planMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_create&&!planMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_edit&&!planMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_edit&&!planMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
     const path=match[1].trim();
@@ -4463,16 +4569,16 @@ async function processCodingActions(text,msgEl){
     }catch(e){previewErr=e.message}
     if(previewErr){if(typeof trackPatchMiss==='function')trackPatchMiss(path,previewErr!=='File not found — create it first');toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
-    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';const recordDel=()=>{if(typeof recordCodingVersion==='function')recordCodingVersion(['(deleted) '+path]).catch(()=>{})};
+    const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';const recordDel=()=>{if(typeof recordCodingVersion==='function')recordCodingVersion(['(deleted) '+path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Delete',path,{ok:true}))};
     ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok){refreshCodingTree();recordDel()}return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree();recordDel()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok){refreshCodingTree();recordDel()}}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>'};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const wf of webFetches){
     const url=wf.url;
@@ -4559,7 +4665,7 @@ async function processCodingActions(text,msgEl){
         const result=await codingWriteFile(p,code);
         bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
         if(result.ok)refreshCodingTree();
-        if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([p]).catch(()=>{});
+        if(result.ok&&typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',p,result));
       };
       const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
       cb.onclick=()=>{toolDiv.remove()};
@@ -4585,7 +4691,7 @@ async function processCodingActions(text,msgEl){
         const result=await codingWriteFile(p,code);
         bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Saved '+escapeHtml(p):escapeHtml(result.error||'failed'))+'</span>';
         if(result.ok)refreshCodingTree();
-        if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([p]).catch(()=>{});
+        if(result.ok&&typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',p,result));
       };
       const cb=document.createElement('button');cb.className='deny';cb.textContent='Skip';
       cb.onclick=()=>{toolDiv.remove()};
@@ -4688,11 +4794,20 @@ function persistCodingChat(){
     const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     // Truncate huge messages (e.g. viewed files) so one big file can't
     // blow the localStorage quota and silently kill all persistence. The
-    // saved `stats` ride along so the pinned +/- line survives the reload.
+    // saved `stats` ride along so the pinned +/- line survives the reload,
+    // and `tools` so executed tool cards re-render after a reload.
     const history=codingHistory.slice(-60).map(m=>{
+      if(Array.isArray(m.content)){
+        // Image parts persist as asset URLs (tiny); raw data: URLs would
+        // blow the quota and kill the whole save, so they are dropped.
+        const parts=m.content.filter(p=>!(p&&p.type==='image_url')||String((p.image_url||{}).url||'').indexOf('data:')!==0);
+        if(parts.length!==m.content.length){const cp={role:m.role,content:parts};if(m.stats)cp.stats=m.stats;if(m.tools)cp.tools=m.tools;return cp}
+        return m;
+      }
       if(m.content&&m.content.length>4000){
         const cut={role:m.role,content:m.content.slice(0,4000)+'\n… [truncated for storage]'};
         if(m.stats)cut.stats=m.stats;
+        if(m.tools)cut.tools=m.tools;
         return cut;
       }
       return m;
@@ -4921,6 +5036,10 @@ function appendCodingHistoryMsg(m){
     // that straight to textContent stringified the objects, so a restored
     // vision message showed "[object Object],[object Object]".
     el.querySelector('.coding-msg-content').textContent=msgTextContent(m.content);
+    try{
+      const imgs=msgImages(m.content);
+      if(imgs.length){const row=document.createElement('div');row.className='msg-imgs';imgs.forEach(u=>{const im=document.createElement('img');im.src=u;im.alt='attached image';im.onclick=()=>window.open(u,'_blank');row.appendChild(im)});el.querySelector('.coding-msg-content').parentElement.appendChild(row)}
+    }catch(e){}
     el._histRef=m;chat.appendChild(el);return;
   }
   const el=document.createElement('div');el.className='coding-msg assistant';
@@ -4930,7 +5049,29 @@ function appendCodingHistoryMsg(m){
   // Re-attach the pinned +/- line this turn recorded, so a reloaded or
   // re-synced chat looks exactly like it did when it was live.
   try{renderCodingStats(m.stats,el.querySelector('.coding-msg-content').parentElement)}catch(e){}
+  try{if(typeof renderSavedTools==='function')renderSavedTools(el,m.tools)}catch(e){}
   chat.appendChild(el);
+}
+function renderSavedTools(msgEl,tools){
+  // Static snapshot of a past turn's tool cards: same look, expand-only.
+  // No approve bars — the run is over, so re-approval makes no sense.
+  try{
+    const host=msgEl.querySelector('.coding-msg-content').parentElement;
+    for(const t of (tools||[]).slice(0,25)){
+      if(!t)continue;
+      const d=document.createElement('div');
+      if(t.t==='cmd'){
+        d.className='coding-msg-tool tool-cmd';
+        d.innerHTML='<div class="tool-label">Ran'+(t.exit?' (exit '+t.exit+')':'')+': '+escapeHtml(t.cmd||'')+'</div>'
+          +'<div class="cmd-result '+(t.cls||'')+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+escapeHtml(t.out||'(no output)')+'</div>';
+      }else{
+        d.className='coding-msg-tool tool-edit';
+        d.innerHTML='<div class="tool-label">'+escapeHtml((t.kind||'File')+' '+(t.path||''))+'</div>'
+          +'<div style="font-size:11px;color:'+((t.ok===false)?'var(--error)':'var(--text-muted)')+';margin-top:4px">'+escapeHtml(t.summary||((t.ok===false)?'failed':'done'))+'</div>';
+      }
+      host.appendChild(d);
+    }
+  }catch(e){}
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
@@ -5230,6 +5371,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
   contentEl._streamArgs=null;contentEl._streamRaf=0;
   contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
   const liveMsg={role:'assistant',content:fullText.trim()};
+  assistantEl._histRef=liveMsg;
   codingHistory.push(liveMsg);
   persistCodingChat();
   scanPlanSteps(fullText);
@@ -5366,7 +5508,11 @@ async function lookupFindings(failText){
     const d=await r.json();
     const list=(d.findings||[]).slice(0,3);
     if(!list.length)return '';
-    return '\nKNOWN ISSUES logged before for this kind of setup (read before acting — do not repeat a documented dead end):\n'+list.map((f,i)=>(i+1)+'. ['+f.kind+'] '+f.title+' — Problem: '+f.problem+' Solution: '+f.solution).join('\n');
+    return '\nKNOWN ISSUES logged before for this kind of setup (read before acting — do not repeat a documented dead end):\n'+list.map((f,i)=>{
+      let s=(i+1)+'. ['+f.kind+'] '+f.title+' — Problem: '+f.problem+' Solution: '+f.solution;
+      if(f.kind==='code'&&f.code)s+='\n   Verified-safe snippet from a past success (it ran and worked — treat it as completely trustworthy, prefer it over inventing your own):\n'+String(f.code).slice(0,1500);
+      return s;
+    }).join('\n');
   }catch(e){return ''}
 }
 function parseFindingBlock(text){
@@ -5384,7 +5530,7 @@ async function requestFindingLog(){
   // One bounded turn after a troubled-but-finished run: ask for a FINDING
   // block and save it. One shot — never retried, never looped.
   const model=(typeof selectedModel!=='undefined'&&selectedModel)||'';
-  codingHistory.push({role:'user',content:'Log what you learned this run so future runs stop hitting the same wall. Reply with EXACTLY one block and nothing else:\nFINDING:\nKIND: error\nTITLE: <max 12 words>\nPROBLEM: <what kept failing>\nSOLUTION: <what finally worked>\nWHY: <why it failed before>\nLANGUAGE: <file extension you worked in, e.g. js>\nCODE:\n<optional reusable snippet, else leave blank>\nEND_FINDING\nIf nothing was actually learned, reply with exactly: NO_FINDING'});
+  codingHistory.push({role:'user',content:'Log what you learned this run so future runs stop hitting the same wall. Reply with EXACTLY one block and nothing else:\nFINDING:\nKIND: error\nTITLE: <max 12 words>\nPROBLEM: <what kept failing>\nSOLUTION: <what finally worked>\nWHY: <why it failed before>\nLANGUAGE: <file extension you worked in, e.g. js>\nCODE:\n<optional reusable snippet you SAW WORKING, else leave blank — never log untested code; logged snippets are treated as completely trustworthy>\nEND_FINDING\nIf nothing was actually learned, reply with exactly: NO_FINDING'});
   persistCodingChat();
   codingStream=true;
   let fullText='';
@@ -5406,14 +5552,14 @@ async function codingAutoContinue(){
   codingRounds=0;codingReplans=0;
   let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false;
-  // Cross-round history. `roundSigs` is one entry per round (its action list)
-  // and `roundWrote` records whether that round changed a file. Together they
-  // catch the alternating A,B,A,B loop the old consecutive-only guard missed.
-  const roundSigs=[],roundWrote=[];
-  // Reflect state: repeated identical results trigger a look back at past
-  // lessons (max 2) instead of an immediate stop. triedCmds feeds the
-  // must-vary list; troubledRun arms the end-of-run learning log.
-  let idleRounds=0,reflectCount=0,troubledRun=false,troubledProgress=false;
+  // Stop tracking: the ONLY early stop is the EXACT same command set with
+  // no writes, 5 rounds running. Near-misses and read-only stretches keep
+  // going (with reflects) — the plan budget is the outer backstop.
+  let sameCmdStreak=0,lastCmdSig='';
+  // Reflect state: exact repeats trigger a look back at past lessons (max 2)
+  // instead of an immediate stop. triedCmds feeds the must-vary list;
+  // troubledRun arms the end-of-run learning log.
+  let reflectCount=0,troubledRun=false,troubledProgress=false;
   const triedCmds=new Set();
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const lastAssistantTruncated=()=>{
@@ -5436,40 +5582,23 @@ async function codingAutoContinue(){
         codingRounds++;
         if(results.wrote)troubledProgress=true;
         planJustExtended=false;
-        // Cycle guard: a repeating sequence of rounds that wrote NOTHING
-        // (A,A / A,B,A,B / A,B,C,A,B,C) is a stall. This is the loop that
-        // used to run 30+ rounds re-reading files; stop it at the second
-        // repeat instead of waiting for the plan to run out.
-        {
-          const acts=results.actions||[];
-          roundSigs.push(acts.slice().sort().join(' | ')||'(none)');
-          roundWrote.push(!!results.wrote);
-          idleRounds=results.wrote?0:idleRounds+1;
-          if(codingCycleDetected(roundSigs,roundWrote,2)){
-            postCodingAssistant('Stopping to save time: the AI is repeating the same inspection steps without changing any files ('
-              +acts.join(', ').slice(0,160)+').\n\nNo progress is possible from here. The remaining open work is listed above — '
-              +'tell me the exact file and change you want, or say "continue" with a more specific instruction.');
-            break;
-          }
-          // Backstop for non-cyclic idling: many rounds that only read.
-          if(idleRounds>=CODING_STALL_ROUNDS){
-            postCodingAssistant('Stopping: '+idleRounds+' rounds in a row ran without writing any file — the AI is only inspecting, not progressing.'
-              +'\n\nTell it exactly which file and change you want, or say "continue" to resume.');
-            break;
-          }
-        }
         // Every file block this round matched disk byte for byte: nothing was
         // written. Re-running the same edit will not help, so say so loudly
         // instead of letting the loop pay for another identical round.
         if(results.noops>0&&!results.text.match(/Ran:|Ran \(exit/)){
           addCodingSystemMsg('Skipped '+results.noops+' no-op write'+(results.noops!==1?'s':'')+' — that content was already in the file, so nothing changed.');
         }
-        // No-progress guard: identical tool results keep coming back. Force a
-        // new approach after the FIRST repeat, stop only as a backstop.
+        // Repeat tracking: identical RESULTS nudge (below); only the EXACT
+        // same command set with no writes, 5 rounds running, stops the loop.
         const sig=results.text||'';
         if(sig&&sig===lastSig)repeatRounds++;else{lastSig=sig;repeatRounds=0;repeatNudges=0}
         for(const a of (results.actions||[])){if(a.indexOf('R:')===0)triedCmds.add(a.slice(2))}
-        if(repeatRounds>=3){
+        const cmdsNow=(results.actions||[]).filter(a=>a.indexOf('R:')===0).sort();
+        const cmdSigNow=cmdsNow.join(' | ');
+        if(cmdsNow.length&&cmdSigNow===lastCmdSig&&!results.wrote)sameCmdStreak++;
+        else sameCmdStreak=(cmdsNow.length&&!results.wrote)?1:0;
+        if(cmdsNow.length)lastCmdSig=cmdSigNow;
+        if(sameCmdStreak>=3&&sameCmdStreak<5){
           if(reflectCount<2){
             // Don't shut down: reflect with past lessons, then vary. The
             // model must explain the failure and send only untried commands.
@@ -5477,7 +5606,7 @@ async function codingAutoContinue(){
             let known='';
             try{if(typeof lookupFindings==='function')known=await lookupFindings(sig)}catch(e){known=''}
             const tried=[...triedCmds].slice(-10).join(' | ')||'(none recorded)';
-            codingHistory.push({role:'user',content:'REFLECT FIRST (attempt '+reflectCount+' of 2) — the same tool results came back 3 times with no progress, so the current approach is wrong. Write 2-3 sentences explaining WHY it keeps failing, then continue with tool blocks.\n'+known+'\nCommands already tried this run — every further command must differ from these (small adjustments are fine, identical resends are not): '+tried+'\nIf the work is genuinely finished, reply with a short summary and no tool blocks.'});
+            codingHistory.push({role:'user',content:'REFLECT FIRST (attempt '+reflectCount+' of 2) — the exact same command has now run '+sameCmdStreak+' times with no progress and no file changes, so the current approach is wrong. Write 2-3 sentences explaining WHY it keeps failing, then continue with tool blocks.\n'+known+'\nCommands already tried this run — every further command must differ from these (small adjustments are fine, identical resends are not): '+tried+'\nIf the work is genuinely finished, reply with a short summary and no tool blocks.'});
             persistCodingChat();
             codingStream=true;
             const rturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -5487,8 +5616,8 @@ async function codingAutoContinue(){
             repeatRounds=0;repeatNudges=0;lastSig='';
             continue;
           }
-          postCodingAssistant('Stopping: the same tool results came back '+repeatRounds+' times running with no progress. Say "continue" and I will try a different approach.');break
         }
+        if(sameCmdStreak>=5){postCodingAssistant('Stopping: the exact same command ran 5 times in a row with no file changes and no progress. Say "continue" and I will try a different approach.');break}
         // Syntax gate: only loop back for REAL breakage in written files.
         // Clean files with no open todos finish here — no redundant rounds.
         const validation=await validateWrittenFiles();
@@ -8150,6 +8279,7 @@ let optTickTimer=null;
 function optProgReset(total){
   optProg={active:true,start:Date.now(),total:total||0,done:0,stage:'reading',pct:0,fileMs:[]};
   optRunStats={calls:[],tin:0,tout:0,ms:0};
+  if(typeof optPaintButton==='function')optPaintButton();
 }
 function optRenderProg(head,label,pct){
   const b=document.getElementById('optimise-banner');
@@ -8191,6 +8321,20 @@ function optStatsText(){
   if(optProg.stage)t+=' - '+optProg.stage;
   return t;
 }
+function optPaintButton(){
+  // The Optimise toolbar button itself is the progress bar: it fills blue
+  // with run progress and drops back to grey when the run ends.
+  try{
+    const btn=document.getElementById('coding-optimise-btn');
+    if(!btn)return;
+    if(optProg&&optProg.active){
+      const p=Math.max(0,Math.min(100,optProg.pct||0));
+      btn.style.background='linear-gradient(90deg, var(--accent) '+p+'%, var(--bg-tertiary) '+p+'%)';
+      btn.style.color='#fff';
+      btn.style.borderColor='var(--accent)';
+    }else{btn.style.background='';btn.style.color='';btn.style.borderColor=''}
+  }catch(e){}
+}
 function optTickRender(){
   if(!optProg.active)return;
   const bar=document.getElementById('opt-prog-bar');
@@ -8199,6 +8343,7 @@ function optTickRender(){
   if(eta)eta.textContent=optEtaText();
   const st=document.getElementById('opt-prog-stats');
   if(st)st.textContent=optStatsText();
+  if(typeof optPaintButton==='function')optPaintButton();
 }
 function optTickStart(){optTickStop();if(optProg.active)optTickTimer=setInterval(optTickRender,1000)}
 function optTickStop(){if(optTickTimer){clearInterval(optTickTimer);optTickTimer=null}}
@@ -8541,6 +8686,7 @@ async function startOptimise(){
     if(cfg.autoRun)codingSettings.auto_edit=wasAuto;
     optProg.active=false;
     optTickStop();
+    if(typeof optPaintButton==='function')optPaintButton();
     optRunning=false;optAbort=null;
     refreshCodingTree();
   }
@@ -9734,6 +9880,9 @@ async function loadAssetsView(){
     '<div id="assets-generator"></div></div>'+
     '<div><h3 style="margin:0 0 12px;font-size:14px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Images</h3>'+
     '<div id="assets-images" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px"></div></div>'+
+    '<div><h3 style="margin:0 0 12px;font-size:14px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Chat images</h3>'+
+    '<div class="tool-result-sub" style="margin-bottom:8px">Images attached to chats live here until you delete them. Deleting one breaks older bubbles that referenced it.</div>'+
+    '<div id="assets-chat-images" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px"></div></div>'+
     '<div><h3 style="margin:0 0 12px;font-size:14px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">3D Models</h3>'+
     '<div id="assets-models" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px"></div></div>'+
     '</div>';
@@ -9758,6 +9907,38 @@ async function loadAssetsView(){
   } else {
     imgHost.innerHTML='<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">No images found in the project</div>';
   }
+  // Chat attachments (persisted server-side, referenced by message bubbles)
+  try{
+    const cr=await authFetch(API+'/api/chat-images');
+    const chHost=document.getElementById('assets-chat-images');
+    if(chHost){
+      if(cr.ok){
+        const cd=await cr.json();const items=cd.images||[];
+        if(items.length){
+          items.forEach(function(it){
+            var card=document.createElement('div');card.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;position:relative';
+            var im=document.createElement('img');im.src=API+it.url;im.alt=it.name||'chat image';im.style.cssText='width:100%;height:120px;object-fit:cover;display:block;cursor:zoom-in';im.onclick=function(){window.open(API+it.url,'_blank')};
+            var nm=document.createElement('div');nm.textContent=(it.name||'image');nm.style.cssText='padding:8px 10px;font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+            var del=document.createElement('button');del.textContent='×';del.title='Delete image';del.style.cssText='position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:rgba(0,0,0,.6);color:#fff;font-size:13px;cursor:pointer;line-height:1';
+            del.onclick=function(){deleteChatImage(it.id)};
+            card.appendChild(im);card.appendChild(nm);card.appendChild(del);chHost.appendChild(card);
+          });
+        } else {
+          chHost.innerHTML='<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">No chat images yet — attach one to any message</div>';
+        }
+      }else{chHost.innerHTML='<div style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">Could not load chat images</div>'}
+    }
+  }catch(e){}
+async function deleteChatImage(id){
+  if(!(await appConfirm('Delete this image? Messages that reference it will show a broken image.')))return;
+  try{
+    const r=await authFetch(API+'/api/chat-images/'+encodeURIComponent(id),{method:'DELETE'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    try{imageDataCache.delete(API+'/api/chat-images/'+id)}catch(e){}
+    try{pendingImageAssets.forEach((v,k)=>{if(v&&v.id===id)pendingImageAssets.delete(k)})}catch(e){}
+    showToast('Image deleted','success');loadAssetsView();
+  }catch(e){showToast('Delete failed: '+e.message,'error')}
+}
   // Load 3D models
   try{
     var r=await authFetch(API+'/api/models');
