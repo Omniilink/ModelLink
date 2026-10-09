@@ -2657,7 +2657,35 @@ async function openCodingFolderPicker(){
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
            fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
 }
-async function refreshCodingTree(){if(!codingFolder&&!isRemote())return;try{if(isRemote()){const tree=await agentBuildTree(remoteCtx.id,remoteCtx.path||'',0);renderFileTree(tree);return}if(fsHandle){const tree=await fsBuildTree(fsHandle);renderFileTree(tree)}else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(r.ok)renderFileTree(data.tree)}}catch(e){}}
+let codingTreeGen=0;
+async function refreshCodingTree(){
+  if(!codingFolder&&!isRemote())return;
+  const gen=++codingTreeGen;
+  try{
+    if(isRemote()){const tree=await agentBuildTree(remoteCtx.id,remoteCtx.path||'',0);if(gen!==codingTreeGen)return;renderFileTree(tree);return}
+    if(fsHandle){const tree=await fsBuildTree(fsHandle);if(gen!==codingTreeGen)return;renderFileTree(tree)}
+    else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(r.ok){if(gen!==codingTreeGen)return;renderFileTree(data.tree)}}
+  }catch(e){
+    // Never fail silently: a swallowed load left the stale projects sidebar
+    // in the panel with no hint anything went wrong.
+    if(gen!==codingTreeGen)return;
+    try{
+      const container=document.getElementById('coding-filetree');
+      if(container){
+        container.innerHTML='';
+        const note=document.createElement('div');
+        note.style.cssText='padding:22px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.7';
+        note.textContent='Could not load files: '+((e&&e.message)||e);
+        const btn=document.createElement('button');
+        btn.className='btn btn-ghost';btn.style.cssText='font-size:11px;margin-top:10px';
+        btn.textContent='Retry';
+        btn.onclick=()=>refreshCodingTree();
+        note.appendChild(document.createElement('br'));note.appendChild(btn);
+        container.appendChild(note);
+      }
+    }catch(e2){}
+  }
+}
 </script>
 
 <script>
@@ -5603,7 +5631,7 @@ async function agentBuildTree(aid,base,depth){
   // "unknown file op" and fall through to the legacy walk below.
   if(!depth){
     try{
-      const fast=await agentFileOp(aid,{op:'tree',path:base});
+      const fast=await agentFileOp(aid,{op:'tree',path:base},undefined,90000);
       if(fast&&fast.tree){
         const fix=(nodes,pfx)=>nodes.map(n=>{
           const rel=pfx?pfx+'/'+n.name:n.name;
@@ -5615,7 +5643,7 @@ async function agentBuildTree(aid,base,depth){
       }
     }catch(e){if(!/unknown file op/.test(e.message||''))throw e}
   }
-  const out=await agentFileOp(aid,{op:'list',path:base});
+  const out=await agentFileOp(aid,{op:'list',path:base},undefined,90000);
   const rows=(out&&out.entries)||[];
   const tree=[];
   const subs=[];
@@ -9275,16 +9303,17 @@ function ollamaRenderReco(rd,scan){
 let admFmPath='',admFmMode='',admFmName='',admAgentsCache=[];
 function admFmJoin(name){return admFmPath?admFmPath+'/'+name:name}
 function admFmParent(){const i=admFmPath.lastIndexOf('/');return i<0?'':admFmPath.slice(0,i)}
-async function agentFileOp(aid, payload, skipOnlineCheck){
+async function agentFileOp(aid, payload, skipOnlineCheck, timeoutMs){
   if(!aid)throw new Error('Pick a computer first');
   if(!skipOnlineCheck){
     const known=(admAgentsCache||[]).find(a=>String(a.id)===String(aid));
     if(known&&!known.online)throw new Error((known.name||'That computer')+' is offline — start Omniilink Server on it first');
   }
+  timeoutMs=timeoutMs||30000;
   const r=await authFetch(API+'/api/agents/'+aid+'/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
-  while(Date.now()-t0<30000){
+  while(Date.now()-t0<timeoutMs){
     await new Promise(res=>setTimeout(res,250));
     const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
