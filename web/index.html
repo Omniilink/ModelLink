@@ -2626,7 +2626,7 @@ function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
 function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
-function closeCodingFolder(){codingFolder=null;fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
+function closeCodingFolder(){codingFolder=null;fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
@@ -3185,7 +3185,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
   // which is exactly how a run stalls after one file. Make it mandatory and
   // show the exact syntax, and require re-emitting it every round so the
   // checkmarks stay truthful.
-  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n';
+  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If one step covers several files or features, write one item per file/feature — never bundle them into a single big item.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n';
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
@@ -3519,7 +3519,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4167,6 +4167,44 @@ let codingSplitNudgeSig='';
 // buildCodingSystemPrompt() as a standing rule — deliberately NOT a user
 // message, which would interrupt the run and corrupt the work in flight.
 let codingSplitPending=false;
+function splitTodoItem(text){
+  // Break one coarse todo into small checkable pieces. Pure and deterministic:
+  // the same text always yields the same pieces, so re-emitted lists merge
+  // and keep earned checkmarks. Returns null when already small enough.
+  const t=String(text||'').trim();
+  if(t.length<45||t.length>400)return null;
+  const files=[...new Set(extractTodoFiles(t))];
+  const short=f=>String(f||'').split('/').pop();
+  const cap=s=>s?s.charAt(0).toUpperCase()+s.slice(1):s;
+  if(files.length>=2)
+    return files.slice(0,6).map(f=>({text:'Finish '+short(f),files:[f]}));
+  const parts=t.split(/,\s*(?:and\s+)?|\s+and\s+/i).map(s=>s.trim()).filter(s=>s.length>=4);
+  if(parts.length<2||parts.length>6)return null;
+  const tag=files.length?short(files[0]):'';
+  return parts.map((p,i)=>{
+    let s=String(p||'').replace(/^(?:with|plus|including|include|along with)\s+/i,'');
+    if(i>0)s=cap(s);
+    if(tag&&s.toLowerCase().indexOf(tag.toLowerCase())===-1)s=s+' ('+tag+')';
+    return{text:s,files:files.slice()};
+  });
+}
+function autoCheckTodos(){
+  // Check off todo pieces whose files have all landed on disk this request.
+  // Called after every successful write; idempotent and monotonic.
+  let changed=false;
+  try{
+    const base=s=>String(s||'').split('/').pop().toLowerCase();
+    for(const p of (codingWrittenPaths||[])){
+      if(p&&codingTodosWrote.indexOf(p)===-1)codingTodosWrote.push(p);
+    }
+    for(const t of (codingTodos||[])){
+      if(t.done||!t.files||!t.files.length)continue;
+      if(t.files.every(f=>codingTodosWrote.some(w=>base(w)===base(f)))){t.done=true;changed=true}
+    }
+    if(changed)renderCodingTodos();
+  }catch(e){}
+  return changed;
+}
 function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g)];
   if(blocks.length===0)return false;
   const last=blocks[blocks.length-1][1];
@@ -4175,13 +4213,29 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
   const norm=s=>s.toLowerCase().replace(/\s+/g,' ').trim();
   const doneSet=new Set((codingTodos||[]).filter(t=>t.done).map(t=>norm(t.text)));
   const beforeOpen=new Set((codingTodos||[]).filter(t=>!t.done).map(t=>norm(t.text)));
-  const fresh=[];
+  const raw=[];
   for(const ln of last.split('\n')){
     const m=ln.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.+?)\s*$/);
     if(!m)continue;
     const key=norm(m[2]);
-    if(fresh.some(f=>norm(f.text)===key))continue;
-    fresh.push({done:m[1].toLowerCase()==='x'||doneSet.has(key),text:m[2]});
+    if(raw.some(f=>norm(f.text)===key))continue;
+    raw.push({done:m[1].toLowerCase()==='x'||doneSet.has(key),text:m[2]});
+  }
+  // Expand coarse items into small checkable pieces. Deterministic, so a
+  // re-emitted parent maps back onto the same children and keeps their
+  // checkmarks (including ones earned by auto-check, via doneSet).
+  const fresh=[];
+  for(const it of raw){
+    const parts=(typeof splitTodoItem==='function')?splitTodoItem(it.text):null;
+    if(parts&&parts.length){
+      for(const p of parts){
+        const key=norm(p.text);
+        if(fresh.some(f=>norm(f.text)===key))continue;
+        fresh.push({done:it.done||doneSet.has(key),text:p.text,files:p.files||[]});
+      }
+    }else{
+      fresh.push(it);
+    }
   }
   if(fresh.length>0)codingTodos=fresh;
   const open=fresh.filter(f=>!f.done);
@@ -4230,8 +4284,10 @@ function synthesizeCodingTodos(text,filePaths){
   if(!touched.length)return false;
   const items=todoItemsFromFiles(touched);
   if(items.length===0)return false;
-  // Anything already written this turn counts as finished.
-  codingTodos=items.map(t=>({done:true,text:t}));
+  // Anything already written this turn counts as finished. Each item keeps
+  // its file so later rounds can check off the rest as they land.
+  const uniq=[...new Set(touched.filter(Boolean))];
+  codingTodos=uniq.map(p=>({done:true,text:'Finish and verify '+p,files:[p]}));
   // The plan promised more rounds than these files: leave an open item so the
   // loop has something to chase instead of declaring victory immediately.
   const planned=todoFromPlanSteps(text);
@@ -4487,6 +4543,7 @@ async function processCodingActions(text,msgEl){
 let codingAutoLoop=false,codingStopRequested=false;
 let codingAbort=null;
 let codingWrittenPaths=[];
+let codingTodosWrote=[];
 // Counts file blocks that matched the file on disk exactly (+0 -0). Reset each
 // turn; a turn that only produces these has made no progress at all.
 let codingNoopWrites=0;
@@ -4832,7 +4889,7 @@ async function restoreCodingChat(){
   // The previous project's messages must die here: without this reset, an
   // empty new project keeps the old history in memory, which then leaks
   // into the model context AND gets persisted under the new project key.
-  codingHistory=[];
+  codingHistory=[];codingTodosWrote=[];codingSplitPending=false;
   let saved=null;
   // Cloud project: the conversation lives inside the project on the server.
   if(codingIsServerProject()){
@@ -5560,18 +5617,19 @@ async function agentBuildTree(aid,base,depth){
 }
 async function codingWriteFile(path,content){
   try{
-    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);return{ok:true,added:lines,removed:0,path:(out.path||remoteRel(path))}}
+    if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:lines,removed:0,path:(out.path||remoteRel(path))}}
     if(fsHandle){
       let existed=false;try{existed=await fsFileExists(path)}catch(e){}
       if(existed){let cur=null;try{cur=await fsReadFile(path)}catch(e){}if(cur!==null&&cur===content)return{ok:true,noop:true,added:0,removed:0}}
       await fsWriteFile(path,content);
       const lines=content.split('\n').length;
       codingWrittenPaths.push(path);
+      if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}
       return{ok:true,added:lines,removed:0};
     }
     const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
     const data=await r.json();
-    if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+    if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
   }catch(e){return{ok:false,error:e.message}}
 }
@@ -5742,9 +5800,9 @@ async function codingPatchFile(path,oldText,newText){
   try{
     const remote=isRemote();
     if(!remote&&!fsHandle){
-      const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
-      const data=await r.json();
-      if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);return{ok:true,added:data.added,removed:data.removed}}
+const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
+const data=await r.json();
+if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
     }
     let current;
@@ -5763,8 +5821,10 @@ async function codingPatchFile(path,oldText,newText){
     }else{
       await fsWriteFile(path,patched);
     }
+    if(!a&&!r)return{ok:true,noop:true,added:0,removed:0};
     codingWrittenPaths.push(path);
-    return{ok:true,added:a,removed:r,noop:!a&&!r};
+    if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}
+    return{ok:true,added:a,removed:r};
   }catch(e){return{ok:false,error:e.message}}
 }
 async function codingRunCmd(command){
@@ -5937,7 +5997,7 @@ async function clearCodingChat(){
   const chat=document.getElementById('coding-chat');
   if((!codingHistory||codingHistory.length===0)&&!chat.innerHTML)return;
   if(!(await appConfirm('Clear this coding chat? This cannot be undone.')))return;
-  codingHistory=[];codingTodos=[];renderCodingTodos();chat.innerHTML='';
+  codingHistory=[];codingTodos=[];codingTodosWrote=[];renderCodingTodos();chat.innerHTML='';
   try{
     const all=JSON.parse(localStorage.getItem(storeKey('omnilink_coding_chats'))||'{}');
     delete all[codingChatKey()];
