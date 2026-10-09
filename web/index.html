@@ -5588,7 +5588,7 @@ async function agentExecSync(aid,command,timeoutMs,cwd){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<timeoutMs){
-    await new Promise(res=>setTimeout(res,1000));
+    await new Promise(res=>setTimeout(res,300));
     const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=25');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
     if(c&&c.status==='done')return{stdout:c.output||'',stderr:'',exit_code:(c.exit_code==null?0:c.exit_code)};
@@ -5598,6 +5598,23 @@ async function agentExecSync(aid,command,timeoutMs,cwd){
 const REMOTE_SKIP_DIRS=['node_modules','.git','.venv','venv','__pycache__','.next','.turbo','.cache','.pytest_cache','.idea','.vscode'];
 async function agentBuildTree(aid,base,depth){
   depth=depth||0;
+  // Fast path: one recursive walk on the device instead of a round trip per
+  // folder (each costs seconds over a slow link). Older companions answer
+  // "unknown file op" and fall through to the legacy walk below.
+  if(!depth){
+    try{
+      const fast=await agentFileOp(aid,{op:'tree',path:base});
+      if(fast&&fast.tree){
+        const fix=(nodes,pfx)=>nodes.map(n=>{
+          const rel=pfx?pfx+'/'+n.name:n.name;
+          const o={name:n.name,type:n.type,path:rel};
+          if(n.type==='dir')o.children=fix(n.children||[],rel);
+          return o;
+        });
+        return fix(fast.tree,base);
+      }
+    }catch(e){if(!/unknown file op/.test(e.message||''))throw e}
+  }
   const out=await agentFileOp(aid,{op:'list',path:base});
   const rows=(out&&out.entries)||[];
   const tree=[];
@@ -9268,7 +9285,7 @@ async function agentFileOp(aid, payload, skipOnlineCheck){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<30000){
-    await new Promise(res=>setTimeout(res,750));
+    await new Promise(res=>setTimeout(res,250));
     const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
     const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
     if(c&&c.status==='done'){

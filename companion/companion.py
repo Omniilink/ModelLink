@@ -34,8 +34,9 @@ CONFIG_DIR = os.path.join(
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 DEFAULT_PROJECTS = os.path.join(os.path.expanduser("~"), "Documents", "OmniilinkProjects")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
-POLL_SECONDS = 1
+POLL_SECONDS = 0.25
 CMD_TIMEOUT = 300
+_TREE_MAX_ENTRIES = 20000  # tree op stops here (huge folders list instead)
 READ_MAX = 256 * 1024
 WRITE_MAX = 1024 * 1024
 
@@ -172,6 +173,54 @@ def do_file_op(root, payload):
                         continue
             entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
             return {"ok": True, "root": os.path.realpath(root), "entries": entries}
+        if op == "tree":
+            # One recursive walk instead of a round trip per folder: the file
+            # tree for a project arrives in a single command. Mirrors the web
+            # client's agentBuildTree exactly (same skips, same depth cap).
+            base = safe_join(root, payload.get("path", ""))
+            if not os.path.isdir(base):
+                return {"ok": False, "error": "not a folder"}
+            skip = {"node_modules", ".git", ".venv", "venv", "__pycache__",
+                    ".next", ".turbo", ".cache", ".pytest_cache", ".idea",
+                    ".vscode"}
+            count = [0]
+            truncated = [False]
+
+            def walk(dirpath, depth):
+                try:
+                    with os.scandir(dirpath) as it:
+                        items = sorted(it, key=lambda e: (
+                            not e.is_dir(follow_symlinks=False),
+                            e.name.lower()))
+                except OSError:
+                    return []
+                out = []
+                for e in items:
+                    if count[0] >= _TREE_MAX_ENTRIES:
+                        truncated[0] = True
+                        break
+                    try:
+                        is_dir = e.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir and (depth >= 4 or e.name in skip):
+                        continue
+                    count[0] += 1
+                    try:
+                        size = e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        size = 0
+                    node = {"name": e.name,
+                            "type": "dir" if is_dir else "file",
+                            "size": size}
+                    if is_dir and not e.is_symlink():
+                        node["children"] = walk(
+                            os.path.join(dirpath, e.name), depth + 1)
+                    out.append(node)
+                return out
+
+            return {"ok": True, "tree": walk(base, 0),
+                    "truncated": truncated[0]}
         if op == "read":
             full = safe_join(root, payload.get("path", ""))
             if not os.path.isfile(full):
