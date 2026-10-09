@@ -1339,6 +1339,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="logs" onclick="admShow('logs',this)">Logs</button>
               <button class="modal-tab" data-atab="audit" onclick="admShow('audit',this)">Audit</button>
               <button class="modal-tab" data-atab="review" onclick="admShow('review',this)">Review <span id="adm-rev-count"></span></button>
+<button class="modal-tab" data-atab="findings" onclick="admShow('findings',this)">Findings</button>
             </div>
             <div data-apane="overview">
               <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -1397,6 +1398,11 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="tool-row"><label class="tool-result-sub">Status <select id="adm-rev-status" onchange="admLoadReview()"><option value="pending" selected>Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All</option></select></label><button class="btn btn-ghost btn-sm" onclick="admLoadReview()">Refresh</button><span class="tool-result-sub" id="adm-rev-meta"></span></div>
               <div class="tool-result-sub" style="margin-bottom:10px">Public projects and assets waiting for approval. Run previews the submission without publishing it.</div>
               <div id="adm-review"></div>
+            </div>
+            <div data-apane="findings" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Kind <select id="adm-find-kind" onchange="admLoadFindings()"><option value="" selected>All</option><option value="error">Errors</option><option value="code">Code</option></select></label><label class="tool-result-sub">Model <input type="text" id="adm-find-model" placeholder="qwen, gemini…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Provider <input type="text" id="adm-find-provider" placeholder="groq, ollama…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Lang <input type="text" id="adm-find-language" placeholder="js, py…" style="width:70px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Search <input type="text" id="adm-find-q" placeholder="keywords…" style="width:130px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadFindings()">Refresh</button><span class="tool-result-sub" id="adm-find-meta"></span></div>
+              <div class="tool-result-sub" style="margin-bottom:10px">Lessons the AI logged after overcoming repeated failures, plus reusable snippets. The coding loop reads these (filtered to its own setup) before retrying a stuck task.</div>
+              <div id="adm-findings"></div>
             </div>
           </div>
         </div>
@@ -4928,7 +4934,7 @@ function appendCodingHistoryMsg(m){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: '];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run'];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -4946,6 +4952,8 @@ function harnessLabel(content){
   if(content.indexOf('Plan extended to ')===0)return 'Plan extended — continuing';
   if(content.indexOf('Not done yet: ')===0)return 'Improve request sent';
   if(content.indexOf('File snapshot: ')===0)return 'Exact file content sent for patching';
+  if(content.indexOf('REFLECT FIRST (')===0)return 'Reflection requested after repeats';
+  if(content.indexOf('Log what you learned this run')===0)return 'Learning log requested';
   return 'Review note sent';
 }
 function appendHarnessRow(chat,full){
@@ -5323,6 +5331,76 @@ async function detectMissingAssets(writtenPaths){
   }catch(e){}
   return missing;
 }
+// ---- Findings: the loop's shared memory ---------------------------------
+// When a run repeats itself, it looks up past lessons (filtered to its own
+// model/provider/language/problem) instead of stopping; when it overcomes
+// the trouble, it logs what it learned so the next run starts smarter.
+function findingProvider(model){
+  model=String(model||'');const i=model.indexOf('/');
+  return i>0?model.slice(0,i):'general';
+}
+function findingLanguage(){
+  try{
+    const files=[];
+    for(const t of (codingTodos||[]))for(const f of extractTodoFiles(t.text||''))files.push(f);
+    if(typeof lastOpenedFile!=='undefined'&&lastOpenedFile)files.push(lastOpenedFile);
+    for(const f of files){const m=/\.([a-z0-9]{1,5})$/i.exec(String(f||''));if(m)return m[1].toLowerCase()}
+  }catch(e){}
+  return '';
+}
+function findingKeywords(text){
+  const stop=new Set('the,a,an,and,or,for,with,from,that,this,into,onto,failed,fail,error,exit,command,ran,running,file,files,round,step,task,using,use,not,was,were,are,but,all,already,again,still,just,only,what,when,then,than,there,their,them,they,you,your,please,could,would,should,have,has,had,been,being,done,nothing,empty'.split(','));
+  const seen=[];
+  for(const w of String(text||'').toLowerCase().replace(/[^a-z0-9_.\-/ ]/g,' ').split(/\s+/)){
+    if(w.length>=4&&!stop.has(w)&&!/^\d+$/.test(w)&&seen.indexOf(w)===-1)seen.push(w);
+    if(seen.length>=8)break;
+  }
+  return seen.join(' ');
+}
+async function lookupFindings(failText){
+  try{
+    const model=(typeof selectedModel!=='undefined'&&selectedModel)||'';
+    const params='model='+encodeURIComponent(model)+'&provider='+encodeURIComponent(findingProvider(model))+'&language='+encodeURIComponent(findingLanguage())+'&q='+encodeURIComponent(findingKeywords(failText));
+    const r=await authFetch(API+'/api/coding/findings?'+params);
+    if(!r.ok)return '';
+    const d=await r.json();
+    const list=(d.findings||[]).slice(0,3);
+    if(!list.length)return '';
+    return '\nKNOWN ISSUES logged before for this kind of setup (read before acting — do not repeat a documented dead end):\n'+list.map((f,i)=>(i+1)+'. ['+f.kind+'] '+f.title+' — Problem: '+f.problem+' Solution: '+f.solution).join('\n');
+  }catch(e){return ''}
+}
+function parseFindingBlock(text){
+  const m=String(text||'').match(/FINDING:\s*\n([\s\S]*?)\nEND_FINDING/);
+  if(!m)return null;
+  const body=m[1];
+  const get=k=>{const mm=body.match(new RegExp('^'+k+':[ \\t]*([^\\n]+)$','mi'));return mm?mm[1].trim():''};
+  const cm=body.match(/^CODE:\s*\n([\s\S]*)$/mi);
+  const kind=(get('KIND')||'error').toLowerCase()==='code'?'code':'error';
+  const out={kind:kind,title:get('TITLE'),problem:get('PROBLEM'),solution:get('SOLUTION'),why:get('WHY'),language:get('LANGUAGE'),code:cm?cm[1].trim():''};
+  if(!out.title||(!out.problem&&!out.solution))return null;
+  return out;
+}
+async function requestFindingLog(){
+  // One bounded turn after a troubled-but-finished run: ask for a FINDING
+  // block and save it. One shot — never retried, never looped.
+  const model=(typeof selectedModel!=='undefined'&&selectedModel)||'';
+  codingHistory.push({role:'user',content:'Log what you learned this run so future runs stop hitting the same wall. Reply with EXACTLY one block and nothing else:\nFINDING:\nKIND: error\nTITLE: <max 12 words>\nPROBLEM: <what kept failing>\nSOLUTION: <what finally worked>\nWHY: <why it failed before>\nLANGUAGE: <file extension you worked in, e.g. js>\nCODE:\n<optional reusable snippet, else leave blank>\nEND_FINDING\nIf nothing was actually learned, reply with exactly: NO_FINDING'});
+  persistCodingChat();
+  codingStream=true;
+  let fullText='';
+  try{
+    const t=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+    fullText=(t&&t.fullText)||'';
+  }catch(e){}
+  codingStream=false;
+  persistCodingChat();
+  const f=parseFindingBlock(fullText);
+  if(!f)return;
+  try{
+    await authFetch(API+'/api/coding/findings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:f.kind,title:f.title,problem:f.problem,solution:f.solution,why:f.why,model:model,provider:findingProvider(model),language:f.language,code:f.code})});
+    addCodingSystemMsg('Logged a learning to Findings: '+f.title);
+  }catch(e){}
+}
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
   codingRounds=0;codingReplans=0;
@@ -5332,7 +5410,11 @@ async function codingAutoContinue(){
   // and `roundWrote` records whether that round changed a file. Together they
   // catch the alternating A,B,A,B loop the old consecutive-only guard missed.
   const roundSigs=[],roundWrote=[];
-  let idleRounds=0;
+  // Reflect state: repeated identical results trigger a look back at past
+  // lessons (max 2) instead of an immediate stop. triedCmds feeds the
+  // must-vary list; troubledRun arms the end-of-run learning log.
+  let idleRounds=0,reflectCount=0,troubledRun=false,troubledProgress=false;
+  const triedCmds=new Set();
   const openTodoTexts=()=> (codingTodos||[]).filter(t=>!t.done).map(t=>t.text);
   const lastAssistantTruncated=()=>{
     const last=codingHistory.length?codingHistory[codingHistory.length-1]:null;
@@ -5352,6 +5434,7 @@ async function codingAutoContinue(){
       const results=harvestCodingResults();
       if(results.hasExecuted){
         codingRounds++;
+        if(results.wrote)troubledProgress=true;
         planJustExtended=false;
         // Cycle guard: a repeating sequence of rounds that wrote NOTHING
         // (A,A / A,B,A,B / A,B,C,A,B,C) is a stall. This is the loop that
@@ -5385,7 +5468,27 @@ async function codingAutoContinue(){
         // new approach after the FIRST repeat, stop only as a backstop.
         const sig=results.text||'';
         if(sig&&sig===lastSig)repeatRounds++;else{lastSig=sig;repeatRounds=0;repeatNudges=0}
-        if(repeatRounds>=3){postCodingAssistant('Stopping: the same tool results came back '+repeatRounds+' times running with no progress. Say "continue" and I will try a different approach.');break}
+        for(const a of (results.actions||[])){if(a.indexOf('R:')===0)triedCmds.add(a.slice(2))}
+        if(repeatRounds>=3){
+          if(reflectCount<2){
+            // Don't shut down: reflect with past lessons, then vary. The
+            // model must explain the failure and send only untried commands.
+            reflectCount++;troubledRun=true;
+            let known='';
+            try{if(typeof lookupFindings==='function')known=await lookupFindings(sig)}catch(e){known=''}
+            const tried=[...triedCmds].slice(-10).join(' | ')||'(none recorded)';
+            codingHistory.push({role:'user',content:'REFLECT FIRST (attempt '+reflectCount+' of 2) — the same tool results came back 3 times with no progress, so the current approach is wrong. Write 2-3 sentences explaining WHY it keeps failing, then continue with tool blocks.\n'+known+'\nCommands already tried this run — every further command must differ from these (small adjustments are fine, identical resends are not): '+tried+'\nIf the work is genuinely finished, reply with a short summary and no tool blocks.'});
+            persistCodingChat();
+            codingStream=true;
+            const rturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+            codingStream=false;
+            persistCodingChat();
+            if(rturn.error)break;
+            repeatRounds=0;repeatNudges=0;lastSig='';
+            continue;
+          }
+          postCodingAssistant('Stopping: the same tool results came back '+repeatRounds+' times running with no progress. Say "continue" and I will try a different approach.');break
+        }
         // Syntax gate: only loop back for REAL breakage in written files.
         // Clean files with no open todos finish here — no redundant rounds.
         const validation=await validateWrittenFiles();
@@ -5655,6 +5758,7 @@ async function codingAutoContinue(){
   document.getElementById('coding-send-btn').disabled=false;
   settleInputAfterSend('coding-input');
   await maybeOfferPendingFiles().catch(()=>{});
+  if(troubledRun&&troubledProgress&&!codingStopRequested&&typeof requestFindingLog==='function'){await requestFindingLog().catch(()=>{})}
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
 }
 
@@ -6814,9 +6918,12 @@ let usageCurrentRange='24h';
 async function loadUsage(range,btn){
   usageCurrentRange=range||'24h';
   if(btn){document.querySelectorAll('.usage-range button').forEach(b=>b.classList.remove('active'));btn.classList.add('active')}
+  const usageFail=async(msg,detail)=>{
+    document.getElementById('usage-body').innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">'+escapeHtml(msg)+'</p><p style="font-size:12px;color:var(--text-muted)">'+escapeHtml(detail||'Could not load usage data')+'</p></div>';
+  };
   try{
     const r=await authFetch(API+'/api/usage?range='+usageCurrentRange);
-    if(!r.ok)throw new Error('offline');
+    if(!r.ok){let detail='HTTP '+r.status;try{const dj=await r.json();if(dj&&dj.error)detail=dj.error}catch(e){}await usageFail('Usage unavailable',detail);return}
     const raw=await r.json();
     const s=raw.summary||{};
     let providersConfigured=0,providerKeys=[];
@@ -6843,18 +6950,20 @@ async function loadUsage(range,btn){
       rate_limits:raw.rate_limits||{},
       model_name:raw.model_name||'omniilink'
     };
-    renderUsageSummary(data);
-    renderUsageTimeseries(data);
-    renderUsageTokenBreakdown(data);
-    renderUsageModelBars(data);
-    renderUsageProviderBars(data);
-    renderUsageTokenBars(data);
-    renderUsageDoughnut(data);
-    renderUsageKeyTable(data);
-    renderUsageActivity(data);
+    if(raw.degraded){
+      const body=document.getElementById('usage-body');
+      const warn=document.createElement('div');
+      warn.style.cssText='margin:0 0 12px;padding:8px 12px;border:1px solid var(--warning);border-radius:var(--radius-xs);color:var(--warning);font-size:12px';
+      warn.textContent='Partial data: '+raw.degraded;
+      body.prepend(warn);
+    }
+    const widgets=[['summary',()=>renderUsageSummary(data)],['timeseries',()=>renderUsageTimeseries(data)],['tokens',()=>renderUsageTokenBreakdown(data)],['models',()=>renderUsageModelBars(data)],['providers',()=>renderUsageProviderBars(data)],['tokenbars',()=>renderUsageTokenBars(data)],['doughnut',()=>renderUsageDoughnut(data)],['keys',()=>renderUsageKeyTable(data)],['activity',()=>renderUsageActivity(data)]];
+    const failed=[];
+    for(const[nm,fn]of widgets){try{fn()}catch(e){failed.push(nm);try{console.error('usage widget failed:',nm,e)}catch(e2){}}}
+    if(failed.length)showToast('Some usage panels failed to render: '+failed.join(', '),'error');
   }catch(e){
     if(e.message==='auth_required')return;
-    document.getElementById('usage-body').innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load usage data</p></div>';
+    await usageFail(e.message==='Failed to fetch'?'Server offline':'Usage unavailable',e.message==='Failed to fetch'?'Could not reach the server':String((e&&e.message)||e));
   }
 }
 function renderUsageSummary(data){
@@ -9069,7 +9178,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview()}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -9139,6 +9248,31 @@ async function admLoadReports(){const box=document.getElementById('adm-reports')
     card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(rep.username||('user '+rep.user_id))+' · '+escapeHtml(rep.created_at||'')+'</span><span class="act-status-'+(open?'error':'success')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(rep.status||'open')+'</span></div><div class="prompt-content">'+escapeHtml([rep.context,rep.provider,rep.model].filter(Boolean).join(' · '))+(rep.error?'\n'+rep.error:'')+(rep.note?'\nNote: '+rep.note:'')+'</div>';
     const row=document.createElement('div');row.className='prompt-actions';const b=document.createElement('button');b.textContent=open?'Resolve':'Reopen';b.onclick=async()=>{try{const rr=await authFetch(API+'/api/admin/error-reports/'+rep.id+'/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:open})});if(!rr.ok)throw new Error('HTTP '+rr.status);admLoadReports()}catch(e){showToast('Could not update report: '+e.message,'error')}};row.appendChild(b);card.appendChild(row);box.appendChild(card)});
 }catch(e){box.innerHTML='<div class="tool-status">Could not load reports.</div>'}}
+async function admLoadFindings(){
+  const box=document.getElementById('adm-findings');if(!box)return;
+  const val=id=>{const el=document.getElementById(id);return el?el.value:''};
+  const qs='kind='+encodeURIComponent(val('adm-find-kind'))+'&model='+encodeURIComponent(val('adm-find-model'))+'&provider='+encodeURIComponent(val('adm-find-provider'))+'&language='+encodeURIComponent(val('adm-find-language'))+'&q='+encodeURIComponent(val('adm-find-q'));
+  try{
+    const r=await authFetch(API+'/api/admin/findings?'+qs);
+    if(!r.ok){box.innerHTML='<div class="tool-status">Could not load findings.</div>';return}
+    const d=await r.json();const list=d.findings||[];
+    const meta=document.getElementById('adm-find-meta');if(meta)meta.textContent=list.length+' of '+(d.total||0);
+    box.innerHTML='';
+    if(!list.length){box.innerHTML='<div class="tool-status">No findings yet — they appear here after the AI overcomes a repeated failure.</div>';return}
+    list.forEach(f=>{
+      const card=document.createElement('div');card.className='prompt-card';
+      const when=f.created_at||'';
+      card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(f.title||'(untitled)')+'</span><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(f.kind||'error')+'</span></div>'
+        +'<div class="tool-result-sub" style="margin:2px 0 6px">'+escapeHtml([f.model,f.provider,f.language].filter(Boolean).join(' · '))+(when?' · '+escapeHtml(when):'')+' · by '+escapeHtml(f.username||('user '+f.user_id))+'</div>'
+        +'<div class="prompt-content">Problem: '+(f.problem?escapeHtml(f.problem):'—')+'\nSolution: '+(f.solution?escapeHtml(f.solution):'—')+(f.why?'\nWhy: '+escapeHtml(f.why):'')+'</div>'
+        +(f.code?'<pre class="code-block" style="max-height:220px">'+escapeHtml(f.code)+'</pre>':'');
+      const row=document.createElement('div');row.className='prompt-actions';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Delete';
+      b.onclick=async()=>{if(!(await appConfirm('Delete this finding?')))return;try{const rr=await authFetch(API+'/api/admin/findings/'+f.id,{method:'DELETE'});if(!rr.ok)throw new Error('HTTP '+rr.status);admLoadFindings()}catch(e){showToast('Could not delete finding: '+e.message,'error')}};
+      row.appendChild(b);card.appendChild(row);box.appendChild(card);
+    });
+  }catch(e){box.innerHTML='<div class="tool-status">Could not load findings.</div>'}
+}
 async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
   const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}
   d.users.forEach(u=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+u.id+'</td><td class="tool-result-sub" style="font-family:var(--mono)">'+escapeHtml(u.username)+'</td><td>'+escapeHtml(u.name||'—')+'</td><td>'+(u.is_admin?'admin':'user')+'</td><td>'+admFmt(u.api_keys)+'</td><td>'+admFmt(u.sessions)+'</td><td>'+admFmt(u.requests)+'</td><td>'+admFmt(u.tokens)+'</td><td class="tool-result-sub">'+escapeHtml(String(u.created_at||'—'))+'</td>';

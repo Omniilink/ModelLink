@@ -230,6 +230,25 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_public_project_files_pid ON public_project_files(project_id);
         CREATE INDEX IF NOT EXISTS idx_forum_threads_section ON forum_threads(section_id, last_post_at);
         CREATE INDEX IF NOT EXISTS idx_forum_posts_thread ON forum_posts(thread_id, id);
+
+        CREATE TABLE IF NOT EXISTS findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            kind TEXT DEFAULT 'error',
+            title TEXT DEFAULT '',
+            problem TEXT DEFAULT '',
+            solution TEXT DEFAULT '',
+            why TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            provider TEXT DEFAULT '',
+            language TEXT DEFAULT '',
+            code TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_findings_kind ON findings(kind, created_at);
+        CREATE INDEX IF NOT EXISTS idx_findings_model ON findings(model, provider, language);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

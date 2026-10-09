@@ -279,13 +279,49 @@ def do_file_op(root, payload):
         return {"ok": False, "error": str(e)}
 
 
+def _rewrite_inline_python(cmd, workdir):
+    """Mirror of the server's rewrite: a multi-line `python -c` script never
+    survives cmd.exe quoting, so run it from a temp file in the workdir."""
+    import re as _re
+    import tempfile as _tf
+    m = _re.match(r"(?i)^\s*(python3?|py)(?:\.exe)?\s+-c\s+(.*)$", cmd or "", _re.DOTALL)
+    if not m or "\n" not in m.group(2):
+        return cmd, None
+    prog, script = m.group(1), m.group(2).strip()
+    if len(script) >= 2 and script[0] == script[-1] and script[0] in "\"'":
+        script = script[1:-1]
+    try:
+        fd, tmp = _tf.mkstemp(prefix="omni_inline_", suffix=".py",
+                              dir=workdir or PROJECTS_ROOT_DEFAULT)
+    except Exception:
+        return cmd, None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(script)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return cmd, None
+    return prog + ' "' + os.path.basename(tmp) + '"', tmp
+
+
 def do_shell(cmd, root=None, timeout=CMD_TIMEOUT, cwd=None):
     try:
         workdir = None
         if cwd:
             workdir = safe_join(root or PROJECTS_ROOT_DEFAULT, cwd)
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                              timeout=timeout, cwd=workdir)
+        cmd, inline_tmp = _rewrite_inline_python(cmd, workdir)
+        try:
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                                  timeout=timeout, cwd=workdir)
+        finally:
+            if inline_tmp:
+                try:
+                    os.remove(inline_tmp)
+                except OSError:
+                    pass
         out = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode, out[-65536:]
     except subprocess.TimeoutExpired:

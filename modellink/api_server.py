@@ -2927,6 +2927,122 @@ async def create_error_report(request: Request):
     finally:
         conn.close()
 
+
+_FINDINGS_COLS = ("id, user_id, username, kind, title, problem, solution,"
+                  " why, model, provider, language, code, created_at")
+_FINDINGS_CAP = 1000
+
+
+def _findings_where(kind, model, provider, language, q):
+    """Shared filter builder for the findings list endpoints."""
+    conds, params = [], []
+    if kind in ("error", "code"):
+        conds.append("kind = ?")
+        params.append(kind)
+    for col, val in (("model", model), ("provider", provider), ("language", language)):
+        v = (val or "").strip()
+        if v:
+            conds.append(col + " LIKE ?")
+            params.append("%" + v[:64] + "%")
+    words = [w for w in re.split(r"\s+", (q or "").strip().lower()) if len(w) >= 4][:8]
+    for w in words:
+        conds.append("(lower(title) LIKE ? OR lower(problem) LIKE ? OR lower(solution) LIKE ?)")
+        params.extend(["%" + w + "%"] * 3)
+    return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+
+@app.get("/api/coding/findings")
+async def coding_findings_list(request: Request, kind: str = "", model: str = "",
+                               provider: str = "", language: str = "", q: str = ""):
+    """Troubleshooting knowledge base for the coding loop: what tripped before,
+    on which model/provider/language, and what fixed it. Readable by any
+    signed-in user (no file contents, only lessons)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    where, params = _findings_where(kind, model, provider, language, q)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT " + _FINDINGS_COLS + " FROM findings"
+            + where + " ORDER BY id DESC LIMIT 100", params).fetchall()
+        return {"findings": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/coding/findings")
+async def coding_findings_create(request: Request):
+    """Log one lesson learned (called by the coding loop after it overcomes a
+    repeated failure, or from the admin page). Any signed-in user may add;
+    only admins can delete."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    kind = str(data.get("kind", "error")).strip().lower()
+    if kind not in ("error", "code"):
+        return JSONResponse(status_code=400, content={"error": "kind must be error or code"})
+    title = str(data.get("title", "")).strip()[:200]
+    problem = str(data.get("problem", "")).strip()[:2000]
+    solution = str(data.get("solution", "")).strip()[:2000]
+    if not title or (not problem and not solution):
+        return JSONResponse(status_code=400, content={"error": "title plus problem/solution required"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO findings (user_id, username, kind, title, problem, solution,"
+            " why, model, provider, language, code)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], user.get("username", ""), kind, title, problem, solution,
+             str(data.get("why", "")).strip()[:2000],
+             str(data.get("model", ""))[:128], str(data.get("provider", ""))[:64],
+             str(data.get("language", ""))[:32], str(data.get("code", ""))[:8000]))
+        conn.execute("DELETE FROM findings WHERE id NOT IN"
+                     " (SELECT id FROM findings ORDER BY id DESC LIMIT ?)",
+                     (_FINDINGS_CAP,))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/findings")
+async def admin_findings_list(request: Request, kind: str = "", model: str = "",
+                              provider: str = "", language: str = "", q: str = ""):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    where, params = _findings_where(kind, model, provider, language, q)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT " + _FINDINGS_COLS + " FROM findings"
+            + where + " ORDER BY id DESC LIMIT 200", params).fetchall()
+        total = conn.execute("SELECT COUNT(*) AS c FROM findings").fetchone()["c"]
+        return {"findings": [dict(r) for r in rows], "total": total}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/findings/{finding_id}")
+async def admin_findings_delete(request: Request, finding_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM findings WHERE id = ?", (finding_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "Finding not found"})
+        return {"status": "ok", "id": finding_id}
+    finally:
+        conn.close()
+
 @app.get("/api/settings")
 async def get_settings(request: Request):
     user, err = _require_auth(request)
@@ -3254,13 +3370,33 @@ async def api_usage(request: Request, range: str = "24h"):
     if err:
         return err
     hours = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range, 24)
+    # Never 500 the whole page for one failing section: return partial data
+    # with a degraded flag so the UI renders what it has and says what broke.
+    degraded = None
     try:
         data = get_usage(user_id=user["id"], range_hours=hours)
-        data["rate_limits"] = lb.rate_limiter.get_status()
-        data["model_name"] = MODEL_NAME
-        return data
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        logger.error(f"[USAGE] aggregate failed: {e}", exc_info=True)
+        degraded = f"usage data unavailable ({e})"
+        data = {
+            "range_hours": hours, "bucket_fmt": "%Y-%m-%d %H:%M",
+            "summary": {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                        "total_tokens": 0, "avg_duration_ms": 0,
+                        "max_duration_ms": 0, "active_days": 0},
+            "all_time": {"requests": 0, "tokens": 0},
+            "timeseries": [], "by_model": [], "by_provider": [],
+            "by_key": [], "recent": [],
+        }
+    try:
+        data["rate_limits"] = lb.rate_limiter.get_status()
+    except Exception as e:
+        logger.error(f"[USAGE] rate-limit status failed: {e}", exc_info=True)
+        data["rate_limits"] = {}
+        degraded = degraded or "rate-limit status unavailable"
+    data["model_name"] = MODEL_NAME
+    if degraded:
+        data["degraded"] = degraded
+    return data
 
 @app.get("/api/network")
 async def api_network(request: Request):
@@ -8277,6 +8413,34 @@ _RESTRICTED_CMD_RE = re.compile(
     re.IGNORECASE)
 
 
+def _rewrite_inline_python(command: str, cwd: str):
+    """cmd.exe (and quoted sh one-liners) cannot take a multi-line `python -c`
+    script — the shell mangles it and python dies with 'Argument expected for
+    the -c option'. Rewrite `python -c <multiline script>` into a temp file
+    next to the project and run that instead. Returns (command, tmp_abspath
+    or None). Single-line -c calls pass through untouched."""
+    m = re.match(r"(?i)^\s*(python3?|py)(?:\.exe)?\s+-c\s+(.*)$", command or "", re.DOTALL)
+    if not m or "\n" not in m.group(2):
+        return command, None
+    prog, script = m.group(1), m.group(2).strip()
+    if len(script) >= 2 and script[0] == script[-1] and script[0] in "\"'":
+        script = script[1:-1]
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="omni_inline_", suffix=".py", dir=cwd)
+    except Exception:
+        return command, None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(script)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return command, None
+    return prog + ' "' + os.path.basename(tmp) + '"', tmp
+
+
 @app.post("/api/coding/run-command")
 async def coding_run_command(request: Request, req: CodingRunCommand):
     user, err = _require_auth(request)
@@ -8313,6 +8477,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
             return JSONResponse(status_code=400, content={"error": "Open one of your projects first — commands run inside it"})
         if _RESTRICTED_CMD_RE.search(command):
             return JSONResponse(status_code=403, content={"error": "Absolute paths, .., %VAR% expansion and script hosts (powershell, wscript, mshta, ...) are not allowed — use paths inside your project folder"})
+    command, inline_tmp = _rewrite_inline_python(command, cwd)
     try:
         sb = _sandbox_config()
         backend = "host"
@@ -8372,6 +8537,12 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         return JSONResponse(status_code=408, content={"error": "Command timed out (60s)"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        if inline_tmp:
+            try:
+                os.remove(inline_tmp)
+            except OSError:
+                pass
 
 @app.get("/api/coding/settings")
 async def coding_get_settings(request: Request):
