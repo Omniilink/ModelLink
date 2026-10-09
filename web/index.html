@@ -2626,7 +2626,7 @@ function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
 function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
-function closeCodingFolder(){codingFolder=null;fsHandle=null;remoteCtx=null;allCodingFiles=[];authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
+function closeCodingFolder(){codingFolder=null;fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
@@ -4829,6 +4829,10 @@ function appendHarnessRow(chat,full){
 }
 async function restoreCodingChat(){
   const chat=document.getElementById('coding-chat');chat.innerHTML='';
+  // The previous project's messages must die here: without this reset, an
+  // empty new project keeps the old history in memory, which then leaks
+  // into the model context AND gets persisted under the new project key.
+  codingHistory=[];
   let saved=null;
   // Cloud project: the conversation lives inside the project on the server.
   if(codingIsServerProject()){
