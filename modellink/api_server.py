@@ -9660,6 +9660,7 @@ def _agent_visible(user, agent):
 
 _AGENT_POLL_SECONDS = 25
 _AGENT_WAITERS = {}
+_CMD_WAITERS = {}
 
 
 def _agent_take_queued(agent_id):
@@ -9845,6 +9846,62 @@ async def agents_commands(request: Request, agent_id: str, limit: int = 20):
     return {"commands": rows[:limit]}
 
 
+@app.get("/api/agents/{agent_id}/commands/{command_id}/wait")
+async def agents_command_wait(request: Request, agent_id: str, command_id: str,
+                              timeout: int = 25):
+    """Hold until one queued command finishes (or the timeout), so browsers
+    make one long request per operation instead of polling the feed several
+    times a second."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    try:
+        timeout = max(1, min(int(timeout or 25), 60))
+    except (TypeError, ValueError):
+        timeout = 25
+    cid = str(command_id)
+
+    def _done():
+        with _AGENT_LOCK:
+            st = _agents_load()
+            a = st["agents"].get(str(agent_id))
+            if a is None or not _agent_visible(user, a):
+                return "gone", None
+            c = st["commands"].get(cid)
+            if c is None or str(c.get("agent_id")) != str(agent_id):
+                return "gone", None
+            if c.get("status") == "done":
+                return "done", {"status": "done",
+                                "exit_code": c.get("exit_code"),
+                                "output": c.get("output") or ""}
+        return "pending", None
+
+    state, payload = _done()
+    if state == "gone":
+        return JSONResponse(status_code=404, content={"error": "Command not found"})
+    if state == "done":
+        return payload
+    ev = asyncio.Event()
+    _CMD_WAITERS.setdefault(cid, set()).add(ev)
+    try:
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+    finally:
+        left = _CMD_WAITERS.get(cid)
+        if left is not None:
+            left.discard(ev)
+            if not left:
+                _CMD_WAITERS.pop(cid, None)
+    state, payload = _done()
+    if state == "gone":
+        return JSONResponse(status_code=404, content={"error": "Command not found"})
+    if state == "done":
+        return payload
+    return {"status": "pending"}
+
+
 @app.delete("/api/agents/{agent_id}")
 async def agents_delete(request: Request, agent_id: str):
     user, err = _require_auth(request)
@@ -10013,6 +10070,11 @@ async def agent_result(request: Request):
         if a["id"] in st["agents"]:
             st["agents"][a["id"]]["last_seen"] = time.time()
         _agents_save(st)
+    for ev in list(_CMD_WAITERS.pop(cid, ())):
+        try:
+            ev.set()
+        except Exception:
+            pass
     return {"status": "ok"}
 
 

@@ -5616,10 +5616,12 @@ async function agentExecSync(aid,command,timeoutMs,cwd){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<timeoutMs){
-    await new Promise(res=>setTimeout(res,300));
-    const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=25');if(!rr.ok)continue;
-    const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
-    if(c&&c.status==='done')return{stdout:c.output||'',stderr:'',exit_code:(c.exit_code==null?0:c.exit_code)};
+    const left=Math.max(1,Math.min(25,Math.ceil((timeoutMs-(Date.now()-t0))/1000)));
+    const rr=await authFetch(API+'/api/agents/'+aid+'/commands/'+encodeURIComponent(cid)+'/wait?timeout='+left).catch(()=>null);
+    if(!rr||!rr.ok){await new Promise(res=>setTimeout(res,1000));continue}
+    const dd=await rr.json().catch(()=>({}));
+    if(dd&&dd.status==='done')return{stdout:dd.output||'',stderr:'',exit_code:(dd.exit_code==null?0:dd.exit_code)};
+    if(dd&&dd.status==='gone')throw new Error('Command vanished');
   }
   throw new Error('Timed out waiting for the computer');
 }
@@ -9314,14 +9316,16 @@ async function agentFileOp(aid, payload, skipOnlineCheck, timeoutMs){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   const cid=String(d.command_id);const t0=Date.now();
   while(Date.now()-t0<timeoutMs){
-    await new Promise(res=>setTimeout(res,250));
-    const rr=await authFetch(API+'/api/agents/'+aid+'/commands?limit=10');if(!rr.ok)continue;
-    const dd=await rr.json();const c=(dd.commands||[]).find(x=>String(x.id)===cid);
-    if(c&&c.status==='done'){
-      let out=null;try{out=JSON.parse(c.output||'null')}catch(e){throw new Error('Bad reply from computer')}
+    const left=Math.max(1,Math.min(25,Math.ceil((timeoutMs-(Date.now()-t0))/1000)));
+    const rr=await authFetch(API+'/api/agents/'+aid+'/commands/'+encodeURIComponent(cid)+'/wait?timeout='+left).catch(()=>null);
+    if(!rr||!rr.ok){await new Promise(res=>setTimeout(res,1000));continue}
+    const dd=await rr.json().catch(()=>({}));
+    if(dd&&dd.status==='done'){
+      let out=null;try{out=JSON.parse(dd.output||'null')}catch(e){throw new Error('Bad reply from computer')}
       if(out&&out.ok)return out;
-      throw new Error((out&&out.error)||('exit '+c.exit_code));
+      throw new Error((out&&out.error)||('exit '+dd.exit_code));
     }
+    if(dd&&dd.status==='gone')throw new Error('Command vanished');
   }
   throw new Error('Timed out waiting for the computer (is Omniilink Server running?)');
 }
