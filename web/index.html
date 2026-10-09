@@ -2653,32 +2653,21 @@ async function openCodingFolderPicker(){
   else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.multiple=true;inp.addEventListener('change',async()=>{if(inp.files.length>0){const first=inp.files[0];const path=first.webkitRelativePath.split('/')[0];await openCodingFolderDirect(path)}});inp.click()}
     }
   async function openCodingFolder(){await openCodingFolderPicker()}
-async function openCodingFolderDirect(path){
+  async function openCodingFolderDirect(path){
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
-            fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();
-  // Wait for auto-attach to complete so AI has file context immediately
-  try{await autoAttachProjectFiles()}catch(e){}
-  addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
+           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
 }
 let codingTreeGen=0;
 async function refreshCodingTree(){
   if(!codingFolder&&!isRemote())return;
   const gen=++codingTreeGen;
-  // Show loading state immediately
-  const container=document.getElementById('coding-filetree');
-  if(container){
-    container.innerHTML='';
-    const loading=document.createElement('div');
-    loading.className='filetree-loading';
-    loading.style.cssText='padding:24px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.7;display:flex;flex-direction:column;align-items:center;gap:8px';
-    loading.innerHTML='<div style="width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div><div>Loading files...</div>';
-    container.appendChild(loading);
-  }
   try{
     if(isRemote()){const tree=await agentBuildTree(remoteCtx.id,remoteCtx.path||'',0);if(gen!==codingTreeGen)return;renderFileTree(tree);return}
     if(fsHandle){const tree=await fsBuildTree(fsHandle);if(gen!==codingTreeGen)return;renderFileTree(tree)}
     else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(r.ok){if(gen!==codingTreeGen)return;renderFileTree(data.tree)}}
   }catch(e){
+    // Never fail silently: a swallowed load left the stale projects sidebar
+    // in the panel with no hint anything went wrong.
     if(gen!==codingTreeGen)return;
     try{
       const container=document.getElementById('coding-filetree');
@@ -2968,26 +2957,43 @@ async function sharePreview(){
   }catch(e){showToast('Could not create share link: '+e.message,'error')}
   if(btn)btn.disabled=false;
 }
+function previewLoadingDoc(tab,title){
+  // Paint instant feedback into a fresh about:blank tab: without this the tab
+  // sits white for the whole scan+download over a slow link. No scripts.
+  try{
+    if(!tab||!tab.document)return;
+    const t=String(title||'Preview').replace(/</g,'').slice(0,80);
+    tab.document.open();
+    tab.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+t+'</title><style>html,body{margin:0;padding:0}body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#9aa1ab;font:14px system-ui,-apple-system,sans-serif}.box{text-align:center}.ring{width:34px;height:34px;margin:0 auto 14px;border:3px solid #2a3342;border-top-color:#4f8cff;border-radius:50%;animation:spin 0.8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="ring"></div><div>Loading preview…</div></div></body></html>');
+    tab.document.close();
+  }catch(e){}
+}
 async function previewFileScanned(path){
   if(isRemote()){
     // Remote preview: the server reads the file through the paired computer
     // and serves a tokenised page; open it in a real tab like any preview.
     let tab=null;try{tab=window.open('about:blank','_blank')}catch(e){}
+    previewLoadingDoc(tab,'Preview: '+String(path).split('/').pop());
     if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
     _previewPath=remoteRel(path);_previewLocal=false;
     const rel=remoteRel(path);const proj=String(remoteCtx.path||'');
+    // NOTE: no preflight download here — the scan above already proved the
+    // file reads, and tab=1 serves without the sandbox CSP over the session
+    // cookie, so navigating straight in saves a full second download of the
+    // page over slow links.
+    const pageUrl=API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(proj?'&proj='+encodeURIComponent(proj):'')+'&tab=1';
+    document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
+    if(tab){tab.location.href=pageUrl;showToast('Preview opened in a new browser tab','success');return}
+    showToast('Popup blocked — allow popups for full preview','error');
     try{
       const pre=await authFetch(API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(proj?'&proj='+encodeURIComponent(proj):'')+'&tab=1');
-      if(!pre.ok){let m='Remote preview failed';try{const d=await pre.json();if(d&&d.error)m='Remote preview: '+d.error}catch(e){};appAlert(m);try{if(tab)tab.close()}catch(e){}return}
+      if(!pre.ok){let m='Remote preview failed';try{const d=await pre.json();if(d&&d.error)m='Remote preview: '+d.error}catch(e){};appAlert(m);return}
       const token=pre.headers.get('X-Preview-Token')||'';
       const url=API+'/api/coding/remote-preview?agent='+encodeURIComponent(remoteCtx.id)+'&path='+encodeURIComponent(rel)+(proj?'&proj='+encodeURIComponent(proj):'')+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
-      document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
-      if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
-      showToast('Popup blocked — allow popups for full preview','error');
       const frame=document.getElementById('file-preview-frame');
       frame.removeAttribute('srcdoc');frame.src=url;
       document.getElementById('file-preview-modal').classList.add('open');
-    }catch(e){appAlert('Remote preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}}
+    }catch(e){appAlert('Remote preview failed: '+e.message)}
     return
   }
   // Previews open in a REAL browser tab so games capture input (pointer
@@ -2998,6 +3004,7 @@ async function previewFileScanned(path){
   _previewPath=path;_previewLocal=!!fsHandle;
   let tab=null;
   try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
+  previewLoadingDoc(tab,'Preview: '+String(path).split('/').pop());
   if(!(await scanPathForAction(path,'preview'))){try{if(tab)tab.close()}catch(e){}return}
   document.getElementById('file-preview-title').textContent='Preview: '+path.split('/').pop();
   const frame=document.getElementById('file-preview-frame');
@@ -3558,7 +3565,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4432,9 +4439,9 @@ async function processCodingActions(text,msgEl){
         else await fillFileDiff(toolDiv,path,res.patched,'Patch');
       }
     }catch(e){previewErr=e.message}
-    if(previewErr){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
+    if(previewErr){if(typeof trackPatchMiss==='function')trackPatchMiss(path,previewErr!=='File not found — create it first');toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
+    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree()}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{})};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
@@ -4589,6 +4596,17 @@ let codingNoopWrites=0;
 // Consecutive "Old text not found" failures this run; drives the escalation
 // that stops the model resending an identical OLD block.
 let patchMissFails=0;
+// Per-file miss counts plus which files already got their exact content
+// injected (ground truth beats another "please re-read" round).
+let patchMissByFile={};
+let patchInjected={};
+function trackPatchMiss(path,failed){
+  try{
+    if(!path)return;
+    if(!failed){delete patchMissByFile[path];return}
+    patchMissByFile[path]=(patchMissByFile[path]||0)+1;
+  }catch(e){}
+}
 // STEP BUDGET: the model counts what its own plan needs and declares it with
 // `PLAN-STEPS: N` (one step = one tool round). The loop runs exactly that many
 // steps; when they run out with work still open it asks the model to RECOUNT
@@ -4894,7 +4912,7 @@ function appendCodingHistoryMsg(m){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: '];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: '];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -4911,6 +4929,7 @@ function harnessLabel(content){
   if(content.indexOf('Before this counts as finished')===0)return 'Completion audit sent';
   if(content.indexOf('Plan extended to ')===0)return 'Plan extended — continuing';
   if(content.indexOf('Not done yet: ')===0)return 'Improve request sent';
+  if(content.indexOf('File snapshot: ')===0)return 'Exact file content sent for patching';
   return 'Review note sent';
 }
 function appendHarnessRow(chat,full){
@@ -5458,8 +5477,29 @@ async function codingAutoContinue(){
             patchNote='\nSTOP RE-SENDING THE SAME PATCH: '+patchMissFails+' patches have now failed to match. Your OLD text is not what is in the file. Before patching again you MUST read the file in THIS round (RUN_COMMAND `cat <path>`, or a WEB_FETCH/FILE_EDIT that shows the exact current lines) and copy OLD character-for-character from that output. If the file is too big to read, use FILE_CREATE with the full corrected content instead of FILE_PATCH.';
           else
             patchNote='\nA patch did not match the file, so NOTHING was changed. Do not resend the same OLD text — read the file again and copy the exact current lines.';
+          // Ground truth beats another telling-off: after repeat misses the
+          // model is editing from memory, so hand it the exact current
+          // content of its worst file once (renders as a collapsed row).
+          if(patchMissFails>=2){
+            try{
+              let worst=null,worstN=0;
+              const byFile=(typeof patchMissByFile!=='undefined'&&patchMissByFile)?patchMissByFile:{};
+              for(const f of Object.keys(byFile)){const n=byFile[f]||0;if(n>worstN){worstN=n;worst=f}}
+              const doneMap=(typeof patchInjected!=='undefined'&&patchInjected)?patchInjected:{};
+              if(worst&&!doneMap[worst]){
+                if(typeof patchInjected!=='undefined')patchInjected[worst]=1;
+                let exact=null;
+                try{exact=await codingReadFile(worst)}catch(e){}
+                if(exact&&String(exact).length>0){
+                  codingHistory.push({role:'user',content:'File snapshot: the EXACT current content of '+worst+' is below. Your OLD text must be copied verbatim from THIS — never from memory. Do not output this content back; only use it to build a correct OLD block.\n--- FILE START ('+worst+') ---\n'+String(exact).slice(0,12000)+'\n--- FILE END ---'});
+                  persistCodingChat();
+                }
+              }
+            }catch(e){}
+          }
         }else if(patchMissFails){
           patchMissFails=0;
+          try{patchMissByFile={}}catch(e){}
         }
         codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
@@ -6259,10 +6299,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
-  // Wait for auto-attach to complete so AI has file context immediately
-  try{await autoAttachProjectFiles()}catch(e){}
-  addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();try{autoAttachProjectFiles()}catch(e){};addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
 if(target.indexOf('agent:')===0){const aid=target.slice(6);
