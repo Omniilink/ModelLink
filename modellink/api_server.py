@@ -3198,7 +3198,8 @@ def _trademe_has_listings(html: str) -> bool:
     return False
 
 
-def _trademe_browser_html(url: str, wait_css: str = "a[href*='listing']") -> str:
+def _trademe_browser_html(url: str, wait_css: str = "a[href*='listing']",
+                          scroll: int = 0, want: int = 0) -> str:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -3222,13 +3223,34 @@ def _trademe_browser_html(url: str, wait_css: str = "a[href*='listing']") -> str
                     page.wait_for_selector(wait_css, timeout=30000)
                 except Exception:
                     pass
+            # Category pages lazy-load cards on scroll. Keep scrolling until
+            # there are comfortably more cards than the quota (excluded ones
+            # still cost cards) or the page stops growing.
+            same = 0
+            for _ in range(max(0, scroll)):
+                try:
+                    before = page.evaluate("document.body.scrollHeight")
+                    have = page.locator("a[href*='listing']").count()
+                    if want and have >= want * 2:
+                        break
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(1500)
+                    after = page.evaluate("document.body.scrollHeight")
+                    if after == before:
+                        same += 1
+                        if same >= 2:
+                            break
+                    else:
+                        same = 0
+                except Exception:
+                    break
             return page.content()
         finally:
             browser.close()
 
 
-def _trademe_playwright_html(url: str) -> str:
-    return _trademe_browser_html(url)
+def _trademe_playwright_html(url: str, scroll: int = 0, want: int = 0) -> str:
+    return _trademe_browser_html(url, scroll=scroll, want=want)
 
 
 # Chrome shown to JS-less / logged-out clients must never be stored as a
@@ -3367,10 +3389,12 @@ def _trademe_fetch_gallery(tm_url: str) -> list:
     return urls
 
 
-def _trademe_fetch_html(url: str):
+def _trademe_fetch_html(url: str, want: int = _TRADEME_CAP):
     """Returns (html, engine). Plain HTTP first (cheap when it works), then
     headless Chromium — Trade Me category pages are a JS app shell whose raw
-    HTML holds no listings at all."""
+    HTML holds no listings at all. `want` is the scrape quota: the browser
+    scrolls to lazy-load comfortably more cards than that, so keyword
+    exclusions filter down to `want` kept listings instead of `want` scanned."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                              "AppleWebKit/537.36 (KHTML, like Gecko) "
                              "Chrome/120.0 Safari/537.36"}
@@ -3382,7 +3406,8 @@ def _trademe_fetch_html(url: str):
             return html, "http"
     except Exception:
         pass
-    html = _trademe_playwright_html(url)
+    scrolls = max(3, min(10, (int(want or _TRADEME_CAP) // 20) + 2))
+    html = _trademe_playwright_html(url, scroll=scrolls, want=int(want or _TRADEME_CAP))
     if not _trademe_has_listings(html):
         raise RuntimeError("No listings rendered even in a real browser — Trade Me may be"
                            " blocking automation, or the category is empty")
@@ -3397,14 +3422,18 @@ def _trademe_abs(base: str, href: str) -> str:
 
 
 def _trademe_parse_listings(html: str, base_url: str,
-                            cap: int = _TRADEME_CAP, exclude=None) -> list:
+                            cap: int = _TRADEME_CAP, exclude=None,
+                            stats: dict = None) -> list:
     """Best-effort item extraction (title/url/price/nearby image). The BERT
     parser plugs in later; for now this stores raw text metadata. `cap` bounds
-    how many items are kept; `exclude` drops titles containing a keyword."""
+    how many items are KEPT — excluded titles never consume the quota, so the
+    scan continues past them until `cap` keepers (or the page runs out).
+    `stats`, when given, is filled with scanned/excluded/kept counts."""
     from html import unescape as _unescape
     cap = max(1, int(cap or _TRADEME_CAP))
     out, seen = [], set()
     spans = []
+    scanned, excluded = 0, 0
     for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html or "",
                           re.IGNORECASE | re.DOTALL):
         href, inner, at = am.group(1), am.group(2), am.start()
@@ -3419,7 +3448,9 @@ def _trademe_parse_listings(html: str, base_url: str,
         title = re.sub(r"\s+", " ", title).strip()
         if len(title) < 3:
             continue
+        scanned += 1
         if _trademe_excluded(title, exclude):
+            excluded += 1
             seen.add(url)
             continue
         seen.add(url)
@@ -3428,6 +3459,8 @@ def _trademe_parse_listings(html: str, base_url: str,
         spans.append((at, am.end()))
         if len(out) >= cap:
             break
+    if stats is not None:
+        stats.update(scanned=scanned, excluded=excluded, kept=len(out))
     # Prices + thumbnails from the neighbourhood of each link: first $ amount
     # after the anchor; thumbnail inside the anchor first, else the nearest
     # <img> before it.
@@ -3486,10 +3519,13 @@ def _trademe_run_scrape(job_id: str, category_url: str,
         log(f"Fetching {category_url}")
         if exclude:
             log("Excluding: " + ", ".join(exclude))
-        html, engine = _trademe_fetch_html(category_url)
+        html, engine = _trademe_fetch_html(category_url, want=limit)
         log(f"Fetched via {engine} ({len(html)} chars)")
-        items = _trademe_parse_listings(html, category_url, cap=limit, exclude=exclude)
-        log(f"Parsed {len(items)} candidate listings (limit {limit})")
+        stats = {}
+        items = _trademe_parse_listings(html, category_url, cap=limit,
+                                        exclude=exclude, stats=stats)
+        log(f"Kept {len(items)} listings (scanned {stats.get('scanned', 0)},"
+            f" excluded {stats.get('excluded', 0)}, quota {limit})")
         conn = get_db()
         try:
             saved, dupes = 0, 0
@@ -3705,7 +3741,9 @@ async def trademe_description(request: Request, listing_id: int):
     if row["description"]:
         return {"id": row["id"], "description": row["description"], "engine": "stored"}
     try:
-        desc, engine = _trademe_fetch_description(row["tm_url"])
+        # Blocking network + sync Playwright must stay off the event loop
+        # (sync API raises if called inside it).
+        desc, engine = await asyncio.to_thread(_trademe_fetch_description, row["tm_url"])
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)[:300]})
     conn = get_db()
@@ -3820,7 +3858,12 @@ async def trademe_delete_all(request: Request, status: str = ""):
                     pass
     try:
         if names is None:
+            # Full clear: drop every cached image, including orphans — but
+            # never touch non-image files sharing the directory.
             for fn in os.listdir(thumb_dir):
+                if os.path.splitext(fn)[1].lower() not in (
+                        ".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                    continue
                 try:
                     os.remove(os.path.join(thumb_dir, fn))
                 except OSError:
@@ -3915,7 +3958,7 @@ async def trademe_gallery(request: Request, listing_id: int):
     if not stored:
         urls = []
         try:
-            urls = _trademe_fetch_gallery(row["tm_url"])
+            urls = await asyncio.to_thread(_trademe_fetch_gallery, row["tm_url"])
         except Exception:
             urls = []
         if row["image_url"] and row["image_url"] not in urls:
