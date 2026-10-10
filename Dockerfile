@@ -15,6 +15,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Headless Chromium for the Trade Me valuation scraper (category pages
+# render listings client-side; plain HTTP returns an empty app shell).
+RUN playwright install --with-deps chromium
+
 # docker CLI for the optional execution sandbox (sibling containers).
 # The daemon socket is mounted at runtime, not baked in.
 COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker

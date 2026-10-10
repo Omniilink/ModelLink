@@ -9436,8 +9436,18 @@ async function admTmScrape(){
     const r=await authFetch(API+'/api/trademe/scrape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({category_url:url})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    if(job)job.textContent='scraping… (job '+d.job_id+') — Refresh in a bit';
-    setTimeout(()=>{try{admTmList()}catch(e){}},8000);
+    if(job)job.textContent='scraping… (job '+d.job_id+')';
+    for(let i=0;i<40;i++){
+      await new Promise(r=>setTimeout(r,3000));
+      let j=null;
+      try{
+        const jr=await authFetch(API+'/api/admin/jobs/'+d.job_id);
+        if(jr.ok)j=await jr.json();
+      }catch(e){break}
+      if(!j)break;
+      if(job)job.textContent='scraping… '+(((j.lines||[]).slice(-1)[0])||'');
+      if(j.status&&j.status!=='running'){admTmList();break}
+    }
   }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
 }
 async function admTmList(){

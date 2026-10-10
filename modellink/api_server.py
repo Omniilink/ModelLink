@@ -3059,10 +3059,55 @@ def _trademe_thumb_dir() -> str:
     return _ensure_dir(os.path.join(APP_DIR, "user_data", "trademe_thumbs"))
 
 
+def _trademe_has_listings(html: str) -> bool:
+    """True when the HTML actually contains item links (numeric /listing/
+    ids). Trade Me category pages are a JS app shell — plain HTTP returns
+    chrome with zero listings, which must escalate, not save as empty."""
+    if not html:
+        return False
+    for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html,
+                          re.IGNORECASE | re.DOTALL):
+        if not re.search(r"/listing/\d", am.group(1) or ""):
+            continue
+        title = re.sub(r"<[^>]+>", " ", am.group(2) or "")
+        if len(re.sub(r"\s+", " ", title).strip()) >= 3:
+            return True
+    return False
+
+
+def _trademe_playwright_html(url: str) -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise RuntimeError("Trade Me renders listings with JavaScript — install Playwright"
+                           " on the server (pip install playwright && playwright install chromium;"
+                           " Docker rebuilds include it) and scrape again")
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(user_agent=ua)
+            try:
+                page.route("**/*.{png,jpg,jpeg,webp,gif,svg,woff,woff2,ttf,mp4}",
+                           lambda r: r.abort())
+            except Exception:
+                pass
+            page.goto(url, timeout=45000)
+            try:
+                page.wait_for_selector("a[href*='listing']", timeout=30000)
+            except Exception:
+                pass
+            html = page.content()
+        finally:
+            browser.close()
+    return html
+
+
 def _trademe_fetch_html(url: str):
-    """Returns (html, engine). Plain HTTP first; Playwright only when the
-    page needs JS rendering (reserved hook — enable with
-    OMNIILINK_TRADEME_PLAYWRIGHT=1 once playwright is installed)."""
+    """Returns (html, engine). Plain HTTP first (cheap when it works), then
+    headless Chromium — Trade Me category pages are a JS app shell whose raw
+    HTML holds no listings at all."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                              "AppleWebKit/537.36 (KHTML, like Gecko) "
                              "Chrome/120.0 Safari/537.36"}
@@ -3070,30 +3115,15 @@ def _trademe_fetch_html(url: str):
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=25) as r:
             html = r.read(2 * 1024 * 1024).decode("utf-8", "replace")
-        if len(html.strip()) > 1000:
+        if _trademe_has_listings(html):
             return html, "http"
-    except Exception as e:
-        last_err = str(e)
-    else:
-        last_err = "empty response"
-    if os.environ.get("OMNIILINK_TRADEME_PLAYWRIGHT", "").strip().lower() in ("1", "true", "yes"):
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise RuntimeError("Playwright requested but not installed")
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(user_agent=headers["User-Agent"])
-                page.goto(url, timeout=45000)
-                page.wait_for_timeout(3000)
-                html = page.content()
-            finally:
-                browser.close()
-        if len(html.strip()) > 1000:
-            return html, "playwright"
-        raise RuntimeError("Playwright returned an empty page")
-    raise RuntimeError(f"Could not fetch category page ({last_err})")
+    except Exception:
+        pass
+    html = _trademe_playwright_html(url)
+    if not _trademe_has_listings(html):
+        raise RuntimeError("No listings rendered even in a real browser — Trade Me may be"
+                           " blocking automation, or the category is empty")
+    return html, "playwright"
 
 
 def _trademe_abs(base: str, href: str) -> str:
@@ -3210,9 +3240,11 @@ def _trademe_run_scrape(job_id: str, category_url: str):
         finally:
             conn.close()
         job["status"] = "done"
+        job["exit_code"] = 0
         log(f"Saved {saved} new listings ({dupes} already known, {imgs} thumbnails).")
     except Exception as e:
         job["status"] = "failed"
+        job["exit_code"] = 1
         log(f"error: {e}")
     finally:
         job["finished"] = time.time()
