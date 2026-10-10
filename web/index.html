@@ -1577,6 +1577,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         <div class="view-body">
           <div style="max-width:1100px;margin:0 auto">
             <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
+            <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Gemini model for bulk valuation"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value with Gemini</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Sends the current filter's unvalued listings to Gemini in chunks and stores each strict min/max as its prediction.</span></div>
             <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Hide from list <input type="text" id="adm-tm-hide" placeholder="e.g. miner, bitcoin, asic" style="width:min(220px,40vw)" onkeydown="if(event.key==='Enter')admTmHideAdd()" /></label><button class="btn btn-ghost btn-sm" onclick="admTmHideAdd()">Add</button><span id="adm-tm-hide-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></span><button class="btn btn-ghost btn-sm" onclick="admTmHideClear()">Clear</button></div>
             <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
@@ -1939,7 +1940,7 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmList()}catch(e){}}
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
@@ -9451,7 +9452,7 @@ async function admTmScrape(){
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
     if(job)job.textContent='scraping… (job '+d.job_id+')';
-    for(let i=0;i<40;i++){
+    for(let i=0;i<120;i++){
       await new Promise(r=>setTimeout(r,3000));
       let j=null;
       try{
@@ -9463,6 +9464,40 @@ async function admTmScrape(){
       if(j.status&&j.status!=='running'){admTmList();break}
     }
   }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
+}
+async function admTmModels(){
+  try{
+    const r=await authFetch(API+'/api/trademe/models');if(!r.ok)return;
+    const d=await r.json();const sel=document.getElementById('adm-tm-model');if(!sel)return;
+    sel.innerHTML='';(d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;if(m===d.default)o.selected=true;sel.appendChild(o)});
+  }catch(e){}
+}
+async function admTmValue(){
+  const st=document.getElementById('adm-tm-status');const status=st?st.value:'pending';
+  const ms=document.getElementById('adm-tm-model');const model=ms?ms.value:'';
+  const job=document.getElementById('adm-tm-value-job');if(job)job.textContent='starting…';
+  try{
+    const r=await authFetch(API+'/api/trademe/value',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status,model:model})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(job)job.textContent='valuing '+d.count+'… (job '+d.job_id+')';
+    for(let i=0;i<240;i++){
+      await new Promise(r=>setTimeout(r,3000));
+      let j=null;
+      try{
+        const jr=await authFetch(API+'/api/admin/jobs/'+d.job_id);
+        if(jr.ok)j=await jr.json();
+      }catch(e){break}
+      if(!j)break;
+      if(job)job.textContent='valuing… '+(((j.lines||[]).slice(-1)[0])||'');
+      if(j.status&&j.status!=='running'){
+        if(job)job.textContent=((j.lines||[]).slice(-1)[0])||j.status;
+        if(j.status==='done')showToast('Bulk valuation done','success');
+        else showToast('Valuation failed: '+(((j.lines||[]).slice(-1)[0])||''),'error');
+        admTmList();break;
+      }
+    }
+  }catch(e){if(job)job.textContent='';showToast('Valuation failed: '+e.message,'error')}
 }
 let admTmAll=[],admTmFacets=[],admTmSel=new Set(),admTmHideWords=[];
 function admTmNorm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'')}

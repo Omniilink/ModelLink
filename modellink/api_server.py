@@ -3395,17 +3395,9 @@ def _trademe_fetch_html(url: str, want: int = _TRADEME_CAP):
     HTML holds no listings at all. `want` is the scrape quota: the browser
     scrolls to lazy-load comfortably more cards than that, so keyword
     exclusions filter down to `want` kept listings instead of `want` scanned."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                             "AppleWebKit/537.36 (KHTML, like Gecko) "
-                             "Chrome/120.0 Safari/537.36"}
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=25) as r:
-            html = r.read(2 * 1024 * 1024).decode("utf-8", "replace")
-        if _trademe_has_listings(html):
-            return html, "http"
-    except Exception:
-        pass
+    html = _trademe_fetch_http(url)
+    if _trademe_has_listings(html):
+        return html, "http"
     scrolls = max(3, min(10, (int(want or _TRADEME_CAP) // 20) + 2))
     html = _trademe_playwright_html(url, scroll=scrolls, want=int(want or _TRADEME_CAP))
     if not _trademe_has_listings(html):
@@ -3509,6 +3501,98 @@ def _trademe_thumb_save(image_url: str):
         return ""
 
 
+def _trademe_merge_keep(keep: dict, items: list, known: set) -> int:
+    """Merge one parsed batch into the keeper dict, skipping already-known
+    URLs. Returns how many were newly added."""
+    new = 0
+    for it in items or []:
+        u = (it or {}).get("tm_url")
+        if u and u not in keep and u not in (known or set()):
+            keep[u] = it
+            new += 1
+    return new
+
+
+def _trademe_collect_browser(category_url: str, limit: int, exclude,
+                             known: set, log) -> tuple:
+    """Batched collection inside one browser session. Each round parses the
+    current DOM (~20-30 fresh cards per scroll), merges keepers, then scrolls
+    for more — until `limit` NEW keepers or the page stops growing. Returns
+    (items, excluded_total). Excluded titles never consume the quota."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise RuntimeError("Trade Me renders listings with JavaScript — install Playwright"
+                           " on the server (pip install playwright && playwright install chromium;"
+                           " Docker rebuilds include it) and scrape again")
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+    keep, excluded_total = {}, 0
+    max_rounds = max(6, limit // 20 + 4)
+    stall = 0
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(user_agent=ua)
+            try:
+                page.route("**/*.{png,jpg,jpeg,webp,gif,svg,woff,woff2,ttf,mp4}",
+                           lambda r: r.abort())
+            except Exception:
+                pass
+            page.goto(category_url, timeout=45000)
+            try:
+                page.wait_for_selector("a[href*='listing']", timeout=30000)
+            except Exception:
+                pass
+            if not _trademe_has_listings(page.content()):
+                raise RuntimeError("No listings rendered even in a real browser — Trade Me may be"
+                                   " blocking automation, or the category is empty")
+            for rnd in range(1, max_rounds + 1):
+                try:
+                    html = page.content()
+                except Exception:
+                    break
+                stats = {}
+                items = _trademe_parse_listings(html, category_url, cap=limit,
+                                                exclude=exclude, stats=stats)
+                new = _trademe_merge_keep(keep, items, known)
+                excluded_total = max(excluded_total, stats.get("excluded", 0))
+                log(f"batch {rnd}: +{new} new ({len(keep)}/{limit} kept,"
+                    f" {stats.get('scanned', 0)} cards on page)")
+                if len(keep) >= limit:
+                    break
+                try:
+                    before = page.evaluate("document.body.scrollHeight")
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(1500)
+                    after = page.evaluate("document.body.scrollHeight")
+                except Exception:
+                    break
+                if new == 0 and after == before:
+                    stall += 1
+                    if stall >= 2:
+                        log("page stopped growing — collected all it holds")
+                        break
+                else:
+                    stall = 0
+        finally:
+            browser.close()
+    return list(keep.values())[:limit], excluded_total
+
+
+def _trademe_fetch_http(url: str) -> str:
+    """Plain-HTTP fetch; returns "" on any failure."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/120.0 Safari/537.36"}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.read(2 * 1024 * 1024).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
 def _trademe_run_scrape(job_id: str, category_url: str,
                         limit: int = _TRADEME_CAP, exclude=None):
     job = _ADMIN_JOBS.get(job_id)
@@ -3516,16 +3600,30 @@ def _trademe_run_scrape(job_id: str, category_url: str,
         return
     log = job["lines"].append
     try:
-        log(f"Fetching {category_url}")
+        log(f"Fetching {category_url} (quota {limit}, ~20-30 per batch)")
         if exclude:
             log("Excluding: " + ", ".join(exclude))
-        html, engine = _trademe_fetch_html(category_url, want=limit)
-        log(f"Fetched via {engine} ({len(html)} chars)")
-        stats = {}
-        items = _trademe_parse_listings(html, category_url, cap=limit,
-                                        exclude=exclude, stats=stats)
-        log(f"Kept {len(items)} listings (scanned {stats.get('scanned', 0)},"
-            f" excluded {stats.get('excluded', 0)}, quota {limit})")
+        conn = get_db()
+        try:
+            known = {r["tm_url"] for r in conn.execute(
+                "SELECT tm_url FROM trademe_listings").fetchall()}
+        finally:
+            conn.close()
+        items, excluded, engine = [], 0, "http"
+        html = _trademe_fetch_http(category_url)
+        if _trademe_has_listings(html):
+            stats = {}
+            raw = _trademe_parse_listings(html, category_url, cap=limit,
+                                          exclude=exclude, stats=stats)
+            keep = {}
+            _trademe_merge_keep(keep, raw, known)
+            items, excluded = list(keep.values()), stats.get("excluded", 0)
+            log(f"http gave {len(items)}/{limit} new keepers — batching in the browser for the rest")
+        if len(items) < limit:
+            items, excluded = _trademe_collect_browser(
+                category_url, limit, exclude, known, log)
+            engine = "playwright"
+        log(f"Kept {len(items)} new listings ({excluded} excluded, quota {limit})")
         conn = get_db()
         try:
             saved, dupes = 0, 0
@@ -3755,6 +3853,268 @@ async def trademe_description(request: Request, listing_id: int):
     finally:
         conn.close()
     return {"id": listing_id, "description": desc, "engine": engine}
+
+
+_TRADEME_VALUE_CHUNK = 25
+_TRADEME_VALUE_MAX = 200
+
+
+def _trademe_gemini_models() -> list:
+    try:
+        return list((PROVIDERS.get("gemini") or {}).get("models") or [])
+    except Exception:
+        return []
+
+
+def _trademe_gemini_key(user_id: int):
+    """User's saved Gemini key, else a server env key, else None."""
+    try:
+        keys = get_user_provider_keys(user_id) or {}
+        if keys.get("gemini"):
+            return keys["gemini"]
+    except Exception:
+        pass
+    try:
+        for entry in (load_all_keys().get("gemini") or []):
+            if (entry or {}).get("key"):
+                return entry["key"]
+    except Exception:
+        pass
+    return None
+
+
+def _trademe_value_system() -> str:
+    return (
+        "You are a strict second-hand computer hardware valuer for the New Zealand "
+        "Trade Me market. All prices in NZD.\n"
+        "For EACH numbered item, heavily scrutinise the title and description: pin down "
+        "exact specs (RAM size/type, storage size/type, CPU, age/generation), discount "
+        "hard for missing specs, vague condition, dead/for-parts wording, or crypto-mining "
+        "gear (worth little). Give the realistic resale range you would confidently defend "
+        "to a buyer — conservative, never optimistic. The asking price is context only; "
+        "do not anchor to it.\n"
+        "Reply with ONLY a JSON array, no prose, no code fences, one object per item, "
+        'e.g. [{"i":0,"min":120,"max":180}]. Use nulls only when an item is truly unvaluable.'
+    )
+
+
+def _trademe_value_user(items: list) -> str:
+    lines = []
+    for n, it in enumerate(items or []):
+        ask = (it or {}).get("tm_price")
+        ask_s = f"${ask:,.2f}" if isinstance(ask, (int, float)) else "unknown"
+        desc = str((it or {}).get("description") or "").strip().replace("\n", " ")
+        if len(desc) > 500:
+            desc = desc[:500] + "…"
+        lines.append(f"[{n}] {(it or {}).get('title') or '(no title)'}"
+                     f" | asking {ask_s} | {desc or 'no description'}")
+    return "Value each item:\n" + "\n".join(lines)
+
+
+def _trademe_parse_value_response(text: str, count: int) -> dict:
+    """{item index: (min, max)} — skips nulls, negatives and garbage.
+    Tolerates prose/fences around the JSON array."""
+    out = {}
+    try:
+        s = text or ""
+        a, b = s.find("["), s.rfind("]")
+        if a < 0 or b <= a:
+            return out
+        data = json.loads(s[a:b + 1])
+    except (ValueError, TypeError):
+        return out
+    if not isinstance(data, list):
+        return out
+
+    def num(v):
+        try:
+            f = float(v)
+            return f if f >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    for row in data:
+        try:
+            i = int((row or {}).get("i"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (0 <= i < count):
+            continue
+        mn, mx = num((row or {}).get("min")), num((row or {}).get("max"))
+        if mn is None and mx is None:
+            continue
+        if mn is not None and mx is not None and mn > mx:
+            mn, mx = mx, mn
+        out[i] = (mn, mx)
+    return out
+
+
+def _trademe_gemini_value(items: list, model: str, api_key: str, timeout: int = 180) -> dict:
+    """One Gemini call valuing a chunk of items → {index: (min, max)}."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "systemInstruction": {"parts": [{"text": _trademe_value_system()}]},
+        "contents": [{"role": "user",
+                      "parts": [{"text": _trademe_value_user(items)}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+    }
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = str(e)
+        raise RuntimeError(f"Gemini HTTP {e.code}: {detail}")
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        raise RuntimeError("Gemini: " + str(err.get("message") if isinstance(err, dict)
+                                           else err)[:300])
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("Gemini returned no content")
+    vals = _trademe_parse_value_response(text, len(items))
+    if not vals:
+        raise RuntimeError("Gemini returned no usable valuations")
+    return vals
+
+
+def _trademe_run_value(job_id: str, ids: list, model: str, api_key: str, chunk: int):
+    job = _ADMIN_JOBS.get(job_id)
+    if job is None:
+        return
+    log = job["lines"].append
+    try:
+        total = 0
+        ids = [int(x) for x in (ids or [])]
+        for s in range(0, len(ids), max(1, chunk)):
+            batch = ids[s:s + max(1, chunk)]
+            conn = get_db()
+            try:
+                rows = conn.execute(
+                    "SELECT id, title, tm_price, description FROM trademe_listings"
+                    f" WHERE id IN ({','.join('?' * len(batch))})", batch).fetchall()
+            finally:
+                conn.close()
+            items = [dict(r) for r in rows]
+            if not items:
+                continue
+            log(f"valuing {s + 1}-{s + len(items)} of {len(ids)} via {model}…")
+            vals = _trademe_gemini_value(items, model, api_key)
+            conn = get_db()
+            try:
+                n = 0
+                for i, it in enumerate(items):
+                    if i in vals:
+                        mn, mx = vals[i]
+                        conn.execute("UPDATE trademe_listings SET predicted_min = ?,"
+                                     " predicted_max = ?, updated_at = datetime('now')"
+                                     " WHERE id = ?", (mn, mx, it["id"]))
+                        n += 1
+                conn.commit()
+            finally:
+                conn.close()
+            total += n
+            log(f"chunk done: {n}/{len(items)} valued ({total} total)")
+            time.sleep(2)
+        job["status"] = "done"
+        job["exit_code"] = 0
+        log(f"Valued {total} of {len(ids)} listings with {model}.")
+    except Exception as e:
+        job["status"] = "failed"
+        job["exit_code"] = 1
+        log(f"error: {e}")
+    finally:
+        job["finished"] = time.time()
+        job.pop("_proc", None)
+
+
+@app.get("/api/trademe/models")
+async def trademe_models(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    models = _trademe_gemini_models()
+    return {"models": models, "default": models[0] if models else "",
+            "chunk_default": _TRADEME_VALUE_CHUNK}
+
+
+@app.post("/api/trademe/value")
+async def trademe_value(request: Request):
+    """Bulk valuation: send a batch of listings to Gemini in chunked requests
+    (one background job) and store each strict min/max as the row's prediction.
+    Fast-tracks labelling ahead of training your own model."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    models = _trademe_gemini_models()
+    model = str(data.get("model") or "").strip() or (models[0] if models else "")
+    if not model or model not in models:
+        return JSONResponse(status_code=400, content={"error": "Unknown Gemini model"})
+    try:
+        chunk = max(5, min(50, int(data.get("chunk") or _TRADEME_VALUE_CHUNK)))
+        maxn = max(1, min(_TRADEME_VALUE_MAX, int(data.get("max") or _TRADEME_VALUE_MAX)))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "chunk/max must be numbers"})
+    overwrite = bool(data.get("overwrite"))
+    api_key = _trademe_gemini_key(user["id"])
+    if not api_key:
+        return JSONResponse(status_code=400, content={
+            "error": "No Gemini API key — add one under Providers (or set GEMINI_API_KEY on the server)"})
+    conn = get_db()
+    try:
+        if data.get("ids") is not None:
+            try:
+                wanted = [int(x) for x in data.get("ids")][:maxn]
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={"error": "ids must be numbers"})
+            if not wanted:
+                return JSONResponse(status_code=400, content={"error": "No listings selected"})
+            rows = conn.execute(
+                "SELECT id FROM trademe_listings"
+                f" WHERE id IN ({','.join('?' * len(wanted))})", wanted).fetchall()
+            ids = [r["id"] for r in rows]
+        else:
+            status = str(data.get("status") or "").strip().lower()
+            conds, params = [], []
+            if status:
+                if status not in _TRADEME_STATUS:
+                    return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+                conds.append("status = ?")
+                params.append(status)
+            if not overwrite:
+                conds.append("predicted_min IS NULL")
+            rows = conn.execute(
+                "SELECT id FROM trademe_listings"
+                + (" WHERE " + " AND ".join(conds) if conds else "")
+                + " ORDER BY id LIMIT ?", params + [maxn]).fetchall()
+            ids = [r["id"] for r in rows]
+    finally:
+        conn.close()
+    if not ids:
+        return JSONResponse(status_code=400, content={"error": "Nothing to value"})
+    job_id = secrets.token_hex(5)
+    job = {"id": job_id, "kind": "trademe-value", "command": f"{len(ids)} via {model}",
+           "status": "running", "lines": [], "exit_code": None,
+           "started": time.time(), "finished": None}
+    with _ADMIN_JOBS_LOCK:
+        for jid in list(_ADMIN_JOBS):
+            if len(_ADMIN_JOBS) > 20 and _ADMIN_JOBS[jid].get("status") != "running":
+                _ADMIN_JOBS.pop(jid, None)
+        _ADMIN_JOBS[job_id] = job
+    threading.Thread(target=_trademe_run_value,
+                     args=(job_id, ids, model, api_key, chunk), daemon=True).start()
+    return {"status": "started", "job_id": job_id, "count": len(ids), "model": model}
 
 
 @app.post("/api/trademe/predict/{listing_id}")
