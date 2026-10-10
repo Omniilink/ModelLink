@@ -3051,12 +3051,64 @@ async def admin_findings_delete(request: Request, finding_id: int):
 # ==========================================
 _TRADEME_STATUS = ("pending", "approved", "rejected", "adjusted")
 _TRADEME_CAP = 50
+_TRADEME_LIMIT_OPTIONS = (20, 50, 100, 200)
 _TRADEME_IMG_MAX = 300 * 1024
 _TRADEME_IMG_CAP = 10
+_TRADEME_GALLERY_CAP = 12
 
 
 def _trademe_thumb_dir() -> str:
     return _ensure_dir(os.path.join(APP_DIR, "user_data", "trademe_thumbs"))
+
+
+def _trademe_config_path() -> str:
+    return os.path.join(APP_DIR, "user_data", "trademe_config.json")
+
+
+def _trademe_config_normalize(data: dict) -> dict:
+    """Clamp limit to the offered options and normalise the exclusion list."""
+    out = {"limit": _TRADEME_CAP, "exclude": []}
+    try:
+        raw = (data or {}).get("limit")
+        if raw not in (None, ""):
+            out["limit"] = max(1, min(200, int(float(raw))))
+    except (TypeError, ValueError):
+        pass
+    ex = (data or {}).get("exclude")
+    if isinstance(ex, str):
+        ex = re.split(r"[,\n]", ex)
+    keys, seen = [], set()
+    for k in (ex or []):
+        k = str(k).strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    out["exclude"] = keys
+    return out
+
+
+def _trademe_config_load() -> dict:
+    try:
+        with open(_trademe_config_path(), "r", encoding="utf-8") as f:
+            return _trademe_config_normalize(json.load(f))
+    except Exception:
+        return {"limit": _TRADEME_CAP, "exclude": []}
+
+
+def _trademe_config_save(cfg: dict) -> dict:
+    cfg = _trademe_config_normalize(cfg)
+    try:
+        with open(_trademe_config_path(), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+    except OSError:
+        pass
+    return cfg
+
+
+def _trademe_excluded(title: str, exclude) -> bool:
+    """Case-insensitive keyword exclusion on a listing title."""
+    t = (title or "").lower()
+    return any(k and k in t for k in (exclude or []))
 
 
 def _trademe_has_listings(html: str) -> bool:
@@ -3146,6 +3198,63 @@ def _trademe_fetch_description(tm_url: str):
     return desc, "playwright"
 
 
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def _trademe_extract_images(page_html: str) -> list:
+    """Candidate photo URLs on an item page: og:image plus gallery <img>s,
+    filtered to Trade Me's photo host to avoid icons/logos."""
+    from html import unescape as _unescape
+    urls, seen = [], set()
+
+    def add(u):
+        u = _unescape((u or "").strip())
+        if not u.lower().startswith(("http://", "https://")):
+            return
+        base = u.split("?")[0].lower()
+        if not base.endswith(_IMG_EXT):
+            return
+        host = urllib.parse.urlparse(u).netloc.lower()
+        if not any(h in host for h in ("tmcdn", "trademe", "photoserver")):
+            return
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+
+    for m in re.finditer(
+            r'<meta[^>]+(?:property|name)="(?:og:image|twitter:image)"[^>]+content="([^"]+)"',
+            page_html or "", re.IGNORECASE):
+        add(m.group(1))
+    for m in re.finditer(r'<img[^>]+src="([^"]+)"', page_html or "", re.IGNORECASE):
+        add(m.group(1))
+    return urls
+
+
+def _trademe_fetch_gallery(tm_url: str) -> list:
+    """Photo URLs for one listing. Plain HTTP often carries og:image; a real
+    browser is needed for the full gallery."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/120.0 Safari/537.36"}
+    try:
+        req = urllib.request.Request(tm_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=25) as r:
+            page = r.read(2 * 1024 * 1024).decode("utf-8", "replace")
+        urls = _trademe_extract_images(page)
+        if len(urls) > 1:
+            return urls
+    except Exception:
+        urls = []
+    try:
+        page = _trademe_browser_html(tm_url, wait_css="")
+        browser_urls = _trademe_extract_images(page)
+        if browser_urls:
+            return browser_urls
+    except Exception:
+        pass
+    return urls
+
+
 def _trademe_fetch_html(url: str):
     """Returns (html, engine). Plain HTTP first (cheap when it works), then
     headless Chromium — Trade Me category pages are a JS app shell whose raw
@@ -3175,10 +3284,13 @@ def _trademe_abs(base: str, href: str) -> str:
     return urllib.parse.urljoin(base, href).split("#")[0]
 
 
-def _trademe_parse_listings(html: str, base_url: str) -> list:
+def _trademe_parse_listings(html: str, base_url: str,
+                            cap: int = _TRADEME_CAP, exclude=None) -> list:
     """Best-effort item extraction (title/url/price/nearby image). The BERT
-    parser plugs in later; for now this stores raw text metadata."""
+    parser plugs in later; for now this stores raw text metadata. `cap` bounds
+    how many items are kept; `exclude` drops titles containing a keyword."""
     from html import unescape as _unescape
+    cap = max(1, int(cap or _TRADEME_CAP))
     out, seen = [], set()
     spans = []
     for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html or "",
@@ -3195,11 +3307,14 @@ def _trademe_parse_listings(html: str, base_url: str) -> list:
         title = re.sub(r"\s+", " ", title).strip()
         if len(title) < 3:
             continue
+        if _trademe_excluded(title, exclude):
+            seen.add(url)
+            continue
         seen.add(url)
         out.append({"tm_url": url[:500], "title": title[:200],
                     "tm_price": None, "image": ""})
         spans.append((at, am.end()))
-        if len(out) >= _TRADEME_CAP:
+        if len(out) >= cap:
             break
     # Prices + thumbnails from the neighbourhood of each link: first $ amount
     # after the anchor; thumbnail inside the anchor first, else the nearest
@@ -3238,7 +3353,9 @@ def _trademe_thumb_save(image_url: str):
         if not raw or len(raw) > _TRADEME_IMG_MAX:
             return ""
         ext = os.path.splitext(urllib.parse.urlparse(image_url).path)[1].lower()
-        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        if ext and ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            return ""
+        if not ext:
             ext = ".jpg"
         name = f"{int(time.time() * 1000):013d}-{secrets.token_hex(4)}{ext}"
         with open(os.path.join(_trademe_thumb_dir(), name), "wb") as f:
@@ -3248,20 +3365,23 @@ def _trademe_thumb_save(image_url: str):
         return ""
 
 
-def _trademe_run_scrape(job_id: str, category_url: str):
+def _trademe_run_scrape(job_id: str, category_url: str,
+                        limit: int = _TRADEME_CAP, exclude=None):
     job = _ADMIN_JOBS.get(job_id)
     if job is None:
         return
     log = job["lines"].append
     try:
         log(f"Fetching {category_url}")
+        if exclude:
+            log("Excluding: " + ", ".join(exclude))
         html, engine = _trademe_fetch_html(category_url)
         log(f"Fetched via {engine} ({len(html)} chars)")
-        items = _trademe_parse_listings(html, category_url)
-        log(f"Parsed {len(items)} candidate listings")
+        items = _trademe_parse_listings(html, category_url, cap=limit, exclude=exclude)
+        log(f"Parsed {len(items)} candidate listings (limit {limit})")
         conn = get_db()
         try:
-            saved, dupes, imgs = 0, 0, 0
+            saved, dupes = 0, 0
             for it in items:
                 exists = conn.execute(
                     "SELECT id FROM trademe_listings WHERE tm_url = ?",
@@ -3269,23 +3389,22 @@ def _trademe_run_scrape(job_id: str, category_url: str):
                 if exists:
                     dupes += 1
                     continue
-                img_name = ""
-                if imgs < _TRADEME_IMG_CAP and it.get("image"):
-                    img_name = _trademe_thumb_save(it["image"])
-                    if img_name:
-                        imgs += 1
+                # Thumbnails are NOT downloaded during scrape (faster, less
+                # bandwidth) — only the source URL is kept and fetched lazily
+                # when the admin opens the listing.
                 conn.execute(
                     "INSERT INTO trademe_listings (tm_url, title, tm_price, status,"
-                    " image_path, source_category) VALUES (?, ?, ?, 'pending', ?, ?)",
+                    " image_url, source_category) VALUES (?, ?, ?, 'pending', ?, ?)",
                     (it["tm_url"], it["title"], it.get("tm_price"),
-                     img_name, category_url[:500]))
+                     (it.get("image") or "")[:500], category_url[:500]))
                 saved += 1
             conn.commit()
         finally:
             conn.close()
         job["status"] = "done"
         job["exit_code"] = 0
-        log(f"Saved {saved} new listings ({dupes} already known, {imgs} thumbnails).")
+        log(f"Saved {saved} new listings ({dupes} already known;"
+            " thumbnails load lazily when opened).")
     except Exception as e:
         job["status"] = "failed"
         job["exit_code"] = 1
@@ -3303,9 +3422,16 @@ async def trademe_scrape(request: Request):
     data, bad = await _safe_json(request)
     if bad:
         return bad
-    url = str((data or {}).get("category_url", "") or "").strip()
+    data = data or {}
+    url = str(data.get("category_url", "") or "").strip()
     if not url or len(url) > 500 or not url.lower().startswith(("http://", "https://")):
         return JSONResponse(status_code=400, content={"error": "A valid http(s) category URL is required"})
+    cfg = _trademe_config_load()
+    if data.get("limit") not in (None, ""):
+        cfg["limit"] = data.get("limit")
+    if "exclude" in data:
+        cfg["exclude"] = data.get("exclude")
+    cfg = _trademe_config_normalize(cfg)
     job_id = secrets.token_hex(5)
     job = {"id": job_id, "kind": "trademe-scrape", "command": url,
            "status": "running", "lines": [], "exit_code": None,
@@ -3315,8 +3441,11 @@ async def trademe_scrape(request: Request):
             if len(_ADMIN_JOBS) > 20 and _ADMIN_JOBS[jid].get("status") != "running":
                 _ADMIN_JOBS.pop(jid, None)
         _ADMIN_JOBS[job_id] = job
-    threading.Thread(target=_trademe_run_scrape, args=(job_id, url), daemon=True).start()
-    return {"status": "started", "job_id": job_id}
+    threading.Thread(target=_trademe_run_scrape,
+                     args=(job_id, url, cfg["limit"], cfg["exclude"]),
+                     daemon=True).start()
+    return {"status": "started", "job_id": job_id,
+            "limit": cfg["limit"], "exclude": cfg["exclude"]}
 
 
 def _trademe_margin(row: dict):
@@ -3347,7 +3476,7 @@ async def trademe_listings(request: Request, status: str = "", sort: str = ""):
         rows = conn.execute(
             "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
             " status, image_path, source_category, description, predicted_min,"
-            " predicted_max, created_at, updated_at"
+            " predicted_max, image_url, images, created_at, updated_at"
             " FROM trademe_listings"
             + (" WHERE " + " AND ".join(conds) if conds else "")
             + " ORDER BY id DESC LIMIT 500", params).fetchall()
@@ -3413,7 +3542,7 @@ async def trademe_verify(request: Request, listing_id: int):
         rec = dict(conn.execute(
             "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
             " status, image_path, source_category, description, predicted_min,"
-            " predicted_max, created_at, updated_at"
+            " predicted_max, image_url, images, created_at, updated_at"
             " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
         rec["margin"] = _trademe_margin(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
@@ -3485,7 +3614,7 @@ async def trademe_predict(request: Request, listing_id: int):
         rec = dict(conn.execute(
             "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
             " status, image_path, source_category, description, predicted_min,"
-            " predicted_max, created_at, updated_at"
+            " predicted_max, image_url, images, created_at, updated_at"
             " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
         rec["margin"] = _trademe_margin(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
@@ -3517,6 +3646,195 @@ async def trademe_delete(request: Request, listing_id: int):
         except OSError:
             pass
     return {"status": "ok", "id": listing_id}
+
+
+@app.delete("/api/trademe/listings")
+async def trademe_delete_all(request: Request, status: str = ""):
+    """Clear the store. Optional ?status= wipes just one bucket; default is
+    everything. Downloaded thumbnails are removed alongside the rows."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    status = (status or "").strip().lower()
+    if status and status not in _TRADEME_STATUS:
+        return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+    where, params = ("WHERE status = ?", (status,)) if status else ("", ())
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT image_path, images FROM trademe_listings " + where, params).fetchall()
+        cur = conn.execute("DELETE FROM trademe_listings " + where, params)
+        deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    thumb_dir = _trademe_thumb_dir()
+    if not status:
+        # Full clear: wipe every cached thumbnail, including orphans.
+        names = None
+    else:
+        names = []
+        for r in rows:
+            if r["image_path"]:
+                names.append(r["image_path"])
+            if r["images"]:
+                try:
+                    names.extend(json.loads(r["images"]))
+                except (TypeError, ValueError):
+                    pass
+    try:
+        if names is None:
+            for fn in os.listdir(thumb_dir):
+                try:
+                    os.remove(os.path.join(thumb_dir, fn))
+                except OSError:
+                    pass
+        else:
+            for n in names:
+                full = os.path.join(thumb_dir, os.path.basename(n))
+                if _is_within(thumb_dir, full) and os.path.isfile(full):
+                    os.remove(full)
+    except OSError:
+        pass
+    return {"status": "ok", "deleted": deleted or 0}
+
+
+@app.get("/api/trademe/settings")
+async def trademe_settings(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    cfg = _trademe_config_load()
+    return {"limit": cfg["limit"], "exclude": cfg["exclude"],
+            "limit_options": list(_TRADEME_LIMIT_OPTIONS)}
+
+
+@app.post("/api/trademe/settings")
+async def trademe_settings_save(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    cfg = _trademe_config_save(data or {})
+    return {"status": "ok", "limit": cfg["limit"], "exclude": cfg["exclude"],
+            "limit_options": list(_TRADEME_LIMIT_OPTIONS)}
+
+
+@app.post("/api/trademe/thumbnail/{listing_id}")
+async def trademe_thumbnail(request: Request, listing_id: int):
+    """Download one listing's thumbnail on demand (first time it is viewed),
+    then serve it from disk. Scraping never downloads images."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id, image_url, image_path FROM trademe_listings"
+                           " WHERE id = ?", (listing_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Listing not found"})
+    if row["image_path"]:
+        return {"id": listing_id, "image_url": f"/api/trademe/image/{listing_id}"}
+    if not row["image_url"]:
+        return {"id": listing_id, "image_url": ""}
+    name = _trademe_thumb_save(row["image_url"])
+    if not name:
+        return {"id": listing_id, "image_url": ""}
+    conn = get_db()
+    try:
+        conn.execute("UPDATE trademe_listings SET image_path = ?,"
+                     " updated_at = datetime('now') WHERE id = ?", (name, listing_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": listing_id, "image_url": f"/api/trademe/image/{listing_id}"}
+
+
+@app.post("/api/trademe/gallery/{listing_id}")
+async def trademe_gallery(request: Request, listing_id: int):
+    """All images for one listing, downloaded lazily on first open and cached.
+    The category page only offers one thumbnail; the item page holds the set."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id, tm_url, image_url, image_path, images"
+                           " FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Listing not found"})
+    stored = []
+    if row["images"]:
+        try:
+            stored = json.loads(row["images"])
+        except (TypeError, ValueError):
+            stored = []
+    if not stored:
+        urls = []
+        try:
+            urls = _trademe_fetch_gallery(row["tm_url"])
+        except Exception:
+            urls = []
+        if row["image_url"] and row["image_url"] not in urls:
+            urls.insert(0, row["image_url"])
+        for u in urls[:_TRADEME_GALLERY_CAP]:
+            name = _trademe_thumb_save(u)
+            if name:
+                stored.append(name)
+        if stored:
+            conn = get_db()
+            try:
+                first = row["image_path"] or stored[0]
+                conn.execute("UPDATE trademe_listings SET images = ?, image_path = ?,"
+                             " updated_at = datetime('now') WHERE id = ?",
+                             (json.dumps(stored), first, listing_id))
+                conn.commit()
+            finally:
+                conn.close()
+    return {"id": listing_id,
+            "images": [f"/api/trademe/image/{listing_id}/{i}" for i in range(len(stored))]}
+
+
+@app.get("/api/trademe/image/{listing_id}/{idx}", include_in_schema=False)
+async def trademe_image_at(request: Request, listing_id: int, idx: int):
+    from fastapi.responses import Response as _Response
+    import mimetypes
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT images FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+    finally:
+        conn.close()
+    names = []
+    if row and row["images"]:
+        try:
+            names = json.loads(row["images"])
+        except (TypeError, ValueError):
+            names = []
+    if not (0 <= idx < len(names)):
+        return JSONResponse(status_code=404, content={"error": "Image not found"})
+    thumb_dir = _trademe_thumb_dir()
+    full = os.path.join(thumb_dir, os.path.basename(names[idx]))
+    if not _is_within(thumb_dir, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "Image not found"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        return _Response(content=content,
+                         media_type=mimetypes.guess_type(full)[0] or "image/jpeg",
+                         headers={"Cache-Control": "private, max-age=86400"})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/trademe/export")

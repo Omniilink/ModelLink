@@ -263,6 +263,8 @@ def init_db():
             description TEXT DEFAULT '',
             predicted_min REAL,
             predicted_max REAL,
+            image_url TEXT DEFAULT '',
+            images TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -313,9 +315,10 @@ def init_db():
     except Exception:
         tcols = []
     if tcols:
-        # Rows saved before descriptions / model predictions existed.
+        # Rows saved before descriptions / model predictions / lazy images existed.
         for col, ddl in (("description", "TEXT DEFAULT ''"),
-                         ("predicted_min", "REAL"), ("predicted_max", "REAL")):
+                         ("predicted_min", "REAL"), ("predicted_max", "REAL"),
+                         ("image_url", "TEXT DEFAULT ''"), ("images", "TEXT DEFAULT ''")):
             if col not in tcols:
                 conn.execute(f"ALTER TABLE trademe_listings ADD COLUMN {col} {ddl}")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
