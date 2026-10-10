@@ -3067,7 +3067,7 @@ def _trademe_has_listings(html: str) -> bool:
         return False
     for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html,
                           re.IGNORECASE | re.DOTALL):
-        if not re.search(r"/listing/\d", am.group(1) or ""):
+        if not re.search(r"(?:/listing/|/item/)\d", am.group(1) or "", re.IGNORECASE):
             continue
         title = re.sub(r"<[^>]+>", " ", am.group(2) or "")
         if len(re.sub(r"\s+", " ", title).strip()) >= 3:
@@ -3075,13 +3075,13 @@ def _trademe_has_listings(html: str) -> bool:
     return False
 
 
-def _trademe_playwright_html(url: str) -> str:
+def _trademe_browser_html(url: str, wait_css: str = "a[href*='listing']") -> str:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        raise RuntimeError("Trade Me renders listings with JavaScript — install Playwright"
+        raise RuntimeError("Trade Me renders with JavaScript — install Playwright"
                            " on the server (pip install playwright && playwright install chromium;"
-                           " Docker rebuilds include it) and scrape again")
+                           " Docker rebuilds include it) and try again")
     ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
           " (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
     with sync_playwright() as pw:
@@ -3094,14 +3094,56 @@ def _trademe_playwright_html(url: str) -> str:
             except Exception:
                 pass
             page.goto(url, timeout=45000)
-            try:
-                page.wait_for_selector("a[href*='listing']", timeout=30000)
-            except Exception:
-                pass
-            html = page.content()
+            if wait_css:
+                try:
+                    page.wait_for_selector(wait_css, timeout=30000)
+                except Exception:
+                    pass
+            return page.content()
         finally:
             browser.close()
-    return html
+
+
+def _trademe_playwright_html(url: str) -> str:
+    return _trademe_browser_html(url)
+
+
+def _trademe_extract_description(page_html: str) -> str:
+    """Best-effort item description: og:description first, then visible text."""
+    from html import unescape as _unescape
+    for pat in (r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"',
+                r'<meta[^>]+content="([^"]+)"[^>]+property="og:description"',
+                r'<meta[^>]+name="description"[^>]+content="([^"]+)"'):
+        m = re.search(pat, page_html or "", re.IGNORECASE)
+        if m and m.group(1).strip():
+            return _unescape(m.group(1).strip())[:3000]
+    text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ",
+                  page_html or "", flags=re.IGNORECASE)
+    text = _unescape(re.sub(r"<[^>]+>", " ", text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:2000] if len(text) >= 40 else ""
+
+
+def _trademe_fetch_description(tm_url: str):
+    """(description, engine) for one listing. Plain HTTP first (og:description
+    is often server-rendered for share bots), then the browser."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/120.0 Safari/537.36"}
+    try:
+        req = urllib.request.Request(tm_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=25) as r:
+            page = r.read(1 * 1024 * 1024).decode("utf-8", "replace")
+        desc = _trademe_extract_description(page)
+        if desc:
+            return desc, "http"
+    except Exception:
+        pass
+    page = _trademe_browser_html(tm_url, wait_css="")
+    desc = _trademe_extract_description(page)
+    if not desc:
+        raise RuntimeError("No description found on the listing page")
+    return desc, "playwright"
 
 
 def _trademe_fetch_html(url: str):
@@ -3136,6 +3178,7 @@ def _trademe_abs(base: str, href: str) -> str:
 def _trademe_parse_listings(html: str, base_url: str) -> list:
     """Best-effort item extraction (title/url/price/nearby image). The BERT
     parser plugs in later; for now this stores raw text metadata."""
+    from html import unescape as _unescape
     out, seen = [], set()
     spans = []
     for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html or "",
@@ -3144,10 +3187,11 @@ def _trademe_parse_listings(html: str, base_url: str) -> list:
         url = _trademe_abs(base_url, href)
         if not url or url in seen:
             continue
-        low = url.lower()
-        if not ("/listing" in low or "/item" in low or "/marketplace/" in low):
+        # Detail pages only (numeric ids) — bare /marketplace/ category and
+        # nav links are not listings.
+        if not re.search(r"(?:/listing/|/item/)\d", url, re.IGNORECASE):
             continue
-        title = re.sub(r"<[^>]+>", " ", inner or "")
+        title = _unescape(re.sub(r"<[^>]+>", " ", inner or ""))
         title = re.sub(r"\s+", " ", title).strip()
         if len(title) < 3:
             continue
@@ -3302,7 +3346,8 @@ async def trademe_listings(request: Request, status: str = "", sort: str = ""):
     try:
         rows = conn.execute(
             "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
-            " status, image_path, source_category, created_at, updated_at"
+            " status, image_path, source_category, description, predicted_min,"
+            " predicted_max, created_at, updated_at"
             " FROM trademe_listings"
             + (" WHERE " + " AND ".join(conds) if conds else "")
             + " ORDER BY id DESC LIMIT 500", params).fetchall()
@@ -3367,13 +3412,105 @@ async def trademe_verify(request: Request, listing_id: int):
         conn.commit()
         rec = dict(conn.execute(
             "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
-            " status, image_path, source_category, created_at, updated_at"
+            " status, image_path, source_category, description, predicted_min,"
+            " predicted_max, created_at, updated_at"
             " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
         rec["margin"] = _trademe_margin(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
         return rec
     finally:
         conn.close()
+
+
+@app.post("/api/trademe/description/{listing_id}")
+async def trademe_description(request: Request, listing_id: int):
+    """Lazy description fetch for one listing (stored on success). The
+    category scrape skips item pages; the detail view calls this on open."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id, tm_url, description FROM trademe_listings"
+                           " WHERE id = ?", (listing_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Listing not found"})
+    if row["description"]:
+        return {"id": row["id"], "description": row["description"], "engine": "stored"}
+    try:
+        desc, engine = _trademe_fetch_description(row["tm_url"])
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)[:300]})
+    conn = get_db()
+    try:
+        conn.execute("UPDATE trademe_listings SET description = ?,"
+                     " updated_at = datetime('now') WHERE id = ?",
+                     (desc, listing_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": listing_id, "description": desc, "engine": engine}
+
+
+@app.delete("/api/trademe/listings/{listing_id}")
+async def trademe_delete(request: Request, listing_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT image_path FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "Listing not found"})
+        conn.execute("DELETE FROM trademe_listings WHERE id = ?", (listing_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    if row["image_path"]:
+        try:
+            full = os.path.join(_trademe_thumb_dir(), os.path.basename(row["image_path"]))
+            if _is_within(_trademe_thumb_dir(), full):
+                os.remove(full)
+        except OSError:
+            pass
+    return {"status": "ok", "id": listing_id}
+
+
+@app.get("/api/trademe/export")
+async def trademe_export(request: Request):
+    """Training data download: one JSON object per human-labelled row
+    (approved/rejected/adjusted) for the BERT value model. Re-export any
+    time after correcting predictions — that file IS the training set."""
+    from fastapi.responses import Response as _Response
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, tm_url, title, description, tm_price, estimated_min,"
+            " estimated_max, predicted_min, predicted_max, status"
+            " FROM trademe_listings WHERE status IN ('approved','rejected','adjusted')"
+            " ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    lines = []
+    for r in rows:
+        d = dict(r)
+        lines.append(json.dumps({
+            "title": d.get("title") or "", "description": d.get("description") or "",
+            "tm_price": d.get("tm_price"), "estimated_min": d.get("estimated_min"),
+            "estimated_max": d.get("estimated_max"),
+            "predicted_min": d.get("predicted_min"),
+            "predicted_max": d.get("predicted_max"),
+            "status": d.get("status"), "tm_url": d.get("tm_url")}))
+    return _Response(content=("\n".join(lines) + ("\n" if lines else "")).encode("utf-8"),
+                     media_type="application/x-ndjson",
+                     headers={"Content-Disposition":
+                              "attachment; filename=trademe_labels.jsonl"})
 
 
 @app.get("/api/trademe/image/{listing_id}")

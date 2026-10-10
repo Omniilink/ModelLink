@@ -1402,7 +1402,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             </div>
             <div data-apane="trademe" style="display:none">
               <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(420px,60vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
-              <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+              <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
               <div id="adm-tm-list"></div>
               <div id="adm-tm-detail" style="display:none"></div>
             </div>
@@ -9465,13 +9465,14 @@ async function admTmList(){
     if(!list.length){box.innerHTML='<div class="tool-status">No listings — paste a category URL above and Scrape.</div>';return}
     list.forEach(l=>{
       const row=document.createElement('div');row.className='prompt-card';
-      row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span></div>'
+      row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span style="display:flex;gap:6px;align-items:center"><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span><button class="btn btn-ghost btn-sm" data-tm-del="'+l.id+'" title="Delete listing" style="padding:1px 8px">×</button></span></div>'
         +'<div class="tool-result-sub" style="margin:2px 0 6px">Ask '+admTmMoney(l.tm_price)+' · Est '+(l.estimated_min!=null||l.estimated_max!=null?(admTmMoney(l.estimated_min)+' – '+admTmMoney(l.estimated_max)):'—')+' · Margin '+admTmMargin(l)+'</div>'
         +'<div class="prompt-actions"></div>';
       const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Open valuation';
       b.onclick=()=>admTmDetail(l.id);
       row.querySelector('.prompt-actions').appendChild(b);box.appendChild(row);
     });
+    box.querySelectorAll('[data-tm-del]').forEach(x=>{x.onclick=async ev=>{ev.stopPropagation();const id=x.getAttribute('data-tm-del');if(!(await appConfirm('Delete this listing?')))return;try{const r=await authFetch(API+'/api/trademe/listings/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admTmList()}catch(e){showToast('Delete failed: '+e.message,'error')}}});
   }catch(e){box.innerHTML='<div class="tool-status">Could not load listings.</div>'}
 }
 async function admTmDetail(id){
@@ -9486,12 +9487,14 @@ async function admTmDetail(id){
     det.innerHTML='<div style="display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:14px">'
       +'<div><div class="usage-section-title">Listing</div><div class="usage-chart-wrap"><div class="usage-chart-body">'
       +(l.image_url?'<img src="'+API+escapeHtml(l.image_url)+'" alt="" style="width:100%;border-radius:var(--radius-xs);margin-bottom:10px" />':'<div class="tool-status" style="margin-bottom:10px">No screenshot captured</div>')
-      +'<div style="font-size:13px;font-weight:600;margin-bottom:6px">'+escapeHtml(l.title||'(no title)')+'</div>'
+      +'<div style="font-size:13px;font-weight:600;margin-bottom:4px">'+escapeHtml(l.title||'(no title)')+'</div>'
       +'<div class="tool-result-sub" style="margin-bottom:10px;word-break:break-all">'+escapeHtml(l.tm_url||'')+'</div>'
+      +'<div id="adm-tm-desc" style="font-size:12px;color:var(--text-secondary);line-height:1.6;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:10px;white-space:pre-wrap;max-height:220px;overflow:auto">'+(l.description?escapeHtml(l.description):'Loading description…')+'</div>'
       +'<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="'+escapeHtml(l.tm_url||'#')+'">Open original listing</a>'
       +'</div></div></div>'
       +'<div><div class="usage-section-title">Valuation console</div><div class="usage-chart-wrap"><div class="usage-chart-body">'
       +'<div class="tool-row"><span class="tool-result-sub">Ask</span><b>'+admTmMoney(l.tm_price)+'</b><span class="tool-result-sub">Margin</span><b>'+admTmMargin(l)+'</b></div>'
+      +((l.predicted_min!=null||l.predicted_max!=null)?'<div class="tool-row"><span class="tool-result-sub">Model predicted</span><b>'+admTmMoney(l.predicted_min)+' – '+admTmMoney(l.predicted_max)+'</b></div>':'')
       +'<div class="modal-field"><label>Estimated min ($)</label><input type="number" min="0" step="0.01" id="adm-tm-min" value="'+(l.estimated_min!=null?l.estimated_min:'')+'" /></div>'
       +'<div class="modal-field"><label>Estimated max ($)</label><input type="number" min="0" step="0.01" id="adm-tm-max" value="'+(l.estimated_max!=null?l.estimated_max:'')+'" /></div>'
       +'<div class="tool-row"><button class="btn btn-primary btn-sm" id="adm-tm-approve">Approve</button><button class="btn btn-ghost btn-sm" id="adm-tm-reject">Reject</button><button class="btn btn-ghost btn-sm" id="adm-tm-save">Save range</button><span style="flex:1"></span><button class="btn btn-ghost btn-sm" id="adm-tm-back">Back to list</button></div>'
@@ -9508,7 +9511,24 @@ async function admTmDetail(id){
     det.querySelector('#adm-tm-reject').onclick=()=>send({status:'rejected'}).catch(e=>showToast(e.message,'error'));
     det.querySelector('#adm-tm-save').onclick=()=>send({adjusted_min:val('adm-tm-min'),adjusted_max:val('adm-tm-max')}).catch(e=>showToast(e.message,'error'));
     det.querySelector('#adm-tm-back').onclick=()=>admTmList();
+    if(!l.description){
+      admTmDescription(l.id).then(desc=>{
+        const box=document.getElementById('adm-tm-desc');
+        if(box)box.textContent=desc||'No description found on the listing page.';
+      });
+    }
   }catch(e){det.innerHTML='<div class="tool-status">Could not load listing.</div>'}
+}
+async function admTmDescription(id){
+  try{
+    const r=await authFetch(API+'/api/trademe/description/'+id,{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    return d.description||'';
+  }catch(e){showToast('Description load failed: '+e.message,'error');return ''}
+}
+async function admTmExport(){
+  window.open(API+'/api/trademe/export','_blank');
 }
 async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
   const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}

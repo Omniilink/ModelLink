@@ -260,6 +260,9 @@ def init_db():
             status TEXT DEFAULT 'pending',
             image_path TEXT DEFAULT '',
             source_category TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            predicted_min REAL,
+            predicted_max REAL,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -305,6 +308,16 @@ def init_db():
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
     except Exception:
         pass
+    try:
+        tcols = [r["name"] for r in conn.execute("PRAGMA table_info(trademe_listings)").fetchall()]
+    except Exception:
+        tcols = []
+    if tcols:
+        # Rows saved before descriptions / model predictions existed.
+        for col, ddl in (("description", "TEXT DEFAULT ''"),
+                         ("predicted_min", "REAL"), ("predicted_max", "REAL")):
+            if col not in tcols:
+                conn.execute(f"ALTER TABLE trademe_listings ADD COLUMN {col} {ddl}")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)")
     env_admin = os.environ.get("OMNIILINK_ADMIN", "").strip().lower()
     # Admin panel allowlist (default: "isaac tribbe", matching api_server):
