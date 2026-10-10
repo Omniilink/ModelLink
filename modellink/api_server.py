@@ -3454,6 +3454,46 @@ async def trademe_description(request: Request, listing_id: int):
     return {"id": listing_id, "description": desc, "engine": engine}
 
 
+@app.post("/api/trademe/predict/{listing_id}")
+async def trademe_predict(request: Request, listing_id: int):
+    """Store a model's valuation for later comparison against the human's
+    adjusted range. This is the write side of the train → predict → correct
+    loop; see /api/trademe/export for the read side."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    try:
+        mn = float(data.get("predicted_min")) if data.get("predicted_min") not in (None, "") else None
+        mx = float(data.get("predicted_max")) if data.get("predicted_max") not in (None, "") else None
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "predicted_min/max must be numbers"})
+    if (mn is not None and mn < 0) or (mx is not None and mx < 0):
+        return JSONResponse(status_code=400, content={"error": "predictions must be >= 0"})
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "Listing not found"})
+        conn.execute("UPDATE trademe_listings SET predicted_min = ?, predicted_max = ?,"
+                     " updated_at = datetime('now') WHERE id = ?", (mn, mx, listing_id))
+        conn.commit()
+        rec = dict(conn.execute(
+            "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
+            " status, image_path, source_category, description, predicted_min,"
+            " predicted_max, created_at, updated_at"
+            " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
+        rec["margin"] = _trademe_margin(rec)
+        rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
+        return rec
+    finally:
+        conn.close()
+
+
 @app.delete("/api/trademe/listings/{listing_id}")
 async def trademe_delete(request: Request, listing_id: int):
     user, err = _require_superadmin(request)
