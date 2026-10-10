@@ -988,6 +988,10 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
         <span>Usage</span>
       </div>
+      <div class="nav-item" data-view="trademe" id="nav-trademe" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><circle cx="7" cy="7" r="1.2"/></svg>
+        <span>Trade Me</span>
+      </div>
       <div class="nav-cap">Manage</div>
       <div class="nav-item" data-view="agents">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -1457,11 +1461,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 <div class="tool-name">File Converter</div>
                 <div class="tool-desc">Images between PNG, JPG, WebP, GIF, BMP, TIFF and ICO — plus PDF pages to images.</div>
               </div>
-              <div class="tool-card" onclick="navigateTool('trademe')">
-                <div class="tool-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><circle cx="7" cy="7" r="1.2"/></svg></div>
-                <div class="tool-name">Trade Me Flips</div>
-                <div class="tool-desc">Scrape Trade Me categories, filter by spec, estimate resale values and track profit margins. Admin only.</div>
-              </div>
             </div>
             <div class="tool-pane" id="tool-youtube" style="display:none">
               <button class="btn btn-ghost btn-sm" onclick="navigate('more')">← All tools</button>
@@ -1570,15 +1569,18 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               </div>
               <div id="conv-status" class="tool-status"></div>
             </div>
-            <div class="tool-pane" id="tool-trademe" style="display:none;max-width:none">
-              <button class="btn btn-ghost btn-sm" onclick="navigate('more')">← All tools</button>
-              <h3>Trade Me Flips</h3>
-              <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
-              <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
-              <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
-              <div id="adm-tm-list"></div>
-              <div id="adm-tm-detail" style="display:none"></div>
-            </div>
+          </div>
+        </div>
+      </div>
+      <div class="view-panel" id="trademe-view">
+        <div class="view-header"><h2>Trade Me Flips <span class="beta-tag">Admin</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body">
+          <div style="max-width:1100px;margin:0 auto">
+            <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
+            <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+            <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
+            <div id="adm-tm-list"></div>
+            <div id="adm-tm-detail" style="display:none"></div>
           </div>
         </div>
       </div>
@@ -1912,6 +1914,7 @@ function toggleAutoScroll(){const btn=document.getElementById('terminal-autoscro
 
 function switchView(view){
   if(view==='admin'&&!(window.__user&&window.__user.is_admin))view='chat';
+  if(view==='trademe'&&!(window.__user&&window.__user.is_admin))view='chat';
   currentView=view;
   document.getElementById('chat-area').style.display=view==='chat'?'flex':'none';
   document.getElementById('input-area').style.display=view==='chat'?'block':'none';
@@ -1923,6 +1926,7 @@ function switchView(view){
   document.getElementById('providers-view').classList.toggle('open',view==='providers');
   document.getElementById('projects-view').classList.toggle('open',view==='projects');
   document.getElementById('more-view').classList.toggle('open',view==='more');
+  document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -1934,13 +1938,13 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmList()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents'};
-const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert',trademe:'/tools/trademe'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
+const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -6474,7 +6478,7 @@ function showAuthSignup(){if(authGoogleOnly){applyAuthMode();return}document.get
 function showAuthSignin(){if(authGoogleOnly){applyAuthMode();return}document.getElementById('auth-form-signup').style.display='none';document.getElementById('auth-form-signin').style.display='';document.getElementById('auth-modal-title').textContent='Sign In';document.getElementById('auth-username').focus()}
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
-function applyAdminNav(){try{var el=document.getElementById('nav-admin');if(el)el.style.display=(window.__user&&window.__user.is_admin)?'':'none'}catch(_){}}
+function applyAdminNav(){try{var el=document.getElementById('nav-admin');if(el)el.style.display=(window.__user&&window.__user.is_admin)?'':'none';var tm=document.getElementById('nav-trademe');if(tm)tm.style.display=(window.__user&&window.__user.is_admin)?'':'none'}catch(_){}}
 async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();try{syncChatsFromServer()}catch(_){}try{preloadAppViews()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
@@ -6589,15 +6593,12 @@ function openTool(name){
   document.getElementById('tools-grid').style.display='none';
   document.getElementById('tool-youtube').style.display=name==='youtube'?'block':'none';
   document.getElementById('tool-convert').style.display=name==='convert'?'block':'none';
-  document.getElementById('tool-trademe').style.display=name==='trademe'?'block':'none';
   if(name==='youtube'&&typeof ytFormatChanged==='function')ytFormatChanged();
-  if(name==='trademe'&&typeof admTmLoadSettings==='function'){admTmLoadSettings();admTmList()}
 }
 function closeTool(){
   document.getElementById('tools-grid').style.display='';
   document.getElementById('tool-youtube').style.display='none';
   document.getElementById('tool-convert').style.display='none';
-  document.getElementById('tool-trademe').style.display='none';
 }
 function ytFmtDur(sec){
   sec=parseInt(sec||0,10);
