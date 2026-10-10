@@ -3859,28 +3859,71 @@ _TRADEME_VALUE_CHUNK = 25
 _TRADEME_VALUE_MAX = 200
 
 
-def _trademe_gemini_models() -> list:
+def _trademe_value_providers() -> list:
+    """Every model the user can pick for bulk valuation: all cloud provider
+    models plus the server's installed Ollama tags. Returns
+    [{provider, model}]."""
+    out = []
     try:
-        return list((PROVIDERS.get("gemini") or {}).get("models") or [])
-    except Exception:
-        return []
-
-
-def _trademe_gemini_key(user_id: int):
-    """User's saved Gemini key, else a server env key, else None."""
-    try:
-        keys = get_user_provider_keys(user_id) or {}
-        if keys.get("gemini"):
-            return keys["gemini"]
+        for pname, pcfg in (PROVIDERS or {}).items():
+            for m in (pcfg or {}).get("models") or []:
+                out.append({"provider": pname, "model": m})
     except Exception:
         pass
     try:
-        for entry in (load_all_keys().get("gemini") or []):
+        for tag in scan_ollama_models() or []:
+            if tag and not any(o["provider"] == "ollama" and o["model"] == tag for o in out):
+                out.append({"provider": "ollama", "model": tag})
+    except Exception:
+        pass
+    return out
+
+
+def _trademe_provider_key(provider: str, user_id: int):
+    """User's saved key for a provider, else a server env key, else None.
+    Ollama is local and needs no key."""
+    if provider == "ollama":
+        return ""
+    try:
+        keys = get_user_provider_keys(user_id) or {}
+        if keys.get(provider):
+            return keys[provider]
+    except Exception:
+        pass
+    try:
+        for entry in (load_all_keys().get(provider) or []):
             if (entry or {}).get("key"):
                 return entry["key"]
     except Exception:
         pass
     return None
+
+
+def _trademe_market_context(items: list) -> str:
+    """One live web search per chunk so knowledge-cutoff models (local
+    Ollama especially) value against today's NZ second-hand market."""
+    first = ""
+    for it in items or []:
+        t = str((it or {}).get("title") or "").strip()
+        if len(t) >= 8:
+            first = t
+            break
+    if not first:
+        return ""
+    try:
+        hits = web_search(f"{first} second hand price New Zealand", limit=5) or []
+    except Exception:
+        return ""
+    lines = []
+    for h in hits:
+        t = str((h or {}).get("title") or "").strip()
+        s = str((h or {}).get("snippet") or "").strip()
+        if t:
+            lines.append(f"- {t}" + (f": {s[:220]}" if s else ""))
+    if not lines:
+        return ""
+    return ("CURRENT NZ SECOND-HAND MARKET SNAPSHOT (live web search — trust this "
+            "over training memory):\n" + "\n".join(lines))
 
 
 def _trademe_value_system() -> str:
@@ -3949,43 +3992,33 @@ def _trademe_parse_value_response(text: str, count: int) -> dict:
     return out
 
 
-def _trademe_gemini_value(items: list, model: str, api_key: str, timeout: int = 180) -> dict:
-    """One Gemini call valuing a chunk of items → {index: (min, max)}."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    payload = {
-        "systemInstruction": {"parts": [{"text": _trademe_value_system()}]},
-        "contents": [{"role": "user",
-                      "parts": [{"text": _trademe_value_user(items)}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
-    }
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"},
-                                 method="POST")
+def _trademe_llm_value(provider: str, model: str, user_keys: dict,
+                       items: list, market: str = "") -> tuple:
+    """One model call valuing a chunk of items through the app's own provider
+    routing (any cloud provider, or a local ollama/<tag>). Returns
+    ({index: (min, max)}, actually_used_model)."""
+    user_text = _trademe_value_user(items)
+    if market:
+        user_text += "\n\n" + market
+    messages = [{"role": "system", "content": _trademe_value_system()},
+                {"role": "user", "content": user_text}]
+    model_ref = f"ollama/{model}" if provider == "ollama" else model
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        try:
-            detail = e.read().decode("utf-8", "replace")[:300]
-        except Exception:
-            detail = str(e)
-        raise RuntimeError(f"Gemini HTTP {e.code}: {detail}")
-    if isinstance(data, dict) and data.get("error"):
-        err = data["error"]
-        raise RuntimeError("Gemini: " + str(err.get("message") if isinstance(err, dict)
-                                           else err)[:300])
-    try:
-        parts = data["candidates"][0]["content"]["parts"]
-        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError("Gemini returned no content")
+        resp, used = generate(
+            messages, model=model_ref, temperature=0.2, max_tokens=8192,
+            stream=False, user_keys=user_keys or {},
+            opts={"temperature": 0.2, "max_tokens": 8192, "health_scope": "trademe"})
+        text = ((resp or {}).get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    except Exception as e:
+        raise RuntimeError(f"{provider}/{model}: {e}")
     vals = _trademe_parse_value_response(text, len(items))
     if not vals:
-        raise RuntimeError("Gemini returned no usable valuations")
-    return vals
+        raise RuntimeError(f"{provider}/{model} returned no usable valuations")
+    return vals, used
 
 
-def _trademe_run_value(job_id: str, ids: list, model: str, api_key: str, chunk: int):
+def _trademe_run_value(job_id: str, ids: list, provider: str, model: str,
+                       user_keys: dict, chunk: int, ground: bool):
     job = _ADMIN_JOBS.get(job_id)
     if job is None:
         return
@@ -4005,27 +4038,31 @@ def _trademe_run_value(job_id: str, ids: list, model: str, api_key: str, chunk: 
             items = [dict(r) for r in rows]
             if not items:
                 continue
-            log(f"valuing {s + 1}-{s + len(items)} of {len(ids)} via {model}…")
-            vals = _trademe_gemini_value(items, model, api_key)
+            market = ""
+            if ground:
+                log(f"chunk {s // max(1, chunk) + 1}: grounding on live market prices…")
+                market = _trademe_market_context(items)
+            log(f"valuing {s + 1}-{s + len(items)} of {len(ids)} via {provider}/{model}…")
+            vals, used = _trademe_llm_value(provider, model, user_keys, items, market)
             conn = get_db()
             try:
                 n = 0
                 for i, it in enumerate(items):
                     if i in vals:
                         mn, mx = vals[i]
-                        conn.execute("UPDATE trademe_listings SET predicted_min = ?,"
-                                     " predicted_max = ?, updated_at = datetime('now')"
+                        conn.execute("UPDATE trademe_listings SET estimated_min = ?,"
+                                     " estimated_max = ?, updated_at = datetime('now')"
                                      " WHERE id = ?", (mn, mx, it["id"]))
                         n += 1
                 conn.commit()
             finally:
                 conn.close()
             total += n
-            log(f"chunk done: {n}/{len(items)} valued ({total} total)")
+            log(f"chunk done: {n}/{len(items)} valued via {used} ({total} total)")
             time.sleep(2)
         job["status"] = "done"
         job["exit_code"] = 0
-        log(f"Valued {total} of {len(ids)} listings with {model}.")
+        log(f"Valued {total} of {len(ids)} listings with {provider}/{model}.")
     except Exception as e:
         job["status"] = "failed"
         job["exit_code"] = 1
@@ -4040,16 +4077,21 @@ async def trademe_models(request: Request):
     user, err = _require_superadmin(request)
     if err:
         return err
-    models = _trademe_gemini_models()
-    return {"models": models, "default": models[0] if models else "",
+    options = _trademe_value_providers()
+    default = next((o for o in options if o["provider"] == "gemini"), options[0] if options else None)
+    return {"options": options,
+            "default_provider": (default or {}).get("provider", ""),
+            "default_model": (default or {}).get("model", ""),
             "chunk_default": _TRADEME_VALUE_CHUNK}
 
 
 @app.post("/api/trademe/value")
 async def trademe_value(request: Request):
-    """Bulk valuation: send a batch of listings to Gemini in chunked requests
-    (one background job) and store each strict min/max as the row's prediction.
-    Fast-tracks labelling ahead of training your own model."""
+    """Bulk valuation with ANY configured model (one background job, chunked
+    requests). Each strict min/max is written straight into the row's ESTIMATED
+    value; local Ollama picks get one live web search per chunk so they value
+    against today's market instead of stale training memory. Review, then
+    Apply to approve everything at once."""
     user, err = _require_superadmin(request)
     if err:
         return err
@@ -4057,20 +4099,39 @@ async def trademe_value(request: Request):
     if bad:
         return bad
     data = data or {}
-    models = _trademe_gemini_models()
-    model = str(data.get("model") or "").strip() or (models[0] if models else "")
-    if not model or model not in models:
-        return JSONResponse(status_code=400, content={"error": "Unknown Gemini model"})
+    options = _trademe_value_providers()
+    provider = str(data.get("provider") or "").strip().lower()
+    model = str(data.get("model") or "").strip()
+    if not provider and model:
+        # Back-compat: bare model name → find its provider.
+        hit = next((o for o in options if o["model"] == model), None)
+        if hit:
+            provider, model = hit["provider"], hit["model"]
+    if not provider and not model:
+        gem = next((o for o in options if o["provider"] == "gemini"), None)
+        if gem:
+            provider, model = gem["provider"], gem["model"]
+    valid = [o["model"] for o in options if o["provider"] == provider] if provider else []
+    if provider == "ollama":
+        try:
+            live = scan_ollama_models() or []
+        except Exception:
+            live = []
+        if model not in live:
+            return JSONResponse(status_code=400, content={"error": f"Ollama model '{model}' is not installed"})
+    elif not provider or not model or model not in valid:
+        return JSONResponse(status_code=400, content={"error": "Unknown provider/model"})
     try:
         chunk = max(5, min(50, int(data.get("chunk") or _TRADEME_VALUE_CHUNK)))
         maxn = max(1, min(_TRADEME_VALUE_MAX, int(data.get("max") or _TRADEME_VALUE_MAX)))
     except (TypeError, ValueError):
         return JSONResponse(status_code=400, content={"error": "chunk/max must be numbers"})
     overwrite = bool(data.get("overwrite"))
-    api_key = _trademe_gemini_key(user["id"])
-    if not api_key:
+    api_key = _trademe_provider_key(provider, user["id"])
+    if api_key is None:
         return JSONResponse(status_code=400, content={
-            "error": "No Gemini API key — add one under Providers (or set GEMINI_API_KEY on the server)"})
+            "error": f"No {provider} API key — add one under Providers (or set it on the server)"})
+    user_keys = {} if provider == "ollama" else {provider: api_key}
     conn = get_db()
     try:
         if data.get("ids") is not None:
@@ -4093,7 +4154,8 @@ async def trademe_value(request: Request):
                 conds.append("status = ?")
                 params.append(status)
             if not overwrite:
-                conds.append("predicted_min IS NULL")
+                # Never clobber human estimates — only fill blanks.
+                conds.append("(estimated_min IS NULL AND estimated_max IS NULL)")
             rows = conn.execute(
                 "SELECT id FROM trademe_listings"
                 + (" WHERE " + " AND ".join(conds) if conds else "")
@@ -4103,8 +4165,10 @@ async def trademe_value(request: Request):
         conn.close()
     if not ids:
         return JSONResponse(status_code=400, content={"error": "Nothing to value"})
+    ground = provider == "ollama" or bool(data.get("ground"))
     job_id = secrets.token_hex(5)
-    job = {"id": job_id, "kind": "trademe-value", "command": f"{len(ids)} via {model}",
+    job = {"id": job_id, "kind": "trademe-value",
+           "command": f"{len(ids)} via {provider}/{model}",
            "status": "running", "lines": [], "exit_code": None,
            "started": time.time(), "finished": None}
     with _ADMIN_JOBS_LOCK:
@@ -4113,8 +4177,37 @@ async def trademe_value(request: Request):
                 _ADMIN_JOBS.pop(jid, None)
         _ADMIN_JOBS[job_id] = job
     threading.Thread(target=_trademe_run_value,
-                     args=(job_id, ids, model, api_key, chunk), daemon=True).start()
-    return {"status": "started", "job_id": job_id, "count": len(ids), "model": model}
+                     args=(job_id, ids, provider, model, user_keys, chunk, ground),
+                     daemon=True).start()
+    return {"status": "started", "job_id": job_id, "count": len(ids),
+            "provider": provider, "model": model, "grounded": ground}
+
+
+@app.post("/api/trademe/approve-all")
+async def trademe_approve_all(request: Request):
+    """Apply button: approve every row in the filter that already carries an
+    estimated value (bulk-valued or hand-valued). Rows without any estimate
+    are left alone."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    status = str((data or {}).get("status") or "pending").strip().lower()
+    if status not in _TRADEME_STATUS:
+        return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "UPDATE trademe_listings SET status = 'approved', updated_at = datetime('now')"
+            " WHERE status = ? AND (estimated_min IS NOT NULL OR estimated_max IS NOT NULL)",
+            (status,))
+        n = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "approved": n or 0}
 
 
 @app.post("/api/trademe/predict/{listing_id}")

@@ -1577,7 +1577,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         <div class="view-body">
           <div style="max-width:1100px;margin:0 auto">
             <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
-            <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Gemini model for bulk valuation"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value with Gemini</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Sends the current filter's unvalued listings to Gemini in chunks and stores each strict min/max as its prediction.</span></div>
+            <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Any configured model — Ollama picks get live market prices fed in"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value all</button><button class="btn btn-ghost btn-sm" onclick="admTmApply()">Apply</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Values the current filter's unvalued listings into their estimated values; Apply approves everything valued.</span></div>
             <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Hide from list <input type="text" id="adm-tm-hide" placeholder="e.g. miner, bitcoin, asic" style="width:min(220px,40vw)" onkeydown="if(event.key==='Enter')admTmHideAdd()" /></label><button class="btn btn-ghost btn-sm" onclick="admTmHideAdd()">Add</button><span id="adm-tm-hide-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></span><button class="btn btn-ghost btn-sm" onclick="admTmHideClear()">Clear</button></div>
             <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
@@ -9465,22 +9465,38 @@ async function admTmScrape(){
     }
   }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
 }
+let admTmOptions=[];
 async function admTmModels(){
   try{
     const r=await authFetch(API+'/api/trademe/models');if(!r.ok)return;
     const d=await r.json();const sel=document.getElementById('adm-tm-model');if(!sel)return;
-    sel.innerHTML='';(d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;if(m===d.default)o.selected=true;sel.appendChild(o)});
+    admTmOptions=d.options||[];sel.innerHTML='';
+    const groups={};
+    admTmOptions.forEach((o,i)=>{(groups[o.provider]=groups[o.provider]||[]).push(i)});
+    Object.keys(groups).sort().forEach(p=>{
+      const g=document.createElement('optgroup');g.label=p;
+      groups[p].forEach(i=>{const o=document.createElement('option');o.value=String(i);o.textContent=admTmOptions[i].model;
+        if(admTmOptions[i].provider===d.default_provider&&admTmOptions[i].model===d.default_model)o.selected=true;
+        g.appendChild(o)});
+      sel.appendChild(g);
+    });
   }catch(e){}
+}
+function admTmPickModel(){
+  const ms=document.getElementById('adm-tm-model');
+  const sel=ms?admTmOptions[Number(ms.value)]:null;
+  if(sel)return{provider:sel.provider,model:sel.model};
+  return{provider:'',model:ms?ms.value:''};
 }
 async function admTmValue(){
   const st=document.getElementById('adm-tm-status');const status=st?st.value:'pending';
-  const ms=document.getElementById('adm-tm-model');const model=ms?ms.value:'';
+  const pick=admTmPickModel();
   const job=document.getElementById('adm-tm-value-job');if(job)job.textContent='starting…';
   try{
-    const r=await authFetch(API+'/api/trademe/value',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status,model:model})});
+    const r=await authFetch(API+'/api/trademe/value',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status,provider:pick.provider,model:pick.model})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    if(job)job.textContent='valuing '+d.count+'… (job '+d.job_id+')';
+    if(job)job.textContent='valuing '+d.count+' via '+d.provider+'/'+d.model+(d.grounded?' (market-grounded)':'')+'… (job '+d.job_id+')';
     for(let i=0;i<240;i++){
       await new Promise(r=>setTimeout(r,3000));
       let j=null;
@@ -9498,6 +9514,17 @@ async function admTmValue(){
       }
     }
   }catch(e){if(job)job.textContent='';showToast('Valuation failed: '+e.message,'error')}
+}
+async function admTmApply(){
+  const st=document.getElementById('adm-tm-status');const status=st?st.value:'pending';
+  if(!(await appConfirm('Approve every '+status+' listing that already has an estimated value?')))return;
+  try{
+    const r=await authFetch(API+'/api/trademe/approve-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Approved '+d.approved+' listing'+(d.approved===1?'':'s'),'success');
+    admTmList();
+  }catch(e){showToast('Apply failed: '+e.message,'error')}
 }
 let admTmAll=[],admTmFacets=[],admTmSel=new Set(),admTmHideWords=[];
 function admTmNorm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'')}
