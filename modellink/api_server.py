@@ -3231,20 +3231,51 @@ def _trademe_playwright_html(url: str) -> str:
     return _trademe_browser_html(url)
 
 
-def _trademe_extract_description(page_html: str) -> str:
-    """Best-effort item description: og:description first, then visible text."""
+# Chrome shown to JS-less / logged-out clients must never be stored as a
+# "description" (it is what you get back from the app shell over plain HTTP).
+_TRADEME_JUNK = ("enable javascript", "requires javascript", "not logged in member",
+                 "profile image for not logged in", "please enable javascript",
+                 "refresh the page to try again")
+
+
+def _trademe_is_junk(text: str) -> bool:
+    low = (text or "").lower()
+    return any(j in low for j in _TRADEME_JUNK)
+
+
+def _trademe_meta_description(page_html: str) -> str:
     from html import unescape as _unescape
     for pat in (r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"',
                 r'<meta[^>]+content="([^"]+)"[^>]+property="og:description"',
                 r'<meta[^>]+name="description"[^>]+content="([^"]+)"'):
         m = re.search(pat, page_html or "", re.IGNORECASE)
         if m and m.group(1).strip():
-            return _unescape(m.group(1).strip())[:3000]
+            txt = _unescape(m.group(1).strip())
+            if not _trademe_is_junk(txt):
+                return txt[:3000]
+    return ""
+
+
+def _trademe_visible_text(page_html: str) -> str:
+    from html import unescape as _unescape
     text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ",
                   page_html or "", flags=re.IGNORECASE)
     text = _unescape(re.sub(r"<[^>]+>", " ", text))
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:2000] if len(text) >= 40 else ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _trademe_extract_description(page_html: str, rendered: bool = False) -> str:
+    """Description from meta tags, or (only for a JavaScript-rendered page)
+    the visible text — never the raw app-shell chrome."""
+    meta = _trademe_meta_description(page_html)
+    if meta:
+        return meta
+    if not rendered:
+        return ""
+    text = _trademe_visible_text(page_html)
+    if len(text) < 40 or _trademe_is_junk(text):
+        return ""
+    return text[:2000]
 
 
 def _trademe_fetch_description(tm_url: str):
@@ -3257,13 +3288,15 @@ def _trademe_fetch_description(tm_url: str):
         req = urllib.request.Request(tm_url, headers=headers)
         with urllib.request.urlopen(req, timeout=25) as r:
             page = r.read(1 * 1024 * 1024).decode("utf-8", "replace")
+        # Plain HTTP only carries the meta description; the body is an app
+        # shell, so visible text there is chrome and must be ignored.
         desc = _trademe_extract_description(page)
         if desc:
             return desc, "http"
     except Exception:
         pass
     page = _trademe_browser_html(tm_url, wait_css="")
-    desc = _trademe_extract_description(page)
+    desc = _trademe_extract_description(page, rendered=True)
     if not desc:
         raise RuntimeError("No description found on the listing page")
     return desc, "playwright"
@@ -3272,9 +3305,13 @@ def _trademe_fetch_description(tm_url: str):
 _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 
+def _trademe_srcset_first(v: str) -> str:
+    return re.split(r"[\s,]", (v or "").strip())[0] if v else ""
+
+
 def _trademe_extract_images(page_html: str) -> list:
-    """Candidate photo URLs on an item page: og:image plus gallery <img>s,
-    filtered to Trade Me's photo host to avoid icons/logos."""
+    """Candidate photo URLs on an item page: og:image plus gallery <img>s
+    (src / data-src / srcset), filtered to Trade Me's photo host."""
     from html import unescape as _unescape
     urls, seen = [], set()
 
@@ -3296,8 +3333,12 @@ def _trademe_extract_images(page_html: str) -> list:
             r'<meta[^>]+(?:property|name)="(?:og:image|twitter:image)"[^>]+content="([^"]+)"',
             page_html or "", re.IGNORECASE):
         add(m.group(1))
-    for m in re.finditer(r'<img[^>]+src="([^"]+)"', page_html or "", re.IGNORECASE):
+    for m in re.finditer(
+            r'<img[^>]+(?:data-src|data-original|data-lazy-src|src)="([^"]+)"',
+            page_html or "", re.IGNORECASE):
         add(m.group(1))
+    for m in re.finditer(r'(?:data-)?srcset="([^"]+)"', page_html or "", re.IGNORECASE):
+        add(_trademe_srcset_first(m.group(1)))
     return urls
 
 
@@ -3398,13 +3439,12 @@ def _trademe_parse_listings(html: str, base_url: str,
                 rec["tm_price"] = float(m.group(1).replace(",", ""))
             except ValueError:
                 pass
-        inner_imgs = re.findall(r'<img[^>]+src="([^"]+)"',
-                                html[at:end], re.IGNORECASE)
+        img_rx = r'<img[^>]+(?:data-src|data-original|data-lazy-src|src)="([^"]+)"'
+        inner_imgs = re.findall(img_rx, html[at:end], re.IGNORECASE)
         if inner_imgs:
             rec["image"] = _trademe_abs(base_url, inner_imgs[0])[:500]
         else:
-            before = re.findall(r'<img[^>]+src="([^"]+)"',
-                                html[max(0, at - 1500):at], re.IGNORECASE)
+            before = re.findall(img_rx, html[max(0, at - 1500):at], re.IGNORECASE)
             if before:
                 rec["image"] = _trademe_abs(base_url, before[-1])[:500]
     return out
