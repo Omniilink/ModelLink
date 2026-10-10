@@ -3694,12 +3694,26 @@ async def trademe_scrape(request: Request):
 
 
 def _trademe_margin(row: dict):
+    """Upside: best-case profit (estimated_max − ask)."""
     try:
         mx = row.get("estimated_max")
         px = row.get("tm_price")
         if mx is None or px is None:
             return None
         return float(mx) - float(px)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trademe_margin_lo(row: dict):
+    """Downside: worst-case outcome (estimated_min − ask). Negative means a
+    potential loss if the item only fetches the low end."""
+    try:
+        mn = row.get("estimated_min")
+        px = row.get("tm_price")
+        if mn is None or px is None:
+            return None
+        return float(mn) - float(px)
     except (TypeError, ValueError):
         return None
 
@@ -3731,6 +3745,7 @@ async def trademe_listings(request: Request, status: str = "", sort: str = ""):
     for r in rows:
         rec = dict(r)
         rec["margin"] = _trademe_margin(rec)
+        rec["margin_lo"] = _trademe_margin_lo(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
         out.append(rec)
     if (sort or "").strip().lower() == "margin":
@@ -3815,6 +3830,7 @@ async def trademe_verify(request: Request, listing_id: int):
             " predicted_max, image_url, images, created_at, updated_at"
             " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
         rec["margin"] = _trademe_margin(rec)
+        rec["margin_lo"] = _trademe_margin_lo(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
         return rec
     finally:
@@ -4244,6 +4260,7 @@ async def trademe_predict(request: Request, listing_id: int):
             " predicted_max, image_url, images, created_at, updated_at"
             " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
         rec["margin"] = _trademe_margin(rec)
+        rec["margin_lo"] = _trademe_margin_lo(rec)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
         return rec
     finally:

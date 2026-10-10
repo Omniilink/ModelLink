@@ -9440,7 +9440,13 @@ async function admLoadFindings(){
   }catch(e){box.innerHTML='<div class="tool-status">Could not load findings.</div>'}
 }
 function admTmMoney(n){if(n==null||isNaN(Number(n)))return '—';return '$'+Number(n).toLocaleString(undefined,{maximumFractionDigits:2})}
-function admTmMargin(l){if(l.margin==null)return '<span style="color:var(--text-muted)">—</span>';const v=Number(l.margin);const c=v>=0?'var(--success)':'var(--error)';return '<span style="color:'+c+'">'+(v>=0?'+':'-')+'$'+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>'}
+function admTmMoneySigned(v){const n=Number(v);const c=n>=0?'var(--success)':'var(--error)';return '<span style="color:'+c+'">'+(n>=0?'+':'-')+'$'+Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>'}
+function admTmMargin(l){
+  const up=l.margin,lo=l.margin_lo;
+  if(up==null&&lo==null)return '<span style="color:var(--text-muted)">—</span>';
+  if(up!=null&&lo!=null&&Number(up)!==Number(lo))return admTmMoneySigned(up)+' <span style="color:var(--text-muted)">/</span> '+admTmMoneySigned(lo);
+  return admTmMoneySigned(up!=null?up:lo);
+}
 async function admTmScrape(){
   const inp=document.getElementById('adm-tm-url');const url=inp?inp.value.trim():'';
   if(!url){showToast('Paste a Trade Me category URL first','error');return}
