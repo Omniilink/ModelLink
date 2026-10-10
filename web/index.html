@@ -1340,6 +1340,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="audit" onclick="admShow('audit',this)">Audit</button>
               <button class="modal-tab" data-atab="review" onclick="admShow('review',this)">Review <span id="adm-rev-count"></span></button>
 <button class="modal-tab" data-atab="findings" onclick="admShow('findings',this)">Findings</button>
+<button class="modal-tab" data-atab="trademe" onclick="admShow('trademe',this)">TradeMe</button>
             </div>
             <div data-apane="overview">
               <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -1398,6 +1399,12 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="tool-row"><label class="tool-result-sub">Status <select id="adm-rev-status" onchange="admLoadReview()"><option value="pending" selected>Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="">All</option></select></label><button class="btn btn-ghost btn-sm" onclick="admLoadReview()">Refresh</button><span class="tool-result-sub" id="adm-rev-meta"></span></div>
               <div class="tool-result-sub" style="margin-bottom:10px">Public projects and assets waiting for approval. Run previews the submission without publishing it.</div>
               <div id="adm-review"></div>
+            </div>
+            <div data-apane="trademe" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(420px,60vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
+              <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+              <div id="adm-tm-list"></div>
+              <div id="adm-tm-detail" style="display:none"></div>
             </div>
             <div data-apane="findings" style="display:none">
               <div class="tool-row"><label class="tool-result-sub">Kind <select id="adm-find-kind" onchange="admLoadFindings()"><option value="" selected>All</option><option value="error">Errors</option><option value="code">Code</option></select></label><label class="tool-result-sub">Model <input type="text" id="adm-find-model" placeholder="qwen, gemini…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Provider <input type="text" id="adm-find-provider" placeholder="groq, ollama…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Lang <input type="text" id="adm-find-language" placeholder="js, py…" style="width:70px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Search <input type="text" id="adm-find-q" placeholder="keywords…" style="width:130px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadFindings()">Refresh</button><span class="tool-result-sub" id="adm-find-meta"></span></div>
@@ -9324,7 +9331,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings()}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings();else if(name==='trademe')admTmList()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -9418,6 +9425,80 @@ async function admLoadFindings(){
       row.appendChild(b);card.appendChild(row);box.appendChild(card);
     });
   }catch(e){box.innerHTML='<div class="tool-status">Could not load findings.</div>'}
+}
+function admTmMoney(n){if(n==null||isNaN(Number(n)))return '—';return '$'+Number(n).toLocaleString(undefined,{maximumFractionDigits:2})}
+function admTmMargin(l){if(l.margin==null)return '<span style="color:var(--text-muted)">—</span>';const v=Number(l.margin);const c=v>=0?'var(--success)':'var(--error)';return '<span style="color:'+c+'">'+(v>=0?'+':'-')+'$'+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>'}
+async function admTmScrape(){
+  const inp=document.getElementById('adm-tm-url');const url=inp?inp.value.trim():'';
+  if(!url){showToast('Paste a Trade Me category URL first','error');return}
+  const job=document.getElementById('adm-tm-job');if(job)job.textContent='starting…';
+  try{
+    const r=await authFetch(API+'/api/trademe/scrape',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({category_url:url})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(job)job.textContent='scraping… (job '+d.job_id+') — Refresh in a bit';
+    setTimeout(()=>{try{admTmList()}catch(e){}},8000);
+  }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
+}
+async function admTmList(){
+  const box=document.getElementById('adm-tm-list');if(!box)return;
+  const det=document.getElementById('adm-tm-detail');if(det)det.style.display='none';
+  box.style.display='';
+  const st=document.getElementById('adm-tm-status');const so=document.getElementById('adm-tm-sort');
+  const qs='status='+encodeURIComponent(st?st.value:'pending')+'&sort='+encodeURIComponent(so?so.value:'');
+  try{
+    const r=await authFetch(API+'/api/trademe/listings?'+qs);
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const list=d.listings||[];
+    const meta=document.getElementById('adm-tm-meta');if(meta)meta.textContent=list.length+' listing'+(list.length===1?'':'s');
+    box.innerHTML='';
+    if(!list.length){box.innerHTML='<div class="tool-status">No listings — paste a category URL above and Scrape.</div>';return}
+    list.forEach(l=>{
+      const row=document.createElement('div');row.className='prompt-card';
+      row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span></div>'
+        +'<div class="tool-result-sub" style="margin:2px 0 6px">Ask '+admTmMoney(l.tm_price)+' · Est '+(l.estimated_min!=null||l.estimated_max!=null?(admTmMoney(l.estimated_min)+' – '+admTmMoney(l.estimated_max)):'—')+' · Margin '+admTmMargin(l)+'</div>'
+        +'<div class="prompt-actions"></div>';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Open valuation';
+      b.onclick=()=>admTmDetail(l.id);
+      row.querySelector('.prompt-actions').appendChild(b);box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div class="tool-status">Could not load listings.</div>'}
+}
+async function admTmDetail(id){
+  const box=document.getElementById('adm-tm-list');if(box)box.style.display='none';
+  const det=document.getElementById('adm-tm-detail');if(!det)return;
+  det.style.display='';
+  det.innerHTML='<div class="tool-status">Loading…</div>';
+  try{
+    const all=await (await authFetch(API+'/api/trademe/listings?status=')).json().catch(()=>({listings:[]}));
+    const l=(all.listings||[]).find(x=>String(x.id)===String(id));
+    if(!l){det.innerHTML='<div class="tool-status">Listing not found.</div>';return}
+    det.innerHTML='<div style="display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:14px">'
+      +'<div><div class="usage-section-title">Listing</div><div class="usage-chart-wrap"><div class="usage-chart-body">'
+      +(l.image_url?'<img src="'+API+escapeHtml(l.image_url)+'" alt="" style="width:100%;border-radius:var(--radius-xs);margin-bottom:10px" />':'<div class="tool-status" style="margin-bottom:10px">No screenshot captured</div>')
+      +'<div style="font-size:13px;font-weight:600;margin-bottom:6px">'+escapeHtml(l.title||'(no title)')+'</div>'
+      +'<div class="tool-result-sub" style="margin-bottom:10px;word-break:break-all">'+escapeHtml(l.tm_url||'')+'</div>'
+      +'<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="'+escapeHtml(l.tm_url||'#')+'">Open original listing</a>'
+      +'</div></div></div>'
+      +'<div><div class="usage-section-title">Valuation console</div><div class="usage-chart-wrap"><div class="usage-chart-body">'
+      +'<div class="tool-row"><span class="tool-result-sub">Ask</span><b>'+admTmMoney(l.tm_price)+'</b><span class="tool-result-sub">Margin</span><b>'+admTmMargin(l)+'</b></div>'
+      +'<div class="modal-field"><label>Estimated min ($)</label><input type="number" min="0" step="0.01" id="adm-tm-min" value="'+(l.estimated_min!=null?l.estimated_min:'')+'" /></div>'
+      +'<div class="modal-field"><label>Estimated max ($)</label><input type="number" min="0" step="0.01" id="adm-tm-max" value="'+(l.estimated_max!=null?l.estimated_max:'')+'" /></div>'
+      +'<div class="tool-row"><button class="btn btn-primary btn-sm" id="adm-tm-approve">Approve</button><button class="btn btn-ghost btn-sm" id="adm-tm-reject">Reject</button><button class="btn btn-ghost btn-sm" id="adm-tm-save">Save range</button><span style="flex:1"></span><button class="btn btn-ghost btn-sm" id="adm-tm-back">Back to list</button></div>'
+      +'<div class="tool-result-sub">Saving a range marks the row adjusted.</div>'
+      +'</div></div></div></div>';
+    const val=id2=>{const el=document.getElementById(id2);const v=el?el.value.trim():'';return v==='' ?null:Number(v)};
+    const send=async body=>{
+      const r=await authFetch(API+'/api/trademe/verify/'+l.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+      showToast('Saved ('+d.status+')','success');admTmList();
+    };
+    det.querySelector('#adm-tm-approve').onclick=()=>send({status:'approved'}).catch(e=>showToast(e.message,'error'));
+    det.querySelector('#adm-tm-reject').onclick=()=>send({status:'rejected'}).catch(e=>showToast(e.message,'error'));
+    det.querySelector('#adm-tm-save').onclick=()=>send({adjusted_min:val('adm-tm-min'),adjusted_max:val('adm-tm-max')}).catch(e=>showToast(e.message,'error'));
+    det.querySelector('#adm-tm-back').onclick=()=>admTmList();
+  }catch(e){det.innerHTML='<div class="tool-status">Could not load listing.</div>'}
 }
 async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
   const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}

@@ -3043,6 +3043,334 @@ async def admin_findings_delete(request: Request, finding_id: int):
     finally:
         conn.close()
 
+
+# ==========================================
+# Trade Me valuation & flipping pipeline (admin only)
+# One-shot category scrape (plain HTTP first, Playwright hook reserved),
+# thumbnails stored server-side, human-in-the-loop verify console.
+# ==========================================
+_TRADEME_STATUS = ("pending", "approved", "rejected", "adjusted")
+_TRADEME_CAP = 50
+_TRADEME_IMG_MAX = 300 * 1024
+_TRADEME_IMG_CAP = 10
+
+
+def _trademe_thumb_dir() -> str:
+    return _ensure_dir(os.path.join(APP_DIR, "user_data", "trademe_thumbs"))
+
+
+def _trademe_fetch_html(url: str):
+    """Returns (html, engine). Plain HTTP first; Playwright only when the
+    page needs JS rendering (reserved hook — enable with
+    OMNIILINK_TRADEME_PLAYWRIGHT=1 once playwright is installed)."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/120.0 Safari/537.36"}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=25) as r:
+            html = r.read(2 * 1024 * 1024).decode("utf-8", "replace")
+        if len(html.strip()) > 1000:
+            return html, "http"
+    except Exception as e:
+        last_err = str(e)
+    else:
+        last_err = "empty response"
+    if os.environ.get("OMNIILINK_TRADEME_PLAYWRIGHT", "").strip().lower() in ("1", "true", "yes"):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise RuntimeError("Playwright requested but not installed")
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(user_agent=headers["User-Agent"])
+                page.goto(url, timeout=45000)
+                page.wait_for_timeout(3000)
+                html = page.content()
+            finally:
+                browser.close()
+        if len(html.strip()) > 1000:
+            return html, "playwright"
+        raise RuntimeError("Playwright returned an empty page")
+    raise RuntimeError(f"Could not fetch category page ({last_err})")
+
+
+def _trademe_abs(base: str, href: str) -> str:
+    href = (href or "").strip()
+    if not href or href.startswith(("#", "javascript:")):
+        return ""
+    return urllib.parse.urljoin(base, href).split("#")[0]
+
+
+def _trademe_parse_listings(html: str, base_url: str) -> list:
+    """Best-effort item extraction (title/url/price/nearby image). The BERT
+    parser plugs in later; for now this stores raw text metadata."""
+    out, seen = [], set()
+    spans = []
+    for am in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html or "",
+                          re.IGNORECASE | re.DOTALL):
+        href, inner, at = am.group(1), am.group(2), am.start()
+        url = _trademe_abs(base_url, href)
+        if not url or url in seen:
+            continue
+        low = url.lower()
+        if not ("/listing" in low or "/item" in low or "/marketplace/" in low):
+            continue
+        title = re.sub(r"<[^>]+>", " ", inner or "")
+        title = re.sub(r"\s+", " ", title).strip()
+        if len(title) < 3:
+            continue
+        seen.add(url)
+        out.append({"tm_url": url[:500], "title": title[:200],
+                    "tm_price": None, "image": ""})
+        spans.append((at, am.end()))
+        if len(out) >= _TRADEME_CAP:
+            break
+    # Prices + thumbnails from the neighbourhood of each link: first $ amount
+    # after the anchor; thumbnail inside the anchor first, else the nearest
+    # <img> before it.
+    for (rec, (at, end)) in zip(out, spans):
+        window = html[end:end + 2000]
+        m = re.search(r"\$\s*([\d,]+(?:\.\d{1,2})?)", window)
+        if m:
+            try:
+                rec["tm_price"] = float(m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+        inner_imgs = re.findall(r'<img[^>]+src="([^"]+)"',
+                                html[at:end], re.IGNORECASE)
+        if inner_imgs:
+            rec["image"] = _trademe_abs(base_url, inner_imgs[0])[:500]
+        else:
+            before = re.findall(r'<img[^>]+src="([^"]+)"',
+                                html[max(0, at - 1500):at], re.IGNORECASE)
+            if before:
+                rec["image"] = _trademe_abs(base_url, before[-1])[:500]
+    return out
+
+
+def _trademe_thumb_save(image_url: str):
+    """Download one thumbnail (capped). Returns the stored filename or ''."""
+    if not image_url or not image_url.lower().startswith(("http://", "https://")):
+        return ""
+    try:
+        req = urllib.request.Request(
+            image_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            if r.status != 200:
+                return ""
+            raw = r.read(_TRADEME_IMG_MAX + 1)
+        if not raw or len(raw) > _TRADEME_IMG_MAX:
+            return ""
+        ext = os.path.splitext(urllib.parse.urlparse(image_url).path)[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            ext = ".jpg"
+        name = f"{int(time.time() * 1000):013d}-{secrets.token_hex(4)}{ext}"
+        with open(os.path.join(_trademe_thumb_dir(), name), "wb") as f:
+            f.write(raw)
+        return name
+    except Exception:
+        return ""
+
+
+def _trademe_run_scrape(job_id: str, category_url: str):
+    job = _ADMIN_JOBS.get(job_id)
+    if job is None:
+        return
+    log = job["lines"].append
+    try:
+        log(f"Fetching {category_url}")
+        html, engine = _trademe_fetch_html(category_url)
+        log(f"Fetched via {engine} ({len(html)} chars)")
+        items = _trademe_parse_listings(html, category_url)
+        log(f"Parsed {len(items)} candidate listings")
+        conn = get_db()
+        try:
+            saved, dupes, imgs = 0, 0, 0
+            for it in items:
+                exists = conn.execute(
+                    "SELECT id FROM trademe_listings WHERE tm_url = ?",
+                    (it["tm_url"],)).fetchone()
+                if exists:
+                    dupes += 1
+                    continue
+                img_name = ""
+                if imgs < _TRADEME_IMG_CAP and it.get("image"):
+                    img_name = _trademe_thumb_save(it["image"])
+                    if img_name:
+                        imgs += 1
+                conn.execute(
+                    "INSERT INTO trademe_listings (tm_url, title, tm_price, status,"
+                    " image_path, source_category) VALUES (?, ?, ?, 'pending', ?, ?)",
+                    (it["tm_url"], it["title"], it.get("tm_price"),
+                     img_name, category_url[:500]))
+                saved += 1
+            conn.commit()
+        finally:
+            conn.close()
+        job["status"] = "done"
+        log(f"Saved {saved} new listings ({dupes} already known, {imgs} thumbnails).")
+    except Exception as e:
+        job["status"] = "failed"
+        log(f"error: {e}")
+    finally:
+        job["finished"] = time.time()
+        job.pop("_proc", None)
+
+
+@app.post("/api/trademe/scrape")
+async def trademe_scrape(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    url = str((data or {}).get("category_url", "") or "").strip()
+    if not url or len(url) > 500 or not url.lower().startswith(("http://", "https://")):
+        return JSONResponse(status_code=400, content={"error": "A valid http(s) category URL is required"})
+    job_id = secrets.token_hex(5)
+    job = {"id": job_id, "kind": "trademe-scrape", "command": url,
+           "status": "running", "lines": [], "exit_code": None,
+           "started": time.time(), "finished": None}
+    with _ADMIN_JOBS_LOCK:
+        for jid in list(_ADMIN_JOBS):
+            if len(_ADMIN_JOBS) > 20 and _ADMIN_JOBS[jid].get("status") != "running":
+                _ADMIN_JOBS.pop(jid, None)
+        _ADMIN_JOBS[job_id] = job
+    threading.Thread(target=_trademe_run_scrape, args=(job_id, url), daemon=True).start()
+    return {"status": "started", "job_id": job_id}
+
+
+def _trademe_margin(row: dict):
+    try:
+        mx = row.get("estimated_max")
+        px = row.get("tm_price")
+        if mx is None or px is None:
+            return None
+        return float(mx) - float(px)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/api/trademe/listings")
+async def trademe_listings(request: Request, status: str = "", sort: str = ""):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    status = (status or "").strip().lower()
+    conds, params = [], []
+    if status:
+        if status not in _TRADEME_STATUS:
+            return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+        conds.append("status = ?")
+        params.append(status)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
+            " status, image_path, source_category, created_at, updated_at"
+            " FROM trademe_listings"
+            + (" WHERE " + " AND ".join(conds) if conds else "")
+            + " ORDER BY id DESC LIMIT 500", params).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        rec = dict(r)
+        rec["margin"] = _trademe_margin(rec)
+        rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
+        out.append(rec)
+    if (sort or "").strip().lower() == "margin":
+        out.sort(key=lambda r: (r["margin"] is None, -(r["margin"] or 0)))
+    return {"listings": out}
+
+
+@app.post("/api/trademe/verify/{listing_id}")
+async def trademe_verify(request: Request, listing_id: int):
+    """Human-in-the-loop verdict. An adjusted_min/max always flips the row to
+    'adjusted'; otherwise an explicit approved/rejected(/pending) applies."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "Listing not found"})
+        sets, params = [], []
+        has_range = ("adjusted_min" in data) or ("adjusted_max" in data)
+        if has_range:
+            try:
+                mn = float(data.get("adjusted_min")) if data.get("adjusted_min") not in (None, "") else None
+                mx = float(data.get("adjusted_max")) if data.get("adjusted_max") not in (None, "") else None
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={"error": "adjusted_min/max must be numbers"})
+            if mn is not None and mn < 0:
+                return JSONResponse(status_code=400, content={"error": "adjusted_min must be >= 0"})
+            if mx is not None and mx < 0:
+                return JSONResponse(status_code=400, content={"error": "adjusted_max must be >= 0"})
+            if mn is not None and mx is not None and mn > mx:
+                return JSONResponse(status_code=400, content={"error": "adjusted_min cannot exceed adjusted_max"})
+            sets.append("estimated_min = ?")
+            params.append(mn)
+            sets.append("estimated_max = ?")
+            params.append(mx)
+            sets.append("status = 'adjusted'")
+        else:
+            want = str(data.get("status", "") or "").strip().lower()
+            if want not in _TRADEME_STATUS:
+                return JSONResponse(status_code=400, content={"error": "status must be pending, approved, rejected or adjusted"})
+            sets.append("status = ?")
+            params.append(want)
+        sets.append("updated_at = datetime('now')")
+        params.append(listing_id)
+        conn.execute("UPDATE trademe_listings SET " + ", ".join(sets) + " WHERE id = ?", params)
+        conn.commit()
+        rec = dict(conn.execute(
+            "SELECT id, tm_url, title, tm_price, estimated_min, estimated_max,"
+            " status, image_path, source_category, created_at, updated_at"
+            " FROM trademe_listings WHERE id = ?", (listing_id,)).fetchone())
+        rec["margin"] = _trademe_margin(rec)
+        rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
+        return rec
+    finally:
+        conn.close()
+
+
+@app.get("/api/trademe/image/{listing_id}")
+async def trademe_image(request: Request, listing_id: int):
+    from fastapi.responses import Response as _Response
+    import mimetypes
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT image_path FROM trademe_listings WHERE id = ?",
+                           (listing_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row["image_path"]:
+        return JSONResponse(status_code=404, content={"error": "No image for this listing"})
+    full = os.path.join(_trademe_thumb_dir(), os.path.basename(row["image_path"]))
+    if not _is_within(_trademe_thumb_dir(), full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "Image not found"})
+    try:
+        with open(full, "rb") as f:
+            content = f.read()
+        return _Response(content=content,
+                         media_type=mimetypes.guess_type(full)[0] or "image/jpeg",
+                         headers={"Cache-Control": "private, max-age=86400"})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.get("/api/settings")
 async def get_settings(request: Request):
     user, err = _require_auth(request)

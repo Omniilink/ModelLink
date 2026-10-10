@@ -249,6 +249,21 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_findings_kind ON findings(kind, created_at);
         CREATE INDEX IF NOT EXISTS idx_findings_model ON findings(model, provider, language);
+
+        CREATE TABLE IF NOT EXISTS trademe_listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tm_url TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            tm_price REAL DEFAULT 0,
+            estimated_min REAL,
+            estimated_max REAL,
+            status TEXT DEFAULT 'pending',
+            image_path TEXT DEFAULT '',
+            source_category TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_trademe_status ON trademe_listings(status, created_at);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
