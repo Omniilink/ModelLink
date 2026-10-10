@@ -1578,6 +1578,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div style="max-width:1100px;margin:0 auto">
             <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+            <div class="tool-row"><label class="tool-result-sub">Hide from list <input type="text" id="adm-tm-hide" placeholder="e.g. miner, bitcoin, asic" style="width:min(220px,40vw)" onkeydown="if(event.key==='Enter')admTmHideAdd()" /></label><button class="btn btn-ghost btn-sm" onclick="admTmHideAdd()">Add</button><span id="adm-tm-hide-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></span><button class="btn btn-ghost btn-sm" onclick="admTmHideClear()">Clear</button></div>
             <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
             <div id="adm-tm-list"></div>
             <div id="adm-tm-detail" style="display:none"></div>
@@ -9463,14 +9464,54 @@ async function admTmScrape(){
     }
   }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
 }
-let admTmAll=[],admTmFacets=[],admTmSel=new Set();
+let admTmAll=[],admTmFacets=[],admTmSel=new Set(),admTmHideWords=[];
 function admTmNorm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'')}
+function admTmHidden(l){
+  const t=admTmNorm(l.title);
+  return admTmHideWords.some(k=>k&&t.indexOf(k)>-1);
+}
 function admTmMatches(l){
+  if(admTmHidden(l))return false;
   if(!admTmSel.size)return true;
   const t=admTmNorm(l.title);
   const byKind={};
   admTmFacets.forEach(f=>{if(admTmSel.has(f.key)){(byKind[f.kind]=byKind[f.kind]||[]).push(f.key)}});
   return Object.keys(byKind).every(k=>byKind[k].some(key=>t.indexOf(key)>-1));
+}
+function admTmHideLoad(){
+  try{
+    const raw=localStorage.getItem('omnilink_tm_hide');
+    admTmHideWords=raw?JSON.parse(raw).filter(k=>typeof k==='string'&&k):[];
+  }catch(e){admTmHideWords=[]}
+}
+function admTmHideSave(){
+  try{localStorage.setItem('omnilink_tm_hide',JSON.stringify(admTmHideWords))}catch(e){}
+}
+function admTmHideAdd(){
+  const inp=document.getElementById('adm-tm-hide');if(!inp)return;
+  const parts=String(inp.value||'').split(/[,\n]/).map(w=>admTmNorm(w)).filter(w=>w);
+  let changed=false;
+  parts.forEach(w=>{if(admTmHideWords.indexOf(w)<0){admTmHideWords.push(w);changed=true}});
+  if(changed){admTmHideSave();admTmRenderHide();admTmRender()}
+  inp.value='';
+}
+function admTmHideRemove(w){
+  admTmHideWords=admTmHideWords.filter(k=>k!==w);
+  admTmHideSave();admTmRenderHide();admTmRender();
+}
+function admTmHideClear(){
+  if(!admTmHideWords.length)return;
+  admTmHideWords=[];admTmHideSave();admTmRenderHide();admTmRender();
+}
+function admTmRenderHide(){
+  const box=document.getElementById('adm-tm-hide-chips');if(!box)return;
+  box.innerHTML='';
+  admTmHideWords.forEach(w=>{
+    const c=document.createElement('button');c.className='btn btn-ghost btn-sm';
+    c.style.cssText='padding:1px 8px;border-radius:10px;font-size:11px';
+    c.textContent=w+' ×';c.title='Stop hiding "'+w+'"';
+    c.onclick=()=>admTmHideRemove(w);box.appendChild(c);
+  });
 }
 async function admTmList(){
   const box=document.getElementById('adm-tm-list');if(!box)return;
@@ -9488,6 +9529,7 @@ async function admTmList(){
       admTmFacets=pr.ok?((await pr.json()).patterns||[]):[];
     }catch(e){admTmFacets=[]}
     const keys=new Set(admTmFacets.map(f=>f.key));admTmSel=new Set([...admTmSel].filter(k=>keys.has(k)));
+    admTmHideLoad();admTmRenderHide();
     admTmRenderChips();admTmRender();
   }catch(e){box.innerHTML='<div class="tool-status">Could not load listings.</div>'}
 }
@@ -9516,11 +9558,12 @@ function admTmRenderChips(){
 }
 function admTmRender(){
   const box=document.getElementById('adm-tm-list');if(!box)return;
+  const hideN=admTmHideWords.length?admTmAll.filter(admTmHidden).length:0;
   const list=admTmAll.filter(admTmMatches);
   const meta=document.getElementById('adm-tm-meta');
-  if(meta)meta.textContent=list.length+' listing'+(list.length===1?'':'s')+(admTmSel.size?' · filtered':'');
+  if(meta)meta.textContent=list.length+' listing'+(list.length===1?'':'s')+(admTmSel.size?' · filtered':'')+(hideN?' · '+hideN+' hidden':'');
   box.innerHTML='';
-  if(!list.length){box.innerHTML='<div class="tool-status">'+(admTmSel.size?'No listings match the selected filters.':'No listings — paste a category URL above and Scrape.')+'</div>';return}
+  if(!list.length){box.innerHTML='<div class="tool-status">'+((admTmSel.size||admTmHideWords.length)?'No listings match (adjust the spec chips or hidden keywords).':'No listings — paste a category URL above and Scrape.')+'</div>';return}
   list.forEach(l=>{
     const row=document.createElement('div');row.className='prompt-card';
     row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span style="display:flex;gap:6px;align-items:center"><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span><button class="btn btn-ghost btn-sm" data-tm-del="'+l.id+'" title="Delete listing" style="padding:1px 8px">×</button></span></div>'
