@@ -1403,6 +1403,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div data-apane="trademe" style="display:none">
               <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
               <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+              <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
               <div id="adm-tm-list"></div>
               <div id="adm-tm-detail" style="display:none"></div>
             </div>
@@ -9452,30 +9453,74 @@ async function admTmScrape(){
     }
   }catch(e){if(job)job.textContent='';showToast('Scrape failed: '+e.message,'error')}
 }
+let admTmAll=[],admTmFacets=[],admTmSel=new Set();
+function admTmNorm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'')}
+function admTmMatches(l){
+  if(!admTmSel.size)return true;
+  const t=admTmNorm(l.title);
+  const byKind={};
+  admTmFacets.forEach(f=>{if(admTmSel.has(f.key)){(byKind[f.kind]=byKind[f.kind]||[]).push(f.key)}});
+  return Object.keys(byKind).every(k=>byKind[k].some(key=>t.indexOf(key)>-1));
+}
 async function admTmList(){
   const box=document.getElementById('adm-tm-list');if(!box)return;
   const det=document.getElementById('adm-tm-detail');if(det)det.style.display='none';
   box.style.display='';
   const st=document.getElementById('adm-tm-status');const so=document.getElementById('adm-tm-sort');
-  const qs='status='+encodeURIComponent(st?st.value:'pending')+'&sort='+encodeURIComponent(so?so.value:'');
+  const status=st?st.value:'pending';
+  const qs='status='+encodeURIComponent(status)+'&sort='+encodeURIComponent(so?so.value:'');
   try{
     const r=await authFetch(API+'/api/trademe/listings?'+qs);
     if(!r.ok)throw new Error('HTTP '+r.status);
-    const d=await r.json();const list=d.listings||[];
-    const meta=document.getElementById('adm-tm-meta');if(meta)meta.textContent=list.length+' listing'+(list.length===1?'':'s');
-    box.innerHTML='';
-    if(!list.length){box.innerHTML='<div class="tool-status">No listings — paste a category URL above and Scrape.</div>';return}
-    list.forEach(l=>{
-      const row=document.createElement('div');row.className='prompt-card';
-      row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span style="display:flex;gap:6px;align-items:center"><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span><button class="btn btn-ghost btn-sm" data-tm-del="'+l.id+'" title="Delete listing" style="padding:1px 8px">×</button></span></div>'
-        +'<div class="tool-result-sub" style="margin:2px 0 6px">Ask '+admTmMoney(l.tm_price)+' · Est '+(l.estimated_min!=null||l.estimated_max!=null?(admTmMoney(l.estimated_min)+' – '+admTmMoney(l.estimated_max)):'—')+' · Margin '+admTmMargin(l)+'</div>'
-        +'<div class="prompt-actions"></div>';
-      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Open valuation';
-      b.onclick=()=>admTmDetail(l.id);
-      row.querySelector('.prompt-actions').appendChild(b);box.appendChild(row);
-    });
-    box.querySelectorAll('[data-tm-del]').forEach(x=>{x.onclick=async ev=>{ev.stopPropagation();const id=x.getAttribute('data-tm-del');if(!(await appConfirm('Delete this listing?')))return;try{const r=await authFetch(API+'/api/trademe/listings/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admTmList()}catch(e){showToast('Delete failed: '+e.message,'error')}}});
+    const d=await r.json();admTmAll=d.listings||[];
+    try{
+      const pr=await authFetch(API+'/api/trademe/patterns?status='+encodeURIComponent(status));
+      admTmFacets=pr.ok?((await pr.json()).patterns||[]):[];
+    }catch(e){admTmFacets=[]}
+    const keys=new Set(admTmFacets.map(f=>f.key));admTmSel=new Set([...admTmSel].filter(k=>keys.has(k)));
+    admTmRenderChips();admTmRender();
   }catch(e){box.innerHTML='<div class="tool-status">Could not load listings.</div>'}
+}
+function admTmRenderChips(){
+  const box=document.getElementById('adm-tm-patterns');if(!box)return;
+  box.innerHTML='';
+  if(!admTmFacets.length){box.style.display='none';return}
+  box.style.display='';
+  const groups={ram:'RAM',storage:'Storage',other:'Specs'};
+  ['ram','storage','other'].forEach(kind=>{
+    const items=admTmFacets.filter(f=>f.kind===kind);if(!items.length)return;
+    const lab=document.createElement('span');lab.className='tool-result-sub';lab.textContent=groups[kind]+':';box.appendChild(lab);
+    items.forEach(f=>{
+      const c=document.createElement('button');c.className='btn btn-ghost btn-sm';
+      c.style.cssText='padding:1px 8px;border-radius:10px;font-size:11px'+(admTmSel.has(f.key)?';background:var(--accent);color:#fff':'');
+      c.textContent=f.label+' ('+f.count+')';
+      c.onclick=()=>{if(admTmSel.has(f.key))admTmSel.delete(f.key);else admTmSel.add(f.key);admTmRenderChips();admTmRender()};
+      box.appendChild(c);
+    });
+  });
+  if(admTmSel.size){
+    const clr=document.createElement('button');clr.className='btn btn-ghost btn-sm';clr.textContent='Clear filters';
+    clr.onclick=()=>{admTmSel=new Set();admTmRenderChips();admTmRender()};
+    box.appendChild(clr);
+  }
+}
+function admTmRender(){
+  const box=document.getElementById('adm-tm-list');if(!box)return;
+  const list=admTmAll.filter(admTmMatches);
+  const meta=document.getElementById('adm-tm-meta');
+  if(meta)meta.textContent=list.length+' listing'+(list.length===1?'':'s')+(admTmSel.size?' · filtered':'');
+  box.innerHTML='';
+  if(!list.length){box.innerHTML='<div class="tool-status">'+(admTmSel.size?'No listings match the selected filters.':'No listings — paste a category URL above and Scrape.')+'</div>';return}
+  list.forEach(l=>{
+    const row=document.createElement('div');row.className='prompt-card';
+    row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(l.title||'(no title)')+'</span><span style="display:flex;gap:6px;align-items:center"><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(l.status||'pending')+'</span><button class="btn btn-ghost btn-sm" data-tm-del="'+l.id+'" title="Delete listing" style="padding:1px 8px">×</button></span></div>'
+      +'<div class="tool-result-sub" style="margin:2px 0 6px">Ask '+admTmMoney(l.tm_price)+' · Est '+(l.estimated_min!=null||l.estimated_max!=null?(admTmMoney(l.estimated_min)+' – '+admTmMoney(l.estimated_max)):'—')+' · Margin '+admTmMargin(l)+'</div>'
+      +'<div class="prompt-actions"></div>';
+    const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Open valuation';
+    b.onclick=()=>admTmDetail(l.id);
+    row.querySelector('.prompt-actions').appendChild(b);box.appendChild(row);
+  });
+  box.querySelectorAll('[data-tm-del]').forEach(x=>{x.onclick=async ev=>{ev.stopPropagation();const id=x.getAttribute('data-tm-del');if(!(await appConfirm('Delete this listing?')))return;try{const r=await authFetch(API+'/api/trademe/listings/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admTmList()}catch(e){showToast('Delete failed: '+e.message,'error')}}});
 }
 async function admTmDetail(id){
   const box=document.getElementById('adm-tm-list');if(box)box.style.display='none';

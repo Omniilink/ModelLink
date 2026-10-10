@@ -3111,6 +3111,77 @@ def _trademe_excluded(title: str, exclude) -> bool:
     return any(k and k in t for k in (exclude or []))
 
 
+# Spec tokens worth surfacing: sizes, RAM generations, cores, refresh, screen.
+_TRADEME_SPEC_RES = (
+    ("size", re.compile(r"(?<![A-Za-z0-9])(\d{1,4}(?:\.\d+)?)\s?(gb|tb|mb)\b", re.I)),
+    ("ddr", re.compile(r"(?<![A-Za-z0-9])ddr\s?([2-5])\b", re.I)),
+    ("cores", re.compile(r"(?<![A-Za-z0-9])(\d{1,3})\s?-?\s?cores?\b", re.I)),
+    ("hz", re.compile(r"(?<![A-Za-z0-9])(\d{2,3})\s?hz\b", re.I)),
+    ("inch", re.compile(r"(?<![A-Za-z0-9])(\d{1,2}(?:\.\d)?)\s?-?\s?(?:inch|inches|\")\b", re.I)),
+)
+_RAM_WORDS = ("ram", "ddr", "memory", "mem ")
+_STORAGE_WORDS = ("ssd", "hdd", "nvme", "storage", "hard drive", "harddisk",
+                  "hard disk", "drive", "emmc")
+
+
+def _trademe_spec_kind(title: str, start: int, end: int, unit: str = "") -> str:
+    """Classify a size token as RAM or storage from the adjacent word. The
+    category word usually follows the size ("64GB RAM", "1TB SSD"), so the
+    suffix is checked first, then the prefix."""
+    low = (title or "").lower()
+    suf, pre = low[end:end + 14], low[max(0, start - 14):start]
+
+    def hit(seg):
+        best = None
+        for kind, words in (("ram", _RAM_WORDS), ("storage", _STORAGE_WORDS)):
+            for w in words:
+                i = seg.find(w)
+                if i != -1 and (best is None or i < best[0]):
+                    best = (i, kind)
+        return best[1] if best else None
+
+    kind = hit(suf) or hit(pre)
+    if kind:
+        return kind
+    return "storage" if (unit or "").upper() == "TB" else "other"
+
+
+def _trademe_detect_patterns(titles, min_count: int = 2, limit: int = 60) -> list:
+    """Spot specs that repeat across listing titles (64GB RAM, 1TB SSD, 8-core,
+    DDR4, 144Hz, 15.6") so the UI can surface them as one-click facets."""
+    counts = {}
+    for title in (titles or []):
+        title = title or ""
+        seen = set()
+        for name, rx in _TRADEME_SPEC_RES:
+            for m in rx.finditer(title):
+                if name == "size":
+                    num, unit = m.group(1), m.group(2)
+                    key = f"{num}{unit.lower()}"
+                    label = f"{num}{unit.upper()}"
+                    kind = _trademe_spec_kind(title, m.start(), m.end(), unit)
+                elif name == "ddr":
+                    key, label, kind = f"ddr{m.group(1)}", f"DDR{m.group(1)}", "ram"
+                elif name == "cores":
+                    key, label, kind = f"{m.group(1)}core", f"{m.group(1)}-Core", "other"
+                elif name == "hz":
+                    key, label, kind = f"{m.group(1)}hz", f"{m.group(1)}Hz", "other"
+                else:
+                    key, label, kind = f"{m.group(1)}inch", f'{m.group(1)}"', "other"
+                if key in seen:
+                    continue
+                seen.add(key)
+                rec = counts.get(key)
+                if rec is None:
+                    counts[key] = {"key": key, "label": label, "kind": kind, "count": 1}
+                else:
+                    rec["count"] += 1
+    out = [r for r in counts.values() if r["count"] >= max(1, min_count)]
+    order = {"ram": 0, "storage": 1, "other": 2}
+    out.sort(key=lambda r: (order.get(r["kind"], 3), -r["count"], r["label"]))
+    return out[:limit]
+
+
 def _trademe_has_listings(html: str) -> bool:
     """True when the HTML actually contains item links (numeric /listing/
     ids). Trade Me category pages are a JS app shell — plain HTTP returns
@@ -3491,6 +3562,31 @@ async def trademe_listings(request: Request, status: str = "", sort: str = ""):
     if (sort or "").strip().lower() == "margin":
         out.sort(key=lambda r: (r["margin"] is None, -(r["margin"] or 0)))
     return {"listings": out}
+
+
+@app.get("/api/trademe/patterns")
+async def trademe_patterns(request: Request, status: str = ""):
+    """Spec facets (64GB, 1TB, DDR4, 8-core, 144Hz…) that repeat across the
+    titles in view — the admin UI pins them above the list as quick filters."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    status = (status or "").strip().lower()
+    conds, params = [], []
+    if status:
+        if status not in _TRADEME_STATUS:
+            return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+        conds.append("status = ?")
+        params.append(status)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT title FROM trademe_listings"
+            + (" WHERE " + " AND ".join(conds) if conds else "")
+            + " ORDER BY id DESC LIMIT 1000", params).fetchall()
+    finally:
+        conn.close()
+    return {"patterns": _trademe_detect_patterns([r["title"] for r in rows])}
 
 
 @app.post("/api/trademe/verify/{listing_id}")
