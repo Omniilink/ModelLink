@@ -1629,6 +1629,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="refreshCodingTree()" title="Refresh file tree">Refresh</button>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
+          <button onclick="genTestsFor()" title="Generate tests for a source file (review before saving)">Tests</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="openVersionsModal()" title="Browse and restore earlier project versions (files + chat)">Versions</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
@@ -1693,6 +1694,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <button class="tab-item" data-tab="menu" onclick="location.href='/menu'" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
 </nav>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
+<div class="modal-overlay" id="tests-modal" onclick="if(event.target===this)closeTestsModal()"><div class="modal" style="max-width:780px"><div class="modal-header"><h2 id="tests-title">Generated tests</h2><button class="modal-close" onclick="closeTestsModal()">&times;</button></div><div class="modal-body"><div id="tests-body"></div></div></div></div>
 <div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-ghost" onclick="runRag()" title="Semantic-ish search: index the project and return the most relevant code chunks" style="font-size:12px;padding:7px 12px">Smart</button><button class="btn btn-ghost" onclick="ragIndex()" title="Rebuild the project search index" style="font-size:12px;padding:7px 10px">Index</button><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
@@ -2961,37 +2963,7 @@ function openFileActionModal(path,execCmd){
   const runners={py:'python',js:'node',ts:'npx ts-node',sh:'bash',rb:'ruby',php:'php',go:'go run',ps1:'powershell -File'};
   if(execCmd||runners[ext])mk('Run','btn btn-primary',()=>{closeFileActionModal();runFileScanned(path,execCmd||runners[ext])});
   if(ext==='html'||ext==='htm')mk('Preview','btn btn-primary',()=>{closeFileActionModal();previewFileScanned(path)});
-  if(['py','js','ts','tsx','jsx','go','rb','java','cs','php','rs'].includes(ext))mk('Generate tests','btn btn-ghost',()=>{closeFileActionModal();genTestsFor(path)});
   document.getElementById('file-action-modal').classList.add('open');
-}
-async function genTestsFor(path){
-  showToast('Generating tests…','success');
-  try{
-    const r=await authFetch(API+'/api/coding/generate-tests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
-    const m=document.createElement('div');m.className='modal';m.style.maxWidth='720px';
-    m.innerHTML='<div class="modal-header"><h2>Generated tests</h2><button class="modal-close">&times;</button></div><div class="modal-body">'
-      +'<div class="tool-result-sub" style="margin-bottom:8px">Proposed file: <b>'+escapeHtml(d.test_path)+'</b>'+(d.model?' · '+escapeHtml(d.model):'')+'</div>'
-      +'<textarea id="gen-tests-code" spellcheck="false" style="width:100%;height:46vh;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px;color:var(--text-primary);font-family:var(--mono);font-size:12px;white-space:pre;overflow:auto"></textarea>'
-      +'<div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-ghost" id="gen-copy">Copy</button><button class="btn btn-ghost" id="gen-cancel">Cancel</button><button class="btn btn-primary" id="gen-save">Save test file</button></div></div>';
-    ov.appendChild(m);document.body.appendChild(ov);
-    const ta=m.querySelector('#gen-tests-code');ta.value=d.code||'';
-    const close=()=>ov.remove();
-    m.querySelector('.modal-close').onclick=close;
-    m.querySelector('#gen-cancel').onclick=close;
-    m.querySelector('#gen-copy').onclick=()=>{ta.select();try{document.execCommand('copy')}catch(e){};showToast('Copied','success')};
-    m.querySelector('#gen-save').onclick=async()=>{
-      try{
-        const wr=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:d.test_path,content:ta.value})});
-        const wd=await wr.json().catch(()=>({}));
-        if(!wr.ok)throw new Error((wd&&wd.error)||('HTTP '+wr.status));
-        close();showToast('Saved '+d.test_path,'success');
-        try{refreshCodingTree()}catch(e){}
-      }catch(e){showToast('Save failed: '+e.message,'error')}
-    };
-  }catch(e){showToast('Test generation failed: '+e.message,'error')}
 }
 function closeFileActionModal(){document.getElementById('file-action-modal').classList.remove('open')}
 function openRenameModal(path){
@@ -5061,50 +5033,65 @@ function renderVersionDetail(d){
   if(d.paragraph)h+='<div style="font-size:12.5px;color:var(--text-secondary);line-height:1.6;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:14px;white-space:pre-wrap">'+vEsc(d.paragraph)+'</div>';
   h+='<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">'
     +'<button class="btn btn-primary" id="ver-restore" style="font-size:12px;padding:6px 14px">Restore this version</button>'
-    +'<button class="btn btn-ghost" id="ver-diff-btn" style="font-size:12px;padding:6px 14px">Show diff vs now</button>'
     +'<button class="btn btn-ghost" id="ver-delete" style="font-size:12px;padding:6px 14px;color:var(--error)">Delete</button>'
+    +'<button class="btn btn-ghost" id="ver-diff-btn" style="font-size:12px;padding:6px 14px">Diff all</button>'
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-ghost" id="ver-back" style="font-size:12px;padding:6px 14px">Back to list</button></div>';
-  h+='<div id="ver-diff" style="display:none;max-height:340px;overflow:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:14px"></div>';
   h+='<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Changed files</div>';
   if(!stats.length)h+='<div style="font-size:12px;color:var(--text-muted)">No file differences recorded.</div>';
   else{
     h+='<div style="font-family:var(--mono);font-size:11.5px">';
     stats.forEach(s=>{
       const badge=s.status==='added'?'<span style="color:var(--accent-light)">new</span>':(s.status==='deleted'?'<span style="color:var(--error)">deleted</span>':'');
-      h+='<div style="display:flex;align-items:center;gap:10px;padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05)">'
+      h+='<div data-verfile="'+vEsc(s.path)+'" style="display:flex;align-items:center;gap:10px;padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer">'
         +'<span style="flex:1;min-width:0;word-break:break-all;color:var(--accent-light)">'+vEsc(s.path)+'</span>'
-        +badge+'<span style="white-space:nowrap">'+vDelta(s.added,s.removed)+'</span></div>';
+        +badge+'<span style="white-space:nowrap">'+vDelta(s.added,s.removed)+'</span><span style="color:var(--text-muted);font-size:10px">diff</span></div>';
     });
     h+='</div>';
   }
+  h+='<div id="ver-diff" style="margin-top:12px"></div>';
   body.innerHTML=h;
   body.querySelector('#ver-back').onclick=()=>openVersionsModal();
   body.querySelector('#ver-restore').onclick=()=>restoreVersion(d.id);
   body.querySelector('#ver-delete').onclick=()=>deleteVersion(d.id);
-  const db=body.querySelector('#ver-diff-btn');if(db)db.onclick=()=>toggleVersionDiff(d.id);
+  body.querySelector('#ver-diff-btn').onclick=()=>toggleVersionDiff(d.id);
+  body.querySelectorAll('[data-verfile]').forEach(el=>{el.onclick=()=>showVersionFileDiff(d.id,el.getAttribute('data-verfile'))});
 }
 async function toggleVersionDiff(id){
   const box=document.getElementById('ver-diff');if(!box)return;
-  if(box.style.display!=='none'){box.style.display='none';return}
-  box.style.display='';box.innerHTML='<div class="tool-result-sub">Loading diff…</div>';
+  if(box.getAttribute('data-open')==='1'){box.innerHTML='';box.removeAttribute('data-open');return}
+  box.innerHTML='<div style="font-size:12px;color:var(--text-muted)">Loading diff…</div>';
   try{
     const r=await authFetch(API+'/api/coding/project-versions/diff?id='+encodeURIComponent(id));
     const d=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(!r.ok){box.innerHTML='<div style="font-size:12px;color:var(--error)">'+vEsc(d.error||'diff failed')+'</div>';return}
     const files=d.files||[];
-    if(!files.length){box.innerHTML='<div class="tool-result-sub">No differences vs the current project.</div>';return}
-    let h='';
-    files.forEach(f=>{
-      h+='<div style="font-family:var(--mono);font-size:11px;margin:6px 0 2px;color:var(--accent-light)">'+vEsc(f.path)+' <span style="color:var(--text-muted)">('+vEsc(f.status)+')</span></div>';
-      (f.diff||[]).forEach(line=>{
-        const c=(line.startsWith('+')&&!line.startsWith('+++'))?'var(--success)':((line.startsWith('-')&&!line.startsWith('---'))?'var(--error)':(line.startsWith('@@')?'var(--accent-light)':'var(--text-secondary)'));
-        h+='<div style="font-family:var(--mono);font-size:11px;white-space:pre-wrap;color:'+c+'">'+vEsc(line||' ')+'</div>';
-      });
-    });
-    if(d.truncated)h+='<div class="tool-result-sub">…diff truncated</div>';
-    box.innerHTML=h;
-  }catch(e){box.innerHTML='<div class="tool-result-sub">'+vEsc('Diff failed: '+e.message)+'</div>'}
+    if(!files.length){box.innerHTML='<div style="font-size:12px;color:var(--text-muted)">No differences.</div>';return}
+    box.innerHTML=files.map(f=>'<div style="font-size:11px;color:var(--accent-light);margin:8px 0 2px">'+vEsc(f.path)+'</div>'+vDiffHtml(f.diff||'')).join('');
+    box.setAttribute('data-open','1');
+  }catch(e){box.innerHTML='<div style="font-size:12px;color:var(--error)">'+vEsc(e.message)+'</div>'}
+}
+async function showVersionFileDiff(id,path){
+  const box=document.getElementById('ver-diff');if(!box)return;
+  box.innerHTML='<div style="font-size:12px;color:var(--text-muted)">Loading diff…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions/diff?id='+encodeURIComponent(id)+'&path='+encodeURIComponent(path));
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){box.innerHTML='<div style="font-size:12px;color:var(--error)">'+vEsc(d.error||'diff failed')+'</div>';return}
+    box.innerHTML=vDiffHtml(d.diff||'');
+  }catch(e){box.innerHTML='<div style="font-size:12px;color:var(--error)">'+vEsc(e.message)+'</div>'}
+}
+function vDiffHtml(diff){
+  if(!diff.trim())return '<div style="font-size:12px;color:var(--text-muted)">No differences.</div>';
+  const lines=diff.split('\n').map(l=>{
+    let c='var(--text-secondary)';
+    if(l.startsWith('+++')||l.startsWith('---'))c='var(--text-muted)';
+    else if(l.startsWith('+'))c='var(--success)';
+    else if(l.startsWith('-'))c='var(--error)';
+    else if(l.startsWith('@@'))c='var(--accent-light)';
+    return '<div style="color:'+c+'">'+vEsc(l||' ')+'</div>';
+  }).join('');
+  return '<div style="font-family:var(--mono);font-size:11.5px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px;max-height:340px;overflow:auto;white-space:pre">'+lines+'</div>';
 }
 async function restoreVersion(id){
   if(!(await appConfirm('Restore this version? The project files AND the coding chat will revert to this point. The current state is saved as a new version first.')))return;
@@ -9128,6 +9115,39 @@ function openSearchModal(q){
   setTimeout(()=>document.getElementById('search-input').focus(),30);
 }
 function closeSearchModal(){const m=document.getElementById('search-modal');if(m)m.classList.remove('open')}
+async function genTestsFor(path){
+  showToast('Generating tests…','success');
+  try{
+    const r=await authFetch(API+'/api/coding/generate-tests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path||''})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    openTestsModal(d);
+  }catch(e){showToast('Test generation failed: '+e.message,'error')}
+}
+function closeTestsModal(){const m=document.getElementById('tests-modal');if(m)m.classList.remove('open')}
+function openTestsModal(d){
+  const m=document.getElementById('tests-modal');if(!m)return;
+  document.getElementById('tests-title').textContent='Generate tests — '+(d.source_path||'');
+  const body=document.getElementById('tests-body');
+  body.innerHTML='<div class="tool-result-sub" style="margin-bottom:8px">Generate tests for <b>'+escapeHtml(d.source_path||'')+'</b> · model '+escapeHtml(d.used||'')+'. Review, edit, then save.</div>'
+    +'<textarea id="gen-tests-code" spellcheck="false" style="width:100%;height:46vh;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px;color:var(--text-primary);font-family:var(--mono);font-size:12px;white-space:pre"></textarea>'
+    +'<div class="tool-row" style="margin-top:10px"><label class="tool-result-sub">Save to <input type="text" id="gen-tests-path" value="'+escapeHtml(d.test_path||'')+'" style="width:min(420px,60vw)" /></label><button class="btn btn-primary btn-sm" id="gen-save">Save file</button><button class="btn btn-ghost btn-sm" onclick="closeTestsModal()">Cancel</button></div>';
+  document.getElementById('gen-tests-code').value=d.content||'';
+  document.getElementById('gen-save').onclick=()=>saveGeneratedTest();
+  m.classList.add('open');
+}
+async function saveGeneratedTest(){
+  const path=(document.getElementById('gen-tests-path').value||'').trim();
+  const content=document.getElementById('gen-tests-code').value||'';
+  if(!path){showToast('Enter a path','error');return}
+  try{
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,content:content})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Saved '+path,'success');closeTestsModal();
+    try{await refreshCodingTree()}catch(e){}
+  }catch(e){showToast('Save failed: '+e.message,'error')}
+}
 async function ragIndex(){
   const box=document.getElementById('search-results');if(box)box.innerHTML='<div class="search-hint">Indexing project…</div>';
   try{
