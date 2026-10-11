@@ -319,6 +319,18 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, read, created_at);
+
+        CREATE TABLE IF NOT EXISTS project_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            path TEXT DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            text TEXT DEFAULT '',
+            tokens TEXT DEFAULT '',
+            tlen INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_chunks_user ON project_chunks(user_id);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

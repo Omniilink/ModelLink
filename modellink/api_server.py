@@ -85,6 +85,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import time
+import math
 import json
 import socket
 import ipaddress
@@ -10903,6 +10904,201 @@ async def user_bandwidth(request: Request):
         "limited": bool(BW_ENABLED and not is_admin),
         "speed": speed,
     }
+
+
+# ==========================================================================
+# RAG over the open project — local, dependency-free lexical retrieval (BM25).
+# Index the folder once; query returns the most relevant chunks with file:line
+# so coding chat (or you) can pull in just the relevant code, not the whole tree.
+# ==========================================================================
+_RAG_MAX_CHUNK_LINES = 60
+_RAG_CHUNK_OVERLAP = 10
+_RAG_MAX_FILE_BYTES = 400 * 1024
+_RAG_MAX_CHUNKS = 5000
+_RAG_STOP = set(
+    "the a an and or of to in is it for on with as at by be this that from are was were "
+    "will can not you your we our they them he she his her its if then else return def "
+    "class import from self none true false".split())
+
+
+def _rag_tokenize(text: str) -> list:
+    toks = re.findall(r"[A-Za-z0-9_]+", (text or "").lower())
+    return [t for t in toks if len(t) >= 2 and t not in _RAG_STOP]
+
+
+def _rag_chunks(text: str) -> list:
+    lines = (text or "").splitlines()
+    step = max(1, _RAG_MAX_CHUNK_LINES - _RAG_CHUNK_OVERLAP)
+    out, i = [], 0
+    while i < len(lines):
+        block = lines[i:i + _RAG_MAX_CHUNK_LINES]
+        if block:
+            out.append((i + 1, i + len(block), "\n".join(block)))
+        if i + _RAG_MAX_CHUNK_LINES >= len(lines):
+            break
+        i += step
+    return out
+
+
+def _rag_index(user_id: str, folder: str) -> int:
+    """(Re)build the chunk index for a project folder. Returns chunk count."""
+    conn = get_db()
+    count = 0
+    try:
+        conn.execute("DELETE FROM project_chunks WHERE user_id = ?", (user_id,))
+        stop = False
+        for dirpath, dirnames, filenames in os.walk(folder):
+            if stop:
+                break
+            dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+            for name in filenames:
+                if count >= _RAG_MAX_CHUNKS:
+                    stop = True
+                    break
+                if name.startswith("."):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    if os.path.getsize(full) > _RAG_MAX_FILE_BYTES:
+                        continue
+                    with open(full, "rb") as f:
+                        if b"\x00" in f.read(8192):
+                            continue
+                    with open(full, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                except Exception:
+                    continue
+                rel = os.path.relpath(full, folder).replace("\\", "/")
+                for (s, e, block) in _rag_chunks(text):
+                    toks = _rag_tokenize(block)
+                    if not toks:
+                        continue
+                    conn.execute(
+                        "INSERT INTO project_chunks (user_id, path, start_line, end_line,"
+                        " text, tokens, tlen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (user_id, rel, s, e, block[:8000], " ".join(toks), len(toks)))
+                    count += 1
+                    if count >= _RAG_MAX_CHUNKS:
+                        stop = True
+                        break
+        conn.commit()
+    finally:
+        conn.close()
+    return count
+
+
+def _rag_query(user_id: str, q: str, k: int = 8) -> list:
+    """BM25 over the user's indexed chunks. Returns top-k with file:line."""
+    qtoks = _rag_tokenize(q)
+    if not qtoks:
+        return []
+    qset = set(qtoks)
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT path, start_line, end_line, text, tokens, tlen"
+                            " FROM project_chunks WHERE user_id = ?", (user_id,)).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return []
+    n = len(rows)
+    avgdl = (sum((r["tlen"] or 0) for r in rows) / n) or 1.0
+    docs = [r["tokens"].split() for r in rows]
+    df = {}
+    for toks in docs:
+        for t in set(toks):
+            if t in qset:
+                df[t] = df.get(t, 0) + 1
+    k1, b = 1.5, 0.75
+    scored = []
+    for r, toks in zip(rows, docs):
+        tf = {}
+        for t in toks:
+            if t in qset:
+                tf[t] = tf.get(t, 0) + 1
+        if not tf:
+            continue
+        tlen = r["tlen"] or 1
+        score = 0.0
+        for t, f in tf.items():
+            idf = math.log(1 + (n - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5))
+            score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * tlen / avgdl))
+        scored.append((score, r))
+    scored.sort(key=lambda x: -x[0])
+    return [{"path": r["path"], "start_line": r["start_line"], "end_line": r["end_line"],
+             "score": round(score, 3), "text": r["text"]} for score, r in scored[:k]]
+
+
+def _rag_context(user_id: str, q: str, k: int = 6, budget: int = 6000) -> str:
+    """Compact context block for prompt injection (file:line + code)."""
+    hits = _rag_query(user_id, q, k)
+    if not hits:
+        return ""
+    parts, used = [], 0
+    for h in hits:
+        snippet = h["text"]
+        if used + len(snippet) > budget:
+            snippet = snippet[:max(0, budget - used)]
+        if not snippet:
+            break
+        parts.append(f"### {h['path']}:{h['start_line']}-{h['end_line']}\n{snippet}")
+        used += len(snippet)
+    return "RELEVANT PROJECT CODE (retrieved by relevance):\n" + "\n\n".join(parts)
+
+
+@app.post("/api/coding/rag/index")
+async def coding_rag_index(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    try:
+        n = await asyncio.to_thread(_rag_index, uid, folder)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok", "chunks": n, "folder": folder}
+
+
+@app.post("/api/coding/rag/query")
+async def coding_rag_query(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    q = str(data.get("q") or "").strip()
+    if not q or len(q) > 500:
+        return JSONResponse(status_code=400, content={"error": "Query must be 1-500 characters"})
+    try:
+        k = max(1, min(30, int(data.get("k") or 8)))
+    except (TypeError, ValueError):
+        k = 8
+    uid = _safe_username(user["username"])
+    hits = await asyncio.to_thread(_rag_query, uid, q, k)
+    return {"query": q, "count": len(hits), "results": hits}
+
+
+@app.get("/api/coding/rag/status")
+async def coding_rag_status(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    conn = get_db()
+    try:
+        n = conn.execute("SELECT COUNT(*) AS n FROM project_chunks WHERE user_id = ?",
+                         (uid,)).fetchone()["n"]
+        files = conn.execute("SELECT COUNT(DISTINCT path) AS n FROM project_chunks"
+                             " WHERE user_id = ?", (uid,)).fetchone()["n"]
+    finally:
+        conn.close()
+    return {"chunks": n, "files": files}
 
 
 @app.get("/api/coding/search")

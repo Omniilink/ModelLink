@@ -1693,7 +1693,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <button class="tab-item" data-tab="menu" onclick="location.href='/menu'" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
 </nav>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
-<div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
+<div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-ghost" onclick="runRag()" title="Semantic-ish search: index the project and return the most relevant code chunks" style="font-size:12px;padding:7px 12px">Smart</button><button class="btn btn-ghost" onclick="ragIndex()" title="Rebuild the project search index" style="font-size:12px;padding:7px 10px">Index</button><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistoryModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2 id="history-title">File history</h2><button class="modal-close" onclick="closeHistoryModal()">&times;</button></div><div class="modal-body"><div id="history-list" style="max-height:38vh;overflow:auto"></div><pre id="history-view" style="display:none;max-height:30vh;overflow:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word"></pre></div></div></div>
 <div id="upload-progress" style="display:none;position:fixed;bottom:16px;right:16px;z-index:400;background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:280px;max-width:340px;animation:scaleIn .18s cubic-bezier(.4,0,.2,1) both"></div>
@@ -9073,6 +9073,34 @@ function openSearchModal(q){
   setTimeout(()=>document.getElementById('search-input').focus(),30);
 }
 function closeSearchModal(){const m=document.getElementById('search-modal');if(m)m.classList.remove('open')}
+async function ragIndex(){
+  const box=document.getElementById('search-results');if(box)box.innerHTML='<div class="search-hint">Indexing project…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/rag/index',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(box)box.innerHTML='<div class="search-hint">Indexed '+d.chunks+' chunks.</div>';
+  }catch(e){if(box)box.innerHTML='<div class="search-hint">'+escapeHtml('Index failed: '+e.message)+'</div>'}
+}
+async function runRag(){
+  const box=document.getElementById('search-results');if(!box)return;
+  const q=document.getElementById('search-input').value.trim();
+  if(!q){box.innerHTML='<div class="search-hint">Describe what you are looking for.</div>';return}
+  box.innerHTML='<div class="search-hint">Retrieving…</div>';
+  try{
+    let r=await authFetch(API+'/api/coding/rag/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:10})});
+    let d=await r.json().catch(()=>({}));
+    if(r.ok&&(!d.results||!d.results.length)){
+      await authFetch(API+'/api/coding/rag/index',{method:'POST'});
+      r=await authFetch(API+'/api/coding/rag/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:10})});
+      d=await r.json().catch(()=>({}));
+    }
+    if(!r.ok){box.innerHTML='<div class="search-hint">'+escapeHtml(d.error||'failed')+'</div>';return}
+    if(!d.results||!d.results.length){box.innerHTML='<div class="search-hint">Nothing relevant for “'+escapeHtml(q)+'”. Try Index first.</div>';return}
+    box.innerHTML=d.results.map(h=>'<div class="search-hit" data-path="'+escapeHtml(h.path)+'"><span class="search-hit-path">'+escapeHtml(h.path)+':'+h.start_line+'-'+h.end_line+'</span><span class="search-hit-text">'+escapeHtml((h.text||'').slice(0,200))+'</span></div>').join('');
+    box.querySelectorAll('.search-hit').forEach(el=>{el.onclick=()=>{const p=el.getAttribute('data-path');if(typeof openFileFromTree==='function')openFileFromTree(p);closeSearchModal()}});
+  }catch(e){box.innerHTML='<div class="search-hint">'+escapeHtml('Failed: '+e.message)+'</div>'}
+}
 async function runSearch(){
   if(isRemote()){showToast('Project search is not available for remote folders yet','error');return}
   const box=document.getElementById('search-results');if(!box)return;
