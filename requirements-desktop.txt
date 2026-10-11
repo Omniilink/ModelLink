@@ -1,0 +1,4 @@
+# Extra dependencies for the offline desktop app (local_app.py).
+# Kept out of requirements.txt so Docker/server installs stay lean.
+# pywebview renders the same web UI in a native Edge WebView2 window on Windows.
+pywebview>=5.0
