@@ -3081,17 +3081,17 @@ async function downloadMultipleFiles(paths){
   zip.href=URL.createObjectURL(new Blob([''],{type:'application/zip'}));
   zip.download='files.zip';
   // For simplicity, download each file individually
-  for(const p of paths){
-    const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(p));
-    if(r.ok){
-      const d=await r.json();
-      const blob=new Blob([d.content||''],{type:'text/plain'});
-      const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download=p.split('/').pop();
-      a.click();
+for(const p of paths){
+      let content=null;
+      try{content=await codingReadFile(p)}catch(e){continue}
+      if(content!=null){
+        const blob=new Blob([content||''],{type:'text/plain'});
+        const a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download=p.split('/').pop();
+        a.click();
+      }
     }
-  }
   showToast('Downloaded '+paths.length+' files','success');
 }
 let _previewPath=null,_previewLocal=false;
@@ -4643,10 +4643,25 @@ async function processCodingActions(text,msgEl){
     // Preview by simulating the replacement against current content
     let previewErr='',patchedPreview=null;
     try{
-      let current=null;
-      if(fsHandle){try{current=await fsReadFile(path)}catch(e){current=null}}
-      else{const rr=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));if(rr.ok){const dd=await rr.json();current=dd.content}}
-      if(current==null)previewErr='File not found — create it first';
+      // Read through the SAME resolver the real apply uses. Remote projects
+      // live on the paired computer, so asking the server made every patch
+      // look like "File not found" even though the file existed there.
+      let current=null,readFailed='';
+      try{
+        if(isRemote()){
+          const ro=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});
+          if(!ro||!ro.ok)readFailed=(ro&&ro.error)||'read failed on the paired computer';
+          else current=ro.content||'';
+        }else if(fsHandle){
+          current=await fsReadFile(path);
+        }else{
+          const rr=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));
+          if(!rr.ok){const dd=await rr.json().catch(()=>({}));readFailed=(dd&&dd.error)||('HTTP '+rr.status)}
+          else{const dd=await rr.json();current=dd.content}
+        }
+      }catch(e){readFailed=e.message||String(e)}
+      if(readFailed)previewErr='Could not read '+path+' — '+readFailed;
+      else if(current==null)previewErr='File not found — create it first';
       else{
         // Same matcher the real apply uses, so the preview can never show a
         // diff that the write then refuses (or hide one that would land).
@@ -5580,7 +5595,12 @@ async function detectMissingAssets(writtenPaths){
     for(const hp of htmlPaths){
       let text='';
       try{
-        if(typeof fsHandle!=='undefined'&&fsHandle)text=(await fsReadFile(hp))||'';
+        // A remote project's files live on the paired computer, so the server
+        // copy does not exist — read them through the device. Guarded so this
+        // stays usable when the helpers are unavailable (tests/partial load).
+        if(typeof isRemote==='function'&&isRemote()&&typeof codingReadFile==='function')text=(await codingReadFile(hp))||'';
+        else if(typeof fsHandle!=='undefined'&&fsHandle&&typeof fsReadFile==='function')text=(await fsReadFile(hp))||'';
+        else if(typeof codingReadFile==='function')text=(await codingReadFile(hp))||'';
         else{const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(hp));if(r.ok)text=(await r.json()).content||''}
       }catch(e){text=''}
       if(!text)continue;
@@ -6033,8 +6053,10 @@ function remoteRel(path){
   return base+'/'+p;
 }
 async function codingReadFile(path){
-  if(fsHandle)return fsReadFile(path);
+  // Remote first, exactly like codingWriteFile: a paired-computer project must
+  // never be read out of a stale local fsHandle or off the server.
   if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});if(!out||!out.ok)throw new Error((out&&out.error)||'Read failed');return out.content||''}
+  if(fsHandle)return fsReadFile(path);
   const r=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));const data=await r.json();if(!r.ok)throw new Error(data.error||'Read failed');return data.content;
 }
 async function agentExecSync(aid,command,timeoutMs,cwd){
@@ -6281,7 +6303,10 @@ if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenP
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
     }
     let current;
-    try{current=await codingReadFile(path)}catch(e){return{ok:false,error:'File not found — create it first'}}
+    try{current=await codingReadFile(path)}catch(e){
+      // Don't claim the file is missing when the real fault is an offline
+      // computer, a rate limit, a timeout or a jail rejection.
+      return{ok:false,error:'Could not read '+path+' — '+(e&&e.message?e.message:String(e))}}
     const res=applyPatchText(current,oldText,newText);
     if(!res.ok)return{ok:false,error:res.error};
     const patched=res.patched;
