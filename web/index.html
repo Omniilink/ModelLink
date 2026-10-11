@@ -996,6 +996,14 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
         <span>Scheduled</span><span id="nav-sched-badge" style="display:none;background:var(--error);color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 5px;line-height:14px"></span>
       </div>
+      <div class="nav-item" data-view="arena">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v6a6 6 0 006 6 6 6 0 006-6V3"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+        <span>Arena</span>
+      </div>
+      <div class="nav-item" data-view="memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 00-4 4v1a3 3 0 00-1 5.8V15a4 4 0 004 4h1V3z"/><path d="M12 3a4 4 0 014 4v1a3 3 0 011 5.8V15a4 4 0 01-4 4h-1"/></svg>
+        <span>Memory</span>
+      </div>
       <div class="nav-cap">Manage</div>
       <div class="nav-item" data-view="agents">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -1166,6 +1174,7 @@ pre{max-width:100%}
               <button onclick="loadUsage('7d',this)">7 Days</button>
               <button onclick="loadUsage('30d',this)">30 Days</button>
             </div>
+            <div id="usage-costs" style="margin:14px 0"></div>
             <div class="usage-summary" id="usage-summary">
               <div class="usage-card"><div class="card-label">Total Requests</div><div class="card-value" id="us-total-req">--</div><div class="card-sub" id="us-total-req-sub"></div></div>
               <div class="usage-card"><div class="card-label">Total Tokens</div><div class="card-value" id="us-total-tok">--</div><div class="card-sub" id="us-total-tok-sub"></div></div>
@@ -1611,6 +1620,29 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
+      <div class="view-panel" id="arena-view">
+        <div class="view-header"><h2>Arena <span class="beta-tag">Beta</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body">
+          <div style="max-width:1200px;margin:0 auto">
+            <div class="tool-result-sub" style="margin-bottom:10px">One prompt, several models side by side. Pick the winner — the vote is logged so model choice becomes evidence-based.</div>
+            <div class="tool-row"><label class="tool-result-sub">Models (comma-separated, 2-4) <input type="text" id="arena-models" value="omniilink, ollama/llama3.1" style="width:min(520px,66vw)" /></label><button class="btn btn-primary btn-sm" onclick="arenaRun()">Run</button><span class="tool-result-sub" id="arena-status"></span></div>
+            <div class="tool-row"><textarea id="arena-prompt" rows="3" placeholder="Ask the models something…" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-family:var(--font);font-size:13px"></textarea></div>
+            <div id="arena-results" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:8px"></div>
+            <div class="usage-section-title" style="margin-top:16px">History</div>
+            <div id="arena-history"></div>
+          </div>
+        </div>
+      </div>
+      <div class="view-panel" id="memory-view">
+        <div class="view-header"><h2>Memory</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body">
+          <div style="max-width:900px;margin:0 auto">
+            <div class="tool-result-sub" style="margin-bottom:10px">Durable facts the assistant carries into chats. Higher importance lives longer; expired ones are pruned automatically.</div>
+            <div class="tool-row"><input type="text" id="mem-text" placeholder="e.g. I flip Dell servers on Trade Me" style="flex:1;min-width:200px" /><select id="mem-importance"><option value="5">Critical</option><option value="4">High</option><option value="3" selected>Normal</option><option value="2">Low</option><option value="1">Ephemeral</option></select><input type="text" id="mem-tags" placeholder="tags" style="width:130px" /><button class="btn btn-primary btn-sm" onclick="memAdd()">Remember</button><button class="btn btn-ghost btn-sm" onclick="memLoad()">Refresh</button></div>
+            <div id="mem-list"></div>
+          </div>
+        </div>
+      </div>
       <div class="view-panel" id="prompts-view">
         <div class="view-header"><h2>Prompts Library</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="prompts-body"></div>
@@ -1959,6 +1991,8 @@ function switchView(view){
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
   document.getElementById('scheduled-view').classList.toggle('open',view==='scheduled');
+  document.getElementById('arena-view').classList.toggle('open',view==='arena');
+  document.getElementById('memory-view').classList.toggle('open',view==='memory');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -1970,13 +2004,13 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}if(view==='scheduled'){try{schLoad()}catch(e){}}
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}if(view==='scheduled'){try{schLoad()}catch(e){}}if(view==='arena'){try{arenaLoad()}catch(e){}}if(view==='memory'){try{memLoad()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe',scheduled:'/scheduled'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe',scheduled:'/scheduled',arena:'/arena',memory:'/memory'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me',scheduled:'Scheduled'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me',scheduled:'Scheduled',arena:'Arena',memory:'Memory'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -7136,6 +7170,7 @@ function deletePrompt(id){if(!appConfirm('Delete this prompt?'))return;const pro
 let usageCurrentRange='24h';
 async function loadUsage(range,btn){
   usageCurrentRange=range||'24h';
+  try{loadCosts(usageCurrentRange)}catch(e){}
   if(btn){document.querySelectorAll('.usage-range button').forEach(b=>b.classList.remove('active'));btn.classList.add('active')}
   const usageFail=async(msg,detail)=>{
     document.getElementById('usage-body').innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">'+escapeHtml(msg)+'</p><p style="font-size:12px;color:var(--text-muted)">'+escapeHtml(detail||'Could not load usage data')+'</p></div>';
@@ -10092,6 +10127,105 @@ async function schNotifs(){
 }
 async function schReadAll(){
   try{await authFetch(API+'/api/scheduled/notifications/read',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});schNotifs()}catch(e){}
+}
+function arenaCols(r){
+  return (r.responses||[]).map((x,i)=>'<div class="prompt-card" style="display:flex;flex-direction:column">'
+    +'<div class="prompt-header"><span class="prompt-name">'+escapeHtml(x.model||'')+'</span><span class="tool-result-sub">'+escapeHtml((x.used||''))+' · '+x.ms+'ms</span></div>'
+    +'<div style="font-size:12.5px;color:var(--text-secondary);white-space:pre-wrap;max-height:260px;overflow:auto;margin:6px 0;flex:1">'+(x.error?'<span style="color:var(--error)">'+escapeHtml(x.error)+'</span>':escapeHtml(x.text||''))+'</div>'
+    +'<button class="btn btn-ghost btn-sm" onclick="arenaVote('+r.id+','+i+')">'+(r.winner===x.model?'✓ winner':'Pick winner')+'</button></div>').join('');
+}
+async function arenaRun(){
+  const p=document.getElementById('arena-prompt');const m=document.getElementById('arena-models');
+  const prompt=p?p.value.trim():'';if(!prompt){showToast('Write a prompt','error');return}
+  const models=(m?m.value:'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(models.length<2||models.length>4){showToast('Pick 2-4 models','error');return}
+  const st=document.getElementById('arena-status');if(st)st.textContent='running…';
+  try{
+    const r=await authFetch(API+'/api/arena/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt,models:models})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(st)st.textContent='';
+    document.getElementById('arena-results').innerHTML=arenaCols(d);
+    arenaLoad();
+  }catch(e){if(st)st.textContent='';showToast('Arena failed: '+e.message,'error')}
+}
+async function arenaVote(id,idx){
+  try{
+    const runs=window._arenaRuns||[];const run=runs.find(x=>x.id===id);
+    const winner=run&&run.responses&&run.responses[idx]?run.responses[idx].model:'';
+    if(!winner)return;
+    const r=await authFetch(API+'/api/arena/vote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,winner:winner})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    showToast('Winner logged: '+winner,'success');arenaLoad();
+  }catch(e){showToast('Vote failed: '+e.message,'error')}
+}
+async function arenaLoad(){
+  try{
+    const r=await authFetch(API+'/api/arena/runs?limit=30');if(!r.ok)return;
+    const d=await r.json();const runs=d.runs||[];window._arenaRuns=runs;
+    const box=document.getElementById('arena-history');if(!box)return;box.innerHTML='';
+    if(!runs.length){box.innerHTML='<div class="tool-status">No runs yet.</div>';return}
+    runs.forEach(run=>{
+      const c=document.createElement('div');c.className='prompt-card';
+      c.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml((run.prompt||'').slice(0,80))+'</span><span class="tool-result-sub">'+escapeHtml(run.created_at||'')+(run.winner?' · winner '+escapeHtml(run.winner):'')+'</span></div>'
+        +'<div class="prompt-actions"></div>';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Show';
+      b.onclick=()=>{document.getElementById('arena-results').innerHTML=arenaCols(run)};
+      const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='×';del.title='Delete run';
+      del.onclick=async()=>{if(!(await appConfirm('Delete this arena run?')))return;const rr=await authFetch(API+'/api/arena/runs/'+run.id,{method:'DELETE'});if(rr.ok)arenaLoad()};
+      c.querySelector('.prompt-actions').appendChild(b);c.querySelector('.prompt-actions').appendChild(del);
+      box.appendChild(c);
+    });
+  }catch(e){}
+}
+async function memLoad(){
+  try{
+    const r=await authFetch(API+'/api/memory');if(!r.ok)return;
+    const d=await r.json();const list=d.memories||[];
+    const box=document.getElementById('mem-list');if(!box)return;box.innerHTML='';
+    if(!list.length){box.innerHTML='<div class="tool-status">Nothing remembered yet.</div>';return}
+    list.forEach(m=>{
+      const c=document.createElement('div');c.className='prompt-card';
+      c.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(m.text)+'</span><span class="tool-result-sub">imp '+m.importance+(m.tags?' · '+escapeHtml(m.tags):'')+'</span></div>'
+        +'<div class="prompt-actions"></div>';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Forget';
+      b.onclick=async()=>{if(!(await appConfirm('Forget this?')))return;const rr=await authFetch(API+'/api/memory/'+m.id,{method:'DELETE'});if(rr.ok)memLoad()};
+      c.querySelector('.prompt-actions').appendChild(b);
+      box.appendChild(c);
+    });
+  }catch(e){}
+}
+async function memAdd(){
+  const t=document.getElementById('mem-text');const imp=document.getElementById('mem-importance');const tags=document.getElementById('mem-tags');
+  const text=t?t.value.trim():'';if(!text){showToast('Type something to remember','error');return}
+  try{
+    const r=await authFetch(API+'/api/memory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,tags:tags?tags.value:'',importance:imp?Number(imp.value):3})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    if(t)t.value='';if(tags)tags.value='';memLoad();
+  }catch(e){showToast('Save failed: '+e.message,'error')}
+}
+async function loadCosts(range){
+  const box=document.getElementById('usage-costs');if(!box)return;
+  try{
+    const r=await authFetch(API+'/api/usage/costs?range='+encodeURIComponent(range||'24h'));
+    if(!r.ok){box.innerHTML='';return}
+    const d=await r.json();const b=d.budget||{};
+    const rows=(d.by_model||[]).map(m=>'<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-family:var(--mono);font-size:11.5px"><span>'+escapeHtml((m.provider||'?')+'/'+(m.model||'?'))+'</span><span>'+m.calls+' calls · $'+Number(m.cost_usd||0).toFixed(4)+'</span></div>').join('');
+    box.innerHTML='<div class="usage-section-title">Costs (estimated)</div>'
+      +'<div style="font-size:12px;color:var(--text-secondary);margin:4px 0 8px">'+escapeHtml(range||'24h')+' total: <b>$'+Number(d.total_usd||0).toFixed(4)+'</b>'+(b.monthly_usd>0?(' · this month $'+Number(b.spent_usd||0).toFixed(2)+' / $'+Number(b.monthly_usd).toFixed(2)+' ('+b.percent+'%)'):'')+'</div>'
+      +'<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px">'+(rows||'<div class="tool-result-sub">No usage in this range.</div>')+'</div>'
+      +'<div class="tool-row" style="margin-top:10px"><label class="tool-result-sub">Monthly budget $ <input type="number" id="budget-cap" min="0" step="1" value="'+(b.monthly_usd||0)+'" style="width:90px" /></label><label class="tool-result-sub">Warn % <input type="number" id="budget-warn" min="0" max="100" value="'+(b.warn_pct||80)+'" style="width:70px" /></label><label class="tool-result-sub"><input type="checkbox" id="budget-enforce" '+(b.enforce?'checked':'')+' /> Block when over</label><button class="btn btn-ghost btn-sm" onclick="saveBudget()">Save budget</button></div>';
+  }catch(e){box.innerHTML=''}
+}
+async function saveBudget(){
+  const cap=document.getElementById('budget-cap');const warn=document.getElementById('budget-warn');const en=document.getElementById('budget-enforce');
+  try{
+    const r=await authFetch(API+'/api/usage/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({monthly_usd:cap?Number(cap.value):0,warn_pct:warn?Number(warn.value):80,enforce:en?en.checked:false})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Budget saved','success');
+  }catch(e){showToast('Save failed: '+e.message,'error')}
 }
 async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
   const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}

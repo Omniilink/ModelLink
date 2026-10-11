@@ -5182,6 +5182,426 @@ async def scheduled_notifications_read(request: Request):
     return {"status": "ok"}
 
 
+# ==========================================================================
+# Phase 5 — model intelligence: long-term memory, multi-model arena, budgets.
+# ==========================================================================
+
+# ---- long-term memory (durable facts with decay, surfaced into chat) ----
+_MEM_TTL_DAYS = {1: 7, 2: 30, 3: 90, 4: 365, 5: 3650}
+
+
+def _memory_expiry(importance, now=None) -> float:
+    now = now or time.time()
+    return now + _MEM_TTL_DAYS.get(int(importance or 3), 90) * 86400
+
+
+def _memory_prune(user_id) -> None:
+    try:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM memories WHERE user_id = ? AND expires_at IS NOT NULL"
+                         " AND expires_at < ?", (user_id, time.time()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _memory_add(user_id, text, tags="", importance=3):
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        importance = max(1, min(5, int(importance or 3)))
+    except (TypeError, ValueError):
+        importance = 3
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO memories (user_id, text, tags, importance, expires_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (user_id, text[:2000], (tags or "")[:200], importance, _memory_expiry(importance)))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _memory_relevant(user_id, query, k=5) -> list:
+    _memory_prune(user_id)
+    qtoks = set(_rag_tokenize(query or ""))
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT id, text, tags, importance FROM memories"
+                            " WHERE user_id = ? AND active = 1"
+                            " ORDER BY importance DESC, id DESC LIMIT 500",
+                            (user_id,)).fetchall()
+    finally:
+        conn.close()
+    scored = []
+    for r in rows:
+        toks = set(_rag_tokenize((r["text"] or "") + " " + (r["tags"] or "")))
+        overlap = len(qtoks & toks)
+        if overlap or not qtoks:
+            scored.append((overlap * 2 + (r["importance"] or 3) * 0.1, r))
+    scored.sort(key=lambda x: -x[0])
+    out = [dict(r) for _, r in scored[:k]]
+    if out:
+        conn = get_db()
+        try:
+            conn.executemany("UPDATE memories SET last_used = datetime('now') WHERE id = ?",
+                             [(r["id"],) for r in out])
+            conn.commit()
+        finally:
+            conn.close()
+    return out
+
+
+def _memory_context(user_id, query, budget=1200) -> str:
+    try:
+        hits = _memory_relevant(user_id, query, k=6)
+    except Exception:
+        return ""
+    lines, used = [], 0
+    for h in hits:
+        t = (h.get("text") or "").strip()
+        if not t or used + len(t) > budget:
+            continue
+        lines.append("- " + t)
+        used += len(t)
+    if not lines:
+        return ""
+    return ("\n\nWHAT YOU REMEMBER ABOUT THIS USER (use only if relevant; never "
+            "repeat it verbatim):\n" + "\n".join(lines))
+
+
+def _last_user_text(messages) -> str:
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return ""
+
+
+@app.get("/api/memory")
+async def memory_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    _memory_prune(user["id"])
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT id, text, tags, importance, active, created_at,"
+                            " last_used, expires_at FROM memories WHERE user_id = ?"
+                            " ORDER BY importance DESC, id DESC LIMIT 500",
+                            (user["id"],)).fetchall()
+    finally:
+        conn.close()
+    return {"memories": [dict(r) for r in rows]}
+
+
+@app.post("/api/memory")
+async def memory_add(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    text = str(data.get("text") or "").strip()
+    if not text or len(text) > 2000:
+        return JSONResponse(status_code=400, content={"error": "Memory text must be 1-2000 characters"})
+    mid = _memory_add(user["id"], text, data.get("tags") or "",
+                      data.get("importance") or 3)
+    return {"status": "ok", "id": mid}
+
+
+@app.delete("/api/memory/{memory_id}")
+async def memory_forget(request: Request, memory_id: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ?",
+                           (memory_id, user["id"]))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Memory not found"})
+    return {"status": "ok", "id": memory_id}
+
+
+# ---- multi-model arena (one prompt, several models, pick a winner) ----
+_MODEL_NAME_RE = re.compile(r"[a-zA-Z0-9._/:-]{1,80}")
+
+
+def _arena_run_model(model, messages, user_keys, temp, max_tokens) -> dict:
+    t0 = time.time()
+    try:
+        resp, used = generate(messages, model=model, stream=False, user_keys=user_keys,
+                              opts={"temperature": temp, "max_tokens": max_tokens,
+                                    "health_scope": "arena"})
+        text = ((resp or {}).get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        return {"model": model, "used": used, "text": text,
+                "ms": int((time.time() - t0) * 1000), "error": ""}
+    except Exception as e:
+        return {"model": model, "used": model, "text": "",
+                "ms": int((time.time() - t0) * 1000), "error": str(e)[:300]}
+
+
+@app.post("/api/arena/run")
+async def arena_run(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt or len(prompt) > 20000:
+        return JSONResponse(status_code=400, content={"error": "Prompt must be 1-20000 characters"})
+    models = data.get("models") or []
+    if not isinstance(models, list) or not (2 <= len(models) <= 4):
+        return JSONResponse(status_code=400, content={"error": "Pick 2-4 models"})
+    models = [str(m).strip() for m in models]
+    if any(not _MODEL_NAME_RE.fullmatch(m) for m in models):
+        return JSONResponse(status_code=400, content={"error": "Invalid model name"})
+    try:
+        temp = max(0.0, min(2.0, float(data.get("temperature", 0.7))))
+        max_tokens = max(1, min(8000, int(data.get("max_tokens", 1000))))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "Invalid temperature or max_tokens"})
+    user_keys = None if user.get("is_admin") else (get_user_provider_keys(user["id"]) or {})
+    messages = [{"role": "user", "content": prompt}]
+    results = await asyncio.gather(*[
+        asyncio.to_thread(_arena_run_model, m, messages, user_keys, temp, max_tokens)
+        for m in models])
+    conn = get_db()
+    try:
+        cur = conn.execute("INSERT INTO arena_runs (user_id, prompt, responses)"
+                           " VALUES (?, ?, ?)",
+                           (user["id"], prompt[:20000], json.dumps(list(results))))
+        conn.commit()
+        rid = cur.lastrowid
+    finally:
+        conn.close()
+    return {"status": "ok", "id": rid, "responses": list(results)}
+
+
+@app.get("/api/arena/runs")
+async def arena_runs(request: Request, limit: int = 30):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    limit = max(1, min(200, int(limit or 30)))
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT id, prompt, responses, winner, created_at FROM arena_runs"
+                            " WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                            (user["id"], limit)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["responses"] = json.loads(d.get("responses") or "[]")
+        except (ValueError, TypeError):
+            d["responses"] = []
+        out.append(d)
+    return {"runs": out}
+
+
+@app.post("/api/arena/vote")
+async def arena_vote(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    try:
+        rid = int(data.get("id"))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "id must be a number"})
+    winner = str(data.get("winner") or "").strip()[:80]
+    if not winner:
+        return JSONResponse(status_code=400, content={"error": "winner is required"})
+    conn = get_db()
+    try:
+        cur = conn.execute("UPDATE arena_runs SET winner = ? WHERE id = ? AND user_id = ?",
+                           (winner, rid, user["id"]))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
+    return {"status": "ok", "id": rid, "winner": winner}
+
+
+@app.delete("/api/arena/runs/{run_id}")
+async def arena_delete(request: Request, run_id: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM arena_runs WHERE id = ? AND user_id = ?",
+                           (run_id, user["id"]))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
+    return {"status": "ok"}
+
+
+# ---- usage costs + budgets (money control over API spend) ----
+# Rough USD per 1M tokens (prompt, completion). Estimates only — local Ollama
+# is free, unknown cloud models fall back to a conservative default.
+_COST_PER_M = {
+    "gpt-4o-mini": (0.15, 0.6), "gpt-4o": (2.5, 10.0), "gpt-4-turbo": (10.0, 30.0),
+    "gpt-3.5": (0.5, 1.5), "claude": (3.0, 15.0), "gemini": (0.1, 0.4),
+    "gemma": (0.1, 0.4), "deepseek": (0.27, 1.1), "mistral": (0.2, 0.6),
+    "command": (0.15, 0.6), "llama": (0.1, 0.3), "qwen": (0.1, 0.3),
+    "mixtral": (0.24, 0.24), "gpt-oss": (0.1, 0.4), "nemotron": (0.1, 0.4),
+}
+
+
+def _model_price(provider, model):
+    if (provider or "").lower() == "ollama":
+        return (0.0, 0.0)
+    m = (model or "").lower()
+    for key, price in _COST_PER_M.items():
+        if key in m:
+            return price
+    return (0.5, 1.5)
+
+
+def _cost_usd(provider, model, ptok, ctok) -> float:
+    p, c = _model_price(provider, model)
+    return round(ptok / 1e6 * p + ctok / 1e6 * c, 6)
+
+
+def _usage_range_modifier(range_: str) -> str:
+    r = (range_ or "24h").strip().lower()
+    return {"24h": "-24 hours", "7d": "-7 days", "30d": "-30 days",
+            "month": "start of month"}.get(r, "-24 hours")
+
+
+def _budget_get(user_id) -> dict:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT monthly_usd, warn_pct, enforce FROM budgets"
+                           " WHERE user_id = ?", (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"monthly_usd": 0.0, "warn_pct": 80, "enforce": False}
+    return {"monthly_usd": float(row["monthly_usd"] or 0),
+            "warn_pct": int(row["warn_pct"] or 80), "enforce": bool(row["enforce"])}
+
+
+def _month_spend(user_id) -> float:
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT provider, model, prompt_tokens, completion_tokens"
+                            " FROM usage_events WHERE user_id = ?"
+                            " AND ts >= datetime('now','start of month')", (user_id,)).fetchall()
+    finally:
+        conn.close()
+    return round(sum(_cost_usd(r["provider"], r["model"],
+                               r["prompt_tokens"] or 0, r["completion_tokens"] or 0)
+                     for r in rows), 6)
+
+
+def _budget_status(user_id) -> dict:
+    b = _budget_get(user_id)
+    spent = _month_spend(user_id)
+    cap = b["monthly_usd"]
+    pct = round(100.0 * spent / cap, 1) if cap > 0 else 0.0
+    return {"monthly_usd": cap, "spent_usd": spent, "percent": pct,
+            "warn_pct": b["warn_pct"], "enforce": b["enforce"],
+            "over": bool(cap > 0 and spent >= cap),
+            "warn": bool(cap > 0 and pct >= b["warn_pct"])}
+
+
+@app.get("/api/usage/costs")
+async def usage_costs(request: Request, range: str = "24h"):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    mod = _usage_range_modifier(range)
+    cond = ("ts >= datetime('now','start of month')" if mod == "start of month"
+            else "ts >= datetime('now', ?)")
+    params = [user["id"]] if mod == "start of month" else [user["id"], mod]
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT provider, model, COUNT(*) AS calls,"
+                            " SUM(prompt_tokens) AS ptok, SUM(completion_tokens) AS ctok"
+                            " FROM usage_events WHERE user_id = ? AND " + cond +
+                            " GROUP BY provider, model", params).fetchall()
+    finally:
+        conn.close()
+    by_model, total = [], 0.0
+    for r in rows:
+        cost = _cost_usd(r["provider"], r["model"], r["ptok"] or 0, r["ctok"] or 0)
+        total += cost
+        by_model.append({"provider": r["provider"], "model": r["model"], "calls": r["calls"],
+                         "prompt_tokens": r["ptok"] or 0, "completion_tokens": r["ctok"] or 0,
+                         "cost_usd": round(cost, 4)})
+    by_model.sort(key=lambda x: -x["cost_usd"])
+    return {"range": range, "total_usd": round(total, 4), "by_model": by_model,
+            "budget": _budget_status(user["id"])}
+
+
+@app.get("/api/usage/budget")
+async def usage_budget_get(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return _budget_status(user["id"])
+
+
+@app.post("/api/usage/budget")
+async def usage_budget_set(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    try:
+        cap = max(0.0, float(data.get("monthly_usd", 0) or 0))
+        warn = max(0, min(100, int(data.get("warn_pct", 80) or 80)))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "monthly_usd/warn_pct must be numbers"})
+    enforce = 1 if data.get("enforce") else 0
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO budgets (user_id, monthly_usd, warn_pct, enforce)"
+                     " VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET"
+                     " monthly_usd = excluded.monthly_usd, warn_pct = excluded.warn_pct,"
+                     " enforce = excluded.enforce", (user["id"], cap, warn, enforce))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", **_budget_status(user["id"])}
+
+
 @app.get("/api/settings")
 async def get_settings(request: Request):
     user, err = _require_auth(request)
@@ -5643,10 +6063,23 @@ async def chat_completions(request: Request):
 
     # carry one, so they are unaffected.
     _sys_uid = _safe_username(user["username"])
+    # Budget enforcement (opt-in per user): block once the monthly cap is hit.
+    try:
+        _bs = _budget_status(user["id"])
+        if _bs.get("enforce") and _bs.get("over"):
+            return JSONResponse(status_code=402, content={
+                "error": f"Monthly budget of ${_bs['monthly_usd']:.2f} reached "
+                         f"(spent ${_bs['spent_usd']:.2f}). Raise it in Usage → Costs."})
+    except Exception:
+        pass
+    try:
+        _mem = _memory_context(_sys_uid, _last_user_text(messages))
+    except Exception:
+        _mem = ""
     _has_system = any(isinstance(m, dict) and m.get("role") == "system" and m.get("content")
                       for m in messages)
     if not _has_system:
-        messages = [{"role": "system", "content": _chat_system_prompt(_sys_uid)}] + list(messages)
+        messages = [{"role": "system", "content": _chat_system_prompt(_sys_uid) + _mem}] + list(messages)
     else:
 
         # A caller-supplied prompt (coding, or a custom system message): append
@@ -5656,7 +6089,7 @@ async def chat_completions(request: Request):
         for _i, _m in enumerate(messages):
             if isinstance(_m, dict) and _m.get("role") == "system" and _m.get("content"):
                 _m = dict(_m)
-                _m["content"] = str(_m["content"]).rstrip() + "\n" + _time_line(_sys_uid)
+                _m["content"] = str(_m["content"]).rstrip() + "\n" + _time_line(_sys_uid) + _mem
                 messages[_i] = _m
                 break
     prompt_chars = sum(len(m.get("content", "")) for m in messages)

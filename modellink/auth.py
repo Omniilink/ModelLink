@@ -331,6 +331,36 @@ def init_db():
             tlen INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_project_chunks_user ON project_chunks(user_id);
+
+        CREATE TABLE IF NOT EXISTS arena_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            prompt TEXT DEFAULT '',
+            responses TEXT DEFAULT '[]',
+            winner TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_arena_user ON arena_runs(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            text TEXT DEFAULT '',
+            tags TEXT DEFAULT '',
+            importance INTEGER DEFAULT 3,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_used TEXT,
+            expires_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, active);
+
+        CREATE TABLE IF NOT EXISTS budgets (
+            user_id INTEGER PRIMARY KEY,
+            monthly_usd REAL DEFAULT 0,
+            warn_pct INTEGER DEFAULT 80,
+            enforce INTEGER DEFAULT 0
+        );
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
