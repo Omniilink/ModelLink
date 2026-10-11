@@ -4761,6 +4761,417 @@ async def trademe_image(request: Request, listing_id: int):
     except OSError as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+# ==========================================================================
+# Scheduler — recurring "agents" (a prompt run on a timer) and deal alerts
+# (a saved Trade Me search checked on a timer). In-process daemon thread,
+# SQLite-persisted, local-first (agents default to your own models).
+# ==========================================================================
+_SCHED_TICK_SECONDS = 30
+_sched_thread = None
+_sched_lock = threading.Lock()
+
+
+def _sched_parse_schedule(s) -> dict:
+    if isinstance(s, str):
+        try:
+            s = json.loads(s)
+        except (ValueError, TypeError):
+            s = {}
+    d = s if isinstance(s, dict) else {}
+    kind = str(d.get("type") or "interval").lower()
+    if kind == "daily":
+        tm = str(d.get("time") or "09:00")
+        try:
+            hh, mm = [int(x) for x in tm.split(":")[:2]]
+        except (ValueError, TypeError):
+            hh, mm = 9, 0
+        hh, mm = max(0, min(23, hh)), max(0, min(59, mm))
+        return {"type": "daily", "hour": hh, "minute": mm, "time": f"{hh:02d}:{mm:02d}"}
+    raw = d.get("minutes")
+    if raw in (None, ""):
+        raw = 60
+    try:
+        minutes = max(1, min(10080, int(float(raw))))
+    except (TypeError, ValueError):
+        minutes = 60
+    return {"type": "interval", "minutes": minutes}
+
+
+def _sched_schedule_label(s) -> str:
+    p = _sched_parse_schedule(s)
+    return f"daily at {p['time']}" if p["type"] == "daily" else f"every {p['minutes']} min"
+
+
+def _sched_next_run(schedule, now: float, last_run=None) -> float:
+    """Epoch of the next due time. Interval jobs step from the last run (or
+    now), always staying in the future so a slow job can't rapid-fire."""
+    p = _sched_parse_schedule(schedule)
+    if p["type"] == "daily":
+        lt = time.localtime(now)
+        target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, p["hour"], p["minute"],
+                              0, 0, 0, -1))
+        if target <= now:
+            target += 86400
+        return target
+    base = last_run if last_run else now
+    nxt = base + p["minutes"] * 60
+    return nxt if nxt > now else now + p["minutes"] * 60
+
+
+def _notify(user_id, kind, title, body, job_id=None) -> None:
+    try:
+        conn = get_db()
+        try:
+            conn.execute("INSERT INTO notifications (user_id, kind, title, body, job_id)"
+                         " VALUES (?, ?, ?, ?, ?)",
+                         (user_id, kind, str(title)[:200], str(body)[:4000], job_id))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _sched_run_agent(payload: dict) -> tuple:
+    """Run one agent prompt through the model router (local or cloud)."""
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise RuntimeError("agent has no prompt")
+    model = str(payload.get("model") or "omniilink").strip() or "omniilink"
+    messages = [
+        {"role": "system", "content": "You are a scheduled OmniLink agent running "
+         "unattended. Be concise and useful: output exactly the result the user "
+         "asked for, with no preamble."},
+        {"role": "user", "content": prompt},
+    ]
+    resp, used = generate(messages, model=model, stream=False,
+                          opts={"temperature": 0.4, "max_tokens": 2000,
+                                "health_scope": "schedule"})
+    text = ((resp or {}).get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    if not text.strip():
+        raise RuntimeError("agent returned nothing")
+    return text.strip(), used
+
+
+def _sched_run_deal_alert(payload: dict) -> tuple:
+    """Check a saved search; save new listings and report matches."""
+    url = str(payload.get("category_url") or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise RuntimeError("deal alert needs a category URL")
+    exclude = payload.get("exclude") or []
+    if isinstance(exclude, str):
+        exclude = [x.strip().lower() for x in re.split(r"[,\n]", exclude) if x.strip()]
+    try:
+        limit = max(1, min(200, int(payload.get("limit") or 30)))
+    except (TypeError, ValueError):
+        limit = 30
+    keywords = [k.strip().lower() for k in (payload.get("keywords") or []) if str(k).strip()]
+    max_price = payload.get("max_price")
+    try:
+        max_price = float(max_price) if max_price not in (None, "") else None
+    except (TypeError, ValueError):
+        max_price = None
+    html = _trademe_fetch_http(url)
+    if not _trademe_has_listings(html):
+        html = _trademe_playwright_html(url)
+    items = _trademe_parse_listings(html, url, cap=limit, exclude=exclude)
+    conn = get_db()
+    new = []
+    try:
+        for it in items:
+            if conn.execute("SELECT id FROM trademe_listings WHERE tm_url = ?",
+                            (it["tm_url"],)).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO trademe_listings (tm_url, title, tm_price, status,"
+                " image_url, source_category) VALUES (?, ?, ?, 'pending', ?, ?)",
+                (it["tm_url"], it["title"], it.get("tm_price"),
+                 (it.get("image") or "")[:500], url[:500]))
+            new.append(it)
+        conn.commit()
+    finally:
+        conn.close()
+    matches = []
+    for it in new:
+        title = (it.get("title") or "").lower()
+        if keywords and not any(k in title for k in keywords):
+            continue
+        if max_price is not None:
+            px = it.get("tm_price")
+            if px is None or float(px) > max_price:
+                continue
+        matches.append(it)
+    summary = f"{len(new)} new listing(s); {len(matches)} matched your alert."
+    if matches:
+        lines = [f"• {m.get('title')} — {('$' + format(m['tm_price'], ',.0f')) if m.get('tm_price') is not None else 'no price'}"
+                 for m in matches[:10]]
+        summary += "\n" + "\n".join(lines)
+    return summary, matches
+
+
+def _sched_execute(job_id: int, now: float = None) -> dict:
+    now = now or time.time()
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    job = dict(row)
+    conn = get_db()
+    try:
+        cur = conn.execute("INSERT INTO scheduled_runs (job_id, started, status)"
+                           " VALUES (?, ?, 'running')", (job_id, now))
+        run_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    status, output = "done", ""
+    try:
+        payload = json.loads(job.get("payload") or "{}")
+        if job.get("kind") == "deal_alert":
+            output, matches = _sched_run_deal_alert(payload)
+            if matches:
+                _notify(job.get("user_id"), "deal_alert",
+                        job.get("name") or "Deal alert", output, job_id)
+        else:
+            text, used = _sched_run_agent(payload)
+            output = f"[{used}] {text}"
+            _notify(job.get("user_id"), "agent",
+                    job.get("name") or "Agent", output, job_id)
+    except Exception as e:
+        status, output = "failed", str(e)[:2000]
+    fin = time.time()
+    nxt = _sched_next_run(job.get("schedule"), fin, last_run=fin)
+    conn = get_db()
+    try:
+        conn.execute("UPDATE scheduled_runs SET finished = ?, status = ?, output = ?"
+                     " WHERE id = ?", (fin, status, output[:4000], run_id))
+        conn.execute("UPDATE scheduled_jobs SET last_run = ?, next_run = ?,"
+                     " last_status = ?, last_output = ? WHERE id = ?",
+                     (fin, nxt, status, output[:2000], job_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": status, "output": output, "run_id": run_id}
+
+
+def _sched_tick(now: float = None) -> list:
+    """Run every due job once. Safe to call from tests (no thread)."""
+    now = now or time.time()
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT id FROM scheduled_jobs WHERE enabled = 1"
+                            " AND (next_run IS NULL OR next_run <= ?)", (now,)).fetchall()
+    finally:
+        conn.close()
+    return [_sched_execute(r["id"], now) for r in rows]
+
+
+def _sched_loop() -> None:
+    while True:
+        try:
+            _sched_tick()
+        except Exception:
+            pass
+        time.sleep(_SCHED_TICK_SECONDS)
+
+
+def _sched_start() -> None:
+    global _sched_thread
+    with _sched_lock:
+        if _sched_thread and _sched_thread.is_alive():
+            return
+        _sched_thread = threading.Thread(target=_sched_loop, daemon=True,
+                                         name="omniilink-scheduler")
+        _sched_thread.start()
+
+
+def _sched_public_job(row: dict) -> dict:
+    d = dict(row)
+    d["schedule_label"] = _sched_schedule_label(d.get("schedule"))
+    try:
+        d["payload"] = json.loads(d.get("payload") or "{}")
+    except (ValueError, TypeError):
+        d["payload"] = {}
+    d["enabled"] = bool(d.get("enabled"))
+    return d
+
+
+@app.on_event("startup")
+async def _sched_on_startup():
+    _sched_start()
+
+
+@app.get("/api/scheduled/jobs")
+async def scheduled_jobs(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM scheduled_jobs ORDER BY id DESC").fetchall()
+    finally:
+        conn.close()
+    return {"jobs": [_sched_public_job(r) for r in rows]}
+
+
+@app.post("/api/scheduled/jobs")
+async def scheduled_job_create(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    kind = str(data.get("kind") or "agent").strip().lower()
+    if kind not in ("agent", "deal_alert"):
+        return JSONResponse(status_code=400, content={"error": "kind must be agent or deal_alert"})
+    payload = data.get("payload") or {}
+    if kind == "agent" and not str(payload.get("prompt") or "").strip():
+        return JSONResponse(status_code=400, content={"error": "agent needs a prompt"})
+    if kind == "deal_alert" and not str(payload.get("category_url") or "").lower().startswith(("http://", "https://")):
+        return JSONResponse(status_code=400, content={"error": "deal alert needs a category URL"})
+    sched = _sched_parse_schedule(data.get("schedule"))
+    now = time.time()
+    nxt = _sched_next_run(sched, now)
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO scheduled_jobs (user_id, name, kind, schedule, payload, enabled,"
+            " next_run) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (user["id"], str(data.get("name") or kind)[:120], kind,
+             json.dumps(sched), json.dumps(payload), nxt))
+        conn.commit()
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?",
+                           (cur.lastrowid,)).fetchone()
+    finally:
+        conn.close()
+    return {"status": "ok", "job": _sched_public_job(row)}
+
+
+@app.post("/api/scheduled/jobs/{job_id}")
+async def scheduled_job_update(request: Request, job_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "Job not found"})
+        sets, params = [], []
+        if "name" in data:
+            sets.append("name = ?")
+            params.append(str(data.get("name") or "")[:120])
+        if "enabled" in data:
+            sets.append("enabled = ?")
+            params.append(1 if data.get("enabled") else 0)
+        if "schedule" in data:
+            sched = _sched_parse_schedule(data.get("schedule"))
+            sets += ["schedule = ?", "next_run = ?"]
+            params += [json.dumps(sched), _sched_next_run(sched, time.time())]
+        if "payload" in data and isinstance(data.get("payload"), dict):
+            sets.append("payload = ?")
+            params.append(json.dumps(data["payload"]))
+        if sets:
+            conn.execute("UPDATE scheduled_jobs SET " + ", ".join(sets) + " WHERE id = ?",
+                         params + [job_id])
+            conn.commit()
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    return {"status": "ok", "job": _sched_public_job(row)}
+
+
+@app.delete("/api/scheduled/jobs/{job_id}")
+async def scheduled_job_delete(request: Request, job_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (job_id,))
+        conn.execute("DELETE FROM scheduled_runs WHERE job_id = ?", (job_id,))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    return {"status": "ok", "id": job_id}
+
+
+@app.post("/api/scheduled/jobs/{job_id}/run")
+async def scheduled_job_run(request: Request, job_id: int):
+    """Run a job now, synchronously, and return its result."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    res = await asyncio.to_thread(_sched_execute, job_id)
+    if res is None:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    return res
+
+
+@app.get("/api/scheduled/jobs/{job_id}/runs")
+async def scheduled_job_runs(request: Request, job_id: int, limit: int = 50):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    limit = max(1, min(200, int(limit or 50)))
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM scheduled_runs WHERE job_id = ?"
+                            " ORDER BY id DESC LIMIT ?", (job_id, limit)).fetchall()
+    finally:
+        conn.close()
+    return {"runs": [dict(r) for r in rows]}
+
+
+@app.get("/api/scheduled/notifications")
+async def scheduled_notifications(request: Request, limit: int = 100):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    limit = max(1, min(500, int(limit or 100)))
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM notifications ORDER BY id DESC LIMIT ?",
+                            (limit,)).fetchall()
+        unread = conn.execute("SELECT COUNT(*) AS n FROM notifications WHERE read = 0"
+                              ).fetchone()["n"]
+    finally:
+        conn.close()
+    return {"notifications": [dict(r) for r in rows], "unread": unread}
+
+
+@app.post("/api/scheduled/notifications/read")
+async def scheduled_notifications_read(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        data = {}
+    conn = get_db()
+    try:
+        if data and data.get("id"):
+            conn.execute("UPDATE notifications SET read = 1 WHERE id = ?", (int(data["id"]),))
+        else:
+            conn.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
 @app.get("/api/settings")
 async def get_settings(request: Request):
     user, err = _require_auth(request)

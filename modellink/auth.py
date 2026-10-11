@@ -281,6 +281,44 @@ def init_db():
             sold_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_trademe_sold_at ON trademe_sold(sold_at);
+
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT DEFAULT '',
+            kind TEXT DEFAULT 'agent',
+            schedule TEXT DEFAULT '{}',
+            payload TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            last_run REAL,
+            next_run REAL,
+            last_status TEXT DEFAULT '',
+            last_output TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_jobs(enabled, next_run);
+
+        CREATE TABLE IF NOT EXISTS scheduled_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER,
+            started REAL,
+            finished REAL,
+            status TEXT DEFAULT 'running',
+            output TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_runs_job ON scheduled_runs(job_id, started);
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            kind TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            body TEXT DEFAULT '',
+            job_id INTEGER,
+            read INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, read, created_at);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

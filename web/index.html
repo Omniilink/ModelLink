@@ -992,6 +992,10 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><circle cx="7" cy="7" r="1.2"/></svg>
         <span>Trade Me</span>
       </div>
+      <div class="nav-item" data-view="scheduled" id="nav-scheduled" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+        <span>Scheduled</span><span id="nav-sched-badge" style="display:none;background:var(--error);color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 5px;line-height:14px"></span>
+      </div>
       <div class="nav-cap">Manage</div>
       <div class="nav-item" data-view="agents">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -1587,6 +1591,26 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
+      <div class="view-panel" id="scheduled-view">
+        <div class="view-header"><h2>Scheduled <span class="beta-tag">Admin</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body">
+          <div style="max-width:1100px;margin:0 auto">
+            <div class="tool-result-sub" style="margin-bottom:10px">Recurring <b>agents</b> (a prompt run on a timer) and <b>deal alerts</b> (a saved Trade Me search checked on a timer). Runs in the background and drops results into Notifications. Agents default to your own models.</div>
+            <div class="tool-row"><label class="tool-result-sub">Kind <select id="sch-kind" onchange="schKindChanged()"><option value="agent">Agent — run a prompt</option><option value="deal_alert">Deal alert — saved search</option></select></label><label class="tool-result-sub">Name <input type="text" id="sch-name" placeholder="Morning deals" style="width:170px" /></label><label class="tool-result-sub">Every <input type="number" id="sch-min" min="1" value="60" style="width:66px" /> min</label><button class="btn btn-primary btn-sm" onclick="schCreate()">Create</button><button class="btn btn-ghost btn-sm" onclick="schLoad()">Refresh</button><span class="tool-result-sub" id="sch-meta"></span></div>
+            <div id="sch-agent">
+              <div class="tool-row"><label class="tool-result-sub">Model <input type="text" id="sch-model" placeholder="omniilink (auto) or ollama/llama3.1" style="width:260px" /></label></div>
+              <div class="tool-row"><textarea id="sch-prompt" placeholder="What should the agent do on each run?" rows="2" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-family:var(--font);font-size:13px"></textarea></div>
+            </div>
+            <div id="sch-alert" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="sch-url" placeholder="https://www.trademe.co.nz/…" style="width:min(420px,58vw)" /></label><label class="tool-result-sub">Limit <input type="number" id="sch-limit" min="1" max="200" value="30" style="width:66px" /></label><label class="tool-result-sub">Max $ <input type="number" id="sch-maxprice" min="0" style="width:84px" /></label></div>
+              <div class="tool-row"><label class="tool-result-sub">Exclude <input type="text" id="sch-exclude" placeholder="miner, broken" style="width:min(240px,40vw)" /></label><label class="tool-result-sub">Only titles with <input type="text" id="sch-keywords" placeholder="e.g. dell, 64gb" style="width:min(240px,40vw)" /></label></div>
+            </div>
+            <div id="sch-jobs"></div>
+            <div class="tool-row" style="margin-top:14px"><div class="usage-section-title">Notifications</div><button class="btn btn-ghost btn-sm" onclick="schReadAll()">Mark all read</button><span class="tool-result-sub" id="sch-unread"></span></div>
+            <div id="sch-notifs"></div>
+          </div>
+        </div>
+      </div>
       <div class="view-panel" id="prompts-view">
         <div class="view-header"><h2>Prompts Library</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="prompts-body"></div>
@@ -1919,6 +1943,7 @@ function toggleAutoScroll(){const btn=document.getElementById('terminal-autoscro
 function switchView(view){
   if(view==='admin'&&!(window.__user&&window.__user.is_admin))view='chat';
   if(view==='trademe'&&!(window.__user&&window.__user.is_admin))view='chat';
+  if(view==='scheduled'&&!(window.__user&&window.__user.is_admin))view='chat';
   currentView=view;
   document.getElementById('chat-area').style.display=view==='chat'?'flex':'none';
   document.getElementById('input-area').style.display=view==='chat'?'block':'none';
@@ -1931,6 +1956,7 @@ function switchView(view){
   document.getElementById('projects-view').classList.toggle('open',view==='projects');
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
+  document.getElementById('scheduled-view').classList.toggle('open',view==='scheduled');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -1942,13 +1968,13 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
   if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
-  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}
+  if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}if(view==='scheduled'){try{schLoad()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe',scheduled:'/scheduled'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me',scheduled:'Scheduled'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -6482,7 +6508,7 @@ function showAuthSignup(){if(authGoogleOnly){applyAuthMode();return}document.get
 function showAuthSignin(){if(authGoogleOnly){applyAuthMode();return}document.getElementById('auth-form-signup').style.display='none';document.getElementById('auth-form-signin').style.display='';document.getElementById('auth-modal-title').textContent='Sign In';document.getElementById('auth-username').focus()}
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
-function applyAdminNav(){try{var admin=(window.__user&&window.__user.is_admin)?'':'none';var el=document.getElementById('nav-admin');if(el)el.style.display=admin;var tm=document.getElementById('nav-trademe');if(tm)tm.style.display=admin;var tt=document.getElementById('tab-trademe');if(tt)tt.style.display=admin}catch(_){}}
+function applyAdminNav(){try{var admin=(window.__user&&window.__user.is_admin)?'':'none';var el=document.getElementById('nav-admin');if(el)el.style.display=admin;var tm=document.getElementById('nav-trademe');if(tm)tm.style.display=admin;var tt=document.getElementById('tab-trademe');if(tt)tt.style.display=admin;var sc=document.getElementById('nav-scheduled');if(sc)sc.style.display=admin}catch(_){}}
 async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();try{syncChatsFromServer()}catch(_){}try{preloadAppViews()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
@@ -9858,6 +9884,111 @@ function admTmShowImages(imgs){
     });
   }
   show(0);
+}
+function schWhen(epoch){if(!epoch)return '—';try{return new Date(Number(epoch)*1000).toLocaleString()}catch(e){return '—'}}
+function schKindChanged(){
+  const k=document.getElementById('sch-kind');const isAlert=k&&k.value==='deal_alert';
+  const a=document.getElementById('sch-agent');const al=document.getElementById('sch-alert');
+  if(a)a.style.display=isAlert?'none':'';if(al)al.style.display=isAlert?'':'none';
+}
+async function schLoad(){
+  schKindChanged();
+  try{
+    const r=await authFetch(API+'/api/scheduled/jobs');if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const jobs=d.jobs||[];
+    const meta=document.getElementById('sch-meta');if(meta)meta.textContent=jobs.length+' job'+(jobs.length===1?'':'s');
+    const box=document.getElementById('sch-jobs');box.innerHTML='';
+    if(!jobs.length){box.innerHTML='<div class="tool-status">No scheduled jobs yet.</div>'}
+    jobs.forEach(j=>{
+      const card=document.createElement('div');card.className='prompt-card';
+      const badge=j.kind==='deal_alert'?'deal alert':'agent';
+      card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(j.name||badge)+'</span>'
+        +'<span class="act-status '+(j.enabled?'act-status-success':'')+'" style="font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:10px">'+escapeHtml(badge)+(j.enabled?'':' · off')+'</span></div>'
+        +'<div class="tool-result-sub" style="margin:2px 0 6px">'+escapeHtml(j.schedule_label||'')+' · next '+escapeHtml(schWhen(j.next_run))+(j.last_status?' · last '+escapeHtml(j.last_status):'')+'</div>'
+        +'<div class="prompt-actions"></div>';
+      const acts=card.querySelector('.prompt-actions');
+      const mk=(t,fn)=>{const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=t;b.onclick=fn;acts.appendChild(b)};
+      mk('Run now',()=>schRun(j.id));
+      mk(j.enabled?'Disable':'Enable',()=>schToggle(j.id,!j.enabled));
+      mk('Runs',()=>schRuns(j.id));
+      mk('Delete',()=>schDel(j.id));
+      box.appendChild(card);
+      if(j.last_output){const o=document.createElement('div');o.className='tool-result-sub';o.style.cssText='white-space:pre-wrap;max-height:120px;overflow:auto;margin:-4px 0 8px';o.textContent=j.last_output;box.appendChild(o)}
+    });
+  }catch(e){const box=document.getElementById('sch-jobs');if(box)box.innerHTML='<div class="tool-status">Could not load jobs.</div>'}
+  schNotifs();
+}
+async function schCreate(){
+  const k=document.getElementById('sch-kind');const kind=k?k.value:'agent';
+  const name=document.getElementById('sch-name');const min=document.getElementById('sch-min');
+  let payload={};
+  if(kind==='deal_alert'){
+    const url=document.getElementById('sch-url');const ex=document.getElementById('sch-exclude');
+    const kw=document.getElementById('sch-keywords');const lim=document.getElementById('sch-limit');const mp=document.getElementById('sch-maxprice');
+    if(!url||!url.value.trim()){showToast('Paste a category URL','error');return}
+    payload={category_url:url.value.trim(),exclude:ex?ex.value:'',limit:lim?Number(lim.value):30,
+      keywords:kw?kw.value.split(',').map(s=>s.trim()).filter(Boolean):[],
+      max_price:(mp&&mp.value!=='')?Number(mp.value):null};
+  }else{
+    const p=document.getElementById('sch-prompt');const m=document.getElementById('sch-model');
+    if(!p||!p.value.trim()){showToast('Write the agent prompt','error');return}
+    payload={prompt:p.value.trim(),model:m?m.value.trim():''};
+  }
+  const body={kind:kind,name:name?name.value.trim():'',schedule:{type:'interval',minutes:min?Number(min.value):60},payload:payload};
+  try{
+    const r=await authFetch(API+'/api/scheduled/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Scheduled','success');
+    if(name)name.value='';if(document.getElementById('sch-prompt'))document.getElementById('sch-prompt').value='';
+    schLoad();
+  }catch(e){showToast('Create failed: '+e.message,'error')}
+}
+async function schToggle(id,on){
+  try{await authFetch(API+'/api/scheduled/jobs/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});schLoad()}catch(e){showToast(e.message,'error')}
+}
+async function schDel(id){
+  if(!(await appConfirm('Delete this scheduled job and its history?')))return;
+  try{await authFetch(API+'/api/scheduled/jobs/'+id,{method:'DELETE'});schLoad()}catch(e){showToast(e.message,'error')}
+}
+async function schRun(id){
+  showToast('Running…','success');
+  try{
+    const r=await authFetch(API+'/api/scheduled/jobs/'+id+'/run',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast(d.status==='done'?'Run complete':'Run failed','success');
+    schLoad();
+  }catch(e){showToast('Run failed: '+e.message,'error')}
+}
+async function schRuns(id){
+  try{
+    const r=await authFetch(API+'/api/scheduled/jobs/'+id+'/runs?limit=20');if(!r.ok)return;
+    const d=await r.json();const runs=d.runs||[];
+    const lines=runs.map(x=>'['+x.status+'] '+schWhen(x.started)+'\n'+(x.output||'')).join('\n\n');
+    showAlertModal(lines||'No runs yet.', 'Recent runs', false);
+  }catch(e){}
+}
+async function schNotifs(){
+  try{
+    const r=await authFetch(API+'/api/scheduled/notifications?limit=50');if(!r.ok)return;
+    const d=await r.json();const list=d.notifications||[];const unread=Number(d.unread||0);
+    const badge=document.getElementById('nav-sched-badge');
+    if(badge){badge.textContent=unread?String(unread):'';badge.style.display=unread?'':'none'}
+    const u=document.getElementById('sch-unread');if(u)u.textContent=unread?unread+' unread':'';
+    const box=document.getElementById('sch-notifs');if(!box)return;
+    box.innerHTML='';
+    if(!list.length){box.innerHTML='<div class="tool-status">No notifications yet.</div>';return}
+    list.forEach(n=>{
+      const c=document.createElement('div');c.className='prompt-card';c.style.opacity=n.read?'0.6':'1';
+      c.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(n.title||n.kind||'')+'</span><span class="tool-result-sub">'+escapeHtml(n.created_at||'')+'</span></div>'
+        +'<div class="tool-result-sub" style="white-space:pre-wrap;max-height:140px;overflow:auto;margin-top:4px">'+escapeHtml(n.body||'')+'</div>';
+      box.appendChild(c);
+    });
+  }catch(e){}
+}
+async function schReadAll(){
+  try{await authFetch(API+'/api/scheduled/notifications/read',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});schNotifs()}catch(e){}
 }
 async function admLoadUsers(){try{const r=await authFetch(API+'/api/admin/users');if(!r.ok)return;const d=await r.json();document.getElementById('adm-users-meta').textContent=d.users.length+' account'+(d.users.length===1?'':'s')+' · allowlist: '+d.allowlist.join(', ');
   const tb=document.querySelector('#adm-users-table tbody');tb.innerHTML='';if(!d.users.length){tb.innerHTML='<tr><td colspan="10" class="tool-result-sub">No users.</td></tr>';return}
