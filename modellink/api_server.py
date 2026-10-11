@@ -3052,6 +3052,9 @@ async def admin_findings_delete(request: Request, finding_id: int):
 _TRADEME_STATUS = ("pending", "approved", "rejected", "adjusted")
 _TRADEME_CAP = 50
 _TRADEME_LIMIT_OPTIONS = (20, 50, 100, 200)
+# Trade Me success fee for most computer/electronics categories. Configurable;
+# used to turn "estimated − ask" into a real profit after fees + shipping.
+_TRADEME_FEE_PCT = 7.9
 _TRADEME_IMG_MAX = 300 * 1024
 _TRADEME_IMG_CAP = 10
 _TRADEME_GALLERY_CAP = 12
@@ -3066,8 +3069,10 @@ def _trademe_config_path() -> str:
 
 
 def _trademe_config_normalize(data: dict) -> dict:
-    """Clamp limit to the offered options and normalise the exclusion list."""
-    out = {"limit": _TRADEME_CAP, "exclude": []}
+    """Clamp limit, normalise the exclusion list, and read the cost model
+    (success-fee % and flat shipping) used for true-profit maths."""
+    out = {"limit": _TRADEME_CAP, "exclude": [], "fee_pct": _TRADEME_FEE_PCT,
+           "shipping": 0.0}
     try:
         raw = (data or {}).get("limit")
         if raw not in (None, ""):
@@ -3084,6 +3089,18 @@ def _trademe_config_normalize(data: dict) -> dict:
             seen.add(k)
             keys.append(k)
     out["exclude"] = keys
+    try:
+        fp = (data or {}).get("fee_pct")
+        if fp not in (None, ""):
+            out["fee_pct"] = max(0.0, min(50.0, float(fp)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        sh = (data or {}).get("shipping")
+        if sh not in (None, ""):
+            out["shipping"] = max(0.0, float(sh))
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -3092,11 +3109,14 @@ def _trademe_config_load() -> dict:
         with open(_trademe_config_path(), "r", encoding="utf-8") as f:
             return _trademe_config_normalize(json.load(f))
     except Exception:
-        return {"limit": _TRADEME_CAP, "exclude": []}
+        return {"limit": _TRADEME_CAP, "exclude": [], "fee_pct": _TRADEME_FEE_PCT,
+                "shipping": 0.0}
 
 
 def _trademe_config_save(cfg: dict) -> dict:
-    cfg = _trademe_config_normalize(cfg)
+    # Merge over what is already stored so a partial save never resets the
+    # other settings to defaults.
+    cfg = _trademe_config_normalize({**_trademe_config_load(), **(cfg or {})})
     try:
         with open(_trademe_config_path(), "w", encoding="utf-8") as f:
             json.dump(cfg, f)
@@ -3718,6 +3738,22 @@ def _trademe_margin_lo(row: dict):
         return None
 
 
+def _trademe_net_profit(row: dict, fee_pct: float, shipping: float, high: bool = True):
+    """Real profit: sale price, minus success fee on the sale, minus shipping
+    you pay, minus what you paid. `high` uses estimated_max (upside); otherwise
+    estimated_min (downside)."""
+    try:
+        sale = row.get("estimated_max") if high else row.get("estimated_min")
+        px = row.get("tm_price")
+        if sale is None or px is None:
+            return None
+        sale = float(sale)
+        fee = sale * (float(fee_pct) / 100.0)
+        return sale - fee - float(shipping) - float(px)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/api/trademe/listings")
 async def trademe_listings(request: Request, status: str = "", sort: str = ""):
     user, err = _require_superadmin(request)
@@ -3741,16 +3777,20 @@ async def trademe_listings(request: Request, status: str = "", sort: str = ""):
             + " ORDER BY id DESC LIMIT 500", params).fetchall()
     finally:
         conn.close()
+    cfg = _trademe_config_load()
+    fee_pct, shipping = cfg.get("fee_pct", _TRADEME_FEE_PCT), cfg.get("shipping", 0.0)
     out = []
     for r in rows:
         rec = dict(r)
         rec["margin"] = _trademe_margin(rec)
         rec["margin_lo"] = _trademe_margin_lo(rec)
+        rec["net"] = _trademe_net_profit(rec, fee_pct, shipping, high=True)
+        rec["net_lo"] = _trademe_net_profit(rec, fee_pct, shipping, high=False)
         rec["image_url"] = f"/api/trademe/image/{rec['id']}" if rec.get("image_path") else ""
         out.append(rec)
     if (sort or "").strip().lower() == "margin":
-        out.sort(key=lambda r: (r["margin"] is None, -(r["margin"] or 0)))
-    return {"listings": out}
+        out.sort(key=lambda r: (r["net"] is None, -(r["net"] or 0)))
+    return {"listings": out, "fee_pct": fee_pct, "shipping": shipping}
 
 
 @app.get("/api/trademe/patterns")
@@ -4393,6 +4433,7 @@ async def trademe_settings(request: Request):
         return err
     cfg = _trademe_config_load()
     return {"limit": cfg["limit"], "exclude": cfg["exclude"],
+            "fee_pct": cfg["fee_pct"], "shipping": cfg["shipping"],
             "limit_options": list(_TRADEME_LIMIT_OPTIONS)}
 
 
@@ -4404,8 +4445,11 @@ async def trademe_settings_save(request: Request):
     data, bad = await _safe_json(request)
     if bad:
         return bad
-    cfg = _trademe_config_save(data or {})
+    # Merge over the stored config so a partial save (e.g. only fee_pct)
+    # never wipes the limit/exclusions.
+    cfg = _trademe_config_save({**_trademe_config_load(), **(data or {})})
     return {"status": "ok", "limit": cfg["limit"], "exclude": cfg["exclude"],
+            "fee_pct": cfg["fee_pct"], "shipping": cfg["shipping"],
             "limit_options": list(_TRADEME_LIMIT_OPTIONS)}
 
 
