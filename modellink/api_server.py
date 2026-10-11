@@ -4199,6 +4199,33 @@ async def trademe_value(request: Request):
             "provider": provider, "model": model, "grounded": ground}
 
 
+@app.post("/api/trademe/clear-values")
+async def trademe_clear_values(request: Request):
+    """Clear button: wipe every valuation (estimated + predicted min/max) on
+    rows in the filter so bulk valuation can start over. Statuses are left
+    untouched — this resets numbers, not verdicts."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    status = str((data or {}).get("status") or "pending").strip().lower()
+    if status not in _TRADEME_STATUS:
+        return JSONResponse(status_code=400, content={"error": "Unknown status filter"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "UPDATE trademe_listings SET estimated_min = NULL, estimated_max = NULL,"
+            " predicted_min = NULL, predicted_max = NULL, updated_at = datetime('now')"
+            " WHERE status = ?", (status,))
+        n = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "cleared": n or 0}
+
+
 @app.post("/api/trademe/approve-all")
 async def trademe_approve_all(request: Request):
     """Apply button: approve every row in the filter that already carries an

@@ -1577,7 +1577,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         <div class="view-body">
           <div style="max-width:1100px;margin:0 auto">
             <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
-            <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Any configured model — Ollama picks get live market prices fed in"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value all</button><button class="btn btn-ghost btn-sm" onclick="admTmApply()">Apply</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Values the current filter's unvalued listings into their estimated values; Apply approves everything valued.</span></div>
+            <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Any configured model — Ollama picks get live market prices fed in"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value all</button><button class="btn btn-ghost btn-sm" onclick="admTmApply()">Apply</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmClearValues()">Clear values</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Values the current filter's unvalued listings into their estimated values; Apply approves everything valued.</span></div>
             <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Hide from list <input type="text" id="adm-tm-hide" placeholder="e.g. miner, bitcoin, asic" style="width:min(220px,40vw)" onkeydown="if(event.key==='Enter')admTmHideAdd()" /></label><button class="btn btn-ghost btn-sm" onclick="admTmHideAdd()">Add</button><span id="adm-tm-hide-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></span><button class="btn btn-ghost btn-sm" onclick="admTmHideClear()">Clear</button></div>
             <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
@@ -9531,6 +9531,17 @@ async function admTmApply(){
     showToast('Approved '+d.approved+' listing'+(d.approved===1?'':'s'),'success');
     admTmList();
   }catch(e){showToast('Apply failed: '+e.message,'error')}
+}
+async function admTmClearValues(){
+  const st=document.getElementById('adm-tm-status');const status=st?st.value:'pending';
+  if(!(await appConfirm('Clear ALL estimated + predicted values on '+status+' listings? Verdicts stay, numbers go.')))return;
+  try{
+    const r=await authFetch(API+'/api/trademe/clear-values',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Cleared '+d.cleared+' listing'+(d.cleared===1?'':'s'),'success');
+    admTmList();
+  }catch(e){showToast('Clear failed: '+e.message,'error')}
 }
 let admTmAll=[],admTmFacets=[],admTmSel=new Set(),admTmHideWords=[];
 function admTmNorm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'')}
