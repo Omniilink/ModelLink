@@ -9479,11 +9479,16 @@ async function admTmModels(){
     const r=await authFetch(API+'/api/trademe/models');if(!r.ok)return;
     const d=await r.json();const sel=document.getElementById('adm-tm-model');if(!sel)return;
     admTmOptions=d.options||[];sel.innerHTML='';
+    if(!admTmOptions.length){
+      const o=document.createElement('option');o.textContent='No models — add an API key under Providers';o.disabled=true;
+      sel.appendChild(o);return;
+    }
     const groups={};
     admTmOptions.forEach((o,i)=>{(groups[o.provider]=groups[o.provider]||[]).push(i)});
     Object.keys(groups).sort().forEach(p=>{
       const g=document.createElement('optgroup');g.label=p;
-      groups[p].forEach(i=>{const o=document.createElement('option');o.value=String(i);o.textContent=admTmOptions[i].model;
+      groups[p].forEach(i=>{const o=document.createElement('option');o.value=String(i);
+        o.textContent=admTmOptions[i].model+(admTmOptions[i].grounded?' (web)':'');
         if(admTmOptions[i].provider===d.default_provider&&admTmOptions[i].model===d.default_model)o.selected=true;
         g.appendChild(o)});
       sel.appendChild(g);

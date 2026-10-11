@@ -3875,21 +3875,25 @@ _TRADEME_VALUE_CHUNK = 25
 _TRADEME_VALUE_MAX = 200
 
 
-def _trademe_value_providers() -> list:
-    """Every model the user can pick for bulk valuation: all cloud provider
-    models plus the server's installed Ollama tags. Returns
-    [{provider, model}]."""
+def _trademe_value_providers(user_id=None) -> list:
+    """Models offered for bulk valuation: [{provider, model, grounded}].
+    With a user id, cloud providers are limited to ones that user can actually
+    call (saved key or server env key) — no dead options. Installed Ollama
+    tags are always included (local, keyless) and flagged grounded, since
+    every Ollama chunk gets a live market web search fed into the prompt."""
     out = []
     try:
         for pname, pcfg in (PROVIDERS or {}).items():
+            if user_id is not None and _trademe_provider_key(pname, user_id) is None:
+                continue
             for m in (pcfg or {}).get("models") or []:
-                out.append({"provider": pname, "model": m})
+                out.append({"provider": pname, "model": m, "grounded": False})
     except Exception:
         pass
     try:
         for tag in scan_ollama_models() or []:
             if tag and not any(o["provider"] == "ollama" and o["model"] == tag for o in out):
-                out.append({"provider": "ollama", "model": tag})
+                out.append({"provider": "ollama", "model": tag, "grounded": True})
     except Exception:
         pass
     return out
@@ -4093,7 +4097,7 @@ async def trademe_models(request: Request):
     user, err = _require_superadmin(request)
     if err:
         return err
-    options = _trademe_value_providers()
+    options = _trademe_value_providers(user["id"])
     default = next((o for o in options if o["provider"] == "gemini"), options[0] if options else None)
     return {"options": options,
             "default_provider": (default or {}).get("provider", ""),
