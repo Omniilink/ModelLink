@@ -269,6 +269,18 @@ def init_db():
             updated_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_trademe_status ON trademe_listings(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS trademe_sold (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER,
+            title TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            price REAL,
+            spec_key TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            sold_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_trademe_sold_at ON trademe_sold(sold_at);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

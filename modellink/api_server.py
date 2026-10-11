@@ -3982,8 +3982,60 @@ def _trademe_market_context(items: list) -> str:
             lines.append(f"- {t}" + (f": {s[:220]}" if s else ""))
     if not lines:
         return ""
-    return ("CURRENT NZ SECOND-HAND MARKET SNAPSHOT (live web search — trust this "
-            "over training memory):\n" + "\n".join(lines))
+    out = ("CURRENT NZ SECOND-HAND MARKET SNAPSHOT (live web search — trust this "
+           "over training memory):\n" + "\n".join(lines))
+    hist = _trademe_sold_context(items)
+    if hist:
+        out += "\n\n" + hist
+    return out
+
+
+def _trademe_spec_key(title: str) -> str:
+    """Compact spec signature for grouping sold prices (e.g. '64gb-1tb-ssd')."""
+    try:
+        keys = sorted(p["key"] for p in _trademe_detect_patterns([title], min_count=1))
+        words = [w for w in ("ssd", "hdd", "nvme", "server", "laptop", "desktop", "gpu")
+                 if w in (title or "").lower()]
+        return "-".join(keys + words)[:120]
+    except Exception:
+        return ""
+
+
+def _trademe_sold_stats(rows: list) -> dict:
+    """Count/avg/median/min/max over a list of {price} rows."""
+    prices = sorted(float(r["price"]) for r in (rows or [])
+                    if r.get("price") is not None)
+    if not prices:
+        return {"count": 0}
+    n = len(prices)
+    mid = n // 2
+    median = prices[mid] if n % 2 else (prices[mid - 1] + prices[mid]) / 2
+    return {"count": n, "avg": round(sum(prices) / n, 2), "median": round(median, 2),
+            "min": prices[0], "max": prices[-1]}
+
+
+def _trademe_sold_context(items: list) -> str:
+    """Your own recorded sold prices that match the chunk's specs — the most
+    trustworthy grounding there is, because you logged the real sale."""
+    if not items:
+        return ""
+    keys = {_trademe_spec_key(str((it or {}).get("title") or "")) for it in items}
+    keys.discard("")
+    if not keys:
+        return ""
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT spec_key, price FROM trademe_sold"
+                            " ORDER BY sold_at DESC LIMIT 2000").fetchall()
+    finally:
+        conn.close()
+    matched = [dict(r) for r in rows if r["spec_key"] in keys]
+    st = _trademe_sold_stats(matched)
+    if not st.get("count"):
+        return ""
+    return ("YOUR OWN RECORDED SOLD PRICES FOR THESE SPECS (real sales — highest "
+            f"trust): {st['count']} sales, median ${st['median']}, "
+            f"range ${st['min']}–${st['max']}.")
 
 
 def _trademe_value_system() -> str:
@@ -4302,6 +4354,86 @@ async def trademe_clear_values(request: Request):
     finally:
         conn.close()
     return {"status": "ok", "cleared": n or 0, "scope": scope}
+
+
+@app.post("/api/trademe/sold")
+async def trademe_sold_add(request: Request):
+    """Record a real sale (yours or a confirmed sold price). This is the
+    ground-truth signal — sold prices, unlike asking prices, don't lie — and it
+    feeds back into future valuations."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    title = str(data.get("title") or "").strip()
+    listing_id = data.get("listing_id")
+    conn = get_db()
+    try:
+        if not title and listing_id:
+            r = conn.execute("SELECT title, source_category FROM trademe_listings"
+                             " WHERE id = ?", (listing_id,)).fetchone()
+            if not r:
+                return JSONResponse(status_code=404, content={"error": "Listing not found"})
+            title = r["title"] or ""
+            data.setdefault("category", r["source_category"] or "")
+        if not title:
+            return JSONResponse(status_code=400, content={"error": "A title is required"})
+        try:
+            price = float(data.get("price"))
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"error": "price must be a number"})
+        if price < 0:
+            return JSONResponse(status_code=400, content={"error": "price must be >= 0"})
+        cur = conn.execute(
+            "INSERT INTO trademe_sold (listing_id, title, category, price, spec_key, note)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (int(listing_id) if listing_id else None, title[:200],
+             str(data.get("category") or "")[:200], price,
+             _trademe_spec_key(title), str(data.get("note") or "")[:500]))
+        conn.commit()
+        new_id = cur.lastrowid
+    finally:
+        conn.close()
+    return {"status": "ok", "id": new_id}
+
+
+@app.get("/api/trademe/sold")
+async def trademe_sold_list(request: Request, limit: int = 100):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    limit = max(1, min(1000, int(limit or 100)))
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, listing_id, title, category, price, spec_key, note, sold_at"
+            " FROM trademe_sold ORDER BY sold_at DESC, id DESC LIMIT ?",
+            (limit,)).fetchall()
+        allrows = conn.execute("SELECT price FROM trademe_sold").fetchall()
+    finally:
+        conn.close()
+    recent = [dict(r) for r in rows]
+    return {"sold": recent, "stats": _trademe_sold_stats([dict(r) for r in allrows])}
+
+
+@app.delete("/api/trademe/sold/{sold_id}")
+async def trademe_sold_delete(request: Request, sold_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM trademe_sold WHERE id = ?", (sold_id,))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    return {"status": "ok", "id": sold_id}
 
 
 @app.post("/api/trademe/predict/{listing_id}")

@@ -1578,9 +1578,10 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div style="max-width:1100px;margin:0 auto">
             <div class="tool-row"><label class="tool-result-sub">Category URL <input type="text" id="adm-tm-url" placeholder="https://www.trademe.co.nz/…" style="width:min(380px,50vw)" /></label><label class="tool-result-sub">Scrape <select id="adm-tm-limit"><option value="20">20</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label><label class="tool-result-sub">Exclude keywords <input type="text" id="adm-tm-exclude" placeholder="e.g. wanted, broken, parts" style="width:min(240px,40vw)" /></label><button class="btn btn-primary btn-sm" onclick="admTmScrape()">Scrape</button><span class="tool-result-sub" id="adm-tm-job"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Bulk value <select id="adm-tm-model" title="Any configured model — Ollama picks get live market prices fed in"></select></label><button class="btn btn-primary btn-sm" onclick="admTmValue()">Value all</button><button class="btn btn-ghost btn-sm" onclick="admTmApply()">Apply</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmClearValues()">Clear values</button><span class="tool-result-sub" id="adm-tm-value-job"></span><span class="tool-result-sub">Values the current filter's unvalued listings into their estimated values; Apply approves everything valued.</span></div>
-            <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><label class="tool-result-sub">Fee % <input type="number" id="adm-tm-fee" min="0" max="50" step="0.1" style="width:64px" /></label><label class="tool-result-sub">Shipping $ <input type="number" id="adm-tm-ship" min="0" step="0.5" style="width:72px" /></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
+            <div class="tool-row"><label class="tool-result-sub">Show <select id="adm-tm-status" onchange="admTmList()"><option value="pending" selected>Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="adjusted">Adjusted</option></select></label><label class="tool-result-sub">Sort <select id="adm-tm-sort" onchange="admTmList()"><option value="" selected>Newest</option><option value="margin">Profit margin</option></select></label><label class="tool-result-sub">Fee % <input type="number" id="adm-tm-fee" min="0" max="50" step="0.1" style="width:64px" /></label><label class="tool-result-sub">Shipping $ <input type="number" id="adm-tm-ship" min="0" step="0.5" style="width:72px" /></label><button class="btn btn-ghost btn-sm" onclick="admTmList()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admTmSaveSettings()">Save filters</button><button class="btn btn-ghost btn-sm" onclick="admTmExport()">Export labels</button><button class="btn btn-ghost btn-sm" onclick="admTmSoldList()">Sold history</button><button class="btn btn-ghost btn-sm" style="color:var(--error)" onclick="admTmDeleteAll()">Delete all</button><span class="tool-result-sub" id="adm-tm-meta"></span></div>
             <div class="tool-row"><label class="tool-result-sub">Hide from list <input type="text" id="adm-tm-hide" placeholder="e.g. miner, bitcoin, asic" style="width:min(220px,40vw)" onkeydown="if(event.key==='Enter')admTmHideAdd()" /></label><button class="btn btn-ghost btn-sm" onclick="admTmHideAdd()">Add</button><span id="adm-tm-hide-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></span><button class="btn btn-ghost btn-sm" onclick="admTmHideClear()">Clear</button></div>
             <div id="adm-tm-patterns" class="tool-row" style="display:none;flex-wrap:wrap;gap:6px;align-items:center"></div>
+            <div id="adm-tm-sold" style="display:none"></div>
             <div id="adm-tm-list"></div>
             <div id="adm-tm-detail" style="display:none"></div>
           </div>
@@ -9692,6 +9693,7 @@ async function admTmDetail(id){
       +'<div><div class="usage-section-title">Valuation console</div><div class="usage-chart-wrap"><div class="usage-chart-body">'
       +'<div class="tool-row"><span class="tool-result-sub">Ask</span><b>'+admTmMoney(l.tm_price)+'</b><span class="tool-result-sub">Margin</span><b>'+admTmMargin(l)+'</b></div>'
       +'<div class="tool-row"><span class="tool-result-sub">Net after fee + shipping</span><b>'+admTmNet(l)+'</b></div>'
+      +'<div class="tool-row"><span class="tool-result-sub">Sold for $</span><input type="number" min="0" step="0.5" id="adm-tm-sold-price" style="width:96px" /><button class="btn btn-ghost btn-sm" id="adm-tm-sold">Mark sold</button><span class="tool-result-sub">Records a real sale to sharpen future valuations.</span></div>'
       +((l.predicted_min!=null||l.predicted_max!=null)?'<div class="tool-row"><span class="tool-result-sub">Model predicted</span><b>'+admTmMoney(l.predicted_min)+' – '+admTmMoney(l.predicted_max)+'</b></div>':'')
       +'<div class="modal-field"><label>Estimated min ($)</label><input type="number" min="0" step="0.01" id="adm-tm-min" value="'+(l.estimated_min!=null?l.estimated_min:'')+'" /></div>'
       +'<div class="modal-field"><label>Estimated max ($)</label><input type="number" min="0" step="0.01" id="adm-tm-max" value="'+(l.estimated_max!=null?l.estimated_max:'')+'" /></div>'
@@ -9709,6 +9711,8 @@ async function admTmDetail(id){
     det.querySelector('#adm-tm-reject').onclick=()=>send({status:'rejected'}).catch(e=>showToast(e.message,'error'));
     det.querySelector('#adm-tm-save').onclick=()=>send({adjusted_min:val('adm-tm-min'),adjusted_max:val('adm-tm-max')}).catch(e=>showToast(e.message,'error'));
     det.querySelector('#adm-tm-back').onclick=()=>admTmList();
+    const soldBtn=det.querySelector('#adm-tm-sold');
+    if(soldBtn)soldBtn.onclick=()=>admTmMarkSold(l.id).catch(e=>showToast(e.message,'error'));
     if(!l.description){
       admTmDescription(l.id).then(desc=>{
         const box=document.getElementById('adm-tm-desc');
@@ -9729,6 +9733,41 @@ async function admTmDescription(id){
 }
 async function admTmExport(){
   window.open(API+'/api/trademe/export','_blank');
+}
+async function admTmMarkSold(id){
+  const el=document.getElementById('adm-tm-sold-price');const v=el?el.value.trim():'';
+  if(v===''){showToast('Enter the sold price first','error');return}
+  const r=await authFetch(API+'/api/trademe/sold',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({listing_id:id,price:Number(v)})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+  showToast('Sale recorded','success');
+}
+async function admTmSoldList(){
+  const box=document.getElementById('adm-tm-sold');if(!box)return;
+  const list=document.getElementById('adm-tm-list');const det=document.getElementById('adm-tm-detail');
+  if(det)det.style.display='none';
+  if(box.style.display!=='none'){box.style.display='none';if(list)list.style.display='';return}
+  if(list)list.style.display='none';
+  box.style.display='';
+  box.innerHTML='<div class="tool-status">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/trademe/sold?limit=200');if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const rows=d.sold||[];const st=d.stats||{};
+    let head='<div class="tool-row"><div class="usage-section-title">Sold history</div>';
+    if(st.count)head+='<span class="tool-result-sub">'+st.count+' sales · median '+admTmMoney(st.median)+' · avg '+admTmMoney(st.avg)+' · range '+admTmMoney(st.min)+' – '+admTmMoney(st.max)+'</span>';
+    head+='<button class="btn btn-ghost btn-sm" onclick="admTmSoldList()">Close</button></div>';
+    box.innerHTML=head;
+    if(!rows.length){box.innerHTML+='<div class="tool-status">No sales recorded yet — open a listing and use Mark sold.</div>';return}
+    rows.forEach(s=>{
+      const row=document.createElement('div');row.className='prompt-card';
+      row.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(s.title||'(no title)')+'</span><b>'+admTmMoney(s.price)+'</b></div>'
+        +'<div class="tool-result-sub">'+escapeHtml(s.sold_at||'')+(s.spec_key?' · '+escapeHtml(s.spec_key):'')+'</div>';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='×';b.title='Delete record';
+      b.onclick=async()=>{if(!(await appConfirm('Delete this sold record?')))return;const rr=await authFetch(API+'/api/trademe/sold/'+s.id,{method:'DELETE'});if(rr.ok)admTmSoldList()};
+      row.querySelector('.prompt-header').appendChild(b);
+      box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div class="tool-status">Could not load sold history.</div>'}
 }
 async function admTmLoadSettings(){
   try{
