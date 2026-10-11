@@ -361,6 +361,30 @@ def init_db():
             warn_pct INTEGER DEFAULT 80,
             enforce INTEGER DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS project_shares (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER,
+            folder TEXT DEFAULT '',
+            shared_with_id INTEGER,
+            role TEXT DEFAULT 'edit',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(owner_id, folder, shared_with_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_shares_target ON project_shares(shared_with_id);
+
+        CREATE TABLE IF NOT EXISTS file_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            path TEXT DEFAULT '',
+            kind TEXT DEFAULT 'write',
+            prev_ts REAL,
+            added INTEGER DEFAULT 0,
+            removed INTEGER DEFAULT 0,
+            undone INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_actions_user ON file_actions(user_id, created_at);
     """)
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]

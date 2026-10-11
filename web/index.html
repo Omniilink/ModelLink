@@ -1662,6 +1662,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="genTestsFor()" title="Generate tests for a source file (review before saving)">Tests</button>
+          <button onclick="openActivityModal()" title="Recent file changes — undo any of them">Activity</button>
+          <button onclick="openShareModal()" title="Share this project with another user">Share</button>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="openVersionsModal()" title="Browse and restore earlier project versions (files + chat)">Versions</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
@@ -1726,6 +1728,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <button class="tab-item" data-tab="menu" onclick="location.href='/menu'" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Menu</button>
 </nav>
 <div class="modal-overlay" id="file-action-modal" onclick="if(event.target===this)closeFileActionModal()"><div class="modal" style="max-width:440px"><div class="modal-header"><h2 id="file-action-title">File</h2><button class="modal-close" onclick="closeFileActionModal()">&times;</button></div><div class="modal-body"><p id="file-action-desc" style="font-size:12px;color:var(--text-muted);margin:0">Choose what to do with this file. Code is scanned for dangerous patterns before running or previewing.</p></div><div class="modal-actions" id="file-action-actions" style="display:flex;gap:8px;justify-content:flex-end"></div></div></div>
+<div class="modal-overlay" id="activity-modal" onclick="if(event.target===this)closeActivityModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Recent changes</h2><button class="modal-close" onclick="closeActivityModal()">&times;</button></div><div class="modal-body"><div id="activity-body"></div></div></div></div>
+<div class="modal-overlay" id="share-modal" onclick="if(event.target===this)closeShareModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Share project</h2><button class="modal-close" onclick="closeShareModal()">&times;</button></div><div class="modal-body"><div id="share-body"></div></div></div></div>
 <div class="modal-overlay" id="tests-modal" onclick="if(event.target===this)closeTestsModal()"><div class="modal" style="max-width:780px"><div class="modal-header"><h2 id="tests-title">Generated tests</h2><button class="modal-close" onclick="closeTestsModal()">&times;</button></div><div class="modal-body"><div id="tests-body"></div></div></div></div>
 <div class="modal-overlay" id="search-modal" onclick="if(event.target===this)closeSearchModal()"><div class="modal" style="max-width:640px"><div class="modal-header"><h2>Search project</h2><button class="modal-close" onclick="closeSearchModal()">&times;</button></div><div class="modal-body"><div style="display:flex;gap:8px;margin-bottom:10px"><input type="text" id="search-input" placeholder="Search file contents…" onkeydown="if(event.key==='Enter')runSearch()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><input type="text" id="search-ext" placeholder="ext (js,html)" style="width:130px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 10px;color:var(--text-primary);font-size:13px;font-family:var(--font);outline:none"/><button class="btn btn-ghost" onclick="runRag()" title="Semantic-ish search: index the project and return the most relevant code chunks" style="font-size:12px;padding:7px 12px">Smart</button><button class="btn btn-ghost" onclick="ragIndex()" title="Rebuild the project search index" style="font-size:12px;padding:7px 10px">Index</button><button class="btn btn-primary" onclick="runSearch()" style="font-size:12px;padding:7px 14px">Search</button></div><div id="search-results" style="max-height:52vh;overflow:auto"></div></div></div></div>
 <div class="modal-overlay" id="git-modal" onclick="if(event.target===this)closeGitModal()"><div class="modal" style="max-width:720px"><div class="modal-header"><h2>Git</h2><button class="modal-close" onclick="closeGitModal()">&times;</button></div><div class="modal-body"><div id="git-panel" style="max-height:62vh;overflow:auto"></div></div></div></div>
@@ -9182,6 +9186,82 @@ async function saveGeneratedTest(){
     showToast('Saved '+path,'success');closeTestsModal();
     try{await refreshCodingTree()}catch(e){}
   }catch(e){showToast('Save failed: '+e.message,'error')}
+}
+function closeActivityModal(){const m=document.getElementById('activity-modal');if(m)m.classList.remove('open')}
+async function openActivityModal(){
+  const m=document.getElementById('activity-modal');if(!m)return;m.classList.add('open');
+  await activityLoad();
+}
+async function activityLoad(){
+  const box=document.getElementById('activity-body');if(!box)return;
+  box.innerHTML='<div class="tool-result-sub">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/actions?limit=80');if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const acts=d.actions||[];
+    if(!acts.length){box.innerHTML='<div class="tool-result-sub">No changes recorded yet.</div>';return}
+    box.innerHTML=acts.map(a=>'<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.05)"><span style="flex:1;min-width:0;word-break:break-all;font-family:var(--mono);font-size:11.5px;color:var(--accent-light)">'+escapeHtml(a.path)+'</span><span class="tool-result-sub">'+escapeHtml(a.kind)+' · +'+a.added+' -'+a.removed+' · '+escapeHtml(a.created_at||'')+'</span>'+(a.undone?'<span class="tool-result-sub">undone</span>':'<button class="btn btn-ghost btn-sm" onclick="activityUndo('+a.id+')">Undo</button>')+'</div>').join('');
+  }catch(e){box.innerHTML='<div class="tool-result-sub">Could not load changes.</div>'}
+}
+async function activityUndo(id){
+  if(!(await appConfirm('Undo this change? The file will revert to its previous content.')))return;
+  try{
+    const r=await authFetch(API+'/api/coding/actions/'+id+'/undo',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Undone ('+d.result+')','success');
+    try{await refreshCodingTree()}catch(e){}
+    activityLoad();
+  }catch(e){showToast('Undo failed: '+e.message,'error')}
+}
+function closeShareModal(){const m=document.getElementById('share-modal');if(m)m.classList.remove('open')}
+async function openShareModal(){
+  const m=document.getElementById('share-modal');if(!m)return;m.classList.add('open');
+  await shareLoad();
+}
+async function shareLoad(){
+  const box=document.getElementById('share-body');if(!box)return;
+  box.innerHTML='<div class="tool-result-sub">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/shares');if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();const owned=d.owned||[];const mine=d.shared_with_me||[];
+    box.innerHTML='';
+    const form=document.createElement('div');form.className='tool-row';
+    form.innerHTML='<label class="tool-result-sub">Username <input type="text" id="share-user" placeholder="username" style="width:170px" /></label><label class="tool-result-sub">Role <select id="share-role"><option value="edit" selected>Can edit</option><option value="view">View only</option></select></label><button class="btn btn-primary btn-sm" onclick="shareCreate()">Share current project</button>';
+    box.appendChild(form);
+    const sec=(t)=>{const s=document.createElement('div');s.className='usage-section-title';s.style.marginTop='12px';s.textContent=t;box.appendChild(s)};
+    const row=(text,meta,btnText,onClick)=>{const c=document.createElement('div');c.style.cssText='display:flex;gap:10px;align-items:center;padding:5px 0';
+      c.innerHTML='<span style="flex:1;word-break:break-all;font-size:11.5px">'+escapeHtml(text)+'</span><span class="tool-result-sub">'+escapeHtml(meta)+'</span>';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=btnText;b.onclick=onClick;c.appendChild(b);return c};
+    const empty=(t)=>{const e=document.createElement('div');e.className='tool-result-sub';e.textContent=t;return e};
+    sec('Shared by you');
+    if(owned.length)owned.forEach(s=>box.appendChild(row(s.folder,'user #'+s.shared_with_id+' · '+s.role,'Revoke',()=>shareDelete(s.id))));
+    else box.appendChild(empty('Nothing shared yet.'));
+    sec('Shared with you');
+    if(mine.length)mine.forEach(s=>box.appendChild(row(s.folder,(s.owner||'')+' · '+s.role,'Open',()=>shareOpen(s.folder))));
+    else box.appendChild(empty('No projects shared with you.'));
+  }catch(e){box.innerHTML='<div class="tool-result-sub">Could not load shares.</div>'}
+}
+async function shareCreate(){
+  const u=document.getElementById('share-user');const role=document.getElementById('share-role');
+  const username=u?u.value.trim():'';if(!username){showToast('Enter a username','error');return}
+  try{
+    const r=await authFetch(API+'/api/coding/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,role:role?role.value:'edit'})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    showToast('Shared with '+username,'success');shareLoad();
+  }catch(e){showToast('Share failed: '+e.message,'error')}
+}
+async function shareDelete(id){
+  try{const r=await authFetch(API+'/api/coding/shares/'+id,{method:'DELETE'});if(r.ok)shareLoad()}catch(e){}
+}
+async function shareOpen(folder){
+  try{
+    const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:folder})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    closeShareModal();showToast('Opened shared project','success');
+    try{await refreshCodingTree()}catch(e){}
+  }catch(e){showToast('Open failed: '+e.message,'error')}
 }
 async function ragIndex(){
   const box=document.getElementById('search-results');if(box)box.innerHTML='<div class="search-hint">Indexing project…</div>';

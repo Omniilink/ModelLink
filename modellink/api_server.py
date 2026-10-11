@@ -1285,11 +1285,12 @@ def _coding_prune_versions(user_id: str, path: str) -> None:
             continue
 
 
-def _coding_save_version(user_id: str, path: str, content: str) -> None:
+def _coding_save_version(user_id: str, path: str, content: str):
     """Snapshot content BEFORE an edit. No-ops are skipped; oldest versions are
-    pruned once the per-file or total cap is hit."""
+    pruned once the per-file or total cap is hit. Returns the version ts (for
+    the undo log) or None."""
     if not content:
-        return
+        return None
     try:
         d = _coding_version_dir(user_id, path)
         os.makedirs(d, exist_ok=True)
@@ -1299,8 +1300,9 @@ def _coding_save_version(user_id: str, path: str, content: str) -> None:
                   encoding="utf-8") as f:
             json.dump(rec, f)
         _coding_prune_versions(user_id, path)
+        return ts
     except Exception:
-        pass
+        return None
 
 
 # ---- Project-wide versions: a whole-project snapshot (files + chat) taken
@@ -6701,14 +6703,248 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
 
 # Per-user coding states handled by _get_coding_state()
 
+def _folder_shared_role(folder, user_id):
+    """'view'/'edit' when `user_id` has a share on this exact folder, else None."""
+    try:
+        norm = os.path.abspath(folder or "")
+        conn = get_db()
+        try:
+            rows = conn.execute("SELECT folder, role FROM project_shares"
+                                " WHERE shared_with_id = ?", (user_id,)).fetchall()
+        finally:
+            conn.close()
+        for r in rows:
+            if os.path.abspath(r["folder"] or "") == norm:
+                return (r["role"] or "edit")
+    except Exception:
+        pass
+    return None
+
+
+def _can_access_folder(user, folder) -> bool:
+    """True when the user owns/administers the folder or it is shared with them."""
+    if user.get("is_admin"):
+        return True
+    if _is_within(_user_data_dir(_safe_username(user["username"])), folder):
+        return True
+    return _folder_shared_role(folder, user["id"]) is not None
+
+
+def _shared_write_block(user, folder):
+    """Read-only shared projects: block mutating endpoints for 'view' role."""
+    if user.get("is_admin"):
+        return None
+    if _folder_shared_role(folder, user["id"]) == "view":
+        return JSONResponse(status_code=403, content={
+            "error": "This shared project is read-only (view role)"})
+    return None
+
+
 def _folder_access_error(user, folder):
     """Return a JSONResponse error if the user may not access folder, else None."""
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
-    if not user.get("is_admin"):
-        if not _is_within(_user_data_dir(_safe_username(user["username"])), folder):
-            return JSONResponse(status_code=403, content={"error": "Access denied: folder is outside your data directory"})
+    if not _can_access_folder(user, folder):
+        return JSONResponse(status_code=403, content={"error": "Access denied: folder is outside your data directory"})
     return None
+
+# ---- AI/file actions log (one-click undo) --------------------------------
+def _action_log(owner: str, path: str, kind: str, prev_ts, added=0, removed=0) -> None:
+    """Record a file mutation so it can be undone later. `owner` is the
+    filesystem-safe username (matches the per-file version store)."""
+    try:
+        conn = get_db()
+        try:
+            conn.execute("INSERT INTO file_actions (user_id, path, kind, prev_ts,"
+                         " added, removed) VALUES (?, ?, ?, ?, ?, ?)",
+                         (owner, path[:500], kind, prev_ts, int(added or 0), int(removed or 0)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _action_undo(action_id: int, owner: str):
+    """Revert one logged action using the per-file version store."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM file_actions WHERE id = ? AND user_id = ?",
+                           (action_id, owner)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Action not found"})
+    if row["undone"]:
+        return JSONResponse(status_code=400, content={"error": "Already undone"})
+    folder = _get_coding_state(owner).get("folder")
+    if not folder:
+        return JSONResponse(status_code=400, content={"error": "No folder open"})
+    full = os.path.join(folder, row["path"])
+    if not _is_within(folder, full):
+        return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
+    try:
+        if row["prev_ts"] is None:
+            # The action created a file that did not exist before → undo = delete.
+            if os.path.isfile(full):
+                os.remove(full)
+            result = "deleted"
+        else:
+            content = _coding_get_version(owner, row["path"], row["prev_ts"])
+            if content is None:
+                return JSONResponse(status_code=404, content={
+                    "error": "The previous version has been pruned and can no longer be restored"})
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+            result = "restored"
+        conn = get_db()
+        try:
+            conn.execute("UPDATE file_actions SET undone = 1 WHERE id = ?", (action_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"status": "ok", "path": row["path"], "result": result}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/coding/actions")
+async def coding_actions(request: Request, limit: int = 50):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    limit = max(1, min(200, int(limit or 50)))
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT id, path, kind, prev_ts, added, removed, undone,"
+                            " created_at FROM file_actions WHERE user_id = ?"
+                            " ORDER BY id DESC LIMIT ?", (owner, limit)).fetchall()
+    finally:
+        conn.close()
+    return {"actions": [dict(r) for r in rows]}
+
+
+@app.post("/api/coding/actions/{action_id}/undo")
+async def coding_action_undo(request: Request, action_id: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    folder = _get_coding_state(owner).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    blk = _shared_write_block(user, folder)
+    if blk:
+        return blk
+    return await asyncio.to_thread(_action_undo, action_id, owner)
+
+
+@app.delete("/api/coding/actions")
+async def coding_actions_clear(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM file_actions WHERE user_id = ?", (owner,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+# ---- shared workspaces (grant another user access to a project folder) ----
+def _share_target_user(username: str):
+    conn = get_db()
+    try:
+        return conn.execute("SELECT id, username FROM users WHERE username = ?",
+                            (username,)).fetchone()
+    finally:
+        conn.close()
+
+
+@app.get("/api/coding/shares")
+async def coding_shares(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        owned = conn.execute("SELECT id, folder, shared_with_id, role, created_at"
+                             " FROM project_shares WHERE owner_id = ? ORDER BY id DESC",
+                             (user["id"],)).fetchall()
+        shared = conn.execute(
+            "SELECT s.id, s.folder, s.role, s.created_at, u.username AS owner"
+            " FROM project_shares s LEFT JOIN users u ON u.id = s.owner_id"
+            " WHERE s.shared_with_id = ? ORDER BY s.id DESC", (user["id"],)).fetchall()
+    finally:
+        conn.close()
+    return {"owned": [dict(r) for r in owned], "shared_with_me": [dict(r) for r in shared]}
+
+
+@app.post("/api/coding/shares")
+async def coding_share_create(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    username = str(data.get("username") or "").strip()
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "username is required"})
+    role = str(data.get("role") or "edit").strip().lower()
+    if role not in ("view", "edit"):
+        return JSONResponse(status_code=400, content={"error": "role must be view or edit"})
+    folder = str(data.get("folder") or "").strip()
+    if not folder:
+        folder = _get_coding_state(_safe_username(user["username"])).get("folder") or ""
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No project folder to share"})
+    if not _can_access_folder(user, folder):
+        return JSONResponse(status_code=403, content={"error": "You do not control that folder"})
+    target = _share_target_user(username)
+    if not target:
+        return JSONResponse(status_code=404, content={"error": "No such user"})
+    if int(target["id"]) == int(user["id"]):
+        return JSONResponse(status_code=400, content={"error": "You already own this project"})
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO project_shares (owner_id, folder, shared_with_id, role)"
+                     " VALUES (?, ?, ?, ?) ON CONFLICT(owner_id, folder, shared_with_id)"
+                     " DO UPDATE SET role = excluded.role",
+                     (user["id"], folder, target["id"], role))
+        conn.commit()
+        row = conn.execute("SELECT id, folder, shared_with_id, role FROM project_shares"
+                           " WHERE owner_id = ? AND folder = ? AND shared_with_id = ?",
+                           (user["id"], folder, target["id"])).fetchone()
+    finally:
+        conn.close()
+    return {"status": "ok", "share": dict(row)}
+
+
+@app.delete("/api/coding/shares/{share_id}")
+async def coding_share_delete(request: Request, share_id: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM project_shares WHERE id = ? AND owner_id = ?",
+                           (share_id, user["id"]))
+        conn.commit()
+        n = cur.rowcount
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Share not found"})
+    return {"status": "ok"}
+
 
 @app.post("/api/coding/open-folder")
 async def coding_open_folder(request: Request, req: CodingOpenFolder):
@@ -6720,14 +6956,12 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     folder = req.path.strip()
     if _bad_path(folder):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
+    if not _can_access_folder(user, folder):
 
         # Containment before existence: no oracle for probing other paths
-        return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
+        return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory or shared with you"})
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": f"Not a valid directory: {folder}"})
-    if not user.get("is_admin") and not _is_within(_user_data_dir(user_id), folder):
-        return JSONResponse(status_code=403, content={"error": "Access denied: you can only open folders inside your own data directory"})
     coding_state["folder"] = folder
     _save_coding_folder(user_id, folder)
     tree = _build_file_tree(folder)
@@ -9264,6 +9498,9 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    blk = _shared_write_block(user, folder)
+    if blk:
+        return blk
     if _bad_path(req.path) or len(req.content) > 5 * 1024 * 1024:
         return JSONResponse(status_code=400, content={"error": "Invalid path or content too large (max 5MB)"})
     quota_err = _check_quota(user, _safe_username(user["username"]), len(req.content.encode("utf-8", "ignore")))
@@ -9275,6 +9512,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
         backup = None
+        vts = None
         if os.path.isfile(full):
             with open(full, "r", encoding="utf-8", errors="replace") as f:
                 backup = f.read()
@@ -9283,7 +9521,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
                 # write, so the loop cannot mistake it for progress.
                 return {"status": "ok", "path": req.path, "size": len(req.content),
                         "backed_up": True, "added": 0, "removed": 0, "noop": True}
-            _coding_save_version(_safe_username(user["username"]), req.path, backup)
+            vts = _coding_save_version(_safe_username(user["username"]), req.path, backup)
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
 
@@ -9297,6 +9535,8 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
             removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
         except Exception:
             added, removed = len(req.content.splitlines()), 0
+        _action_log(_safe_username(user["username"]), req.path,
+                    "write" if vts is not None else "create", vts, added, removed)
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
@@ -9410,6 +9650,9 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    blk = _shared_write_block(user, folder)
+    if blk:
+        return blk
     if (_bad_path(req.path) or len(req.old_text) > 5 * 1024 * 1024
             or len(req.new_text) > 5 * 1024 * 1024):
         return JSONResponse(status_code=400, content={"error": "Invalid path or text too large (max 5MB)"})
@@ -9444,7 +9687,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
         if quota_err:
             return quota_err
-        _coding_save_version(_safe_username(user["username"]), req.path, current)
+        vts = _coding_save_version(_safe_username(user["username"]), req.path, current)
         with open(full, "w", encoding="utf-8") as f:
             f.write(patched)
         try:
@@ -9454,6 +9697,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
             removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
         except Exception:
             added, removed = 0, 0
+        _action_log(_safe_username(user["username"]), req.path, "patch", vts, added, removed)
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(patched),
                 "added": added, "removed": removed}
@@ -9742,6 +9986,9 @@ async def coding_file_delete(request: Request, path: str):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
+    blk = _shared_write_block(user, folder)
+    if blk:
+        return blk
     if _bad_path(path):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     full = os.path.join(folder, path)
@@ -9750,7 +9997,14 @@ async def coding_file_delete(request: Request, path: str):
     if not os.path.isfile(full):
         return JSONResponse(status_code=404, content={"error": "File not found"})
     try:
+        owner = _safe_username(user["username"])
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                vts = _coding_save_version(owner, path, f.read())
+        except Exception:
+            vts = None
         os.remove(full)
+        _action_log(owner, path, "delete", vts)
         logger.info(f"[CODING] Deleted file: {path} user={user.get('username','-')}")
         return {"status": "ok"}
     except Exception as e:
