@@ -1370,6 +1370,38 @@ def _project_version_stats(prev: dict, cur: dict) -> tuple:
     return stats, tot_add, tot_rem
 
 
+def _project_version_diff(user_id: str, folder: str, vid: str,
+                          max_chars: int = 200000):
+    """Unified diff of a saved version vs the project's CURRENT state, per file.
+    This is what a coding worker's changes look like before you keep them."""
+    import difflib
+    rec = _project_version_load(user_id, folder, vid)
+    if rec is None:
+        return None
+    prev = rec.get("files", {}) or {}
+    cur = _project_snapshot(folder)
+    files, total, truncated = [], 0, False
+    for p in sorted(set(prev) | set(cur)):
+        a, b = prev.get(p, ""), cur.get(p, "")
+        if a == b:
+            continue
+        status = "added" if p not in prev else ("deleted" if p not in cur else "modified")
+        dl = list(difflib.unified_diff(
+            a.splitlines(), b.splitlines(),
+            fromfile=f"{p} (version)" if p in prev else f"{p} (absent)",
+            tofile=f"{p} (current)" if p in cur else f"{p} (deleted)",
+            lineterm=""))
+        if total + sum(len(x) for x in dl) > max_chars:
+            truncated = True
+            dl = dl[:max(0, max_chars - total)]
+        total += sum(len(x) for x in dl)
+        files.append({"path": p, "status": status, "diff": dl})
+        if truncated:
+            break
+    return {"id": vid, "files": files, "truncated": truncated,
+            "added": rec.get("added", 0), "removed": rec.get("removed", 0)}
+
+
 def _project_version_load(user_id: str, folder: str, vid: str):
     try:
         p = os.path.join(_project_versions_dir(user_id, folder),
@@ -9172,6 +9204,22 @@ async def coding_project_version_detail(request: Request, id: str):
             "chat_count": len(rec.get("chat", []) or [])}
 
 
+@app.get("/api/coding/project-versions/diff")
+async def coding_project_version_diff(request: Request, id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    bad = _project_versions_folder(user, folder)
+    if bad:
+        return bad
+    d = await asyncio.to_thread(_project_version_diff, uid, folder, id)
+    if d is None:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    return d
+
+
 @app.delete("/api/coding/project-versions")
 async def coding_project_version_delete(request: Request, id: str):
     user, err = _require_auth(request)
@@ -11099,6 +11147,91 @@ async def coding_rag_status(request: Request):
     finally:
         conn.close()
     return {"chunks": n, "files": files}
+
+
+# ---- Test generation (#8): propose a runnable test file for one source file.
+_CODING_TEST_LANG = {".py": "python", ".js": "javascript", ".ts": "typescript",
+                     ".tsx": "typescript", ".jsx": "javascript", ".go": "go",
+                     ".rb": "ruby", ".java": "java", ".cs": "c#", ".php": "php",
+                     ".rs": "rust"}
+_CODING_TEST_FRAMEWORK = {
+    "python": "pytest", "javascript": "the project's existing runner (jest or node:test)",
+    "typescript": "jest or vitest", "go": "the standard testing package",
+    "ruby": "minitest", "java": "JUnit", "c#": "xUnit", "php": "PHPUnit", "rust": "the built-in test module"}
+
+
+def _coding_test_target(path: str) -> tuple:
+    d = os.path.dirname(path)
+    stem, ext = os.path.splitext(os.path.basename(path))
+    e = ext.lower()
+    if e == ".py":
+        name = f"test_{stem}.py"
+    elif e in (".js", ".ts", ".jsx", ".tsx"):
+        name = f"{stem}.test{ext}"
+    else:
+        name = f"{stem}_test{ext}"
+    return (((d + "/") if d else "") + name).replace("\\", "/"), _CODING_TEST_LANG.get(e, "")
+
+
+def _extract_code_block(text: str) -> str:
+    if not text:
+        return ""
+    m = re.search(r"```[a-zA-Z0-9_+#-]*\n(.*?)```", text, re.S)
+    return (m.group(1) if m else text).strip("\n")
+
+
+def _coding_generate_tests_sync(messages: list, model: str) -> tuple:
+    return generate(messages, model=model, temperature=0.3, max_tokens=4000,
+                    stream=False,
+                    opts={"temperature": 0.3, "max_tokens": 4000, "health_scope": "tests"})
+
+
+@app.post("/api/coding/generate-tests")
+async def coding_generate_tests(request: Request):
+    """Ask a model to write tests for one project file. Returns the proposed
+    test file (path + code); nothing is written until you approve it."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    path = str(data.get("path") or "").strip()
+    if not path:
+        return JSONResponse(status_code=400, content={"error": "path is required"})
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    full = os.path.normpath(os.path.join(folder, path))
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(120 * 1024)
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    target, lang = _coding_test_target(path)
+    framework = _CODING_TEST_FRAMEWORK.get(lang, "the idiomatic framework for the language")
+    model = str(data.get("model") or "omniilink").strip() or "omniilink"
+    messages = [
+        {"role": "system", "content": "You are a senior engineer writing tests. "
+         "Output ONLY the complete test file inside a single fenced code block, no prose."},
+        {"role": "user", "content":
+            f"Write focused, runnable unit tests for the file below using {framework}. "
+            f"Cover the main behaviour and key edge cases.\n\nFile: {path}\n```\n{content}\n```"},
+    ]
+    try:
+        resp, used = await asyncio.to_thread(_coding_generate_tests_sync, messages, model)
+        text = ((resp or {}).get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Model failed: {e}"})
+    code = _extract_code_block(text)
+    if not code.strip():
+        return JSONResponse(status_code=502, content={"error": "Model returned no test code"})
+    return {"test_path": target, "language": lang, "code": code, "model": used}
 
 
 @app.get("/api/coding/search")

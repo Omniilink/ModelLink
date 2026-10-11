@@ -2961,7 +2961,37 @@ function openFileActionModal(path,execCmd){
   const runners={py:'python',js:'node',ts:'npx ts-node',sh:'bash',rb:'ruby',php:'php',go:'go run',ps1:'powershell -File'};
   if(execCmd||runners[ext])mk('Run','btn btn-primary',()=>{closeFileActionModal();runFileScanned(path,execCmd||runners[ext])});
   if(ext==='html'||ext==='htm')mk('Preview','btn btn-primary',()=>{closeFileActionModal();previewFileScanned(path)});
+  if(['py','js','ts','tsx','jsx','go','rb','java','cs','php','rs'].includes(ext))mk('Generate tests','btn btn-ghost',()=>{closeFileActionModal();genTestsFor(path)});
   document.getElementById('file-action-modal').classList.add('open');
+}
+async function genTestsFor(path){
+  showToast('Generating tests…','success');
+  try{
+    const r=await authFetch(API+'/api/coding/generate-tests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+    const m=document.createElement('div');m.className='modal';m.style.maxWidth='720px';
+    m.innerHTML='<div class="modal-header"><h2>Generated tests</h2><button class="modal-close">&times;</button></div><div class="modal-body">'
+      +'<div class="tool-result-sub" style="margin-bottom:8px">Proposed file: <b>'+escapeHtml(d.test_path)+'</b>'+(d.model?' · '+escapeHtml(d.model):'')+'</div>'
+      +'<textarea id="gen-tests-code" spellcheck="false" style="width:100%;height:46vh;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px;color:var(--text-primary);font-family:var(--mono);font-size:12px;white-space:pre;overflow:auto"></textarea>'
+      +'<div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-ghost" id="gen-copy">Copy</button><button class="btn btn-ghost" id="gen-cancel">Cancel</button><button class="btn btn-primary" id="gen-save">Save test file</button></div></div>';
+    ov.appendChild(m);document.body.appendChild(ov);
+    const ta=m.querySelector('#gen-tests-code');ta.value=d.code||'';
+    const close=()=>ov.remove();
+    m.querySelector('.modal-close').onclick=close;
+    m.querySelector('#gen-cancel').onclick=close;
+    m.querySelector('#gen-copy').onclick=()=>{ta.select();try{document.execCommand('copy')}catch(e){};showToast('Copied','success')};
+    m.querySelector('#gen-save').onclick=async()=>{
+      try{
+        const wr=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:d.test_path,content:ta.value})});
+        const wd=await wr.json().catch(()=>({}));
+        if(!wr.ok)throw new Error((wd&&wd.error)||('HTTP '+wr.status));
+        close();showToast('Saved '+d.test_path,'success');
+        try{refreshCodingTree()}catch(e){}
+      }catch(e){showToast('Save failed: '+e.message,'error')}
+    };
+  }catch(e){showToast('Test generation failed: '+e.message,'error')}
 }
 function closeFileActionModal(){document.getElementById('file-action-modal').classList.remove('open')}
 function openRenameModal(path){
@@ -5031,9 +5061,11 @@ function renderVersionDetail(d){
   if(d.paragraph)h+='<div style="font-size:12.5px;color:var(--text-secondary);line-height:1.6;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:14px;white-space:pre-wrap">'+vEsc(d.paragraph)+'</div>';
   h+='<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">'
     +'<button class="btn btn-primary" id="ver-restore" style="font-size:12px;padding:6px 14px">Restore this version</button>'
+    +'<button class="btn btn-ghost" id="ver-diff-btn" style="font-size:12px;padding:6px 14px">Show diff vs now</button>'
     +'<button class="btn btn-ghost" id="ver-delete" style="font-size:12px;padding:6px 14px;color:var(--error)">Delete</button>'
     +'<div style="flex:1"></div>'
     +'<button class="btn btn-ghost" id="ver-back" style="font-size:12px;padding:6px 14px">Back to list</button></div>';
+  h+='<div id="ver-diff" style="display:none;max-height:340px;overflow:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:14px"></div>';
   h+='<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Changed files</div>';
   if(!stats.length)h+='<div style="font-size:12px;color:var(--text-muted)">No file differences recorded.</div>';
   else{
@@ -5050,6 +5082,29 @@ function renderVersionDetail(d){
   body.querySelector('#ver-back').onclick=()=>openVersionsModal();
   body.querySelector('#ver-restore').onclick=()=>restoreVersion(d.id);
   body.querySelector('#ver-delete').onclick=()=>deleteVersion(d.id);
+  const db=body.querySelector('#ver-diff-btn');if(db)db.onclick=()=>toggleVersionDiff(d.id);
+}
+async function toggleVersionDiff(id){
+  const box=document.getElementById('ver-diff');if(!box)return;
+  if(box.style.display!=='none'){box.style.display='none';return}
+  box.style.display='';box.innerHTML='<div class="tool-result-sub">Loading diff…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions/diff?id='+encodeURIComponent(id));
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    const files=d.files||[];
+    if(!files.length){box.innerHTML='<div class="tool-result-sub">No differences vs the current project.</div>';return}
+    let h='';
+    files.forEach(f=>{
+      h+='<div style="font-family:var(--mono);font-size:11px;margin:6px 0 2px;color:var(--accent-light)">'+vEsc(f.path)+' <span style="color:var(--text-muted)">('+vEsc(f.status)+')</span></div>';
+      (f.diff||[]).forEach(line=>{
+        const c=(line.startsWith('+')&&!line.startsWith('+++'))?'var(--success)':((line.startsWith('-')&&!line.startsWith('---'))?'var(--error)':(line.startsWith('@@')?'var(--accent-light)':'var(--text-secondary)'));
+        h+='<div style="font-family:var(--mono);font-size:11px;white-space:pre-wrap;color:'+c+'">'+vEsc(line||' ')+'</div>';
+      });
+    });
+    if(d.truncated)h+='<div class="tool-result-sub">…diff truncated</div>';
+    box.innerHTML=h;
+  }catch(e){box.innerHTML='<div class="tool-result-sub">'+vEsc('Diff failed: '+e.message)+'</div>'}
 }
 async function restoreVersion(id){
   if(!(await appConfirm('Restore this version? The project files AND the coding chat will revert to this point. The current state is saved as a new version first.')))return;
