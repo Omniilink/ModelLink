@@ -9222,14 +9222,26 @@ def _pub_extras(conn, pid, user_id):
 
 
 def _public_snapshot_version(conn, pid, changelog=""):
-    """Snapshot the current files as a new numbered version (cap 10)."""
+    """Snapshot the current files as a new numbered version (cap 10).
+
+    Byte-identical re-snapshots (e.g. approving unchanged files) are
+    skipped so the history never fills with duplicate versions.
+    """
     try:
-        cur = conn.execute("SELECT COALESCE(MAX(version),0) AS v FROM public_project_versions"
-                           " WHERE project_id = ?", (pid,)).fetchone()
-        v = int(cur["v"] or 0) + 1
+        latest = conn.execute("SELECT version, files_json FROM public_project_versions"
+                              " WHERE project_id = ? ORDER BY version DESC LIMIT 1", (pid,)).fetchone()
         files = conn.execute("SELECT path, size, content FROM public_project_files"
                              " WHERE project_id = ? ORDER BY path", (pid,)).fetchall()
         payload = [{"path": f["path"], "size": f["size"], "content": f["content"]} for f in files]
+        if latest:
+            try:
+                if json.loads(latest["files_json"] or "[]") == payload:
+                    return int(latest["version"])
+            except Exception:
+                pass
+            v = int(latest["version"] or 0) + 1
+        else:
+            v = 1
         conn.execute("INSERT INTO public_project_versions (project_id, version, changelog, files_json)"
                      " VALUES (?, ?, ?, ?)", (pid, v, (changelog or "")[:500], json.dumps(payload)))
         conn.execute("DELETE FROM public_project_versions WHERE project_id = ? AND id NOT IN"
