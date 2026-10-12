@@ -964,6 +964,45 @@ async def _safe_json(request: Request):
         return None, JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
     return data, None
 
+async def _optional_json_body(request: Request):
+    """Parse an optional JSON body; an empty body means {}.
+
+    Pairing invitations are created from a button that historically sent no
+    body at all. Requiring a JSON document would break those callers, while
+    still accepting an explicit owner_username when present.
+    """
+    raw = b""
+    body_fn = getattr(request, "body", None)
+    if callable(body_fn):
+        try:
+            raw = await body_fn()
+        except Exception:
+            raw = b""
+    if not (raw or b"").strip():
+        # No raw body (or a test double without one): fall back to parsed
+        # JSON when available, otherwise treat the invitation as self-owned.
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        return (data or {}), None
+    return await _safe_json(request)
+
+
+def _request_ip(request: Request) -> str:
+    """Best-effort client IP for rate limits. Tolerates request doubles."""
+    try:
+        header_ip = request.headers.get("cf-connecting-ip", "")
+    except Exception:
+        header_ip = ""
+    if header_ip:
+        return header_ip
+    try:
+        client = getattr(request, "client", None)
+        return client.host if client else ""
+    except Exception:
+        return ""
+
 def _user_quota_bytes() -> int:
     try:
         return int(os.environ.get("OMNIILINK_USER_QUOTA", str(1 * 1024 * 1024 * 1024)))
@@ -1191,18 +1230,22 @@ def _coding_versions_dir(user_id: str) -> str:
     return os.path.join(_user_data_dir(user_id), "coding_versions")
 
 
-def _coding_version_dir(user_id: str, path: str) -> str:
-    """One directory per tracked file. The key is a hash of the project-relative
-    path so separators and odd characters can never escape the user dir."""
+def _coding_version_dir(user_id: str, path: str, folder: str = "") -> str:
+    """One directory per tracked file in one project folder.
+
+    The key hashes both the absolute project folder and the project-relative
+    path, so the same filename in two projects never shares history.
+    """
     import hashlib
-    key = hashlib.sha1((path or "").encode("utf-8", "replace")).hexdigest()[:24]
+    scope = os.path.abspath(folder or "") if folder else ""
+    key = hashlib.sha1((scope + "\n" + (path or "")).encode("utf-8", "replace")).hexdigest()[:24]
     return os.path.join(_coding_versions_dir(user_id), key)
 
 
-def _coding_list_versions(user_id: str, path: str) -> list:
+def _coding_list_versions(user_id: str, path: str, folder: str = "") -> list:
     out = []
     try:
-        d = _coding_version_dir(user_id, path)
+        d = _coding_version_dir(user_id, path, folder)
         for name in os.listdir(d):
             full = os.path.join(d, name)
             if not name.endswith(".json") or not os.path.isfile(full):
@@ -1220,13 +1263,13 @@ def _coding_list_versions(user_id: str, path: str) -> list:
     return out
 
 
-def _coding_get_version(user_id: str, path: str, ts: float) -> Optional[str]:
+def _coding_get_version(user_id: str, path: str, ts: float, folder: str = "") -> Optional[str]:
     try:
         prefix = f"{float(ts):.6f}_"
-        for name in os.listdir(_coding_version_dir(user_id, path)):
+        for name in os.listdir(_coding_version_dir(user_id, path, folder)):
             if not name.startswith(prefix):
                 continue
-            full = os.path.join(_coding_version_dir(user_id, path), name)
+            full = os.path.join(_coding_version_dir(user_id, path, folder), name)
             with open(full, "r", encoding="utf-8") as f:
                 rec = json.load(f)
             if isinstance(rec, dict) and "content" in rec:
@@ -1236,9 +1279,9 @@ def _coding_get_version(user_id: str, path: str, ts: float) -> Optional[str]:
     return None
 
 
-def _coding_prune_versions(user_id: str, path: str) -> None:
+def _coding_prune_versions(user_id: str, path: str, folder: str = "") -> None:
     """Keep the newest N per file, then the newest overall under the size cap."""
-    d = _coding_version_dir(user_id, path)
+    d = _coding_version_dir(user_id, path, folder)
     files = []
     try:
         for name in os.listdir(d):
@@ -1285,21 +1328,21 @@ def _coding_prune_versions(user_id: str, path: str) -> None:
             continue
 
 
-def _coding_save_version(user_id: str, path: str, content: str):
+def _coding_save_version(user_id: str, path: str, content: str, folder: str = ""):
     """Snapshot content BEFORE an edit. No-ops are skipped; oldest versions are
     pruned once the per-file or total cap is hit. Returns the version ts (for
     the undo log) or None."""
     if not content:
         return None
     try:
-        d = _coding_version_dir(user_id, path)
+        d = _coding_version_dir(user_id, path, folder)
         os.makedirs(d, exist_ok=True)
         ts = time.time()
         rec = {"ts": ts, "size": len(content.encode("utf-8", "ignore")), "content": content}
         with open(os.path.join(d, f"{ts:.6f}_{secrets.token_hex(4)}.json"), "w",
                   encoding="utf-8") as f:
             json.dump(rec, f)
-        _coding_prune_versions(user_id, path)
+        _coding_prune_versions(user_id, path, folder)
         return ts
     except Exception:
         return None
@@ -1592,6 +1635,16 @@ def _time_line(user_id: str) -> str:
     """Fresh 'Current date and time' line injected into prompts so the model
     always knows the real time (computed per request, never cached)."""
     return "Current date and time: " + _localized_now(user_id)[0] + "."
+
+def _coding_state_evict(user_id: str) -> None:
+    """Drop one cached coding session.
+
+    Usernames can be recycled. Without eviction, a new account taking a
+    vacated username would inherit the previous account's open folder and
+    settings from this in-process cache.
+    """
+    _coding_states.pop(user_id, None)
+
 
 def _get_coding_state(user_id: str) -> dict:
     if user_id not in _coding_states:
@@ -2203,6 +2256,8 @@ async def auth_change_username(request: Request):
     if result.get("error"):
         return JSONResponse(status_code=400, content={"error": result["error"]})
     updated = get_user_by_id(user["id"])
+    _coding_state_evict(_safe_username(user.get("username", "")))
+    _coding_state_evict(_safe_username(updated.get("username", "")))
     _audit("auth.change_username", updated.get("username", ""), new)
     out = {"status": "ok", "user": updated}
     if result.get("warning"):
@@ -2337,12 +2392,14 @@ async def get_status(request: Request):
         return {"providers": {}, "rate_limits": {}, "model_name": MODEL_NAME, "error": str(e)}
 
 def _device_model_entries(user):
-    """Model entries for Ollama on the caller's OWN paired devices.
+    """Model entries for Ollama on paired devices the caller may use.
 
-    Owner-only by product decision: even admins don't get another account's
-    device models. Offline devices keep their last-known tags with
-    online:false so the menu never jumps around. Contains relay I/O — call
-    via asyncio.to_thread, never directly on the event loop."""
+    Access is owner-or-explicit-share only (server admins included): even
+    admins don't get another account's device models unless the owner shares
+    the computer or the support escape hatch is enabled. Offline devices keep
+    their last-known tags with online:false so the menu never jumps around.
+    Contains relay I/O — call via asyncio.to_thread, never directly on the
+    event loop."""
     out = []
     try:
         uid = int(user.get("id") or 0)
@@ -2352,10 +2409,7 @@ def _device_model_entries(user):
         st = _agents_load()
         agents = [dict(a) for a in st["agents"].values()]
     for a in agents:
-        try:
-            if int(a.get("owner_id") or 0) != uid:
-                continue
-        except (TypeError, ValueError):
+        if not _agent_visible(user, a):
             continue
         if "ollama" not in (a.get("caps") or ()):
             continue
@@ -5853,38 +5907,39 @@ async def set_timezone_setting(http_request: Request, request: TimezoneRequest):
     logger.info(f"Timezone set to: {tz or '(server)'} user={user['username']}")
     return {"status": "ok", "timezone": tz, "local": localized, "iso": iso}
 
-def _split_used_model(used_model: str):
+def _split_used_model(used_model: str, viewer=None):
     """'groq/openai/gpt-oss-120b' -> ('groq', 'openai/gpt-oss-120b').
 
     The provider is always the first path segment; everything after it is the
     model name (which may itself contain slashes, as groq's do). Device ids
     ('device/<agent>/<tag>') resolve to the paired device's display name so
-    usage rows read 'MSI/llama3.1:8b' instead of '1/llama3.1:8b'.
+    usage rows read 'MSI/llama3.1:8b' instead of '1/llama3.1:8b' — but only
+    when the viewer may access that computer. Otherwise the opaque id stays.
     """
     if used_model and used_model.startswith("device/"):
         parts = used_model.split("/", 2)
         if len(parts) == 3:
-            return "device", f"{_device_display_name(parts[1])}/{parts[2]}"
+            return "device", f"{_device_display_name(parts[1], viewer)}/{parts[2]}"
     if used_model and "/" in used_model:
         provider, _, model = used_model.partition("/")
         return provider or "unknown", model or used_model
     return "unknown", used_model or "unknown"
 
 
-def _device_display_name(agent_id):
+def _device_display_name(agent_id, viewer=None):
     """Paired device display name for usage/attribution, else its id."""
     try:
         with _AGENT_LOCK:
             st = _agents_load()
             a = st["agents"].get(str(agent_id))
-        if a:
+        if a and (viewer is None or _agent_visible(viewer, a)):
             return str(a.get("name") or a.get("hostname") or agent_id)
     except Exception:
         pass
     return str(agent_id)
 
 
-def _resolve_request_model(req_model):
+def _resolve_request_model(req_model, viewer=None):
     """Best-effort (provider, model) for a requested model name.
 
     Direct selections like 'openai/gpt-oss-120b' resolve to the provider that
@@ -5899,7 +5954,7 @@ def _resolve_request_model(req_model):
     if req_model.startswith("device/"):
         parts = req_model.split("/", 2)
         if len(parts) == 3:
-            return "device", f"{_device_display_name(parts[1])}/{parts[2]}"
+            return "device", f"{_device_display_name(parts[1], viewer)}/{parts[2]}"
         return "device", req_model
     for prov_name, prov_cfg in PROVIDERS.items():
         if req_model in prov_cfg.get("models", []):
@@ -6009,9 +6064,9 @@ async def chat_completions(request: Request):
     is_stream = bool(is_stream)
 
 
-    # Paired-device models are owner-only: strictly the account that paired
-
-    # the device may use it — not even an admin. Reject before anything runs.
+    # Paired-device models are private: the owning account, an explicitly
+    # shared account, or (only with the support escape hatch enabled) an
+    # admin may use them. Reject before anything runs.
     if req_model.startswith("device/"):
         parts = req_model.split("/", 2)
         agent = None
@@ -6021,11 +6076,7 @@ async def chat_completions(request: Request):
                 agent = st["agents"].get(parts[1])
         if not agent:
             return JSONResponse(status_code=400, content={"error": "Invalid model name"})
-        try:
-            owner_ok = int(agent.get("owner_id") or 0) == int(user.get("id") or 0)
-        except (TypeError, ValueError):
-            owner_ok = False
-        if not owner_ok:
+        if not _agent_visible(user, agent):
             return JSONResponse(status_code=403, content={
                 "error": "This device's models belong to the account that paired it."})
 
@@ -6106,7 +6157,7 @@ async def chat_completions(request: Request):
     )
 
     def _finish_usage(used_model: str, completion_tokens: int = 0, status: int = 200):
-        provider, model_name = _split_used_model(used_model)
+        provider, model_name = _split_used_model(used_model, user)
         dur_ms = int((time.time() - start_ts) * 1000)
         record_usage(
             user_id=user["id"],
@@ -6142,7 +6193,7 @@ async def chat_completions(request: Request):
                 )
             except Exception as e:
                 logger.error(f"[CHAT] tool loop failed: {e}", exc_info=True)
-                prov, mname = _resolve_request_model(req_model)
+                prov, mname = _resolve_request_model(req_model, user)
                 _finish_usage(f"{prov}/{mname}", completion_tokens=0, status=500)
                 return JSONResponse(status_code=500, content={"error": str(e)})
             tool_content = ""
@@ -6432,6 +6483,10 @@ def _build_file_tree(root_path, prefix="", patterns=None):
     files = []
     for name in items:
         full = os.path.join(root_path, name)
+        # Symlinks can point outside the project (including another user's
+        # files). Never follow or expose them in the project tree.
+        if os.path.islink(full):
+            continue
         if os.path.isdir(full):
             if name not in IGNORE_DIRS and not name.startswith("."):
                 dirs.append(name)
@@ -6552,16 +6607,32 @@ def _chat_system_prompt(user_id=""):
     )
 
 
-DEFAULT_CODING_PROMPT = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
-Write in proper, grammatically correct English: capitalise the first word of every sentence and end with correct punctuation. Never reply in all-lowercase.
+# --- System prompt: OWNED BY THE SERVER, never editable by users ---------
+#
+# The prompt used to be one blob with "The server runs on WINDOWS" baked in,
+# and the client then appended an "authoritative" EXECUTION ENVIRONMENT block
+# for the real OS. On a Docker/cloud host that produced a prompt that said
+# WINDOWS in the body and Linux in the block, so models mixed the two and
+# emitted `ls`/`/work/...` against a Windows project.
+#
+# It is now split so there is exactly ONE source of truth: the server decides
+# which profile applies (hosting mode), serves that complete prompt, and the
+# client renders it verbatim. Two full heads, one shared tail.
 
-ENVIRONMENT (memorize this):
-- The server runs on WINDOWS. Commands execute in cmd.exe, already a shell.
+_CODING_PROMPT_INTRO = """You are an expert coding assistant inside the Omniilink Coding Mode. You can create, edit, delete files and run commands. The user sees your explanations; a parser executes your blocks.
+Write in proper, grammatically correct English: capitalise the first word of every sentence and end with correct punctuation. Never reply in all-lowercase.
+"""
+
+_CODING_PROMPT_ENV_SERVER = """
+ENVIRONMENT (memorize this — AUTHORITATIVE, it overrides anything else you were told):
+- HOSTING: OmniLink Server, running natively on the user's own WINDOWS machine.
+- Shell: cmd.exe, which is ALREADY a shell.
 - Working directory is the open project folder. All paths are relative to it.
-- NEVER prefix commands with `cmd /c` — it is already implied and breaks parsing.
+- NEVER prefix commands with `cmd /c` or `cmd /k` — it is already implied and breaks parsing.
 - NEVER wrap a command in quotes. Write it bare on one single line.
 - One command per RUN_COMMAND block. Chain with `&&` if needed.
 - Forward slashes work in paths (e.g. `type src/app.js`).
+- WRONG, never use these here: `ls`, `cat`, `rm`, `python3`, `which`, `mkdir -p`, `sh -c`, and NEVER write `/work/...` paths or `/work` — that is a container path that does not exist on a Windows host.
 
 COMMAND REFERENCE (use exactly these forms):
 - List files: dir /b
@@ -6571,11 +6642,44 @@ COMMAND REFERENCE (use exactly these forms):
 - Delete a file: del filename
 - Run Python: python filename.py  (check first: python --version)
 - Run JavaScript: node filename.js  (check first: node --version)
+- Browser JavaScript is different: if a .js file is loaded by an HTML page, or
+  uses window/document/canvas or a CDN global such as THREE, validate it with
+  `node --check filename.js` only. Never execute it with node; verify it by
+  previewing the HTML page.
 - Packages: pip install name  /  npm install
 - Git: git status / git add -A / git commit -m "msg"
 - Fetch a web page: WEB_FETCH:https://example.com (below)
+"""
 
-BLOCK SYNTAX (exact — the parser is strict):
+_CODING_PROMPT_ENV_CLOUD = """
+ENVIRONMENT (memorize this — AUTHORITATIVE, it overrides anything else you were told):
+- HOSTING: OmniLink Cloud. Commands do NOT run on a Windows machine — they run inside a LINUX container.
+- Shell: sh, which is ALREADY a shell.
+- Working directory inside the container is /work, which maps to the open project folder. Paths are relative to it.
+- NEVER prefix commands with `sh -c` or `bash -c` — the runner already wraps them.
+- NEVER wrap a command in quotes. Write it bare on one single line.
+- One command per RUN_COMMAND block. Chain with `&&` if needed.
+- WRONG, never use these here: `dir`, `type`, `del`, `python` (without 3), `where`, and NEVER write Windows paths like `C:\\` or `src\\app.js`.
+- In FILE_CREATE / FILE_EDIT / FILE_PATCH / FILE_DELETE blocks always use plain relative paths such as `index.html` or `src/app.js`. The parser writes straight to the host folder — putting `/work/` in a block path breaks it.
+
+COMMAND REFERENCE (use exactly these forms):
+- List files: ls
+- List with sizes: ls -la
+- Show a file: cat path/to/file
+- Make a folder: mkdir -p name
+- Delete a file: rm name
+- Run Python: python3 file.py  (check first: python3 --version)
+- Run JavaScript: node file.js  (check first: node --version)
+- Browser JavaScript is different: if a .js file is loaded by an HTML page, or
+  uses window/document/canvas or a CDN global such as THREE, validate it with
+  `node --check file.js` only. Never execute it with node; verify it by
+  previewing the HTML page.
+- Packages: pip3 install name  /  npm install
+- Git: git status / git add -A / git commit -m "msg"
+- Fetch a web page: WEB_FETCH:https://example.com (below)
+"""
+
+CODING_PROMPT_TAIL = """BLOCK SYNTAX (exact — the parser is strict):
 - Each block starts on its own line. No code fences around blocks. No quotes around the command.
 - FILE_CREATE:path/to/file.ext — full file content between markers, then END_FILE_CREATE.
 - FILE_EDIT:path/to/file.ext — COMPLETE new file content, then END_FILE_EDIT.
@@ -6617,7 +6721,10 @@ TODO_LIST:
 END_TODO_LIST
 Update it in later replies (repeat the full list with [x] on finished items).
 3. Explain briefly, then emit blocks.
-4. After creating code, run it to verify (python/node) and report the output.
+4. After creating code, verify it and report the output. Run server-side code
+   with python/node. For browser JavaScript, use `node --check` only, then
+   preview the HTML page. Never rerun a passing validation command on a file
+   you have not changed since that validation.
 5. Deliverables (code files) MUST go in FILE_CREATE/FILE_EDIT blocks — never
 bare fenced code alone, or the system cannot save them.
 6. NEVER describe a task as done/finished/complete while any [ ] item
@@ -6626,6 +6733,10 @@ actually exists AND is non-empty — false completion claims are rejected
 and sent back.
 7. Keep chat text SHORT (2-4 sentences). NEVER paste file contents into
    chat text — code lives in FILE_CREATE/FILE_EDIT blocks only.
+8. Start every reply with AT MOST ONE short status sentence, and never
+   announce the same step twice in different words. If you show a code
+   fence without a FILE_* block, write its filename on the line above it
+   like `File: engine.js`. Always explain what you are doing.
 
 STEP PLANNING (how this run is budgeted):
 - At the START of a task, before any tool block, write ONE line declaring how
@@ -6701,6 +6812,58 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
 """
 
 
+# Prompt profiles. `server` = native Windows host (OmniLink Server), `cloud` =
+# Docker container (OmniLink Cloud). Users never choose; the server reports
+# what commands will ACTUALLY run and serves the matching prompt.
+_CODING_PROMPT_BY_HOSTING = {
+    "server": _CODING_PROMPT_INTRO + _CODING_PROMPT_ENV_SERVER + CODING_PROMPT_TAIL,
+    "cloud": _CODING_PROMPT_INTRO + _CODING_PROMPT_ENV_CLOUD + CODING_PROMPT_TAIL,
+}
+
+# Back-compat alias for existing imports/tests. Resolved per request by
+# _coding_exec_env() so it never lies about the live environment.
+DEFAULT_CODING_PROMPT = _CODING_PROMPT_BY_HOSTING["server"]
+
+
+def _coding_exec_env() -> dict:
+    """Authoritative description of where RUN_COMMAND actually executes.
+
+    The coding prompt is built from this and nothing else, so the prompt can
+    never describe an OS different from the one the runner uses. Mirrors the
+    branch order in coding_run_command(): sandbox -> container, else host.
+    """
+    sb = _sandbox_config()
+    if sb is not None:
+        # Both docker (fresh per command) and project (persistent) modes run
+        # inside the Linux sandbox image with /work as the cwd.
+        return {
+            "hosting": "cloud",
+            "exec_os": "linux",
+            "exec_shell": "sh",
+            "sandbox_mode": sb["mode"],
+            "sandbox": True,
+            "container_workdir": "/work",
+            "persistent": sb["mode"] == "project",
+        }
+    if sys.platform == "win32":
+        return {"hosting": "server", "exec_os": "windows", "exec_shell": "cmd",
+                "sandbox_mode": "", "sandbox": False,
+                "container_workdir": "", "persistent": False}
+    return {"hosting": "server", "exec_os": "linux", "exec_shell": "sh",
+            "sandbox_mode": "", "sandbox": False,
+            "container_workdir": "", "persistent": False}
+
+
+def _coding_system_prompt(user_id: str = "") -> str:
+    """The one true coding system prompt for this server.
+
+    Ignores anything stored in the user's settings: the prompt is server-owned
+    so a user (or a stale save from another machine) cannot pin the wrong OS.
+    """
+    env = _coding_exec_env()
+    return _CODING_PROMPT_BY_HOSTING.get(env["hosting"], DEFAULT_CODING_PROMPT)
+
+
 # Per-user coding states handled by _get_coding_state()
 
 def _folder_shared_role(folder, user_id):
@@ -6740,12 +6903,14 @@ def _shared_write_block(user, folder):
     return None
 
 
-def _folder_access_error(user, folder):
+def _folder_access_error(user, folder, write=False):
     """Return a JSONResponse error if the user may not access folder, else None."""
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
     if not _can_access_folder(user, folder):
         return JSONResponse(status_code=403, content={"error": "Access denied: folder is outside your data directory"})
+    if write:
+        return _shared_write_block(user, folder)
     return None
 
 # ---- AI/file actions log (one-click undo) --------------------------------
@@ -6790,7 +6955,7 @@ def _action_undo(action_id: int, owner: str):
                 os.remove(full)
             result = "deleted"
         else:
-            content = _coding_get_version(owner, row["path"], row["prev_ts"])
+            content = _coding_get_version(owner, row["path"], row["prev_ts"], folder)
             if content is None:
                 return JSONResponse(status_code=404, content={
                     "error": "The previous version has been pruned and can no longer be restored"})
@@ -7032,7 +7197,7 @@ async def coding_save_chat(request: Request, req: CodingChatSave):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     if not folder or not os.path.isdir(folder):
@@ -7204,6 +7369,9 @@ async def coding_set_omniiignore(request: Request):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
     if not folder or not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": "No folder open"})
     body, jerr = await _safe_json(request)
@@ -9286,7 +9454,7 @@ async def coding_file_upload(request: Request, path: str = ""):
     user_id = _safe_username(user["username"])
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         await _drain_request_body(request)
         return access_err
@@ -9346,7 +9514,7 @@ async def coding_file_upload_init(request: Request, req: CodingUploadInit):
         return err
     user_id = _safe_username(user["username"])
     folder = _get_coding_state(user_id).get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
@@ -9391,7 +9559,7 @@ async def coding_file_upload_chunk(request: Request, upload_id: str, index: int)
         return err
     user_id = _safe_username(user["username"])
     folder = _get_coding_state(user_id).get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         await _drain_request_body(request)
         return access_err
@@ -9441,7 +9609,7 @@ async def coding_file_upload_complete(request: Request, req: CodingUploadComplet
         return err
     user_id = _safe_username(user["username"])
     folder = _get_coding_state(user_id).get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     sdir, meta = _load_upload_meta(user_id, req.upload_id or "")
@@ -9495,7 +9663,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     blk = _shared_write_block(user, folder)
@@ -9521,7 +9689,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
                 # write, so the loop cannot mistake it for progress.
                 return {"status": "ok", "path": req.path, "size": len(req.content),
                         "backed_up": True, "added": 0, "removed": 0, "noop": True}
-            vts = _coding_save_version(_safe_username(user["username"]), req.path, backup)
+            vts = _coding_save_version(_safe_username(user["username"]), req.path, backup, folder)
         with open(full, "w", encoding="utf-8") as f:
             f.write(req.content)
 
@@ -9647,7 +9815,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     blk = _shared_write_block(user, folder)
@@ -9687,7 +9855,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         quota_err = _check_quota(user, _safe_username(user["username"]), max(0, len(patched) - len(current)))
         if quota_err:
             return quota_err
-        vts = _coding_save_version(_safe_username(user["username"]), req.path, current)
+        vts = _coding_save_version(_safe_username(user["username"]), req.path, current, folder)
         with open(full, "w", encoding="utf-8") as f:
             f.write(patched)
         try:
@@ -9705,9 +9873,9 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-def _coding_version_checks(user, folder, path):
+def _coding_version_checks(user, folder, path, write=False):
     """Shared guard for the version endpoints: auth, open folder, path safety."""
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=write)
     if access_err:
         return access_err
     if _bad_path(path):
@@ -9729,7 +9897,8 @@ async def coding_file_versions(request: Request, path: str):
     if guard:
         return guard
     return {"path": path,
-            "versions": _coding_list_versions(_safe_username(user["username"]), path)}
+            "versions": _coding_list_versions(_safe_username(user["username"]), path,
+                                              coding_state.get("folder"))}
 
 
 @app.get("/api/coding/file-version-content")
@@ -9742,7 +9911,8 @@ async def coding_file_version_content(request: Request, path: str, ts: float):
     guard = _coding_version_checks(user, coding_state.get("folder"), path)
     if guard:
         return guard
-    content = _coding_get_version(_safe_username(user["username"]), path, ts)
+    content = _coding_get_version(_safe_username(user["username"]), path, ts,
+                                 coding_state.get("folder"))
     if content is None:
         return JSONResponse(status_code=404, content={"error": "Version not found"})
     return {"path": path, "ts": ts, "content": content}
@@ -9757,20 +9927,20 @@ async def coding_file_restore(request: Request, req: CodingFileRestore):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    guard = _coding_version_checks(user, folder, req.path)
+    guard = _coding_version_checks(user, folder, req.path, write=True)
     if guard:
         return guard
     full = os.path.join(folder, req.path)
     if not os.path.isfile(full):
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    content = _coding_get_version(_safe_username(user["username"]), req.path, req.ts)
+    content = _coding_get_version(_safe_username(user["username"]), req.path, req.ts, folder)
     if content is None:
         return JSONResponse(status_code=404, content={"error": "Version not found"})
     try:
         with open(full, "r", encoding="utf-8", errors="replace") as f:
             current = f.read()
         if current != content:
-            _coding_save_version(_safe_username(user["username"]), req.path, current)
+            _coding_save_version(_safe_username(user["username"]), req.path, current, folder)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
         logger.info(f"[CODING] Restored file: {req.path} user={user.get('username','-')}")
@@ -9779,9 +9949,9 @@ async def coding_file_restore(request: Request, req: CodingFileRestore):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-def _project_versions_folder(user, folder):
+def _project_versions_folder(user, folder, write=False):
     """None when versioning is available; else a JSONResponse explaining why not."""
-    if _folder_access_error(user, folder):
+    if _folder_access_error(user, folder, write=write):
         return JSONResponse(status_code=400, content={
             "error": "Open a cloud project to use project versions."})
     if not folder or not os.path.isdir(folder):
@@ -9812,7 +9982,7 @@ async def coding_project_version_create(request: Request, req: ProjectVersionCre
         return err
     uid = _safe_username(user["username"])
     folder = _get_coding_state(uid).get("folder")
-    bad = _project_versions_folder(user, folder)
+    bad = _project_versions_folder(user, folder, write=True)
     if bad:
         return bad
     try:
@@ -9899,7 +10069,7 @@ async def coding_project_version_delete(request: Request, id: str):
         return err
     uid = _safe_username(user["username"])
     folder = _get_coding_state(uid).get("folder")
-    bad = _project_versions_folder(user, folder)
+    bad = _project_versions_folder(user, folder, write=True)
     if bad:
         return bad
     p = os.path.join(_project_versions_dir(uid, folder),
@@ -9922,7 +10092,7 @@ async def coding_project_version_restore(request: Request, req: ProjectVersionId
         return err
     uid = _safe_username(user["username"])
     folder = _get_coding_state(uid).get("folder")
-    bad = _project_versions_folder(user, folder)
+    bad = _project_versions_folder(user, folder, write=True)
     if bad:
         return bad
     rec = _project_version_load(uid, folder, req.id)
@@ -9983,7 +10153,7 @@ async def coding_file_delete(request: Request, path: str):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     blk = _shared_write_block(user, folder)
@@ -10000,7 +10170,7 @@ async def coding_file_delete(request: Request, path: str):
         owner = _safe_username(user["username"])
         try:
             with open(full, "r", encoding="utf-8", errors="replace") as f:
-                vts = _coding_save_version(owner, path, f.read())
+                vts = _coding_save_version(owner, path, f.read(), folder)
         except Exception:
             vts = None
         os.remove(full)
@@ -10027,7 +10197,7 @@ async def coding_rename(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     full_old = os.path.join(folder, old_path)
@@ -11442,6 +11612,9 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
     user_id = _safe_username(uname)
     coding_state = _get_coding_state(user_id)
     folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
     if user.get("is_admin"):
         cwd = req.cwd or folder or os.getcwd()
         if not os.path.isdir(cwd):
@@ -11540,22 +11713,20 @@ async def coding_get_settings(request: Request):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     settings = dict(coding_state["settings"])
-    sb = _sandbox_config()
-    settings["sandbox"] = sb is not None
+    env = _coding_exec_env()
 
-    # Effective command-execution environment for the coding prompt: a
+    # Server-owned: the stored per-user value is ignored and OVERWRITTEN, so a
+    # prompt saved on another machine (or before a Windows->Docker switch)
+    # cannot pin the wrong OS into the model's instructions.
+    settings["system_prompt"] = _coding_system_prompt(_safe_username(user["username"]))
+    settings["prompt_locked"] = True
+    settings["hosting_mode"] = env["hosting"]
+    settings["sandbox"] = env["sandbox"]
 
-    # sandbox means a Linux container no matter what the host runs.
-    settings["sandbox_mode"] = sb["mode"] if sb else ""
-    if sb is not None:
-        settings["exec_os"] = "linux"
-        settings["exec_shell"] = "sh"
-    elif sys.platform == "win32":
-        settings["exec_os"] = "windows"
-        settings["exec_shell"] = "cmd"
-    else:
-        settings["exec_os"] = "linux"
-        settings["exec_shell"] = "sh"
+    settings["sandbox_mode"] = env["sandbox_mode"]
+    settings["exec_os"] = env["exec_os"]
+    settings["exec_shell"] = env["exec_shell"]
+    settings["container_workdir"] = env["container_workdir"]
     settings["host_os"] = sys.platform
     settings["upload_limit_mb"] = UPLOAD_LIMIT_MB
     settings["upload_chunk_mb"] = UPLOAD_CHUNK_BYTES // (1024 * 1024)
@@ -11572,6 +11743,12 @@ async def coding_update_settings(request: Request):
         return jerr
     for k, v in body.items():
         if k not in coding_state["settings"]:
+            continue
+        if k == "system_prompt":
+
+            # Server-owned. Accepting it would let a stale prompt (saved on a
+            # Windows box, replayed on a Docker host) reintroduce the very
+            # Windows/Docker command mix this prompt was split to prevent.
             continue
         if k == "versions_to_keep":
             try:
@@ -12059,7 +12236,7 @@ async def coding_git_commit(request: Request, req: CodingGitCommit):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
-    access_err = _folder_access_error(user, folder)
+    access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
     message = (req.message or "").strip()
@@ -12305,6 +12482,49 @@ def _scan_project_dir(path: str, max_files: int = 50000, max_dirs: int = 20000) 
     return file_count, dir_size
 
 
+def _shared_project_entries(user, projects_dir=""):
+    """Projects other accounts shared with this user.
+
+    Returns list entries shaped like /api/projects items plus shared/role/
+    owner fields, so every project picker can render and open them directly.
+    Folders that vanished (unshared/deleted) are skipped instead of surfacing
+    dead cards.
+    """
+    out = []
+    try:
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT s.id AS share_id, s.folder, s.role, u.username AS owner"
+                " FROM project_shares s LEFT JOIN users u ON u.id = s.owner_id"
+                " WHERE s.shared_with_id = ? ORDER BY s.id DESC", (user["id"],)).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[PROJECTS] cannot list shares for {user.get('username', '-')}: {e}")
+        return out
+    for r in rows:
+        folder = r["folder"] or ""
+        try:
+            if not folder or not os.path.isdir(folder):
+                continue
+            if projects_dir and _is_within(projects_dir, folder):
+                continue
+            if _folder_shared_role(folder, user["id"]) is None:
+                continue
+            file_count, dir_size = _scan_project_dir(folder)
+            out.append({"name": os.path.basename(os.path.normpath(folder)),
+                        "path": folder, "file_count": file_count,
+                        "modified": os.path.getmtime(folder),
+                        "size_bytes": dir_size, "shared": True,
+                        "role": (r["role"] or "edit"),
+                        "owner": r["owner"] or "", "share_id": r["share_id"]})
+        except Exception as e:
+            logger.warning(f"[PROJECTS] skipped shared {folder}: {e}")
+            continue
+    return out
+
+
 @app.get("/api/projects")
 async def list_projects(request: Request):
     user, err = _require_auth(request)
@@ -12335,7 +12555,8 @@ async def list_projects(request: Request):
         except Exception as e:
             logger.warning(f"[PROJECTS] skipped {path}: {e}")
             continue
-    return {"projects": projects, "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
+    return {"projects": projects, "shared_projects": _shared_project_entries(user, projects_dir),
+            "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
 
 
 @app.get("/api/projects/tree")
@@ -13052,11 +13273,27 @@ def _agent_online(a):
     return bool(seen and time.time() - seen < 75)
 
 
-def _agent_public(a):
-    return {"id": a.get("id", ""), "name": a.get("name", ""), "hostname": a.get("hostname", ""),
+def _agent_public(a, viewer=None):
+    owner_name = a.get("owner_name", "")
+    if not owner_name:
+        owner_name = _agent_owner_username(_agent_owner_id(a))
+    out = {"id": a.get("id", ""), "name": a.get("name", ""), "hostname": a.get("hostname", ""),
             "platform": a.get("platform", ""), "created_at": a.get("created_at", ""),
             "last_seen": a.get("last_seen", 0), "online": _agent_online(a),
-            "owner": a.get("owner_name", ""), "caps": a.get("caps") or []}
+            "owner": owner_name, "owner_id": _agent_owner_id(a),
+            "is_owner": _agent_is_owner(viewer, a), "caps": a.get("caps") or []}
+    # Only the owner needs to manage (or even see) the explicit share list.
+    if _agent_is_owner(viewer, a):
+        out["access"] = "owner"
+        out["shared_with"] = [_agent_owner_username(uid) or f"user {uid}"
+                              for uid in _agent_shared_ids(a)]
+    else:
+        try:
+            out["access"] = ("shared" if int((viewer or {}).get("id") or 0)
+                             in _agent_shared_ids(a) else "admin")
+        except (TypeError, ValueError):
+            out["access"] = "admin"
+    return out
 
 
 def _agent_from_token(request):
@@ -13073,18 +13310,62 @@ def _agent_from_token(request):
     return None
 
 
-def _agent_visible(user, agent):
-    """Agents a caller may see and manage: everything for admins, only
-    self-paired machines for everyone else. Unknown agents are invisible
-    (404, never 403) so ids cannot be probed."""
+def _agent_owner_id(agent) -> int:
+    try:
+        return int((agent or {}).get("owner_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _agent_shared_ids(agent) -> list:
+    """User ids explicitly granted access to someone else's computer."""
+    try:
+        shared = (agent or {}).get("shared_with") or []
+        if isinstance(shared, dict):
+            shared = list(shared.keys())
+        return sorted({int(x) for x in shared})
+    except (TypeError, ValueError):
+        return []
+
+
+def _agent_is_owner(user, agent) -> bool:
     if not user or not isinstance(agent, dict):
         return False
-    if user.get("is_admin"):
-        return True
     try:
-        return int(agent.get("owner_id") or 0) == int(user.get("id") or 0)
+        return _agent_owner_id(agent) == int(user.get("id") or 0)
     except (TypeError, ValueError):
         return False
+
+
+def _agent_visible(user, agent):
+    """Computers a caller may list and use.
+
+    Paired computers are strictly private: the owner plus users the owner
+    explicitly shares with. Server admins do NOT inherit access; the opt-in
+    OMNIILINK_ADMIN_DEVICE_ACCESS=1 escape hatch is the only exception, for
+    account recovery/support, and it must be deliberately enabled. Unknown
+    agents are invisible (404, never 403) so ids cannot be probed.
+    """
+    if not user or not isinstance(agent, dict):
+        return False
+    if _agent_is_owner(user, agent):
+        return True
+    try:
+        if int(user.get("id") or 0) in _agent_shared_ids(agent):
+            return True
+    except (TypeError, ValueError):
+        return False
+    if user.get("is_admin"):
+        return os.environ.get("OMNIILINK_ADMIN_DEVICE_ACCESS") == "1"
+    return False
+
+
+def _agent_owner_username(user_id: int) -> str:
+    try:
+        row = get_user_by_id(int(user_id))
+    except Exception:
+        return ""
+    return str((row or {}).get("username") or "")
 
 
 _AGENT_POLL_SECONDS = 25
@@ -13154,16 +13435,37 @@ async def agents_pairing(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
-    code = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(6))
+    data, bad = await _optional_json_body(request)
+    if bad:
+        return bad
+    data = data or {}
+    owner_name = str(data.get("owner_username") or user.get("username") or "").strip().lower()
+    target = _share_target_user(owner_name) if owner_name else None
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Device-owner account not found"})
+    if not user.get("is_admin") and int(target["id"]) != int(user.get("id") or 0):
+        return JSONResponse(status_code=403, content={
+            "error": "Pairing codes can only create computers owned by your own account"})
+    code = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(10))
     now = time.time()
     with _AGENT_LOCK:
         st = _agents_load()
+        # Expired invitations are single-use secrets: prune them so a leaked
+        # code cannot linger indefinitely alongside active invitations.
+        st["pairing"] = {k: p for k, p in st["pairing"].items()
+                         if float((p or {}).get("expires", 0)) >= now}
         st["pairing"][code] = {"code": code, "created": now, "expires": now + 600,
-                               "claimed": False, "created_by": user["id"],
-                               "created_by_name": user.get("username", "")}
+                               "claimed": False,
+                               "created_by": user["id"],
+                               "created_by_name": user.get("username", ""),
+                               "owner_id": int(target["id"]),
+                               "owner_name": target["username"]}
         _agents_save(st)
     base = str(request.base_url or "").strip().rstrip("/")
-    return {"code": code, "expires_in": 600, "server_hint": base}
+    return {"code": code, "expires_in": 600, "server_hint": base,
+            "owner": target["username"],
+            "warning": ("This code gives '%s' full control over the computer that claims it. "
+                        "Only share it with the owner of that computer.") % target["username"]}
 
 
 @app.get("/api/agents")
@@ -13173,7 +13475,7 @@ async def agents_list(request: Request):
         return err
     with _AGENT_LOCK:
         st = _agents_load()
-        agents = [_agent_public(a) for a in st["agents"].values()
+        agents = [_agent_public(a, user) for a in st["agents"].values()
                   if _agent_visible(user, a)]
     agents.sort(key=lambda a: str(a["id"]))
     return {"agents": agents}
@@ -13352,6 +13654,117 @@ async def agents_delete(request: Request, agent_id: str):
     return {"status": "ok"}
 
 
+def _agent_owner_record(user, agent_id):
+    """Load the agent store and return (store, agent) only for its owner."""
+    st = _agents_load()
+    a = st["agents"].get(str(agent_id))
+    if a is None or not _agent_is_owner(user, a):
+        return None, None
+    return st, a
+
+
+def _agent_share_names(agent) -> list:
+    return [_agent_owner_username(uid) or f"user {uid}"
+            for uid in _agent_shared_ids(agent)]
+
+
+@app.post("/api/agents/{agent_id}/share")
+async def agents_share(request: Request, agent_id: str):
+    """Explicitly grant another account access to one paired computer.
+
+    Sharing is deliberately account-to-account and computer-specific: it does
+    not expose any other device, project, chat, or setting belonging to either
+    user. Only the computer's owner can grant access.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    username = str((data or {}).get("username") or "").strip().lower()
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    target = _share_target_user(username)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        if int(target["id"]) == _agent_owner_id(a):
+            return JSONResponse(status_code=400, content={"error": "That user already owns this computer"})
+        shared = set(_agent_shared_ids(a))
+        shared.add(int(target["id"]))
+        a["shared_with"] = sorted(shared)
+        _agents_save(st)
+        names = _agent_share_names(a)
+    _audit("agent.share", user["username"], f"agent={agent_id} shared_with={target['username']}")
+    return {"status": "ok", "shared_with": names}
+
+
+@app.delete("/api/agents/{agent_id}/share/{username}")
+async def agents_unshare(request: Request, agent_id: str, username: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    target_name = str(username or "").strip().lower()
+    if not target_name:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        target = _share_target_user(target_name)
+        if target is None:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        shared = set(_agent_shared_ids(a))
+        shared.discard(int(target["id"]))
+        a["shared_with"] = sorted(shared)
+        _agents_save(st)
+        names = _agent_share_names(a)
+    _audit("agent.unshare", user["username"], f"agent={agent_id} unshared={target['username']}")
+    return {"status": "ok", "shared_with": names}
+
+
+@app.post("/api/agents/{agent_id}/transfer")
+async def agents_transfer(request: Request, agent_id: str):
+    """Move computer ownership to another account and remove prior shares.
+
+    This is the recovery path when a computer was claimed under the wrong
+    invitation: the current owner can hand it to the person who physically
+    controls it, after which the previous owner immediately loses access.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    username = str((data or {}).get("username") or "").strip().lower()
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    target = _share_target_user(username)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        if int(target["id"]) == _agent_owner_id(a):
+            return JSONResponse(status_code=400, content={"error": "That user already owns this computer"})
+        old_owner = a.get("owner_name", "")
+        a["owner_id"] = int(target["id"])
+        a["owner_name"] = target["username"]
+        a["shared_with"] = []
+        a["transferred_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        a["transferred_by"] = user.get("username", "")
+        _agents_save(st)
+    _audit("agent.transfer", user["username"],
+           f"agent={agent_id} from={old_owner} to={target['username']}")
+    return {"status": "ok", "owner": target["username"]}
+
+
 @app.get("/api/agents/client")
 async def agents_client(request: Request):
     """Headless agent script, server URL baked in. Any signed-in user."""
@@ -13404,6 +13817,9 @@ async def agent_claim(request: Request):
     platform_name = str(data.get("platform", "") or "").strip()[:128]
     if not code:
         return JSONResponse(status_code=400, content={"error": "Missing pairing code"})
+    ip = _request_ip(request)
+    if not _admin_rate_ok(ip or "unknown-claim-ip", 20, 300, "agent_claim"):
+        return JSONResponse(status_code=429, content={"error": "Too many pairing attempts. Try again later."})
     now = time.time()
     with _AGENT_LOCK:
         st = _agents_load()
@@ -13414,14 +13830,25 @@ async def agent_claim(request: Request):
         token = secrets.token_hex(32)
         aid = str(st.get("next_agent", 1))
         st["next_agent"] = int(aid) + 1
+        owner_id = p.get("owner_id", p.get("created_by"))
+        owner_name = p.get("owner_name", p.get("created_by_name", ""))
         st["agents"][aid] = {"id": aid, "name": name, "hostname": hostname, "platform": platform_name,
                              "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-                             "owner_id": p.get("created_by"),
-                             "owner_name": p.get("created_by_name", ""),
+                             "owner_id": owner_id,
+                             "owner_name": owner_name,
+                             "created_by": p.get("created_by"),
+                             "created_by_name": p.get("created_by_name", ""),
+                             "claimed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                             "claimed_ip": ip,
+                             "shared_with": [],
                              "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "last_seen": 0}
+        # Claiming consumes the invitation and prunes any other expired codes.
+        st["pairing"].pop(code, None)
+        st["pairing"] = {k: q for k, q in st["pairing"].items()
+                         if float((q or {}).get("expires", 0)) >= now}
         _agents_save(st)
-    _audit("agent.pair", "-", f"agent={aid} host={hostname}")
-    return {"status": "ok", "agent_id": aid, "token": token}
+    _audit("agent.pair", str(owner_name or "-"), f"agent={aid} host={hostname} owner={owner_name}")
+    return {"status": "ok", "agent_id": aid, "token": token, "owner": owner_name}
 
 
 @app.get("/api/agent/pending")
@@ -13711,7 +14138,7 @@ def main():
     global SERVER
     ap = argparse.ArgumentParser(description="Omniilink pairing agent")
     ap.add_argument("--server", default=SERVER, help="Omniilink server URL")
-    ap.add_argument("--code", required=True, help="6-character pairing code from Admin > Agents")
+    ap.add_argument("--code", required=True, help="10-character pairing code from Admin > Agents")
     ap.add_argument("--name", default=socket.gethostname(), help="Display name for this computer")
     ap.add_argument("--ollama-url", default=OLLAMA_URL, help="Local Ollama URL for model relay")
     args = ap.parse_args()

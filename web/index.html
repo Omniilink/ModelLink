@@ -1292,10 +1292,13 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         <div class="view-body" id="agents-body">
           <div style="max-width:1180px;margin:0 auto">
 
-              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/agents/client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/agents/companion" download="OmniilinkServerSetup.msi" title="Windows installer with tray app">Server setup (.msi)</a><span class="tool-result-sub" id="adm-api-build" title="Build of the API this page talks to"></span><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
+              <div class="tool-row"><button class="btn btn-primary btn-sm" onclick="admGenPairing()">+ New pairing code</button><input type="text" id="adm-pair-owner" placeholder="Device owner account (blank = you)" title="The account that will own and control the computer. For someone else's computer, enter their OmniLink username here." style="max-width:230px" /><span class="tool-result-sub" id="adm-pair-note">Pairing codes expire after 10 minutes and are single-use. The named owner gets full control of the claiming computer.</span><span style="flex:1"></span><a class="btn btn-ghost btn-sm" href="/api/agents/client" download="omniilink-agent.py">Headless agent (.py)</a><a class="btn btn-ghost btn-sm" href="/api/agents/companion" download="OmniilinkServerSetup.msi" title="Windows installer with tray app">Server setup (.msi)</a><span class="tool-result-sub" id="adm-api-build" title="Build of the API this page talks to"></span><button class="btn btn-ghost btn-sm" onclick="admLoadAgents()">Refresh</button></div>
               <div id="adm-pair-box"></div>
               <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
               <div id="adm-agents"></div>
+              <div class="usage-section-title" style="margin-top:16px">Computer access</div>
+              <div class="tool-row"><select id="adm-share-agent" title="Only computers you own can be shared or transferred" style="min-width:200px"></select><input type="text" id="adm-share-user" placeholder="Other OmniLink username" style="max-width:220px" /><button class="btn btn-ghost btn-sm" onclick="admShareAgent()">Share</button><button class="btn btn-ghost btn-sm" onclick="admUnshareAgent()">Remove access</button><button class="btn btn-ghost btn-sm" onclick="admTransferAgent()">Transfer ownership</button></div>
+              <div class="tool-result-sub" id="adm-share-note">Computers stay private. Sharing grants one account access to one computer; transferring moves ownership and clears old shares. Admins do not see other people's computers unless the owner shares them.</div>
               <div class="usage-section-title" style="margin-top:16px">Run command</div>
               <div class="tool-row"><select id="adm-cmd-agent" style="min-width:180px" onchange="admFmPath='';admFmLoad()"></select><input type="text" id="adm-cmd-input" placeholder="command to run on the client…" style="flex:1" onkeydown="if(event.key==='Enter')admRunAgentCmd()" /><button class="btn btn-primary btn-sm" onclick="admRunAgentCmd()">Run</button></div>
               <div class="usage-chart-wrap"><div class="usage-chart-body"><div class="usage-activity" id="adm-cmd-out" style="max-height:320px"></div></div></div>
@@ -1316,6 +1319,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                   <option value="70">&le; 70B</option>
                 </select>
                 <input type="text" id="ollama-search" placeholder="Search models…" style="flex:1" oninput="ollamaRenderLibrary()" />
+                <input type="text" id="ollama-custom" placeholder="Exact tag, e.g. qwen3:8b" title="Add an exact Ollama tag that is not in the curated library" style="max-width:220px" onkeydown="if(event.key==='Enter')ollamaAddCustom()" />
+                <button class="btn btn-ghost btn-sm" onclick="ollamaAddCustom()" title="Add the exact tag to this browser's library search">Add tag</button>
                 <button class="btn btn-primary btn-sm" onclick="ollamaAutoDetect()" title="Scan the selected computer and suggest the best models for it">Auto-detect best for this device</button>
               </div>
               <div id="ollama-reco"></div>
@@ -1774,7 +1779,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null,codingIgnoredFolders=[];
+let currentView='chat',codingFolder='',currentProjectName='',currentProjectShared=false,currentProjectRole='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null,codingIgnoredFolders=[];
 
 // Chat stores are namespaced per signed-in account so two people sharing a
 // browser never read or overwrite each other's conversations. Before the
@@ -2240,7 +2245,29 @@ async function sendReport(){const note=document.getElementById('report-note').va
   catch(e){showToast('Could not send report: '+e.message,'error')}
   btn.disabled=false}
 function reportBar(info){const bar=document.createElement('div');bar.className='report-bar';const t=document.createElement('span');t.textContent='Request failed. Flag this for the admin?';bar.appendChild(t);const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Send error report';b.onclick=()=>openReportModal(info);bar.appendChild(b);return bar}
-function maybeAttachReport(msgEl,text,model,context){try{if(!msgEl||msgEl.querySelector('.report-bar'))return;if(String(text||'').indexOf('all providers are currently unavailable')<0)return;msgEl.appendChild(reportBar({context:context,model:model||selectedModel,error:String(text||'').slice(0,2000)}))}catch(e){}}
+function maybeAttachReport(msgEl,text,model,context,providerFailOnly){try{if(!msgEl||msgEl.querySelector('.report-bar'))return;
+  // providerFailOnly: this text is a normal model REPLY, not an error string.
+  // Only attach when the reply itself reports the all-providers failure,
+  // otherwise keywords like "failed"/"invalid" in ordinary prose would trigger
+  // a report bar on healthy messages.
+  if(providerFailOnly){if(!/\ball providers are currently unavailable\b/i.test(String(text||'')))return}
+  else if(!isErrorText(text))return;
+  msgEl.appendChild(reportBar({context:context,model:model||selectedModel,error:String(text||'').slice(0,2000)}))}catch(e){}}
+function isErrorText(text){
+  // True for ANY real failure, not just one hardcoded string. Previously the
+  // report button only appeared for "all providers are currently unavailable",
+  // so every other error (HTTP failures, stream aborts, timeouts) had no way
+  // to reach the admin's Error Reports page.
+  const t=String(text||'');
+  if(!t)return false;
+  if(/\ball providers are currently unavailable\b/i.test(t))return true;
+  if(/^Error(:|\s+\d)/.test(t.trim()))return true;
+  if(/\b(HTTP|status)\s*(4\d\d|5\d\d)\b/i.test(t))return true;
+  if(/\b(fetch|network|connection|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up)\b/i.test(t))return true;
+  if(/\b(timed? ?out|timed out)\b/i.test(t))return true;
+  if(/\b(failed|failure|denied|refused|forbidden|unauthorized|unavailable|crash|traceback|exception|invalid)\b/i.test(t))return true;
+  return false;
+}
 let pendingImages=[];
 const VISION_OK=[/gemini/i,/gpt-4o/i,/gpt-4\.1/i,/claude/i,/o1/i,/o3/i,/sonar/i];
 const VISION_NO=[/gpt-oss/i,/llama/i,/qwen/i,/mistral/i,/mixtral/i,/deepseek/i,/gemma/i,/command/i,/nemo/i,/qwq/i,/granite/i,/phi/i,/aya/i];
@@ -2386,7 +2413,7 @@ async function sendMessage(){
     if(!seenDone){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateMessage(assistantEl,fullText)}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
-    chatHistory.push({role:'assistant',content:fullText.trim()});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat');
+    chatHistory.push({role:'assistant',content:fullText.trim()});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat',true);
   }catch(e){const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat()}
   settleSpinners(assistantEl);
   if(!assistantEl.textContent.trim()&&!assistantEl.querySelector('.message-content'))assistantEl.innerHTML='<span style="color:var(--text-muted);font-size:13px">(no response)</span>';
@@ -2443,7 +2470,7 @@ async function editAndResend(editIdx,newText,keepImgs){
       buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}
       read();});}read();
-  }).catch(e=>{const errText='Error: '+e.message;updateMessage(assistantEl,errText);chatHistory.push({role:'assistant',content:errText});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false});
+  }).catch(e=>{const errText='Error: '+e.message;updateMessage(assistantEl,errText);maybeAttachReport(assistantEl.closest('.message'),errText,selectedModel,'chat');chatHistory.push({role:'assistant',content:errText});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false});
 }
 function renderMessageContent(el,content){
   let s=String(content==null?'':content);
@@ -2559,11 +2586,14 @@ function renderSettings(){
     vwi.onchange=()=>{let n=parseInt(vwi.value,10);if(isNaN(n))n=5;n=Math.max(1,Math.min(50,n));vwi.value=n;authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({versions_to_keep:n})}).then(()=>showToast('Saved — keeping '+n+' version'+(n===1?'':'s'),'success'))};
     vr.appendChild(vw);cs.appendChild(vr);
     const pr=document.createElement('div');pr.style.marginTop='16px';pr.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">System Prompt</div>';
-    const pa=document.createElement('textarea');pa.style.cssText='width:100%;min-height:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6';pa.value=cod.system_prompt||'';pa.id='coding-system-prompt';
-    const pa2=document.createElement('div');pa2.style.cssText='display:flex;gap:8px;margin-top:8px';
-    const sb=document.createElement('button');sb.className='btn btn-primary';sb.style.fontSize='11px';sb.textContent='Save Prompt';
-    sb.onclick=()=>{authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_prompt:document.getElementById('coding-system-prompt').value})}).then(()=>showToast('System prompt saved','success'))};
-    pa2.appendChild(sb);pr.appendChild(pa);pr.appendChild(pa2);cs.appendChild(pr);
+    // Read-only: the prompt is server-owned and selected automatically from
+    // the hosting mode (Windows server vs Docker cloud), so it can never
+    // contradict the shell that actually runs the commands.
+    const hosting=(cod.hosting_mode==='cloud')?'OmniLink Cloud (Docker container)':'OmniLink Server (native Windows)';
+    const pa=document.createElement('div');pa.style.cssText='max-height:200px;overflow:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);line-height:1.6;white-space:pre-wrap';pa.textContent=cod.system_prompt||'';
+    const pa2=document.createElement('div');pa2.style.cssText='margin-top:8px;font-size:11px;color:var(--text-muted)';
+    pa2.textContent='Managed automatically for '+hosting+' ('+((cod.exec_os==='linux')?'Linux / sh':'Windows / cmd.exe')+'). Commands, paths and the shell in this prompt always match where your code actually runs.';
+    pr.appendChild(pa);pr.appendChild(pa2);cs.appendChild(pr);
     const oi=document.createElement('div');oi.style.marginTop='16px';oi.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">Omniiignore</div>';
     const oiTa=document.createElement('textarea');oiTa.style.cssText='width:100%;min-height:100px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);resize:vertical;outline:none;line-height:1.6';oiTa.placeholder='node_modules\ndist/\n*.log';oiTa.id='omniiignore-editor';
     const oiBtn=document.createElement('button');oiBtn.className='btn btn-primary';oiBtn.style.cssText='font-size:11px;margin-top:8px';oiBtn.textContent='Save Omniiignore';
@@ -2775,7 +2805,7 @@ function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
 function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
-function closeCodingFolder(){codingFolder=null;fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
+function closeCodingFolder(){codingFolder=null;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
@@ -2784,7 +2814,7 @@ async function loadProjectsSidebar(){
   const header=document.createElement('div');header.style.cssText='padding:10px 12px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;display:flex;align-items:center;justify-content:space-between';
   header.innerHTML='<span>Projects</span>';const newBtn=document.createElement('button');newBtn.style.cssText='font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font)';newBtn.textContent='+ New';newBtn.onclick=()=>openProjectsModal();header.appendChild(newBtn);container.appendChild(header);
   try{const r=await authFetch(API+'/api/projects');if(gen!==projectsSidebarGen)return;if(!r.ok)throw new Error('offline');const data=await r.json();
-    if(!data.projects||data.projects.length===0){const empty=document.createElement('div');empty.style.cssText='padding:20px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.6';empty.innerHTML='No projects yet.<br><span style="color:var(--accent-light);cursor:pointer;text-decoration:underline" onclick="openProjectsModal()">Create one</span> or open any folder above.';container.appendChild(empty);return}
+    if((!data.projects||data.projects.length===0)&&(!data.shared_projects||data.shared_projects.length===0)){const empty=document.createElement('div');empty.style.cssText='padding:20px 12px;text-align:center;color:var(--text-muted);font-size:12px;line-height:1.6';empty.innerHTML='No projects yet.<br><span style="color:var(--accent-light);cursor:pointer;text-decoration:underline" onclick="openProjectsModal()">Create one</span> or open any folder above.';container.appendChild(empty);return}
     const list=document.createElement('div');list.style.padding='0 4px';
     for(const p of data.projects){const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
       const isActive=codingFolder&&codingFolder===p.path;if(isActive)item.style.background='var(--accent-dim)';
@@ -2793,18 +2823,26 @@ async function loadProjectsSidebar(){
       item.addEventListener('mouseenter',()=>{if(!isActive)item.style.background='var(--bg-hover)';delBtn.style.display='flex'});
       item.addEventListener('mouseleave',()=>{if(!isActive)item.style.background='';delBtn.style.display='none'});
       item.addEventListener('click',()=>openProject(p.name));list.appendChild(item)}
+    const sharedList=data.shared_projects||[];
+    if(sharedList.length){const sharedHead=document.createElement('div');sharedHead.style.cssText='padding:12px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';sharedHead.textContent='Shared with you';list.appendChild(sharedHead);
+      for(const p of sharedList){const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
+        const isActive=codingFolder&&codingFolder===p.path;if(isActive)item.style.background='var(--accent-dim)';
+        item.innerHTML='<span style="font-size:12px">\uD83D\uDCC1</span><div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px"><div style="font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+escapeHtml(p.name)+'</div><span style="font-size:10px;color:var(--text-muted)">'+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view':'edit')+'</span></div>';
+        item.addEventListener('mouseenter',()=>{if(!isActive)item.style.background='var(--bg-hover)'});
+        item.addEventListener('mouseleave',()=>{if(!isActive)item.style.background=''});
+        item.addEventListener('click',()=>openSharedProject(p));list.appendChild(item)}}
     container.appendChild(list);
     if(gen===projectsSidebarGen&&typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(container,'ft')}catch(e){}}
   }catch(e){if(gen!==projectsSidebarGen)return;const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
 }
 async function openCodingFolderPicker(){
-    if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;remoteCtx=null;codingFolder=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
+    if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;remoteCtx=null;currentProjectShared=false;currentProjectRole='';codingFolder=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
   else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.multiple=true;inp.addEventListener('change',async()=>{if(inp.files.length>0){const first=inp.files[0];const path=first.webkitRelativePath.split('/')[0];await openCodingFolderDirect(path)}});inp.click()}
     }
   async function openCodingFolder(){await openCodingFolderPicker()}
   async function openCodingFolderDirect(path){
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
-           fsHandle=null;remoteCtx=null;codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();
+           fsHandle=null;remoteCtx=null;currentProjectShared=false;currentProjectRole='';codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();
   // Wait for auto-attach to complete so AI has file context immediately
   try{await autoAttachProjectFiles()}catch(e){}
   addCodingSystemMsg('Opened project: '+folderBaseName(data.folder)+'\n'+data.file_count+' files found.');updateProjectBadge(data.folder.split(/[\\/]/).pop())}catch(e){appAlert('Error: '+e.message)}
@@ -2867,10 +2905,10 @@ function openFileTreeContextMenu(ev,path,isDir){
   const menu=document.createElement('div');menu.id='ft-context-menu';menu.className='ft-context-menu';
   const items=[
     {label:'Open',fn:()=>openFileActionModal(path,null)},
-    {label:'Rename',fn:()=>openRenameModal(path)},
     {label:'Copy path',fn:()=>{if(navigator.clipboard)navigator.clipboard.writeText(path)}},
-    {label:'Delete',fn:()=>{if(appConfirm('Delete "'+path+'"?'))deleteCodingFile(path)}}
   ];
+  if(!codingIsReadOnly())items.push({label:'Rename',fn:()=>openRenameModal(path)},
+    {label:'Delete',fn:()=>{if(appConfirm('Delete "'+path+'"?'))deleteCodingFile(path)}});
   items.forEach(it=>{const b=document.createElement('button');b.className='ft-context-item';b.textContent=it.label;b.onclick=e=>{e.stopPropagation();closeFileTreeContextMenu();it.fn()};menu.appendChild(b)});
   document.body.appendChild(menu);
   const r=ev.target.getBoundingClientRect();
@@ -2879,12 +2917,13 @@ function openFileTreeContextMenu(ev,path,isDir){
   setTimeout(()=>document.addEventListener('click',closeFileTreeContextMenu,{once:true}),0);
 }
 function closeFileTreeContextMenu(){const m=document.getElementById('ft-context-menu');if(m)m.remove()}
+function codingIsReadOnly(){return !!(currentProjectShared&&currentProjectRole==='view'&&!fsHandle&&!isRemote())}
 function renderFileTree(tree){
   try{if(typeof window!=='undefined')window.lastCodingTree=tree||[]}catch(e){}
   const container=document.getElementById('coding-filetree');container.innerHTML='';
     const header=document.createElement('div');header.className='ft-header';header.style.cssText='padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)';header.innerHTML='<span style="flex:1">Files</span><input id="ft-search" placeholder="Filter..." style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:2px 6px;color:var(--text-primary);font-size:10px;font-family:var(--font);outline:none;width:90px" oninput="filterFileTree(this.value)"/>';
     const treeChev=document.createElement('button');treeChev.id='coding-tree-toggle';treeChev.textContent=codingTreeCollapsed?'\u25B8':'\u25BE';treeChev.title='Toggle file tree';treeChev.style.cssText='padding:1px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';treeChev.onclick=()=>toggleCodingTree();header.appendChild(treeChev);
-    const newFileBtn=document.createElement('button');newFileBtn.textContent='+ File';newFileBtn.title='New file';newFileBtn.style.cssText='padding:2px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';newFileBtn.onclick=()=>openNewFileModal();header.appendChild(newFileBtn);container.appendChild(header);
+    const newFileBtn=document.createElement('button');newFileBtn.textContent='+ File';newFileBtn.title='New file';newFileBtn.style.cssText='padding:2px 6px;border-radius:3px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-muted);font-size:10px;cursor:pointer;font-family:var(--font)';newFileBtn.onclick=()=>openNewFileModal();if(!codingIsReadOnly())header.appendChild(newFileBtn);container.appendChild(header);
   if(!tree||tree.length===0){const empty=document.createElement('div');empty.className='filetree-empty';empty.textContent='No files found';container.appendChild(empty);return}
   function render(entries,parent,depth){for(const e of entries){const item=document.createElement('div');item.className='ft-item'+(e.type==='dir'?' dir':'');const indentHtml='<span class="ft-indent" style="width:'+(depth*16)+'px"></span>';
            if(e.type==='dir'){item.innerHTML=indentHtml+'<span style="font-size:8px">\u25B6</span><span>'+escapeHtml(e.name)+'</span>';item.oncontextmenu=ev=>openFileTreeContextMenu(ev,e.path||e.name,true);const igDir=document.createElement('button');igDir.className='ft-ignore-btn';igDir.textContent='Ignore';igDir.title='Edit ignore list';igDir.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';igDir.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};item.appendChild(igDir);const children=document.createElement('div');children.className='ft-children';item.addEventListener('click',()=>{item.classList.toggle('open');item.querySelector('span:nth-child(2)').textContent=item.classList.contains('open')?'\u25BC':'\u25B6'});parent.appendChild(item);parent.appendChild(children);if(e.children)render(e.children,children,depth+1)}
@@ -2896,7 +2935,7 @@ function renderFileTree(tree){
       delBtn.onclick=async ev=>{ev.stopPropagation();if(!(await appConfirm('Delete "'+e.name+'"?')))return;try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(fp)});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}else if(fsHandle)await fsDeleteFile(fp);else await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(fp),{method:'DELETE'});refreshCodingTree();showToast('Deleted '+e.name,'success')}catch(err){showToast('Delete failed: '+err.message,'error')}};
       const igBtn=document.createElement('button');igBtn.className='ft-ignore-btn';igBtn.textContent='Ignore';igBtn.title='Edit ignore list';igBtn.style.cssText='height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);font-size:10px;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;margin-left:2px;padding:0 4px';
       igBtn.onclick=ev=>{ev.stopPropagation();openOmniiignoreEditor()};
-      item.appendChild(delBtn);item.appendChild(igBtn);item.addEventListener('mouseenter',()=>{delBtn.style.display='flex';igBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';igBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>openFileActionModal(fp,execCmd||null));parent.appendChild(item)}}
+      item.appendChild(delBtn);item.appendChild(igBtn);item.addEventListener('mouseenter',()=>{if(!codingIsReadOnly())delBtn.style.display='flex';igBtn.style.display='flex';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='flex'});item.addEventListener('mouseleave',()=>{delBtn.style.display='none';igBtn.style.display='none';const rb=item.querySelector('.ft-run-btn');if(rb)rb.style.display='none'});item.addEventListener('click',()=>openFileActionModal(fp,execCmd||null));parent.appendChild(item)}}
   }
   render(tree,container,0);
   container.classList.toggle('collapsed',codingTreeCollapsed);
@@ -3329,12 +3368,15 @@ function insertAtFile(path){const input=document.getElementById('coding-input');
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 
 function codingExecOs(cs){
-  // Effective command-execution OS from /api/coding/settings. Older
-  // servers only send the sandbox flag; the historic default is Windows.
+  // Effective command-execution OS, straight from the server. The server owns
+  // this: it knows whether RUN_COMMAND lands in a Docker container or on the
+  // host, and it serves the system prompt built for exactly that OS. Never
+  // re-derive it from the `sandbox` flag alone - that is what previously let
+  // a Windows project receive Linux/Docker instructions.
   const os=String((cs&&cs.exec_os)||'').toLowerCase();
-  if(os==='windows'||os==='linux')return os;
-  if(cs&&cs.sandbox)return 'linux';
-  return 'windows';
+  if(os==='windows')return'windows';
+  if(os==='linux')return'linux';
+  return'';
 }
 function codingOsBlock(kind){
   // Authoritative execution-environment section. It names the real OS and
@@ -3345,16 +3387,8 @@ function codingOsBlock(kind){
   if(kind==='windows')return head+'\n- OS: Windows. Shell: cmd.exe (already a shell — NEVER prefix commands with cmd /c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed.\n- COMMAND REFERENCE (use exactly these forms): list files `dir /b`; list with sizes `dir`; show a file `type path\\to\\file`; make a folder `mkdir name`; delete a file `del name`; run Python `python file.py` (check `python --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install`; git as usual.\n- Validate browser JavaScript with `node --check file.js` (syntax only — do NOT execute browser scripts with node: document and window do not exist there).';
   return '';
 }
-function codingDefaultPrompt(kind){
-  // Built-in prompt when nothing custom is saved. Mirrors the Windows
-  // default, with a Linux twin for container execution.
-  const blocks='You can CREATE, EDIT, DELETE files and RUN commands using these blocks:\nFILE_CREATE:path\ncontent\nEND_FILE_CREATE\nFILE_EDIT:path\ncontent\nEND_FILE_EDIT\nFILE_DELETE:path\nEND_FILE_DELETE\nRUN_COMMAND:command (same line, or on the next line)\nEND_RUN_COMMAND\nFILE_PATCH:path\nOLD:\nexact lines to replace\nNEW:\nfixed lines\nEND_FILE_PATCH\nTo ask the user a blocking question (max 3 per turn):\nQUESTION:What background color?\nOPTION:Warm cream\nOPTION:Deep charcoal\nEND_QUESTION\nPrefer FILE_PATCH for small fixes (never rewrite whole files to fix a few lines). ';
-  const tail='One command per block, single line, no quotes. Keep chat text short; never paste file contents into chat text. Start every reply with AT MOST ONE short status sentence — never announce the same step twice in different words. If you show a code fence without a FILE_* block, write its filename on the line above it like File: engine.js. Always write in proper, grammatically correct English (capitalise sentences, use full stops). Always explain what you are doing.';
-  if(kind==='linux')return 'You are Omniilink Coding Assistant. Commands run in a minimal Linux container (sh shell — NEVER prefix with sh -c, NEVER quote commands). '+blocks+'Useful commands: ls (list), cat <file> (read), mkdir -p, rm, python3 file.py, node file.js. '+tail;
-  return 'You are Omniilink Coding Assistant. The server runs WINDOWS (cmd.exe, already a shell — NEVER prefix commands with cmd /c, NEVER quote commands). '+blocks+'Useful commands: dir /b (list), type <file> (read), mkdir, del, python file.py, node file.js. '+tail;
-}
-async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMode='';try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=codingExecOs(null)}
-  if(!basePrompt)basePrompt=codingDefaultPrompt(execOs);
+async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
+  if(!basePrompt)basePrompt='You are an Omniilink Coding Assistant.';
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
   // Small local models (3B-7B) blow their context on long file bodies: they
   // start ignoring the rules and produce malformed blocks. Past this budget,
@@ -3364,16 +3398,17 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='windows',csMo
    const attached=codingAtFiles.slice(-12);
    const totalBytes=attached.reduce((n,f)=>n+((allCodingFileSizes&&allCodingFileSizes[f])||0),0);
    const useSummary=maxBytes>0&&totalBytes>maxBytes;
+   let projectSummary='';
    if(attached.length>0&&useSummary){
-     sysPrompt+='\nPROJECT STRUCTURE (file bodies are NOT attached - read what you need):\n';
+     projectSummary+='\nPROJECT STRUCTURE (file bodies are NOT attached - read what you need):\n';
      const ranked=optRankFiles(attached,allCodingFileSizes);
      for(const fname of ranked){
        const sz=(allCodingFileSizes&&allCodingFileSizes[fname])||0;
-       sysPrompt+='- '+fname+' ('+optLangOf(fname)+', '+(sz>1024?Math.round(sz/1024)+'KB':sz+'B')+')\n';
+       projectSummary+='- '+fname+' ('+optLangOf(fname)+', '+(sz>1024?Math.round(sz/1024)+'KB':sz+'B')+')\n';
      }
-     sysPrompt+='Read a file before editing it (e.g. FILE_EDIT with its full content, or a command that prints it). Never patch a file you have not read.\n';
+     projectSummary+='Read a file before editing it (e.g. FILE_EDIT with its full content, or a command that prints it). Never patch a file you have not read.\n';
    }}
-  let sysPrompt=basePrompt+'\n';const osBlock=codingOsBlock(execOs);if(osBlock)sysPrompt+=osBlock+'\n';
+  let sysPrompt=basePrompt+'\n'+projectSummary;const osBlock=codingOsBlock(execOs);if(osBlock)sysPrompt+=osBlock+'\n';
   // The shell, first and impossible to miss: small models default to Windows
   // commands even when the execution block below says Linux. One line beats
   // a paragraph they never reach.
@@ -3775,7 +3810,7 @@ async function sendCodingMessage(){
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding');scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding',true);scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){stopWait();if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
@@ -5381,7 +5416,7 @@ function codingErrorHint(resultsText){
     hints.push('worker_threads has no DOM and parentPort is null in the main thread — drop that approach entirely and follow the browser-code rule above.');
   const ref=/ReferenceError:\s*([A-Za-z_$][\w$]*) is not defined/.exec(t);
   if(ref&&!/^(document|window|navigator)$/.test(ref[1]))
-    hints.push(ref[1]+' is not defined: every node file runs in its own module scope. require() the file that defines it (with module.exports) or keep the code in a single file.');
+    hints.push(ref[1]+' is not defined: if this JavaScript file is loaded by an HTML page, uses browser APIs, or depends on a CDN global, do NOT require() it and do NOT run it under node. Validate it with node --check <file> (syntax only) and verify it by previewing the HTML page. Only use require()/module.exports when both files are server-side Node/CommonJS modules with no browser dependency.');
   if(/Old text not found/i.test(t))
     hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-8 unique lines. Re-read the file first if you have not seen it this session; never rebuild OLD from memory.');
   // JSX / TypeScript run straight under node is a syntax error you cannot
@@ -6655,9 +6690,9 @@ function renderConfigSnippet(info){const el=document.getElementById('opencode-co
 async function generateApiKey(){const btn=document.querySelector('[onclick="generateApiKey()"]');if(btn){btn.disabled=true;btn.textContent='Generating...'}try{const r=await authFetch(API+'/api/keys/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const data=await r.json();if(r.ok&&data.key){showToast('API Key generated!','success');loadApiPage();appAlert('API Key Generated\n\n'+data.key+'\n\nCopy this key now. It won\'t be shown again.')}else{appAlert('Failed to generate key: '+(data.error||'Unknown error (status '+r.status+')'))}}catch(e){appAlert('Failed to generate key: '+e.message)}finally{if(btn){btn.disabled=false;btn.textContent='+ New Key'}}}
 async function revokeApiKey(key){if(await appConfirm('Revoke this API key?')){try{await authFetch(API+'/api/keys/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key})});loadApiPage();showToast('Key revoked','success')}catch(e){appAlert('Failed to revoke key')}}}
 
-function updateProjectBadge(name){currentProjectName=name;const badge=document.getElementById('coding-project-badge');const nameEl=document.getElementById('coding-project-name');if(name){badge.style.display='flex';nameEl.textContent=name}else{badge.style.display='none';nameEl.textContent=''}}
+function updateProjectBadge(name,meta){currentProjectName=name;const badge=document.getElementById('coding-project-badge');const nameEl=document.getElementById('coding-project-name');if(name){badge.style.display='flex';nameEl.textContent=name+(meta?' · '+meta:'')}else{badge.style.display='none';nameEl.textContent=''}}
 function switchProject(){openProjectsModal()}
-async function deleteCurrentProject(){if(!currentProjectName)return;if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
+async function deleteCurrentProject(){if(!currentProjectName)return;if(currentProjectShared){appAlert('This is a shared project — only its owner can delete it.');return}if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
 
 async function loadProjectsPage(){
   const body=document.getElementById('projects-body');body.innerHTML='';body.style.maxWidth='920px';body.style.margin='0 auto';body.style.width='100%';
@@ -6674,6 +6709,12 @@ async function loadProjectsPage(){
       card.querySelector('.proj-info').parentElement.addEventListener('click',async e=>{if(e.target.closest('.proj-del'))return;await openProject(p.name)});
       card.querySelector('.proj-del').addEventListener('click',async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)});
       body.appendChild(card)}
+    const shared=data.shared_projects||[];
+    if(shared.length){const sharedTitle=document.createElement('div');sharedTitle.className='usage-section-title';sharedTitle.style.margin='16px 0 8px';sharedTitle.textContent='Shared with you';body.appendChild(sharedTitle);
+      for(const p of shared){const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
+        card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view only':'can edit')+'</div></div>';
+        card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openSharedProject(p)});
+        body.appendChild(card)}}
     const remoteBox=document.createElement('div');body.appendChild(remoteBox);
     if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
   }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load projects</p></div>'}
@@ -6685,7 +6726,7 @@ async function loadCreateTargets(){const sel=document.getElementById('new-projec
     if([...sel.options].some(o=>o.value===keep))sel.value=keep;
   }catch(e){}}
 function closeProjectsModal(){document.getElementById('projects-modal').classList.remove('open')}
-function openNewFileModal(){document.getElementById('newfile-modal').classList.add('open');const inp=document.getElementById('new-file-name');inp.value='';setTimeout(()=>inp.focus(),50)}
+function openNewFileModal(){if(codingIsReadOnly()){appAlert('This shared project is view-only.');return}document.getElementById('newfile-modal').classList.add('open');const inp=document.getElementById('new-file-name');inp.value='';setTimeout(()=>inp.focus(),50)}
 function closeNewFileModal(){document.getElementById('newfile-modal').classList.remove('open')}
 async function confirmNewFile(){const name=document.getElementById('new-file-name').value.trim();if(!name)return;closeNewFileModal();try{await codingWriteFile(name,'');refreshCodingTree();showToast('Created '+name,'success')}catch(e){showToast('Failed: '+e.message,'error')}}
 function showProjectTab(tab,btn){document.querySelectorAll('.modal-tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');document.getElementById('project-tab-list').style.display=tab==='list'?'block':'none';document.getElementById('project-tab-create').style.display=tab==='create'?'block':'none';document.getElementById('project-tab-import').style.display=tab==='import'?'block':'none';if(tab==='create'){try{loadCreateTargets()}catch(e){}}}
@@ -6697,14 +6738,32 @@ async function loadProjectList(){const list=document.getElementById('project-lis
       item.querySelector('.name').parentElement.addEventListener('click',async e=>{if(e.target.closest('.del'))return;await openProject(p.name)});
       item.querySelector('.del').addEventListener('click',async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)});
       list.appendChild(item)}}
+    const sharedItems=data.shared_projects||[];
+    if(sharedItems.length){const sharedT=document.createElement('div');sharedT.style.cssText='padding:12px 2px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';sharedT.textContent='Shared with you';list.appendChild(sharedT);
+      for(const p of sharedItems){const item=document.createElement('div');item.className='project-item';if(codingFolder&&codingFolder===p.path)item.classList.add('active');
+        item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(p.name)+'</span><span class="meta">'+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view':'edit')+'</span>';
+        item.querySelector('.name').parentElement.addEventListener('click',async()=>{await openSharedProject(p)});
+        list.appendChild(item)}}
     if(typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(list,'item')}catch(e){}}
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
+  codingFolder=data.folder;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
   // Wait for auto-attach to complete so AI has file context immediately
   try{await autoAttachProjectFiles()}catch(e){}
   addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
+  const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
+  const role=String(p.role||'edit'),owner=String(p.owner||'');
+  try{const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json().catch(()=>({}));if(!r.ok){appAlert(data.error||'Failed to open shared project');return}
+  codingFolder=data.folder;currentProjectShared=true;currentProjectRole=role;fsHandle=null;remoteCtx=null;allCodingFiles=[];
+  document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';
+  renderFileTree(data.tree||[]);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
+  try{await autoAttachProjectFiles()}catch(e){}
+  addCodingSystemMsg('Opened shared project: '+name+'\n'+(data.file_count||0)+' files ready.'+(owner?'\nOwner: '+owner:'')+'\nRole: '+(role==='view'?'view only':'can edit')+'.');
+  updateProjectBadge(name,'shared · '+(role==='view'?'view only':'can edit'));closeProjectsModal();try{closeShareModal()}catch(e){}
+  try{if(typeof loadProjectsSidebar==='function')loadProjectsSidebar()}catch(e){}
+  if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
 if(target.indexOf('agent:')===0){const aid=target.slice(6);
@@ -9262,7 +9321,7 @@ async function shareLoad(){
     if(owned.length)owned.forEach(s=>box.appendChild(row(s.folder,'user #'+s.shared_with_id+' · '+s.role,'Revoke',()=>shareDelete(s.id))));
     else box.appendChild(empty('Nothing shared yet.'));
     sec('Shared with you');
-    if(mine.length)mine.forEach(s=>box.appendChild(row(s.folder,(s.owner||'')+' · '+s.role,'Open',()=>shareOpen(s.folder))));
+    if(mine.length)mine.forEach(s=>box.appendChild(row(s.folder,(s.owner||'')+' · '+s.role,'Open',()=>shareOpen(s.folder,s.role,s.owner))));
     else box.appendChild(empty('No projects shared with you.'));
   }catch(e){box.innerHTML='<div class="tool-result-sub">Could not load shares.</div>'}
 }
@@ -9279,14 +9338,8 @@ async function shareCreate(){
 async function shareDelete(id){
   try{const r=await authFetch(API+'/api/coding/shares/'+id,{method:'DELETE'});if(r.ok)shareLoad()}catch(e){}
 }
-async function shareOpen(folder){
-  try{
-    const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:folder})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    closeShareModal();showToast('Opened shared project','success');
-    try{await refreshCodingTree()}catch(e){}
-  }catch(e){showToast('Open failed: '+e.message,'error')}
+async function shareOpen(folder,role,owner){
+  await openSharedProject({path:folder,role:role,owner:owner});
 }
 async function ragIndex(){
   const box=document.getElementById('search-results');if(box)box.innerHTML='<div class="search-hint">Indexing project…</div>';
@@ -10406,19 +10459,25 @@ async function admRunPublic(pid,mainPath){
   try{const r=await authFetch(API+'/api/public/projects/'+pid);if(!r.ok)throw new Error('HTTP '+r.status);const p=await r.json();runPublicProject(pid,p.main_file||mainPath,p.files||[])}
   catch(e){showToast('Run failed: '+e.message,'error')}
 }
-async function admGenPairing(){try{const r=await authFetch(API+'/api/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
-  document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Windows may show &quot;Smart App Control blocked this app&quot; because the installer is unsigned — open Windows Security &gt; App &amp; browser control &gt; Smart App Control and turn it off, or choose &quot;Run anyway&quot;. Buying a code-signing certificate removes that prompt for good.<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admGenPairing(){try{const ownerEl=document.getElementById('adm-pair-owner');const owner=ownerEl?ownerEl.value.trim().toLowerCase():'';const r=await authFetch(API+'/api/agents/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(owner?{owner_username:owner}:{})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+  document.getElementById('adm-pair-box').innerHTML='<div class="tool-result"><div><div class="tool-result-title" style="font-family:var(--mono);font-size:18px;letter-spacing:3px">'+escapeHtml(d.code)+'</div><div class="tool-result-sub">Owner: <b>'+escapeHtml(d.owner||owner||'you')+'</b>. '+(d.warning?escapeHtml(d.warning)+'<br>':'')+'Easiest: install <b>Companion setup (.msi)</b> above, open Omniilink Companion, and paste this code in the Setup page.<br>Advanced: python omniilink-agent.py --server '+escapeHtml(d.server_hint||'https://YOUR-SERVER')+' --code '+escapeHtml(d.code)+'<br>Windows may show &quot;Smart App Control blocked this app&quot; because the installer is unsigned — open Windows Security &gt; App &amp; browser control &gt; Smart App Control and turn it off, or choose &quot;Run anyway&quot;. Buying a code-signing certificate removes that prompt for good.<br>Expires in '+Math.round((d.expires_in||600)/60)+' minutes · single use</div></div></div>';if(ownerEl)ownerEl.value='';admLoadAgents()}catch(e){showToast(e.message,'error')}}
 function admAgo(t){t=Number(t)||0;if(!t)return 'never';const s=Math.max(0,Date.now()/1000-t);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
 async function admLoadAgents(){const box=document.getElementById('adm-agents');try{try{const hr=await authFetch(API+'/api/health');const hd=await hr.json();document.getElementById('adm-api-build').textContent='api '+(hd.build||'?')}catch(e){}
 const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
   if(!(d.agents||[]).length){box.innerHTML='<div class="tool-status">No computers paired yet. Generate a pairing code above, then run the agent on the client.</div>';return}
   d.agents.forEach(a=>{const caps=Array.isArray(a.caps)?a.caps:[];const chip=caps.indexOf('ollama')>-1?'<span class="act-provider" style="font-size:10px;border:1px solid var(--border);border-radius:10px;padding:0 6px;margin-left:6px" title="Shares its local Ollama models with your account">ollama</span>':(a.online?'<span class="act-time" style="font-size:10px;margin-left:6px" title="Update Omniilink Server on that computer to share its Ollama models">no model relay</span>':'');
   const item=document.createElement('div');item.className='usage-activity-item';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span>'+chip+'<span class="act-time">'+escapeHtml(admAgo(a.last_seen))+'</span>';box.appendChild(item);
+    const access=document.createElement('div');access.className='act-detail';access.style.cssText='width:100%;white-space:normal';const shared=Array.isArray(a.shared_with)?a.shared_with:[];access.textContent='Owner: '+(a.owner||'unknown')+(a.is_owner?(shared.length?' · shared with '+shared.join(', '):' · private'):a.access==='shared'?' · shared with you':' · temporary support access');item.appendChild(access);
     if(caps.indexOf('ollama')>-1){const mb=document.createElement('button');mb.className='btn btn-ghost btn-sm';mb.style.marginLeft='auto';mb.textContent='Models';mb.title='Check the Ollama models this computer shares';mb.onclick=()=>admAgentOllama(a.id);item.appendChild(mb)}
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
+  const shareSel=document.getElementById('adm-share-agent');if(shareSel){shareSel.innerHTML='';const owned=(d.agents||[]).filter(x=>x&&x.is_owner);if(!owned.length){const o=document.createElement('option');o.value='';o.textContent='No computers owned by you';shareSel.appendChild(o)}owned.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=(x.name||('agent '+x.id))+' ('+(x.hostname||'no hostname')+')';shareSel.appendChild(o)})}
   admLoadAgentOut();if(sel.value)admFmLoad();ollamaLibraryLoad()}catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
 async function admRemoveAgent(id){if(!(await appConfirm('Remove this paired computer? Its queued commands will be dropped.')))return;try{const r=await authFetch(API+'/api/agents/'+id,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);showToast('Agent removed','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+function admShareTarget(){const id=(document.getElementById('adm-share-agent')||{}).value||'';const username=((document.getElementById('adm-share-user')||{}).value||'').trim().toLowerCase();if(!id){showToast('Select one of your computers first','error');return null}if(!username){showToast('Enter the other OmniLink username','error');return null}return{id,username}}
+async function admShareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Shared with '+t.username+(d.shared_with&&d.shared_with.length?' — access: '+d.shared_with.join(', '):''),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admUnshareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share/'+encodeURIComponent(t.username),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Removed access for '+t.username,'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admTransferAgent(){const t=admShareTarget();if(!t)return;if(!(await appConfirm('Transfer this computer to '+t.username+'? You will immediately lose access unless they share it back.')))return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Ownership transferred to '+(d.owner||t.username),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admAgentOllama(id){try{const r=await authFetch(API+'/api/devices/'+id+'/ollama');const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));const o=d.ollama||{};if(!o.ok)showToast(o.error||'Ollama status unavailable','error');else showToast((d.name||'Device')+': '+o.models.length+' Ollama model(s) ready'+(o.models.length?' — '+o.models.slice(0,3).join(', ')+(o.models.length>3?'…':''):''),'success')}catch(e){showToast(e.message,'error')}}
 let ollamaCatalog=null;
 function ollamaTargetDevice(){const sel=document.getElementById('adm-cmd-agent');return sel&&sel.value?sel.value:''}
@@ -10439,13 +10498,33 @@ function ollamaFilterModels(models,family,maxP,q,use){
     return true;
   });
 }
+function ollamaCustomTags(){try{const tags=JSON.parse(localStorage.getItem('omniilink_ollama_custom')||'[]');return Array.isArray(tags)?tags.filter(t=>typeof t==='string'):[]}catch(e){return[]}}
+function ollamaCustomModels(){
+  return ollamaCustomTags().map(tag=>{
+    const name=tag.indexOf(':')>-1?tag.slice(0,tag.lastIndexOf(':')):tag;
+    const size=tag.indexOf(':')>-1?tag.slice(tag.lastIndexOf(':')+1):'latest';
+    return{name:tag,family:'Custom',min_params:0,vision:false,use:['custom'],
+      description:'Manually added exact tag. Downloading checks whether Ollama can provide it on the selected computer.',
+      sizes:[{tag:size,size_gb:null,full:tag}]};
+  });
+}
+function ollamaAddCustom(){
+  const el=document.getElementById('ollama-custom');const search=document.getElementById('ollama-search');
+  const tag=el?el.value.trim():'';
+  if(!/^[A-Za-z0-9._:\-/]{1,120}$/.test(tag)){showToast('Use a valid Ollama tag such as qwen3:8b','error');return}
+  const tags=ollamaCustomTags();
+  if(tags.indexOf(tag)<0){tags.push(tag);try{localStorage.setItem('omniilink_ollama_custom',JSON.stringify(tags))}catch(e){}}
+  if(el)el.value='';if(search)search.value=tag;
+  ollamaRenderLibrary();
+  showToast('Added '+tag+' to library search','success');
+}
 function ollamaRenderLibrary(){
   const box=document.getElementById('ollama-library');if(!box||!ollamaCatalog)return;
   const fam=(document.getElementById('ollama-family')||{}).value||'';
   const use=(document.getElementById('ollama-use')||{}).value||'';
   const maxP=(document.getElementById('ollama-size')||{}).value||'0';
   const q=(document.getElementById('ollama-search')||{}).value||'';
-  const rows=ollamaFilterModels(ollamaCatalog.models,fam,maxP,q,use);
+  const rows=ollamaFilterModels(ollamaCustomModels().concat(ollamaCatalog.models||[]),fam,maxP,q,use);
   const cnt=document.getElementById('ollama-count');if(cnt)cnt.textContent=rows.length+' model'+(rows.length===1?'':'s')+' — pick a size to download on the selected computer';
   box.innerHTML='';
   if(!rows.length){box.innerHTML='<div class="tool-status">No models match those filters.</div>';return}
@@ -10456,7 +10535,7 @@ function ollamaRenderLibrary(){
     item.appendChild(head);
     const desc=document.createElement('div');desc.className='act-detail';desc.style.cssText='width:100%;white-space:normal';desc.textContent=m.description||'';item.appendChild(desc);
     const sizes=document.createElement('div');sizes.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;width:100%';
-    for(const s of m.sizes){const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent=s.tag+' · '+s.size_gb.toFixed(1)+'GB';b.title='Download '+s.full+' ('+s.size_gb.toFixed(1)+' GB)';b.onclick=()=>ollamaDownload(s.full);sizes.appendChild(b)}
+    for(const s of m.sizes){const b=document.createElement('button');b.className='btn btn-ghost btn-sm';const sizeText=(s.size_gb==null)?'size unknown':s.size_gb.toFixed(1)+'GB';b.textContent=s.tag+' · '+sizeText;b.title='Download '+s.full+' ('+sizeText+')';b.onclick=()=>ollamaDownload(s.full);sizes.appendChild(b)}
     item.appendChild(sizes);box.appendChild(item);
   }
 }
@@ -10612,7 +10691,7 @@ async function openRemoteProjectInCode(agentId, path){
   }catch(e){}
   if(!online){appAlert('That computer is offline — start Omniilink Server on it first.');return}
   remoteCtx={id:String(agentId),name,path:path||'',platform};
-  fsHandle=null;codingFolder=name+(path?' / '+path:'');
+  fsHandle=null;currentProjectShared=false;currentProjectRole='';codingFolder=name+(path?' / '+path:'');
   document.getElementById('coding-close-btn').style.display='';
   document.getElementById('coding-reconnect-btn').style.display='none';
   try{await admLoadAgents()}catch(e){}
