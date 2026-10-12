@@ -395,6 +395,7 @@ a:hover{text-decoration:underline}
 .opt-foot{display:flex;align-items:center;gap:8px;padding:10px 13px;border-top:1px solid var(--border);background:var(--bg-tertiary)}
 .opt-foot .opt-est{font-size:10px;color:var(--text-muted);flex:1;line-height:1.35}
 .opt-run{flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-xs);padding:7px 15px;font-size:11.5px;font-weight:650;cursor:pointer;font-family:var(--font)}
+.opt-profiles{display:flex;gap:6px;flex-wrap:wrap}.opt-prof{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-size:11px;padding:5px 10px;cursor:pointer;font-family:var(--font)}.opt-prof:hover{color:var(--text-primary);border-color:var(--accent)}
 .opt-run:hover{filter:brightness(1.12)}
 .opt-run:disabled{opacity:.5;cursor:not-allowed}
 .opt-view{display:none;margin-top:6px;max-height:210px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-input);padding:6px;font-family:var(--mono);font-size:10.5px;line-height:1.5}
@@ -1217,6 +1218,12 @@ pre{max-width:100%}
                 <div class="usage-chart-body" style="padding:0">
                   <table class="usage-key-table" id="us-key-table"><thead><tr><th>Key</th><th>Requests</th><th>Tokens</th><th>Last Used</th></tr></thead><tbody></tbody></table>
                 </div>
+              </div>
+            </div>
+            <div style="margin-bottom:24px">
+              <div class="usage-chart-wrap">
+                <div class="usage-chart-header">Optimise trend <span style="font-weight:400;color:var(--text-muted)">(this browser · green = fixed, amber = issues found)</span></div>
+                <div class="usage-chart-body"><div id="us-opt-trend"></div></div>
               </div>
             </div>
             <div>
@@ -2868,6 +2875,7 @@ function openFileTreeContextMenu(ev,path,isDir){
   ];
   if(!codingIsReadOnly())items.push({label:'Rename',fn:()=>openRenameModal(path)},
     {label:'Delete',fn:()=>{if(appConfirm('Delete "'+path+'"?'))deleteCodingFile(path)}});
+  if(!isDir)items.push({label:'Optimise this file',fn:()=>optOptimisePaths([path])});
   items.forEach(it=>{const b=document.createElement('button');b.className='ft-context-item';b.textContent=it.label;b.onclick=e=>{e.stopPropagation();closeFileTreeContextMenu();it.fn()};menu.appendChild(b)});
   document.body.appendChild(menu);
   const r=ev.target.getBoundingClientRect();
@@ -8439,6 +8447,7 @@ async function loadUsage(range,btn){
     const failed=[];
     for(const[nm,fn]of widgets){try{fn()}catch(e){failed.push(nm);try{console.error('usage widget failed:',nm,e)}catch(e2){}}}
     if(failed.length)showToast('Some usage panels failed to render: '+failed.join(', '),'error');
+    try{renderOptTrend()}catch(e){try{console.error('opt trend',e)}catch(e2){}}
   }catch(e){
     if(e.message==='auth_required')return;
     await usageFail(e.message==='Failed to fetch'?'Server offline':'Usage unavailable',e.message==='Failed to fetch'?'Could not reach the server':String((e&&e.message)||e));
@@ -9191,6 +9200,28 @@ const OPT_MODES=[
   {k:'perf',    t:'Performance',d:'Memory, batching, I/O, assets'},
   {k:'docs',    t:'Docs',       d:'Comments and docstrings where they help'}
 ];
+const OPT_PROFILES=[
+  {k:'cleanup',t:'Quick cleanup', d:'Light + structure', modes:['self'],intensity:'light'},
+  {k:'fix',    t:'Fix errors',    d:'Balanced + quality',modes:['quality'],intensity:'balanced'},
+  {k:'speed',  t:'Speed pass',    d:'Balanced + speed',  modes:['speed','perf'],intensity:'balanced'},
+  {k:'docs',   t:'Document',      d:'Light + docs',      modes:['docs'],intensity:'light'},
+  {k:'audit',  t:'Deep audit',    d:'Deep + everything', modes:['speed','quality','features','self','security','a11y','perf','docs'],intensity:'deep'}
+];
+function optApplyProfile(k){
+  const pr=(typeof OPT_PROFILES!=='undefined'?OPT_PROFILES:[]).find(p=>p.k===k);
+  if(!pr)return;
+  optLoadCfg();
+  optCfg.modes=pr.modes.slice();optCfg.intensity=pr.intensity;optSaveCfg();
+  try{
+    document.querySelectorAll('[data-opt-mode]').forEach(l=>{
+      const key=l.getAttribute('data-opt-mode');const on=optCfg.modes.indexOf(key)>-1;
+      l.classList.toggle('on',on);const cb=l.querySelector('input');if(cb)cb.checked=on;
+    });
+    const inten=document.getElementById('opt-intensity');if(inten)inten.value=optCfg.intensity;
+    if(typeof optUpdateEstimate==='function')optUpdateEstimate();
+  }catch(e){}
+  showToast('Profile applied: '+pr.t,'success');
+}
 const OPT_INTENSITY={
   light:   {label:'Light',  note:'Quick pass, obvious wins only',        maxFiles:5,  roundsPerFile:1},
   balanced:{label:'Balanced',note:'Recommended. Real fixes, no rewrites', maxFiles:12, roundsPerFile:2},
@@ -9257,7 +9288,8 @@ function openOptimiseMenu(ev){
     +'<div class="opt-body">'
     +'<div class="opt-row"><div class="opt-label">Main model <span class="opt-hint">used for most edits</span></div>'
     +'<select class="opt-select" id="opt-main-model"></select></div>'
-    +'<div class="opt-row"><div class="opt-label">What to improve</div><div class="opt-checks">'+modes+'</div></div>'
+     +'<div class="opt-row"><div class="opt-label">What to improve</div><div class="opt-checks">'+modes+'</div></div>'
+     +'<div class="opt-row"><div class="opt-label">Profile <span class="opt-hint">one-tap setup</span></div><div class="opt-profiles">'+OPT_PROFILES.map(p=>'<button class="opt-prof" onclick="optApplyProfile(\''+p.k+'\')" title="'+escapeHtml(p.d)+'">'+escapeHtml(p.t)+'</button>').join('')+'</div></div>'
     +'<div class="opt-row"><div class="opt-label">How much</div><select class="opt-select" id="opt-intensity">'+intens+'</select></div>'
     +'<div class="opt-row"><div class="opt-label">Target time <span class="opt-hint">stops cleanly when reached</span></div>'
     +'<select class="opt-select" id="opt-time">'+times+'</select></div>'
@@ -9279,7 +9311,8 @@ function openOptimiseMenu(ev){
     +'<div class="opt-progress" id="opt-progress-wrap" style="display:none"><i id="opt-progress"></i></div>'
     +'</div>'
     +'<div class="opt-foot"><div class="opt-est" id="opt-est"></div>'
-    +'<button class="opt-run" id="opt-run-btn" onclick="startOptimise()">Start optimise</button></div>';
+     +'<button class="btn btn-ghost btn-sm" onclick="optFindingsModal()">Findings</button>'
+     +'<button class="opt-run" id="opt-run-btn" onclick="startOptimise()">Start optimise</button></div>';
   // The stylesheet ships .opt-panel with display:none so it costs nothing
   // while closed; showing it here is what makes the button actually work.
   p.classList.add('open');
@@ -9797,7 +9830,14 @@ function optParseClaim(text){
   const m=String(text||'').match(/WHY\s*:\s*([^\n]+)/i);
   return m?m[1].trim():'';
 }
-async function startOptimise(){
+async function optOptimisePaths(paths){
+  if(typeof optRunning!=='undefined'&&optRunning){showToast('An optimise run is already going','info');return}
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  paths=(paths||[]).filter(Boolean);
+  if(!paths.length){showToast('Nothing to optimise','info');return}
+  await startOptimise(paths);
+}
+async function startOptimise(onlyPaths){
   if(optRunning)return;
   if(!codingFolder&&!fsHandle&&!isRemote()){showToast('Open a project folder first','info');return}
   const cfg=optLoadCfg();
@@ -9815,7 +9855,7 @@ async function startOptimise(){
   optRenderProg('Optimising...','reading the project',0);
   optTickStart();
   const status=t=>{const el=document.getElementById('opt-status');if(el)el.textContent=t};
-  const done={files:0,changed:0,added:0,removed:0,fixes:[],skipped:0,log:[]};
+  const done={files:0,changed:0,added:0,removed:0,fixes:[],skipped:0,log:[],linesBefore:0,linesAfter:0};
   try{
     // 1. shortlist
     status('reading the project');
@@ -9823,6 +9863,7 @@ async function startOptimise(){
     const all=(allCodingFiles||[]).filter(p=>!/\.omniiignore$/.test(p));
     const ranked=optRankFiles(all,allCodingFileSizes);
     const shortlist=ranked.slice(0,inten.maxFiles);
+    if(Array.isArray(onlyPaths)&&onlyPaths.length){const set=new Set(onlyPaths);const sub=ranked.filter(p=>set.has(p)).slice(0,inten.maxFiles);if(!sub.length)throw new Error('those files are not in the project');shortlist.length=0;for(const p of sub)shortlist.push(p)}
     if(!shortlist.length)throw new Error('no files to optimise');
     optProg.total=shortlist.length;
     optRenderProg('Optimising '+shortlist.length+' file'+(shortlist.length!==1?'s':''),'reading files',4);
@@ -9913,6 +9954,7 @@ async function startOptimise(){
         logTicks();optTickRender();
         continue;
       }
+      done.linesBefore+=before.split('\n').length;
       const perFile=optFormatFindings(findings.filter(f=>f.path===path),12);
       const pct=Math.round(((i+0.5)/shortlist.length)*100);
       optProg.stage='audit';
@@ -9962,6 +10004,7 @@ async function startOptimise(){
         if(typeof after!=='string')break;
         const d=diffCharStats(before,after);
         if(!d.added&&!d.removed){done.skipped++;break}
+        done.linesAfter+=after.split('\n').length;
         let verdict='';
         if(cfg.advanced||inten.intensity==='deep'){
           optProg.stage='verify';
@@ -9999,6 +10042,7 @@ async function startOptimise(){
     rep=optBuildDebrief({
       reason:reason,started:started,ended:Date.now(),durationMs:Date.now()-started,
       examined:done.files,improved:done.changed,skipped:done.skipped,
+      linesBefore:done.linesBefore||0,linesAfter:done.linesAfter||0,
       unchanged:shortlist.filter(p=>!done.fixes.some(f=>f.p===p)),
       added:done.added,removed:done.removed,bytesBefore:bytes0,
       tin:optRunStats.tin,tout:optRunStats.tout,calls:optRunStats.calls.length,
@@ -10033,6 +10077,19 @@ async function startOptimise(){
       +(failed?'\n\n**Needs another look:**\n'+done.fixes.filter(f=>!f.ok).map(f=>'- '+f.p).join('\n'):'')
       +(done.fixes.length?'\n\n**Improved:**\n'+done.fixes.map(f=>'- '+f.p+' — '+f.n).join('\n'):''));
     persistCodingChat();
+    try{
+      const hk=optStoreKey()+'_runs';
+      const arr=JSON.parse(localStorage.getItem(hk)||'[]');
+      arr.unshift({at:Date.now(),examined:done.files,improved:done.changed,findings:findings.length,
+        added:done.added,removed:done.removed,ms:Date.now()-started});
+      localStorage.setItem(hk,JSON.stringify(arr.slice(0,30)));
+    }catch(e){}
+    try{
+      if(typeof wsActive!=='undefined'&&wsActive&&currentWorkspace){
+        await authFetch(API+'/api/coding/workspace/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({text:optDebriefMarkdown(rep).slice(0,2000)})});
+      }
+    }catch(e){}
     optShowDebrief(rep);
   }catch(e){
     reason='error: '+(e.message||String(e));
@@ -10144,7 +10201,8 @@ function optDebriefHtml(r){
     +'<td class="num">'+((f.added!=null)?('<span class="opt-dpos">+'+f.added+'</span> <span class="opt-dneg">-'+f.removed+'</span>'):escapeHtml(f.n||''))+'</td>'
     +'<td>'+(f.verify==='pass'?'<span class="opt-chip good">pass</span>':f.verify==='fail'?'<span class="opt-chip bad">fail</span>':'<span style="color:var(--text-muted)">-</span>')+'</td>'
     +'<td class="num">'+(f.ms?optFormatLeft(f.ms):'-')+'</td>'
-    +'<td>'+escapeHtml(f.model||'')+'</td></tr>').join('');
+    +'<td>'+escapeHtml(f.model||'')+'</td>'
+    +'<td><button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px" onclick="openFileHistoryModal(decodeURIComponent(\''+encodeURIComponent(f.p)+'\'))">Revert</button></td></tr>').join('');
   const unchanged=r.unchanged||[];
   const models=(r.models||[]).map(m=>{
     const tps=m.ms>0?m.tout/(m.ms/1000):0;
@@ -10155,10 +10213,18 @@ function optDebriefHtml(r){
       +'<td>'+escapeHtml(Object.keys(m.stages||{}).map(s=>s+' '+m.stages[s]).join(', '))+'</td></tr>';
   }).join('');
   const aspectChips=Object.keys(r.aspectCounts||{}).map(k=>'<span class="opt-chip">'+escapeHtml(optAspectLabel(k))+' '+r.aspectCounts[k]+'</span>').join('');
+  const lb=Number(r.linesBefore)||0,la=Number(r.linesAfter)||0;
+  const kb=Number(r.bytesBefore)||0,ka=kb+(Number(r.added)||0)-(Number(r.removed)||0);
+  const kbKb=(kb/1024).toFixed(1),kaKb=(ka/1024).toFixed(1);
+  const metricRows='<tr><td>Files</td><td class="num">'+(r.examined||0)+' examined</td><td class="num">'+(r.improved||0)+' improved</td></tr>'
+    +'<tr><td>Lines</td><td class="num">'+lb+'</td><td class="num">'+la+' ('+((la-lb>=0?'+':'')+(la-lb))+')</td></tr>'
+    +'<tr><td>Size</td><td class="num">'+kbKb+' KB</td><td class="num">'+kaKb+' KB</td></tr>'
+    +'<tr><td>Issues</td><td class="num">'+(r.scanFindings||0)+' found</td><td class="num">'+(r.improved||0)+' fixed</td></tr>';
   return '<div class="opt-kpis">'+kpis+'</div>'
+    +'<h3 class="opt-dh">Before → after</h3><table class="opt-dtable"><thead><tr><th></th><th>Before</th><th>After</th></tr></thead><tbody>'+metricRows+'</tbody></table>'
     +(r.reason&&r.reason!=='completed'?'<p class="opt-dnote" style="margin:10px 0 0;color:var(--text-secondary)">Stopped early: '+escapeHtml(r.reason)+'</p>':'')
     +'<h3 class="opt-dh">Files improved ('+fixes.length+')</h3>'
-    +(fixes.length?'<table class="opt-dtable"><thead><tr><th>File</th><th>Kind</th><th>Change</th><th>Verify</th><th>Took</th><th>Model</th></tr></thead><tbody>'+rows+'</tbody></table>':'<p class="opt-dnote">No file changed this run.</p>')
+    +(fixes.length?'<table class="opt-dtable"><thead><tr><th>File</th><th>Kind</th><th>Change</th><th>Verify</th><th>Took</th><th>Model</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>':'<p class="opt-dnote">No file changed this run.</p>')
     +(aspectChips?'<div class="opt-chips">'+aspectChips+'</div>':'')
     +(unchanged.length?'<h3 class="opt-dh">Left unchanged ('+unchanged.length+')</h3><div class="opt-dlist">'+escapeHtml(unchanged.join(', '))+'</div>':'')
     +((r.models||[]).length?'<h3 class="opt-dh">Models</h3><table class="opt-dtable"><thead><tr><th>Model</th><th>Calls</th><th>Tokens in/out</th><th>Time</th><th>Speed</th><th>Stages</th></tr></thead><tbody>'+models+'</tbody></table>':'')
@@ -10180,6 +10246,8 @@ function optDebriefMarkdown(r){
   L.push('- **Duration:** '+optFormatLeft(r.durationMs||0));
   L.push('- **Files improved:** '+r.improved+' / '+r.examined+' examined, '+((r.unchanged||[]).length)+' unchanged');
   L.push('- **Change size:** +'+r.added+' / -'+r.removed+' characters ('+(r.net>=0?'+':'')+r.net+(r.bytesBefore?', '+(r.net>=0?'+':'')+r.netPct+'% of '+r.bytesBefore+' chars':'' )+')');
+  if(r.linesBefore||r.linesAfter)L.push('- **Lines:** '+(r.linesBefore||0)+' → '+(r.linesAfter||0));
+  L.push('- **Issues:** '+(r.scanFindings||0)+' found, '+(r.improved||0)+' fixed');
   L.push('- **Tokens:** '+optFmtTok(r.tin)+' in / '+optFmtTok(r.tout)+' out over '+(r.calls||0)+' model calls');
   if(r.tps>0)L.push('- **Average speed:** '+Math.round(r.tps)+' tok/s');
   if(r.verifyTotal)L.push('- **Verify:** '+r.verifyPassed+'/'+r.verifyTotal+' passed'+(r.verifyFailed?', '+r.verifyFailed+' failed':''));
@@ -10241,6 +10309,25 @@ function optCopyFallback(text,done){
     if(ok)done();else showToast('Copy failed - select the report manually','error');
   }catch(e){showToast('Copy failed','error')}
 }
+function optTrendRuns(){try{const a=JSON.parse(localStorage.getItem(optStoreKey()+'_runs')||'[]');return Array.isArray(a)?a:[]}catch(e){return[]}}
+function optTrendStats(runs){
+  runs=(runs||[]).slice(0,12);
+  const max=Math.max(1,...runs.map(r=>Math.max(Number(r.examined)||0,Number(r.findings)||0)));
+  return runs.map(r=>({at:r.at||0,improved:Number(r.improved)||0,findings:Number(r.findings)||0,max:max}));
+}
+function renderOptTrend(){
+  const host=document.getElementById('us-opt-trend');if(!host)return;
+  const runs=optTrendRuns().slice(0,12);
+  if(!runs.length){host.innerHTML='<div style="font-size:12px;color:var(--text-muted)">No optimise runs yet — run Optimise in Coding to start the trend.</div>';return}
+  const max=Math.max(1,...runs.map(r=>Math.max(r.examined||0,r.findings||0)));
+  host.innerHTML=runs.map(r=>{
+    const d=new Date(r.at||Date.now());const lbl=(d.getMonth()+1)+'/'+d.getDate();
+    const w1=Math.min(100,Math.round(100*(r.improved||0)/max)),w2=Math.min(100,Math.round(100*(r.findings||0)/max));
+    return '<div style="display:flex;gap:8px;align-items:center;font-size:11px;color:var(--text-secondary);padding:3px 0"><span style="width:44px;flex-shrink:0">'+lbl+'</span>'
+      +'<span style="flex:1;background:var(--bg-tertiary);border-radius:3px;height:10px;position:relative;overflow:hidden" title="'+(r.findings||0)+' issues found"><i style="display:block;height:100%;width:'+w2+'%;background:var(--warning);opacity:.55"></i><i style="display:block;height:100%;width:'+w1+'%;background:var(--success);margin-top:-10px"></i></span>'
+      +'<span style="width:130px;flex-shrink:0">'+(r.improved||0)+' fixed · '+(r.findings||0)+' found</span></div>';
+  }).join('');
+}
 // Execute the FILE_* blocks from one optimiser reply through the real coding
 // pipeline, so validation, versions, approvals and the diff cards all apply
 // exactly as they do for a normal turn.
@@ -10258,6 +10345,46 @@ async function optApplyBlocks(path,reply){
     if(r&&r.ok)applied++;
   }
   return applied?{ok:true,applied:applied}:{ok:false,applied:0};
+}
+async function optFixFinding(path,line,rule,level){
+  if(typeof optRunning!=='undefined'&&optRunning){showToast('An optimise run is already going','info');return}
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  path=String(path||'');if(!path)return;
+  showToast('Fixing '+path+'…','info');
+  try{
+    const cfg=optLoadCfg();
+    const before=await optReadFile(path);
+    if(typeof before!=='string'||!before){showToast('Could not read '+path,'error');return}
+    const brief=path+':'+(line||0)+' ['+(level||'warn')+'] '+(rule||'fix this');
+    const reply=await optRunModel(optModelFor('fix'),buildOptimisePrompt(cfg,{graph:'',findings:brief,timeBudget:'2m'}),1400,'edit');
+    if(!/FILE_(PATCH|CREATE|EDIT):/.test(String(reply))){showToast('The model offered no fix','info');return}
+    const res=await optApplyBlocks(path,reply);
+    if(!res||!res.ok){showToast('Fix did not apply','error');return}
+    const after=await optReadFile(path);
+    const d=(typeof diffCharStats==='function'&&typeof after==='string')?diffCharStats(before,after):{added:0,removed:0};
+    if(!d.added&&!d.removed)showToast('No change — already fine','info');
+    else showToast('Fixed '+path+' (+'+d.added+'/-'+d.removed+')','success');
+    try{await refreshCodingTree()}catch(e){}
+  }catch(e){showToast('Fix failed: '+e.message,'error')}
+}
+async function optFindingsModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Optimise findings</h2></div><div class="modal-body" id="of-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="of-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#of-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#of-body');
+  let items=[];
+  try{items=((optCfg&&optCfg.lastScan)||[]).slice(0,60)}catch(e){}
+  if(!items.length){body.innerHTML='<div class="tool-status">No findings — run an advanced Optimise scan first.</div>';return}
+  body.innerHTML='';
+  items.forEach(f=>{
+    const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px';
+    row.innerHTML='<span style="flex:1;min-width:0"><span style="font-family:var(--mono);color:var(--accent-light)">'+escapeHtml(f.path+(f.line?':'+f.line:''))+'</span><div style="color:var(--text-secondary);font-size:11.5px">'+escapeHtml((f.level?('['+f.level+'] '):'')+(f.rule||''))+'</div></span>';
+    const fix=document.createElement('button');fix.className='btn btn-primary btn-sm';fix.textContent='Fix';
+    fix.onclick=()=>{ov.remove();optFixFinding(f.path,f.line,f.rule,f.level)};
+    row.appendChild(fix);body.appendChild(row);
+  });
 }
 // ---- Optimise: project analysis (no model needed) ----------------------
 // These are cheap, deterministic measurements that make the report specific
