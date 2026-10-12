@@ -4092,29 +4092,32 @@ function fmtCmdResult(result){
   if(!t)return (result.exit_code===0?'(no output)':'(no matches — exit '+result.exit_code+')');
   return escapeHtml(t);
 }
+function diffCharEstimate(a,b){
+  // Line-membership approximation for inputs too big to diff exactly.
+  // Pure arithmetic, no large allocations — safe at any size.
+  const oldSet=new Map(),la=String(a).split('\n'),lb=String(b).split('\n');
+  for(const ln of la)oldSet.set(ln,(oldSet.get(ln)||0)+1);
+  let removed=0;
+  for(const ln of la)removed++;
+  for(const ln of lb){
+    const c=oldSet.get(ln)||0;
+    if(c>0)oldSet.set(ln,c-1);else removed--;
+  }
+  removed=Math.max(0,removed);
+  let added=0;
+  for(const ln of lb)added++;
+  for(const ln of la){const c=oldSet.get(ln)||0;if(c>0)added--;}
+  return{added:Math.max(0,added),removed};
+}
 function diffCharStats(oldText,newText){
   // Character-level added/removed counts for a whole-file edit. Cheap LCS with
-  // a hard size cap: past it the totals are estimated from line counts so a
-  // huge file can never stall the UI. Returns {added,removed} in CHARACTERS.
+  // hard size caps: past them the totals are estimated from line counts so a
+  // huge file can never stall the UI (or blow up the allocator). Returns
+  // {added,removed} in CHARACTERS.
   const a=String(oldText==null?'':oldText),b=String(newText==null?'':newText);
   if(a===b)return{added:0,removed:0};
   const MAX=600000;
-  if(a.length+b.length>MAX){
-    // Too big to diff exactly: approximate by line membership.
-    const oldSet=new Map(),la=a.split('\n'),lb=b.split('\n');
-    for(const ln of la)oldSet.set(ln,(oldSet.get(ln)||0)+1);
-    let removed=0;
-    for(const ln of la)removed++;
-    for(const ln of lb){
-      const c=oldSet.get(ln)||0;
-      if(c>0)oldSet.set(ln,c-1);else removed--;
-    }
-    removed=Math.max(0,removed);
-    let added=0;
-    for(const ln of lb)added++;
-    for(const ln of la){const c=oldSet.get(ln)||0;if(c>0)added--;}
-    return{added:Math.max(0,added),removed};
-  }
+  if(a.length+b.length>MAX)return diffCharEstimate(a,b);
   const n=a.length,m=b.length;
   // Trim the common prefix/suffix first — edits touch one region, so this
   // shrinks the DP from the whole file to just the changed window.
@@ -4126,6 +4129,11 @@ function diffCharStats(oldText,newText){
   const A=a.slice(p,n-s),B=b.slice(p,m-s);
   if(!A.length)return{added:B.length,removed:0};
   if(!B.length)return{added:0,removed:A.length};
+  // The totals cap above does NOT bound this window: a heavy rewrite with
+  // almost no common prefix/suffix would allocate W*H cells (gigabytes) and
+  // die with "Array buffer allocation failed". Cap the window the same way
+  // diffLineOps caps its grid.
+  if(A.length*B.length>4000000)return diffCharEstimate(a,b);
   const W=A.length+1,H=B.length+1;
   const dp=new Uint32Array(W*H);
   for(let i=A.length-1;i>=0;i--){
