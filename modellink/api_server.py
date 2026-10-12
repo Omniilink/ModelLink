@@ -6375,8 +6375,12 @@ def _ws_quiet_block(user, folder):
     return None
 
 
-def _ws_take_lock(user, folder, relpath):
-    """Claim a per-file lock. Returns an error dict or None on success."""
+def _ws_take_lock(user, folder, relpath, quiet=False):
+    """Claim a per-file lock. Returns an error dict or None on success.
+
+    quiet=True skips the feed event: used for transient per-write holds that
+    exist only while a single block executes.
+    """
     qb = _ws_quiet_block(user, folder)
     if qb:
         return qb
@@ -6386,18 +6390,20 @@ def _ws_take_lock(user, folder, relpath):
     if cur and now - cur["at"] < _WS_LOCK_TTL and cur["user_id"] != user["id"]:
         return {"error": "File is locked by another editor", "locked_by": cur["username"], "locked_by_id": cur["user_id"]}
     _ws_locks[key] = {"user_id": user["id"], "username": user.get("username", ""), "at": now}
-    _ws_append_event(folder, {"type": "lock", "path": relpath,
-                              "user": user.get("username", ""), "user_id": user["id"]})
+    if not quiet:
+        _ws_append_event(folder, {"type": "lock", "path": relpath,
+                                  "user": user.get("username", ""), "user_id": user["id"]})
     return None
 
 
-def _ws_release_lock(user, folder, relpath):
+def _ws_release_lock(user, folder, relpath, quiet=False):
     key = _ws_lock_key(folder, relpath)
     cur = _ws_locks.get(key)
     if cur and cur["user_id"] == user["id"]:
         del _ws_locks[key]
-        _ws_append_event(folder, {"type": "unlock", "path": relpath,
-                                  "user": user.get("username", ""), "user_id": user["id"]})
+        if not quiet:
+            _ws_append_event(folder, {"type": "unlock", "path": relpath,
+                                      "user": user.get("username", ""), "user_id": user["id"]})
 
 
 def _ws_cleanup_locks(folder=None):
@@ -7099,6 +7105,7 @@ async def workspace_context(request: Request):
 class WsLockBody(BaseModel):
     path: str = ""
     unlock: bool = False
+    transient: bool = False
 
 
 @app.post("/api/coding/workspace/lock")
@@ -7114,9 +7121,9 @@ async def workspace_lock(request: Request, req: WsLockBody):
     if not _workspace_row(folder):
         return JSONResponse(status_code=400, content={"error": "Not a workspace"})
     if req.unlock:
-        _ws_release_lock(user, folder, req.path)
+        _ws_release_lock(user, folder, req.path, quiet=bool(req.transient))
         return {"status": "ok", "locked": False, "path": req.path}
-    errd = _ws_take_lock(user, folder, req.path)
+    errd = _ws_take_lock(user, folder, req.path, quiet=bool(req.transient))
     if errd:
         code = errd.pop("code", 409) if isinstance(errd, dict) else 409
         return JSONResponse(status_code=code, content=errd)
@@ -7133,7 +7140,7 @@ async def workspace_unlock(request: Request, req: WsLockBody):
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
-    _ws_release_lock(user, folder, req.path)
+    _ws_release_lock(user, folder, req.path, quiet=bool(req.transient))
     return {"status": "ok"}
 
 
