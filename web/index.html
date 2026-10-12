@@ -6762,7 +6762,6 @@ async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!pa
   try{await autoAttachProjectFiles()}catch(e){}
   addCodingSystemMsg('Opened shared project: '+name+'\n'+(data.file_count||0)+' files ready.'+(owner?'\nOwner: '+owner:'')+'\nRole: '+(role==='view'?'view only':'can edit')+'.');
   updateProjectBadge(name,'shared · '+(role==='view'?'view only':'can edit'));closeProjectsModal();try{closeShareModal()}catch(e){}
-  try{if(typeof loadProjectsSidebar==='function')loadProjectsSidebar()}catch(e){}
   if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
