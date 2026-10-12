@@ -1625,7 +1625,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="openGitModal()" title="Git status, diff and commits">Git</button>
           <button onclick="openVersionsModal()" title="Browse and restore earlier project versions (files + chat)">Versions</button>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
-          <button onclick="openOptimiseMenu(event)" id="coding-optimise-btn" title="Optimise this project: audit, speed up, fix errors and add missing features">Optimise</button>
+           <button onclick="openOptimiseMenu(event)" id="coding-optimise-btn" title="Optimise this project: audit, speed up, fix errors and add missing features">Optimise</button>
+           <button onclick="openRunToolsModal()" title="Run tools: retry a todo, diff the run, recipes, tests, git">Run tools</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
            <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
@@ -2528,6 +2529,12 @@ function renderSettings(){
       const sw=document.createElement('div');sw.className='toggle-switch'+(cod[t.key]?' on':'');sw.onclick=()=>{sw.classList.toggle('on');authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[t.key]:sw.classList.contains('on')})})};
       row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
     });
+    [['omnilink_review_mode','Review Mode','Audit only — the AI reports findings and writes nothing'],['omnilink_parallel_todos','Parallel Mode','Up to 3 open todos per reply on different files (default off)']].forEach(t=>{
+      const row=document.createElement('div');row.className='toggle-row';const left=document.createElement('div');left.innerHTML='<div class="toggle-label">'+t[1]+'</div><div class="toggle-desc">'+t[2]+'</div>';
+      const sw=document.createElement('div');let on=false;try{on=localStorage.getItem(t[0])==='1'}catch(e){}sw.className='toggle-switch'+(on?' on':'');
+      sw.onclick=()=>{sw.classList.toggle('on');try{localStorage.setItem(t[0],sw.classList.contains('on')?'1':'0')}catch(e){}showToast(t[1]+(sw.classList.contains('on')?' ON':' OFF'),'info')};
+      row.appendChild(left);row.appendChild(sw);cs.appendChild(row);
+    });
     const vr=document.createElement('div');vr.className='toggle-row';vr.style.alignItems='center';
     vr.innerHTML='<div><div class="toggle-label">Project versions to keep</div><div class="toggle-desc">How many project backups to save in cloud storage before the oldest is deleted (1–50). Each time the AI changes code a version is saved.</div></div>';
     const vwi=document.createElement('input');vwi.type='number';vwi.min='1';vwi.max='50';vwi.step='1';vwi.id='settings-versions-keep';
@@ -3384,7 +3391,8 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   // which is exactly how a run stalls after one file. Make it mandatory and
   // show the exact syntax, and require re-emitting it every round so the
   // checkmarks stay truthful.
-  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If one step covers several files or features, write one item per file/feature — never bundle them into a single big item.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n- ONE TODO AT A TIME: each reply may advance ONLY the first open [ ] item. Never emit FILE_* blocks for files belonging to two different todos in one reply — parallel edits collide (especially with collaborators editing too) and oversized replies get cut off mid-file. Finish the current item (written and verified) before starting the next; if it is blocked, say what blocks it and stop.\n';
+  const oneTodoRule=((typeof codingParallelModeOn==='function')&&codingParallelModeOn())?'PARALLEL MODE (the user enabled it): you may advance up to 3 open [ ] items per reply, but ONLY when they touch DIFFERENT files — never two blocks for the same file in one reply. In a shared workspace only touch files you hold the lock for; leave locked files for later. Finish each item (written and verified) before moving on; if one is blocked, say what blocks it and stop.':'ONE TODO AT A TIME: each reply may advance ONLY the first open [ ] item. Never emit FILE_* blocks for files belonging to two different todos in one reply — parallel edits collide (especially with collaborators editing too) and oversized replies get cut off mid-file. Finish the current item (written and verified) before starting the next; if it is blocked, say what blocks it and stop.';
+  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If one step covers several files or features, write one item per file/feature — never bundle them into a single big item.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n- '+oneTodoRule+'\n';
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
@@ -3396,6 +3404,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   if(codingSplitPending)sysPrompt+='\nTODO GRANULARITY (your TODO_LIST is too coarse): split each open item into its own smaller steps — one file, one feature, or one check per item — and continue working in the SAME reply. Do NOT stop, restart, or ask anything: just emit a finer TODO_LIST with the already-done items still marked [x] and carry on with the next tool block.\n';
   if(wsActive&&currentWorkspace){try{const cr=await authFetch(API+'/api/coding/workspace/context');if(cr.ok){const cd=await cr.json().catch(()=>({}));if(cd&&cd.active){const wsLabel=String(currentWorkspace.name||'collaborative').slice(0,48);const summary=String(cd.summary||'(no recent activity yet)').slice(0,1500);
     sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- A file another user is actively editing (locked) must NOT be modified. If the task needs it, either make ONLY the required change and preserve every other edit intact, or tell the user it is locked.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n- If a write is rejected because the file is locked by someone else, do NOT fight it: re-read the file, wait, or describe the conflict to the user.\n'}}}catch(e){}}
+  if((typeof codingReviewModeOn==='function')&&codingReviewModeOn())sysPrompt+='\nREVIEW MODE (the user enabled it): audit ONLY. Do NOT emit FILE_CREATE/FILE_EDIT/FILE_PATCH/FILE_DELETE blocks and do NOT run state-changing commands — read-only inspection (cat, ls, grep, node --check) is allowed. Deliver a findings list ordered by severity, then end with VERDICT:PASS and a short summary. Never write files in this mode.\n';
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -3720,7 +3729,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4401,15 +4410,40 @@ function renderCodingTodos(){
   if(!bar||!list)return;
   if(!codingTodos||codingTodos.length===0){bar.style.display='none';list.innerHTML='';return}
   bar.style.display='';bar.style.opacity='';list.innerHTML='';
-  for(const t of codingTodos){
-    const item=document.createElement('div');item.className='coding-todo-item'+(t.done?' done':'');
-    const box=document.createElement('span');box.className='todo-box';box.textContent=t.done?'✓':'';
-    const txt=document.createElement('span');txt.className='todo-text';txt.textContent=t.text;
-    item.appendChild(box);item.appendChild(txt);list.appendChild(item);
+  try{
+    const now=Date.now();
+    const done=(codingTodos||[]).filter(t=>t.done),open=(codingTodos||[]).filter(t=>!t.done);
+    if(open.length&&!open[0].startedAt)open[0].startedAt=now;
+    const durs=done.filter(t=>t.doneAt&&t.startedAt).map(t=>t.doneAt-t.startedAt);
+    const avg=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
+    const elapsed=codingRunT0?now-codingRunT0:((codingTodos[0]&&codingTodos[0].createdAt)?now-codingTodos[0].createdAt:0);
+    let head='Todos '+done.length+'/'+codingTodos.length;
+    if(elapsed>0)head+=' · '+fmtDur(elapsed);
+    if(avg>0&&open.length)head+=' · ~'+fmtDur(avg*open.length)+' left';
+    const hd=bar.querySelector('.coding-todo-head');if(hd)hd.textContent=head;
+    for(const t of codingTodos){
+      const item=document.createElement('div');item.className='coding-todo-item'+(t.done?' done':'');
+      const box=document.createElement('span');box.className='todo-box';box.textContent=t.done?'✓':'';
+      const txt=document.createElement('span');txt.className='todo-text';txt.textContent=t.text;
+      item.appendChild(box);item.appendChild(txt);
+      const tm=document.createElement('span');tm.style.cssText='font-size:10px;color:var(--text-muted);flex-shrink:0';
+      if(t.done&&t.doneAt&&t.startedAt)tm.textContent='· '+fmtDur(t.doneAt-t.startedAt);
+      else if(!t.done&&t.startedAt)tm.textContent='· '+fmtDur(now-t.startedAt)+'…';
+      if(tm.textContent)item.appendChild(tm);
+      if(!t.done){const rb=document.createElement('button');rb.textContent='↻';rb.title='Retry this todo on its own';rb.style.cssText='border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;font-size:10px;cursor:pointer;padding:0 5px;flex-shrink:0';rb.onclick=e=>{e.stopPropagation();retryCodingTodo(t.text)};item.appendChild(rb)}
+      list.appendChild(item);
+    }
+  }catch(e){
+    for(const t of codingTodos){
+      const item=document.createElement('div');item.className='coding-todo-item'+(t.done?' done':'');
+      const box=document.createElement('span');box.className='todo-box';box.textContent=t.done?'✓':'';
+      const txt=document.createElement('span');txt.className='todo-text';txt.textContent=t.text;
+      item.appendChild(box);item.appendChild(txt);list.appendChild(item);
+    }
   }
 }
 function completeAllTodos(){
-  (codingTodos||[]).forEach(t=>{t.done=true});
+  const now=Date.now();(codingTodos||[]).forEach(t=>{t.done=true;if(!t.doneAt)t.doneAt=now});
   renderCodingTodos();
   codingTodoGen++;const gen=codingTodoGen;
   setTimeout(()=>{
@@ -4456,7 +4490,7 @@ function autoCheckTodos(){
     }
     for(const t of (codingTodos||[])){
       if(t.done||!t.files||!t.files.length)continue;
-      if(t.files.every(f=>codingTodosWrote.some(w=>base(w)===base(f)))){t.done=true;changed=true}
+      if(t.files.every(f=>codingTodosWrote.some(w=>base(w)===base(f)))){t.done=true;if(!t.doneAt)t.doneAt=Date.now();changed=true}
     }
     if(changed)renderCodingTodos();
   }catch(e){}
@@ -4494,7 +4528,10 @@ function parseCodingTodos(text){  const blocks=[...text.matchAll(/TODO_LIST:\n([
       fresh.push(it);
     }
   }
-  if(fresh.length>0)codingTodos=fresh;
+  if(fresh.length>0){const now=Date.now();const tm={};for(const t of (codingTodos||[])){const k=norm(t.text);if(!tm[k])tm[k]=t}
+    for(const f of fresh){const k=norm(f.text);const old=tm[k];if(old){if(old.createdAt)f.createdAt=old.createdAt;if(old.startedAt)f.startedAt=old.startedAt;if(old.doneAt)f.doneAt=old.doneAt}
+      if(!f.createdAt)f.createdAt=now;if(f.done&&!f.doneAt)f.doneAt=(old&&old.doneAt)||now}
+    codingTodos=fresh}
   const open=fresh.filter(f=>!f.done);
   const longest=open.reduce((m,f)=>Math.max(m,f.text.length),0);
   // Coarse items: ask for a split — but as a STANDING RULE in the system
@@ -4576,6 +4613,202 @@ async function continueCodingAfterAnswer(){
     if(!turn.error&&turn.actions&&turn.actions.actionable)codingAutoContinue().catch(reportCodingLoopCrash);
   }finally{codingStream=false;persistCodingChat()}
 }
+// ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
+// document/test runs, git commit/branch, review + parallel modes ---------------
+var codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null;
+function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
+function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
+function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
+function setParallelMode(on){try{localStorage.setItem('omnilink_parallel_todos',on?'1':'0')}catch(e){}showToast(on?'Parallel mode ON — up to 3 open todos per reply on different files':'Parallel mode OFF — one todo at a time',on?'info':'success')}
+function fmtDur(ms){ms=Math.max(0,Number(ms)||0);const m=Math.floor(ms/60000);if(m<1)return Math.max(1,Math.round(ms/1000))+'s';if(m<60)return m+'m';const h=Math.floor(m/60);return h+'h '+(m%60)+'m'}
+async function captureRunBaseVersion(){try{if(codingRunBaseVer||!codingFolder)return;const r=await authFetch(API+'/api/coding/project-versions');const d=await r.json().catch(()=>({}));if(r.ok&&d&&d.available&&(d.versions||[]).length)codingRunBaseVer=d.versions[0].id||null}catch(e){}}
+async function startCodingLoopWith(text){
+  if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('A run is already in progress','info');return}
+  if(typeof codingStream!=='undefined'&&codingStream){showToast('Wait for the current reply to finish','info');return}
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  try{const chat=document.getElementById('coding-chat');const um=document.createElement('div');um.className='coding-msg user';um.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(um);chat.scrollTop=chat.scrollHeight}catch(e){}
+  try{codingPlanSteps=CODING_DEFAULT_PLAN}catch(e){}
+  codingHistory.push({role:'user',content:text});persistCodingChat();
+  codingAutoContinue().catch(reportCodingLoopCrash);
+}
+async function retryCodingTodo(text){
+  text=String(text||'').trim();
+  if(!text){
+    try{const open=(codingTodos||[]).filter(t=>!t.done);if(open.length)text=open[0].text}catch(e){}
+  }
+  if(!text){showToast('No open todos to retry','info');return}
+  await startCodingLoopWith('Retry this open todo now — it is the current priority. Work ONLY this item this turn, verify it, and mark it done: '+text);
+}
+async function retryCurrentTodo(){await retryCodingTodo('')}
+function runToolsClose(){try{document.getElementById('runtools-modal').remove()}catch(e){}}
+async function openRunToolsModal(){
+  runToolsClose();
+  const stored=((function(){try{return JSON.parse(localStorage.getItem('omnilink_runbranch')||'{}')}catch(e){return{}}})()||{})[codingFolder||''];
+  const br=codingRunBranch||stored;
+  const ov=document.createElement('div');ov.id='runtools-modal';ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='520px';
+  const rows=[
+    ['Retry current todo','Re-run the first open todo on its own.',()=>retryCurrentTodo()],
+    ['Diff this run','Unified diff of everything changed since this run started.',()=>openRunDiffModal()],
+    ['Explain this run','Plain-language summary: what changed, why, how to verify.',()=>explainCodingRun()],
+    ['Save run as recipe','Keep this task plus touched files as a reusable template.',()=>saveRunRecipe()],
+    ['Recipes','Browse, reuse or delete saved run templates.',()=>openRecipesModal()],
+    ['Previous runs','What past runs did — reuse any of them.',()=>openRunHistoryModal()],
+    ['Document project','AI writes README plus useful comments, verified.',()=>docProjectRun()],
+    ['Generate + run tests','AI writes tests, runs them, fixes failures until green.',()=>testsRun()],
+    ['Commit run to git','Commit all changes with an auto message.',()=>commitRunToGit()],
+    [br?('Merge '+br.name):'Branch for this run',br?('Merge the run branch back into '+br.base+'.'):'Work on a git branch, merge when approved.',()=>{if(br)branchRunMerge();else branchRunCreate()}],
+    [(codingReviewModeOn()?'✓ Review mode':'Review mode'),'Audit only — the AI reports findings, writes nothing.',()=>setReviewMode(!codingReviewModeOn())],
+    [(codingParallelModeOn()?'✓ Parallel mode':'Parallel mode'),'Up to 3 open todos per reply on different files (default off).',()=>setParallelMode(!codingParallelModeOn())]
+  ];
+  m.innerHTML='<div class="modal-header"><h2>Run tools</h2></div><div class="modal-body" id="rt-body"></div><div class="modal-actions"><button class="btn btn-ghost" id="rt-close">Close</button></div>';
+  const body=m.querySelector('#rt-body');
+  rows.forEach(r=>{
+    const row=document.createElement('button');row.style.cssText='display:block;width:100%;text-align:left;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:7px;cursor:pointer;font-family:var(--font)';
+    row.innerHTML='<div style="font-size:12.5px;font-weight:600;color:var(--text-primary)">'+escapeHtml(r[0])+'</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">'+escapeHtml(r[1])+'</div>';
+    row.onclick=()=>{runToolsClose();try{r[2]()}catch(e){showToast(e.message,'error')}};
+    body.appendChild(row);
+  });
+  m.querySelector('#rt-close').onclick=runToolsClose;
+  ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)runToolsClose()};
+}
+async function openRunDiffModal(){
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='720px';
+  m.innerHTML='<div class="modal-header"><h2>Diff this run</h2></div><div class="modal-body" id="rd-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="rd-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#rd-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#rd-body');
+  try{
+    if(!codingRunBaseVer)await captureRunBaseVersion();
+    if(!codingRunBaseVer){body.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:12.5px">No baseline version yet — versions save automatically as the AI works. Make an edit, then come back.</div>';return}
+    const r=await authFetch(API+'/api/coding/project-versions/diff?id='+encodeURIComponent(codingRunBaseVer));
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'diff failed');
+    const files=d.files||[];
+    if(!files.length){body.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:12.5px">No differences since this run started.</div>';return}
+    body.innerHTML=files.map(f=>'<div style="font-size:11.5px;color:var(--accent-light);margin:10px 0 3px;font-family:var(--mono)">'+vEsc(f.path)+'</div>'+vDiffHtml(f.diff||'')).join('')+'<div style="font-size:11px;color:var(--text-muted);margin-top:10px">Restore or inspect any version from the Versions tab.</div>';
+  }catch(e){body.innerHTML='<div style="padding:16px;color:var(--error);font-size:12.5px">'+vEsc(e.message)+'</div>'}
+}
+async function explainCodingRun(){
+  if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('Wait for the run to finish first','info');return}
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  const text='Explain this run in plain language: what changed in each file, why, and how to verify it works. Text only — no tool blocks.';
+  try{const chat=document.getElementById('coding-chat');const um=document.createElement('div');um.className='coding-msg user';um.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(um);chat.scrollTop=chat.scrollHeight}catch(e){}
+  codingHistory.push({role:'user',content:text});persistCodingChat();
+  codingStream=true;
+  try{
+    let sysPrompt='You are a coding assistant.';try{sysPrompt=await buildCodingSystemPrompt()}catch(e){}
+    await streamCodingTurn([{role:'system',content:sysPrompt},...codingHistory.slice(-20)]);
+  }finally{codingStream=false;persistCodingChat()}
+}
+function getRecipes(){try{const r=JSON.parse(localStorage.getItem('omnilink_recipes')||'[]');return Array.isArray(r)?r:[]}catch(e){return[]}}
+function saveRecipes(r){try{localStorage.setItem('omnilink_recipes',JSON.stringify(r.slice(0,50)))}catch(e){}}
+async function saveRunRecipe(){
+  const task=String(codingRunTask||'').trim();
+  const files=Object.keys(codingRunTouched||{});
+  if(!task&&!files.length){showToast('Nothing to save yet — run something first','info');return}
+  const recs=getRecipes();
+  const name=(task.length>52?task.slice(0,52)+'…':task)||'Recipe';
+  recs.unshift({name:name,task:task,files:files.slice(0,12),when:Date.now()});
+  saveRecipes(recs);
+  showToast('Recipe saved','success');
+}
+function useRunTemplate(t){
+  try{
+    const inp=document.getElementById('coding-input');
+    if(inp&&t.task){inp.value=t.task;inp.focus();try{autoResize(inp)}catch(e){}}
+    let attached=0;
+    for(const f of (t.files||[])){if(f&&codingAtFiles.indexOf(f)<0){codingAtFiles.push(f);attached++}}
+    try{updateAtIndicator()}catch(e){}
+    showToast(attached?'Template loaded — '+attached+' file'+(attached!==1?'s':'')+' re-attached. Edit and send.':'Template loaded — edit and send.','success');
+  }catch(e){showToast(e.message,'error')}
+}
+async function openRecipesModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='560px';
+  m.innerHTML='<div class="modal-header"><h2>Recipes</h2></div><div class="modal-body" id="rc-body"></div><div class="modal-actions"><button class="btn btn-ghost" id="rc-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#rc-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#rc-body');const recs=getRecipes();
+  if(!recs.length){body.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:12.5px">No recipes yet. Finish a run, then Run tools → Save run as recipe.</div>';return}
+  recs.forEach((r,i)=>{
+    const row=document.createElement('div');row.style.cssText='padding:10px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+    const nm=document.createElement('div');nm.style.cssText='color:var(--text-primary);font-weight:600;margin-bottom:2px';nm.textContent=r.name||'Recipe';row.appendChild(nm);
+    const mt=document.createElement('div');mt.style.cssText='color:var(--text-muted);font-size:11px;margin-bottom:6px';mt.textContent=(r.files||[]).length+' files · '+new Date(r.when||Date.now()).toLocaleString();row.appendChild(mt);
+    const btns=document.createElement('div');btns.style.cssText='display:flex;gap:6px';
+    const use=document.createElement('button');use.className='btn btn-primary btn-sm';use.textContent='Use';use.onclick=()=>{ov.remove();useRunTemplate(r)};btns.appendChild(use);
+    const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=()=>{const rr=getRecipes();rr.splice(i,1);saveRecipes(rr);ov.remove();openRecipesModal()};btns.appendChild(del);
+    row.appendChild(btns);body.appendChild(row);
+  });
+}
+function getRunLog(){try{const r=JSON.parse(localStorage.getItem('omnilink_runlog')||'[]');return Array.isArray(r)?r:[]}catch(e){return[]}}
+function saveRunLog(r){try{localStorage.setItem('omnilink_runlog',JSON.stringify(r.slice(0,20)))}catch(e){}}
+async function openRunHistoryModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='560px';
+  m.innerHTML='<div class="modal-header"><h2>Previous runs</h2></div><div class="modal-body" id="rh-body"></div><div class="modal-actions"><button class="btn btn-ghost" id="rh-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#rh-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#rh-body');const items=getRunLog();
+  if(!items.length){body.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:12.5px">No finished runs recorded yet.</div>';return}
+  items.forEach(it=>{
+    const row=document.createElement('div');row.style.cssText='padding:10px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+    const nm=document.createElement('div');nm.style.cssText='color:var(--text-primary);font-weight:600;margin-bottom:2px';nm.textContent=String(it.task||'Run').slice(0,120);row.appendChild(nm);
+    const mt=document.createElement('div');mt.style.cssText='color:var(--text-muted);font-size:11px;margin-bottom:6px';mt.textContent=(it.files||[]).length+' files · '+new Date(it.when||Date.now()).toLocaleString();row.appendChild(mt);
+    const use=document.createElement('button');use.className='btn btn-primary btn-sm';use.textContent='Reuse';use.onclick=()=>{ov.remove();useRunTemplate(it)};row.appendChild(use);
+    body.appendChild(row);
+  });
+}
+async function docProjectRun(){await startCodingLoopWith('Write or update documentation for this project: a README.md a newcomer can follow plus useful code comments where they add value. Verify every command and path you document actually exists. Work one todo at a time.')}
+async function testsRun(){await startCodingLoopWith('Write automated tests for this project (or the attached files), save them as proper test files, then RUN them and fix failures until green. Work one todo at a time.')}
+async function commitRunToGit(){
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  let msg='Omniilink run';
+  try{const open=(codingTodos||[]).filter(t=>!t.done);const first=open.length?open[0].text:((codingTodos||[]).length?codingTodos[0].text:'');if(first)msg='Omniilink: '+String(first).slice(0,80)}catch(e){}
+  if(!await appConfirm('Commit all changes with message:\n\n'+msg))return;
+  try{
+    const r=await authFetch(API+'/api/coding/git/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,add:'all'})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast(d.error||'Commit failed','error');return}
+    showToast('Committed','success');
+    try{if(document.getElementById('git-modal')&&document.getElementById('git-modal').classList.contains('open'))renderGitPanel()}catch(e){}
+  }catch(e){showToast(e.message,'error')}
+}
+function getRunBranches(){try{const m=JSON.parse(localStorage.getItem('omnilink_runbranch')||'{}');return(m&&typeof m==='object')?m:{}}catch(e){return{}}}
+function saveRunBranches(m){try{localStorage.setItem('omnilink_runbranch',JSON.stringify(m))}catch(e){}}
+async function branchRunCreate(){
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  const nm='omniilink/'+new Date().toISOString().slice(0,16).replace(/[-:T]/g,'').replace(/^(\d{8})(\d{4})$/,'$1-$2');
+  try{
+    const r=await authFetch(API+'/api/coding/git/branch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'create',name:nm})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast(d.error||'Could not create branch','error');return}
+    codingRunBranch={name:d.branch||nm,base:d.previous||''};
+    const mb=getRunBranches();mb[codingFolder]=codingRunBranch;saveRunBranches(mb);
+    showToast('On branch '+codingRunBranch.name+(codingRunBranch.base?' (from '+codingRunBranch.base+')':''),'success');
+    try{if(document.getElementById('git-modal')&&document.getElementById('git-modal').classList.contains('open'))renderGitPanel()}catch(e){}
+  }catch(e){showToast(e.message,'error')}
+}
+async function branchRunMerge(){
+  const stored=(getRunBranches()||{})[codingFolder||''];
+  const br=codingRunBranch||stored;
+  if(!br||!br.name){showToast('No run branch for this folder','info');return}
+  if(!br.base){showToast('Run branch has no recorded base — merge it from the Git tab','info');return}
+  if(!await appConfirm('Merge '+br.name+' into '+br.base+'?'))return;
+  try{
+    const r=await authFetch(API+'/api/coding/git/branch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'merge',name:br.name,base:br.base,message:'Merge '+br.name})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast(d.error||'Merge failed','error');return}
+    showToast('Merged into '+br.base,'success');
+    codingRunBranch=null;const mb=getRunBranches();delete mb[codingFolder||''];saveRunBranches(mb);
+    try{if(document.getElementById('git-modal')&&document.getElementById('git-modal').classList.contains('open'))renderGitPanel()}catch(e){}
+  }catch(e){showToast(e.message,'error')}
+}
+function codingFallbackModel(){try{const opts=(typeof optModelOptions==='function'?optModelOptions():[])||[];const ids=opts.map(o=>typeof o==='string'?o:(o&&o.id)).filter(Boolean);if(selectedModel!=='omniilink')return'omniilink';const alt=ids.find(id=>id&&id!=='omniilink');return alt||null}catch(e){return null}}
+function codingModelError(s){return /5\d\d|429|overloaded|unavailable|rate.?limit|quota|timed out|timeout|connection|network|fetch failed/i.test(String(s||''))}
 // Index of a file block the model opened but never closed (reply cut off at
 // the token limit), or -1. Such a block must NOT be executed: saving its
 // partial content is what produces broken/unworking files. Short tails are
@@ -4602,6 +4835,7 @@ async function processCodingActions(text,msgEl){
   const parseText=truncFrom>=0?text.slice(0,truncFrom):text;
   const codingSettings=await fetchCodingSettings();
   const planMode=!!codingSettings.plan_mode;
+  const reviewMode=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
   const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const webFetches=[...parseText.matchAll(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g)].map(m=>({url:m[0].replace(/^WEB_FETCH:[ \t]*\r?\n?/,'').replace(/\nEND_WEB_FETCH$/,'').trim()}));
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
@@ -4619,13 +4853,13 @@ async function processCodingActions(text,msgEl){
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     const destructive=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructive){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_create&&!planMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))}
+    if(codingSettings.auto_create&&!planMode&&!reviewMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_edit&&!planMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
@@ -4667,7 +4901,7 @@ async function processCodingActions(text,msgEl){
     }catch(e){previewErr=e.message}
     if(previewErr){if(typeof trackPatchMiss==='function')trackPatchMiss(path,previewErr!=='File not found — create it first');toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
@@ -4675,7 +4909,7 @@ async function processCodingActions(text,msgEl){
     ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok){refreshCodingTree();recordDel()}return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree();recordDel()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok){refreshCodingTree();recordDel()}}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
     const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
-    if(codingSettings.auto_command&&!planMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))}
+    if(codingSettings.auto_command&&!planMode&&!reviewMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const wf of webFetches){
@@ -4987,6 +5221,7 @@ async function recordCodingVersion(changes){
   // validator owns that); the server skips the write when nothing changed,
   // so callers can record liberally after every message.
   changes=((changes||codingWrittenPaths)||[]).slice();
+  try{if(typeof codingRunTouched==='undefined')codingRunTouched={};changes.forEach(p=>{if(p)codingRunTouched[p]=1})}catch(e){}
   if(!changes.length)return;
   if(!codingIsServerProject())return;
   try{
@@ -5213,7 +5448,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed '];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed '];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -5854,7 +6089,8 @@ async function codingAutoContinue(){
             :'\nSTOP REPEATING: the identical result is back for a third time on the same action. Change route completely (different tool, different approach), or reply in plain text saying what is blocking you instead of retrying.';
         }
         const stepsLeft=Math.max(0,codingPlanSteps-codingRounds);
-        const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — batch every independent action for the single todo you are working into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
+        const packRule=((typeof codingParallelModeOn==='function')&&codingParallelModeOn())?'batch every independent action for up to 3 open todos on different files':'batch every independent action for the single todo you are working';
+        const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — '+packRule+' into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
         // Writes that changed nothing, and a reply the model already sent.
         // Both are dead ends; naming them stops the exact loop in the logs.
         const noopNote=results.noops>0?'\nNOTE: '+results.noops+' of the file blocks you sent this round (+0 -0) matched the file EXACTLY — they wrote nothing. Those features are NOT implemented. Write the missing code (do not resend what is already there), or state plainly that you are stuck.':'';
@@ -5902,7 +6138,11 @@ async function codingAutoContinue(){
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
         codingStream=false;
         persistCodingChat();
-        if(turn.error)break;
+        if(turn.error){
+          const fb=((typeof codingFallbackUsed==='undefined'||!codingFallbackUsed)&&!codingStopRequested&&(typeof codingModelError==='function')&&codingModelError(turn.error)&&(typeof codingFallbackModel==='function'))?codingFallbackModel():null;
+          if(fb){codingFallbackUsed=true;try{selectModel(fb)}catch(e){}addCodingSystemMsg('The model failed ('+String(turn.error).slice(0,160)+') — continuing with '+fb+'.');codingHistory.push({role:'user',content:'The previous model failed with: '+String(turn.error).slice(0,300)+'\nYou are now running on '+fb+'. Pick up the unfinished work from the open todos.'});persistCodingChat();continue}
+          break;
+        }
         continue;
       }
       // No new tool executions: recover a cut-off reply first, then verify
@@ -6041,6 +6281,7 @@ async function codingAutoContinue(){
   document.getElementById('coding-send-btn').disabled=false;
   settleInputAfterSend('coding-input');
   if(typeof wsActive!=='undefined'&&wsActive&&typeof wsReleaseMine==='function'){try{await wsReleaseMine()}catch(e){}}
+  try{const touched=Object.keys(codingRunTouched||{});if(touched.length&&codingRunTask){const log=getRunLog();log.unshift({task:codingRunTask,files:touched.slice(0,12),when:Date.now()});saveRunLog(log.slice(0,20))}}catch(e){}
   await maybeOfferPendingFiles().catch(()=>{});
   if(troubledRun&&troubledProgress&&!codingStopRequested&&typeof requestFindingLog==='function'){await requestFindingLog().catch(()=>{})}
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});

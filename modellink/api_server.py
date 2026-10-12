@@ -1903,6 +1903,13 @@ class CodingGitCommit(BaseModel):
     add: str = "all"
 
 
+class CodingGitBranch(BaseModel):
+    op: str = ""
+    name: str = ""
+    base: str = ""
+    message: str = ""
+
+
 # ==========================================
 
 # API Endpoints
@@ -12594,6 +12601,54 @@ async def coding_git_commit(request: Request, req: CodingGitCommit):
         return JSONResponse(status_code=409, content={"error": out[:500]})
     logger.info(f"[CODING] git commit user={user.get('username','-')} msg={message[:60]!r}")
     return {"status": "ok", "output": out[:2000]}
+
+
+def _valid_git_branch(name: str) -> bool:
+    n = (name or "").strip()
+    if not n or len(n) > 100 or ".." in n:
+        return False
+    return re.match(r"^[A-Za-z0-9][A-Za-z0-9/_.-]*$", n) is not None
+
+
+@app.post("/api/coding/git/branch")
+async def coding_git_branch(request: Request, req: CodingGitBranch):
+    """Create a branch for an AI run, or merge one back into its base."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    coding_state = _get_coding_state(_safe_username(user["username"]))
+    folder = coding_state.get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(os.path.join(folder, ".git")):
+        return JSONResponse(status_code=404, content={"error": "Not a git repository"})
+    op = (req.op or "").strip().lower()
+    name = (req.name or "").strip()
+    if not _valid_git_branch(name):
+        return JSONResponse(status_code=400, content={"error": "Bad branch name (letters, digits, / _ . -; max 100)"})
+    if op == "create":
+        code, cur = _coding_git(folder, ["rev-parse", "--abbrev-ref", "HEAD"])
+        previous = cur.strip().splitlines()[0] if code == 0 and cur.strip() else ""
+        code, out = _coding_git(folder, ["checkout", "-b", name])
+        if code != 0:
+            return JSONResponse(status_code=409, content={"error": out[:500]})
+        logger.info(f"[CODING] git branch {name} (from {previous}) user={user.get('username','-')}")
+        return {"status": "ok", "branch": name, "previous": previous}
+    if op == "merge":
+        base = (req.base or "").strip()
+        if not _valid_git_branch(base):
+            return JSONResponse(status_code=400, content={"error": "Bad base branch name"})
+        code, out = _coding_git(folder, ["checkout", base])
+        if code != 0:
+            return JSONResponse(status_code=409, content={"error": out[:500]})
+        msg = (req.message or f"Merge {name}").strip()[:200] or f"Merge {name}"
+        code, out = _coding_git(folder, ["merge", "--no-ff", name, "-m", msg])
+        if code != 0:
+            return JSONResponse(status_code=409, content={"error": out[:500]})
+        logger.info(f"[CODING] git merge {name} into {base} user={user.get('username','-')}")
+        return {"status": "ok", "output": out[:2000]}
+    return JSONResponse(status_code=400, content={"error": "op must be 'create' or 'merge'"})
 
 
 def _coding_validate_fetch_url(url: str):
