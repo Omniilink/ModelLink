@@ -565,6 +565,14 @@ def init_db():
     if pcols and "cover" not in pcols:
         conn.execute("ALTER TABLE public_projects ADD COLUMN cover TEXT DEFAULT ''")
     try:
+        fcols = [r["name"] for r in conn.execute("PRAGMA table_info(public_forks)").fetchall()]
+    except Exception:
+        fcols = []
+    if fcols and "listed" not in fcols:
+        conn.execute("ALTER TABLE public_forks ADD COLUMN listed INTEGER DEFAULT 0")
+    if fcols and "note" not in fcols:
+        conn.execute("ALTER TABLE public_forks ADD COLUMN note TEXT DEFAULT ''")
+    try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
     except Exception:
         pass
@@ -1173,18 +1181,25 @@ def get_api_key_id_by_key(key: str) -> Optional[int]:
         conn.close()
 
 
-def get_usage(user_id: Optional[int] = None, range_hours: int = 24) -> dict:
-    """Aggregate usage events for a user (or all users if user_id is None)."""
+def get_usage(user_id: Optional[int] = None, range_hours: int = 24,
+            offset_hours: int = 0) -> dict:
+    """Aggregate usage events for a user (or all users if user_id is None).
+
+    offset_hours shifts the whole window into the past, so callers can fetch
+    the *previous* period for side-by-side comparisons.
+    """
     conn = get_db()
     try:
         now = time.time()
         # SQLite datetime('now') is UTC; our local server may not be UTC —
         # filter with a computed ISO cutoff in UTC to match DEFAULT timestamps.
-        cutoff_utc = datetime.utcfromtimestamp(now - range_hours * 3600).strftime(
+        end = now - max(0, offset_hours) * 3600
+        cutoff_utc = datetime.utcfromtimestamp(end - range_hours * 3600).strftime(
             "%Y-%m-%d %H:%M:%S")
+        end_utc = datetime.utcfromtimestamp(end).strftime("%Y-%m-%d %H:%M:%S")
 
-        where = "WHERE ts >= ?"
-        params: list = [cutoff_utc]
+        where = "WHERE ts >= ? AND ts < ?"
+        params: list = [cutoff_utc, end_utc]
         if user_id is not None:
             where += " AND user_id = ?"
             params.append(user_id)
@@ -1243,8 +1258,8 @@ def get_usage(user_id: Optional[int] = None, range_hours: int = 24) -> dict:
             params,
         ).fetchall()]
 
-        key_params: list = [cutoff_utc]
-        key_where = "WHERE e.ts >= ?"
+        key_params: list = [cutoff_utc, end_utc]
+        key_where = "WHERE e.ts >= ? AND e.ts < ?"
         if user_id is not None:
             key_where += " AND k.user_id = ?"
             key_params.append(user_id)

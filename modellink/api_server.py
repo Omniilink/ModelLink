@@ -5300,16 +5300,20 @@ async def api_websearch(request: Request, q: str = "", limit: int = 8):
 
 
 @app.get("/api/usage")
-async def api_usage(request: Request, range: str = "24h"):
+async def api_usage(request: Request, range: str = "24h", offset: str = "0"):
     user, err = _require_auth(request)
     if err:
         return err
     hours = {"1h": 1, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}.get(range, 24)
+    try:
+        offset_hours = max(0, min(24 * 90, int(offset or 0)))
+    except (TypeError, ValueError):
+        offset_hours = 0
     # Never 500 the whole page for one failing section: return partial data
     # with a degraded flag so the UI renders what it has and says what broke.
     degraded = None
     try:
-        data = get_usage(user_id=user["id"], range_hours=hours)
+        data = get_usage(user_id=user["id"], range_hours=hours, offset_hours=offset_hours)
     except Exception as e:
         logger.error(f"[USAGE] aggregate failed: {e}", exc_info=True)
         degraded = f"usage data unavailable ({e})"
@@ -9816,6 +9820,69 @@ def _public_fork_folder_name(pub_name: str) -> str:
     return base[:80]
 
 
+def _public_fork_disk_files(folder):
+    """Live working-copy files of a fork (for remixing a featured fork).
+
+    Mirrors the tree the user sees: no dotfiles/dot-dirs, no symlinks, no
+    generated dirs. Returns [{path, content}] with text or base64: payloads.
+    """
+    out = []
+    total = 0
+    for root, dirs, names in os.walk(folder, followlinks=False):
+        dirs[:] = sorted(d for d in dirs
+                         if not d.startswith(".") and d not in IGNORE_DIRS
+                         and not os.path.islink(os.path.join(root, d)))
+        for nm in sorted(names):
+            if nm.startswith("."):
+                continue
+            full = os.path.join(root, nm)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            if not rel or ".." in rel.split("/"):
+                continue
+            try:
+                with open(full, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if len(raw) > PUBLIC_FILE_MAX_BYTES:
+                continue
+            total += len(raw)
+            if total > PUBLIC_SUBMIT_MAX_BYTES:
+                break
+            try:
+                c = raw.decode("utf-8")
+            except Exception:
+                c = "base64:" + base64.b64encode(raw).decode()
+            out.append({"path": rel, "content": c})
+    return out
+
+
+def _public_fork_file_list(folder):
+    """[{path, size}] for a fork folder (showcase listings, no contents)."""
+    out = []
+    for root, dirs, names in os.walk(folder, followlinks=False):
+        dirs[:] = sorted(d for d in dirs
+                         if not d.startswith(".") and d not in IGNORE_DIRS
+                         and not os.path.islink(os.path.join(root, d)))
+        for nm in sorted(names):
+            if nm.startswith("."):
+                continue
+            full = os.path.join(root, nm)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            if not rel or ".." in rel.split("/"):
+                continue
+            try:
+                out.append({"path": rel, "size": os.path.getsize(full)})
+            except OSError:
+                continue
+    out.sort(key=lambda f: f["path"])
+    return out
+
+
 def _public_fork_row_for(user_id: int, pid: int):
     conn = get_db()
     try:
@@ -9899,10 +9966,32 @@ async def public_fork(request: Request, pid: int):
         if existing:
             return {"status": "ok", "already": True, "name": existing["name"],
                     "folder": existing["folder"], "submitted": bool(existing["submitted"])}
-        files = conn.execute("SELECT path, content FROM public_project_files WHERE project_id = ? ORDER BY path",
-                             (pid,)).fetchall()
+        source_fork_id = 0
+        try:
+            raw = await request.body()
+            if raw:
+                source_fork_id = int((json.loads(raw) or {}).get("source_fork_id") or 0)
+        except Exception:
+            source_fork_id = 0
+        src_folder = ""
+        if source_fork_id:
+            src = conn.execute("SELECT * FROM public_forks WHERE id = ? AND project_id = ?",
+                               (source_fork_id, pid)).fetchone()
+            if not src or not os.path.isdir(src["folder"] or ""):
+                return JSONResponse(status_code=404, content={"error": "Source fork not found"})
+            if not src["listed"] and src["user_id"] != user["id"] and not user.get("is_admin"):
+                return JSONResponse(status_code=403, content={"error": "That fork is not shared"})
+            src_folder = src["folder"]
+            files = None
+        else:
+            files = conn.execute("SELECT path, content FROM public_project_files WHERE project_id = ? ORDER BY path",
+                                 (pid,)).fetchall()
     finally:
         conn.close()
+    if source_fork_id:
+        files = _public_fork_disk_files(src_folder)
+        if not files:
+            return JSONResponse(status_code=400, content={"error": "Source fork is empty"})
     if not files:
         return JSONResponse(status_code=400, content={"error": "Empty project — nothing to copy"})
     user_id = _safe_username(user["username"])
@@ -9972,10 +10061,112 @@ async def public_my_forks(request: Request):
                             "size_bytes": dir_size, "modified": os.path.getmtime(folder),
                             "public": True, "project_id": f["project_id"],
                             "pub_name": (f["pub_name"] or ""), "author": (f["author"] or ""),
-                            "submitted": bool(f["submitted"]), "fork_id": f["id"]})
+                            "submitted": bool(f["submitted"]), "fork_id": f["id"],
+                            "listed": bool(f["listed"]) if "listed" in f.keys() else False,
+                            "note": (f["note"] or "") if "note" in f.keys() else ""})
             except Exception:
                 continue
         return {"forks": out}
+    finally:
+        conn.close()
+
+
+class ForkShowcaseBody(BaseModel):
+    listed: bool = False
+    note: str = ""
+
+
+@app.post("/api/public/forks/{fid}/showcase")
+async def public_fork_showcase(request: Request, fid: int, req: ForkShowcaseBody):
+    """Feature (or unfeature) my fork on its project's page, with a note.
+
+    Featuring consents to showing the fork's live files to anyone who can
+    see the project. Only the fork owner (or an admin) may change it.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        f = conn.execute("SELECT * FROM public_forks WHERE id = ?", (fid,)).fetchone()
+        if not f:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if f["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("UPDATE public_forks SET listed = ?, note = ? WHERE id = ?",
+                     (1 if req.listed else 0, str(req.note or "")[:300], fid))
+        conn.commit()
+        return {"status": "ok", "listed": bool(req.listed)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/forks")
+async def public_featured_forks(request: Request, pid: int):
+    """Forks the authors chose to showcase under this project."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute(
+            "SELECT f.*, u.username AS by_user FROM public_forks f"
+            " LEFT JOIN users u ON u.id = f.user_id"
+            " WHERE f.project_id = ? AND f.listed = 1 ORDER BY f.created_at DESC LIMIT 50",
+            (pid,)).fetchall()
+        out = []
+        for f in rows:
+            folder = f["folder"] or ""
+            try:
+                files = _public_fork_file_list(folder) if os.path.isdir(folder) else []
+            except Exception:
+                files = []
+            out.append({"fork_id": f["id"], "name": f["name"] or "",
+                        "author": f["by_user"] or "", "note": f["note"] or "",
+                        "submitted": bool(f["submitted"]), "created_at": f["created_at"],
+                        "file_count": len(files), "files": files,
+                        "mine": f["user_id"] == user["id"]})
+        return {"forks": out}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/forks/{fid}/file")
+async def public_featured_fork_file(request: Request, pid: int, fid: int, path: str = ""):
+    """Read one file from a showcased fork (consent = featuring it)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    p = (path or "").strip().lstrip("/").replace("\\", "/")
+    if not p or ".." in p.split("/"):
+        return JSONResponse(status_code=400, content={"error": "Bad path"})
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        f = conn.execute("SELECT * FROM public_forks WHERE id = ? AND project_id = ?",
+                         (fid, pid)).fetchone()
+        if not f:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if not f["listed"] and f["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "That fork is not shared"})
+        full = os.path.join(f["folder"] or "", p)
+        if not _is_within(f["folder"] or "", full) or not os.path.isfile(full):
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        if os.path.getsize(full) > PUBLIC_FILE_MAX_BYTES:
+            return JSONResponse(status_code=400, content={"error": "File too large"})
+        try:
+            with open(full, "r", encoding="utf-8") as fh:
+                return {"path": p, "encoding": "text", "content": fh.read()}
+        except Exception:
+            try:
+                with open(full, "rb") as fh:
+                    return {"path": p, "encoding": "base64",
+                            "content": base64.b64encode(fh.read()).decode()}
+            except OSError as e:
+                return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
         conn.close()
 
@@ -14407,7 +14598,7 @@ def _public_fork_entries(user):
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT f.id AS fork_id, f.name, f.folder, f.submitted, f.created_at,"
+            "SELECT f.id AS fork_id, f.name, f.folder, f.submitted, f.created_at, f.listed, f.note,"
             " p.id AS project_id, p.name AS pub_name, p.username AS author, p.allow_edits"
             " FROM public_forks f LEFT JOIN public_projects p ON p.id = f.project_id"
             " WHERE f.user_id = ? ORDER BY f.created_at DESC", (user["id"],)).fetchall()
@@ -14424,7 +14615,9 @@ def _public_fork_entries(user):
                         "public": True, "project_id": r["project_id"],
                         "pub_name": (r["pub_name"] or ""), "author": (r["author"] or ""),
                         "submitted": bool(r["submitted"]), "fork_id": r["fork_id"],
-                        "can_submit": bool(r["allow_edits"])})
+                        "can_submit": bool(r["allow_edits"]),
+                        "listed": bool(r["listed"]) if "listed" in r.keys() else False,
+                        "note": (r["note"] or "") if "note" in r.keys() else ""})
         except Exception:
             continue
     return out

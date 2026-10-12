@@ -1212,6 +1212,35 @@ pre{max-width:100%}
                 </div>
               </div>
             </div>
+            <div class="usage-grid">
+              <div>
+                <div class="usage-chart-wrap">
+                  <div class="usage-chart-header">Slowest models</div>
+                  <div class="usage-chart-body"><div id="us-slow-models"></div></div>
+                </div>
+              </div>
+              <div>
+                <div class="usage-chart-wrap">
+                  <div class="usage-chart-header">Error rate by model</div>
+                  <div class="usage-chart-body"><div id="us-err-models"></div></div>
+                </div>
+              </div>
+            </div>
+            <div style="margin-bottom:24px">
+              <div class="usage-chart-wrap">
+                <div class="usage-chart-header">Compare periods &amp; export</div>
+                <div class="usage-chart-body">
+                  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+                    <select id="us-cmp-a" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 8px;color:var(--text-primary);font-size:12px"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select>
+                    <span style="font-size:12px;color:var(--text-muted)">vs</span>
+                    <select id="us-cmp-b" style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 8px;color:var(--text-primary);font-size:12px"><option value="prev">Previous period</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select>
+                    <button class="btn btn-ghost btn-sm" onclick="loadUsageCompare()">Compare</button>
+                    <button class="btn btn-ghost btn-sm" onclick="exportUsageCsv()">Export CSV</button>
+                  </div>
+                  <div id="us-compare"><div style="font-size:12px;color:var(--text-muted)">Pick two windows to compare totals side by side.</div></div>
+                </div>
+              </div>
+            </div>
             <div style="margin-bottom:24px">
               <div class="usage-chart-wrap">
                 <div class="usage-chart-header">API Key Usage</div>
@@ -7249,7 +7278,7 @@ async function openPublicFork(fd,p){
     label:name,
     subtitle:'public · fork of '+(p.name||'a published project'),
     role:'edit',shared:true,
-    publicFork:{project_id:fd.project_id||p.id,pub_name:p.name||'',name:name,submitted:!!fd.submitted,fork_id:fd.fork_id}
+    publicFork:{project_id:fd.project_id||p.id,pub_name:p.name||'',name:name,submitted:!!fd.submitted,fork_id:fd.fork_id,listed:!!fd.listed,note:fd.note||''}
   });
   if(data)renderCodingMetaBar();
 }
@@ -7262,6 +7291,11 @@ function renderCodingMetaBar(){
     const span=document.createElement('span');span.style.fontWeight=600;span.textContent='Public copy · fork of '+(currentPublicFork.pub_name||currentPublicFork.name||'a published project');bar.appendChild(span);
     if(currentPublicFork.submitted){const s=document.createElement('span');s.style.color='var(--success)';s.textContent='· submitted to author';bar.appendChild(s)}
     const sub=document.createElement('button');sub.className='btn btn-primary btn-sm';sub.textContent=currentPublicFork.submitted?'Submit updated copy':'Submit changes to author';sub.onclick=()=>openSubmitForkModal();bar.appendChild(sub);
+    if(currentPublicFork.fork_id){
+      const ft=document.createElement('button');ft.className='btn btn-ghost btn-sm';ft.textContent=currentPublicFork.listed?'★ Featured':'☆ Feature';
+      ft.title=currentPublicFork.listed?'Shown under the original project — click to hide':'Show this fork under the original project';
+      ft.onclick=()=>openForkShowcaseModal();bar.appendChild(ft);
+    }
   }else if(currentWorkspace){
     bar.style.display='flex';bar.style.background='var(--accent-dim)';bar.style.border='1px solid var(--accent)';bar.style.color='var(--accent-light)';
     const role=(currentWorkspace.role==='view')?'view only':((currentWorkspace.role==='owner'||currentWorkspace.owner===(window.__user&&window.__user.id))?'you own':'can edit');
@@ -8443,7 +8477,7 @@ async function loadUsage(range,btn){
       warn.textContent='Partial data: '+raw.degraded;
       body.prepend(warn);
     }
-    const widgets=[['summary',()=>renderUsageSummary(data)],['timeseries',()=>renderUsageTimeseries(data)],['tokens',()=>renderUsageTokenBreakdown(data)],['models',()=>renderUsageModelBars(data)],['providers',()=>renderUsageProviderBars(data)],['tokenbars',()=>renderUsageTokenBars(data)],['doughnut',()=>renderUsageDoughnut(data)],['keys',()=>renderUsageKeyTable(data)],['activity',()=>renderUsageActivity(data)]];
+    const widgets=[['summary',()=>renderUsageSummary(data)],['timeseries',()=>renderUsageTimeseries(data)],['tokens',()=>renderUsageTokenBreakdown(data)],['models',()=>renderUsageModelBars(data)],['providers',()=>renderUsageProviderBars(data)],['tokenbars',()=>renderUsageTokenBars(data)],['doughnut',()=>renderUsageDoughnut(data)],['keys',()=>renderUsageKeyTable(data)],['activity',()=>renderUsageActivity(data)],['slowmodels',()=>renderUsageLeaderboard(data)],['errmodels',()=>renderUsageErrors(data)]];
     const failed=[];
     for(const[nm,fn]of widgets){try{fn()}catch(e){failed.push(nm);try{console.error('usage widget failed:',nm,e)}catch(e2){}}}
     if(failed.length)showToast('Some usage panels failed to render: '+failed.join(', '),'error');
@@ -8639,6 +8673,83 @@ function renderUsageActivity(data){
     item.innerHTML='<span class="act-time">'+time+'</span><span class="act-model">'+escapeHtml(model)+'</span><span class="act-provider">'+escapeHtml(provider)+'</span><span class="act-detail">'+dur+'</span><span class="act-status act-status-'+statusClass+'">'+status+'</span>';
     container.appendChild(item);
   });
+}
+function renderUsageLeaderboard(data){
+  const box=document.getElementById('us-slow-models');if(!box)return;
+  const rows=(data.by_model||[]).filter(m=>(m.requests||0)>0)
+    .sort((a,b)=>(b.avg_duration||0)-(a.avg_duration||0)).slice(0,8);
+  if(!rows.length){box.innerHTML='<div style="font-size:12px;color:var(--text-muted)">No data</div>';return}
+  box.innerHTML=rows.map(m=>{
+    const ms=Math.round(m.avg_duration||0);
+    const s=ms>=1000?(ms/1000).toFixed(1)+'s':ms+'ms';
+    return '<div style="display:flex;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)">'+escapeHtml(m.model||'?')+'</span><span style="color:var(--text-muted)">'+(m.requests||0)+' calls</span><span style="width:70px;text-align:right;color:'+(ms>15000?'var(--error)':ms>5000?'var(--warning)':'var(--text-primary)')+'">'+s+' avg</span></div>';
+  }).join('');
+}
+function renderUsageErrors(data){
+  const box=document.getElementById('us-err-models');if(!box)return;
+  const evs=data.recent_events||data.events||[];
+  const by={};
+  for(const e of evs){
+    const m=e.model||'unknown';
+    by[m]=by[m]||{n:0,err:0};
+    by[m].n++;
+    if(Number(e.status||200)>=400)by[m].err++;
+  }
+  const rows=Object.keys(by).map(m=>({model:m,n:by[m].n,err:by[m].err,pct:by[m].n?100*by[m].err/by[m].n:0}))
+    .sort((a,b)=>b.pct-a.pct||b.n-a.n).slice(0,8);
+  if(!rows.length){box.innerHTML='<div style="font-size:12px;color:var(--text-muted)">No recent calls</div>';return}
+  box.innerHTML=rows.map(r=>'<div style="display:flex;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)">'+escapeHtml(r.model)+'</span><span style="color:var(--text-muted)">'+r.n+' calls</span><span style="width:70px;text-align:right;color:'+(r.pct>20?'var(--error)':r.pct>0?'var(--warning)':'var(--success)')+'">'+r.pct.toFixed(1)+'% err</span></div>').join('')
+    +'<div style="font-size:10.5px;color:var(--text-muted);margin-top:6px">Last '+evs.length+' calls in range.</div>';
+}
+const USAGE_RANGE_HOURS={'1h':1,'24h':24,'7d':168,'30d':720};
+async function loadUsageCompare(){
+  const box=document.getElementById('us-compare');if(!box)return;
+  const a=(document.getElementById('us-cmp-a')||{}).value||'24h';
+  const b=(document.getElementById('us-cmp-b')||{}).value||'prev';
+  box.innerHTML='<div class="tool-status">Comparing…</div>';
+  try{
+    const ra=await authFetch(API+'/api/usage?range='+encodeURIComponent(a));
+    if(!ra.ok)throw new Error('load failed');
+    const da=await ra.json();
+    const off=b==='prev'?USAGE_RANGE_HOURS[a]||24:0;
+    const rng=b==='prev'?a:b;
+    const rb=await authFetch(API+'/api/usage?range='+encodeURIComponent(rng)+(off?'&offset='+off:''));
+    if(!rb.ok)throw new Error('load failed');
+    const db=await rb.json();
+    const sa=da.summary||{},sb=db.summary||{};
+    const lblB=b==='prev'?('previous '+a):b;
+    const row=(l,fa,fb,fmt)=>{
+      fmt=fmt||(v=>Math.round(v).toLocaleString());
+      const d=fa-fb;const ds=d===0?'—':((d>0?'+':'')+fmt(d));
+      return '<tr><td>'+l+'</td><td class="num">'+fmt(fa)+'</td><td class="num">'+fmt(fb)+'</td><td class="num" style="color:'+(d===0?'var(--text-muted)':d>0?'var(--success)':'var(--error)')+'">'+ds+'</td></tr>';
+    };
+    box.innerHTML='<table class="usage-key-table"><thead><tr><th></th><th>'+escapeHtml(a)+'</th><th>'+escapeHtml(lblB)+'</th><th>Δ</th></tr></thead><tbody>'
+      +row('Requests',sa.requests||0,sb.requests||0)
+      +row('Tokens',sa.total_tokens||0,sb.total_tokens||0)
+      +row('Avg latency',sa.avg_duration_ms||0,sb.avg_duration_ms||0,v=>v>0?(v/1000).toFixed(1)+'s':'--')
+      +row('Active days',sa.active_days||0,sb.active_days||0)
+      +'</tbody></table>';
+  }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Compare failed: '+escapeHtml(e.message)+'</div>'}
+}
+function usageCsvCell(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}
+async function exportUsageCsv(){
+  showToast('Preparing CSV…','info');
+  try{
+    const r=await authFetch(API+'/api/usage?range='+encodeURIComponent(usageCurrentRange||'24h'));
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    const L=[];
+    L.push('section,bucket,requests,prompt_tokens,completion_tokens');
+    for(const t of (d.timeseries||[]))L.push(['timeseries',t.bucket||'',t.requests||0,t.prompt_tokens||0,t.completion_tokens||0].map(usageCsvCell).join(','));
+    L.push('section,model,requests,tokens,avg_duration_ms');
+    for(const m of (d.by_model||[]))L.push(['by_model',m.model||'',m.requests||0,m.tokens||0,Math.round(m.avg_duration||0)].map(usageCsvCell).join(','));
+    L.push('section,key,requests,tokens,last_used');
+    for(const k of (d.by_key||[]))L.push(['by_key',k.name||k.key||'',k.requests_in_range||0,k.tokens||0,k.last_used_at||''].map(usageCsvCell).join(','));
+    L.push('section,ts,model,provider,tokens,duration_ms,status');
+    for(const e of (d.recent||[]))L.push(['recent',e.ts||'',e.model||'',e.provider||'',(e.prompt_tokens||0)+(e.completion_tokens||0),e.duration_ms||'',e.status||''].map(usageCsvCell).join(','));
+    downloadBlob(new Blob([L.join('\n')],{type:'text/csv'}),'usage-'+(usageCurrentRange||'24h')+'.csv');
+    showToast('CSV downloaded','success');
+  }catch(e){showToast('Export failed: '+e.message,'error')}
 }
 function renderUsageTokenBreakdown(data){
   const canvas=document.getElementById('usage-tokens-canvas');
@@ -12211,8 +12322,98 @@ function renderPublicDetail(p){
   pubRenderComments(wrap,pid,p);
   pubRenderBounties(wrap,pid);
   pubRenderRemixes(wrap,pid);
+  pubRenderForks(wrap,pid,p);
   if(p.mine)pubRenderCoauthors(wrap,pid);
   host.appendChild(wrap);
+}
+async function openForkShowcaseModal(){
+  const fk=currentPublicFork;
+  if(!fk||!fk.fork_id){appAlert('Open one of your forks first');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='440px';
+  m.innerHTML='<div class="modal-header"><h2>'+(fk.listed?'Featured fork':'Feature this fork')+'</h2></div><div class="modal-body">'
+    +'<p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Featuring posts this copy in a Forks subsection inside the original project, with its live files for anyone to browse and remix.</p>'
+    +'<div class="modal-field"><label>Note (optional)</label><input type="text" id="fk-note" placeholder="e.g. dark theme, bug fixes" /></div>'
+    +'<div class="modal-actions"><button class="btn btn-ghost" id="fk-cancel">Cancel</button>'
+    +(fk.listed?'<button class="btn btn-ghost" id="fk-hide">Unfeature</button>':'')
+    +'<button class="btn btn-primary" id="fk-go">'+(fk.listed?'Save note':'Feature it')+'</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#fk-cancel').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  try{m.querySelector('#fk-note').value=fk.note||''}catch(e){}
+  const save=async(listed)=>{
+    const note=m.querySelector('#fk-note').value.trim().slice(0,300);
+    try{
+      const rr=await authFetch(API+'/api/public/forks/'+fk.fork_id+'/showcase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({listed,note})});
+      const dd=await rr.json().catch(()=>({}));
+      if(!rr.ok){showToast(dd.error||'Could not save','error');return}
+      fk.listed=listed;fk.note=note;ov.remove();renderCodingMetaBar();
+      showToast(listed?'Featured under the original project':'Hidden from the original project','success');
+    }catch(e){showToast(e.message,'error')}
+  };
+  m.querySelector('#fk-go').onclick=()=>save(true);
+  const hide=m.querySelector('#fk-hide');if(hide)hide.onclick=()=>save(false);
+}
+async function pubRenderForks(wrap,pid,p){
+  const sec=pubSection(wrap,'Forks');const box=document.createElement('div');box.innerHTML='<div class="tool-status">Loading…</div>';sec.appendChild(box);
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/forks');if(!r.ok)throw new Error('load failed');
+    const d=await r.json();const items=d.forks||[];
+    if(!items.length){box.innerHTML='<div class="tool-status">No featured forks yet — fork it with “Edit a copy”, then Feature it from your copy.</div>';return}
+    box.innerHTML='';
+    items.forEach(f=>{
+      const row=document.createElement('div');row.style.cssText='padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+      const head=document.createElement('div');head.style.cssText='display:flex;gap:8px;align-items:center';
+      const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary);font-weight:600';nm.textContent=(f.name||'Fork')+' · by '+(f.author||'someone')+(f.submitted?' · submitted':'');head.appendChild(nm);row.appendChild(head);
+      if(f.note){const nt=document.createElement('div');nt.style.cssText='color:var(--text-secondary);margin:3px 0';nt.textContent=f.note;row.appendChild(nt)}
+      const files=f.files||[];
+      const meta=document.createElement('div');meta.style.cssText='font-size:11px;color:var(--text-muted);margin:2px 0 6px';meta.textContent=files.length+' file'+(files.length!==1?'s':'');row.appendChild(meta);
+      const btns=document.createElement('div');btns.style.cssText='display:flex;gap:6px';
+      const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.textContent='Files';
+      vw.onclick=()=>pubForkFiles(pid,f);btns.appendChild(vw);
+      if(!p.mine){
+        const rx=document.createElement('button');rx.className='btn btn-primary btn-sm';rx.textContent='Remix this fork';
+        rx.onclick=async()=>{
+          rx.disabled=true;rx.textContent='Copying…';
+          try{
+            const rr=await authFetch(API+'/api/public/projects/'+pid+'/fork',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_fork_id:f.fork_id})});
+            const dd=await rr.json().catch(()=>({}));
+            if(!rr.ok){showToast((dd&&dd.error)||'Could not remix','error');rx.disabled=false;rx.textContent='Remix this fork';return}
+            showToast('Remixed — opening your copy','success');
+            await openPublicFork(dd,p);
+          }catch(e){showToast('Could not remix: '+e.message,'error');rx.disabled=false;rx.textContent='Remix this fork'}
+        };btns.appendChild(rx);
+      }
+      row.appendChild(btns);box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load forks</div>'}
+}
+async function pubForkFiles(pid,f){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>'+escapeHtml((f.name||'Fork')+' · by '+(f.author||'someone'))+'</h2></div><div class="modal-body" id="pf-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="pf-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#pf-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#pf-body');
+  const files=f.files||[];
+  if(!files.length){body.innerHTML='<div class="tool-status">Empty fork.</div>';return}
+  body.innerHTML='';
+  files.forEach(fl=>{
+    const row=document.createElement('div');row.style.cssText='padding:7px 0;border-bottom:1px solid var(--border);font-size:12px';
+    row.innerHTML='<div style="font-family:var(--mono);color:var(--accent-light)">'+escapeHtml(fl.path)+' <span style="color:var(--text-muted)">('+Math.round((fl.size||0)/102.4)/10+' KB)</span></div>';
+    const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.style.marginTop='4px';vw.textContent='View';
+    vw.onclick=async()=>{
+      try{
+        const rr=await authFetch(API+'/api/public/projects/'+pid+'/forks/'+f.fork_id+'/file?path='+encodeURIComponent(fl.path));
+        const dd=await rr.json().catch(()=>({}));
+        if(!rr.ok)throw new Error(dd.error||'load failed');
+        let content=String(dd.content||'');
+        if(dd.encoding==='base64'){try{content=atob(content)}catch(e){content='(binary file)'}}
+        const pre=document.createElement('pre');pre.style.cssText='font-family:var(--mono);font-size:11px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;margin-top:6px';pre.textContent=content.slice(0,20000);
+        row.appendChild(pre);vw.remove();
+      }catch(e){showToast(e.message,'error')}
+    };
+    row.appendChild(vw);body.appendChild(row);
+  });
 }
 function pubSection(wrap,title){
   const s=document.createElement('div');s.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px';
