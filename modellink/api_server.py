@@ -12808,8 +12808,17 @@ def _scan_project_dir(path: str, max_files: int = 50000, max_dirs: int = 20000) 
             with os.scandir(d) as it:
                 for entry in it:
                     try:
+                        # Mirror _build_file_tree visibility so card counts
+                        # match the tree the user sees: no dotfiles/dot-dirs
+                        # (e.g. .omniilink chat + workspace metadata), no
+                        # symlinks, and no big generated dirs.
+                        if entry.name.startswith("."):
+                            continue
+                        if entry.is_symlink():
+                            continue
                         if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
+                            if entry.name not in IGNORE_DIRS:
+                                stack.append(entry.path)
                         elif entry.is_file(follow_symlinks=False):
                             if not any(entry.name.endswith(e) for e in IGNORE_EXTS):
                                 file_count += 1
