@@ -388,6 +388,25 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id);
+
+        CREATE TABLE IF NOT EXISTS workspace_quiet (
+            workspace_id INTEGER PRIMARY KEY,
+            enabled INTEGER DEFAULT 0,
+            start_h INTEGER DEFAULT 22,
+            end_h INTEGER DEFAULT 8
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_invites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER NOT NULL,
+            token TEXT UNIQUE,
+            role TEXT DEFAULT 'edit',
+            created_by INTEGER,
+            expires_at REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token);
     """)
     # Migration: retired features whose tables are no longer used.
     conn.execute("DROP TABLE IF EXISTS scheduled_jobs")

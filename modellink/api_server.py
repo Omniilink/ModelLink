@@ -6306,8 +6306,76 @@ def _ws_lock_key(folder, relpath):
     return (os.path.abspath(folder), os.path.normpath(relpath or "").lstrip("\\/"))
 
 
+_ws_presence = {}
+
+
+def _ws_prune_presence(folder):
+    try:
+        absf = os.path.abspath(folder or "")
+        now = time.time()
+        bucket = _ws_presence.get(absf) or {}
+        for uid in [k for k, v in bucket.items() if now - float(v.get("at") or 0) > 90]:
+            bucket.pop(uid, None)
+        if bucket:
+            _ws_presence[absf] = bucket
+        else:
+            _ws_presence.pop(absf, None)
+    except Exception:
+        pass
+
+
+def _ws_marker(folder):
+    try:
+        with open(os.path.join(folder, ".omniilink", "workspace.json"), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ws_run_cmd(folder):
+    return str(_ws_marker(folder).get("run_cmd") or "")[:500]
+
+
+def _ws_quiet_active(ws_id) -> bool:
+    """True when the workspace is inside owner-set quiet hours (server time)."""
+    try:
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT enabled, start_h, end_h FROM workspace_quiet"
+                             " WHERE workspace_id = ?", (ws_id,)).fetchone()
+        finally:
+            conn.close()
+        if not r or not r["enabled"]:
+            return False
+        h = time.localtime().tm_hour
+        s, e = int(r["start_h"]) % 24, int(r["end_h"]) % 24
+        if s == e:
+            return True
+        if s < e:
+            return s <= h < e
+        return h >= s or h < e
+    except Exception:
+        return False
+
+
+def _ws_quiet_block(user, folder):
+    """Error dict when a non-owner hits quiet hours, else None."""
+    try:
+        ws = _workspace_row(folder)
+        if ws and _ws_quiet_active(ws["id"]) and ws.get("owner_id") != user["id"] \
+                and not user.get("is_admin"):
+            return {"error": "Workspace is in quiet hours — breathing room, no new edits", "code": 423}
+    except Exception:
+        pass
+    return None
+
+
 def _ws_take_lock(user, folder, relpath):
     """Claim a per-file lock. Returns an error dict or None on success."""
+    qb = _ws_quiet_block(user, folder)
+    if qb:
+        return qb
     key = _ws_lock_key(folder, relpath)
     now = time.time()
     cur = _ws_locks.get(key)
@@ -6356,6 +6424,9 @@ def _ws_enforce_lock(user, folder, relpath):
     lock of the same user so long AI actions keep it alive)."""
     if not _workspace_row(folder):
         return None
+    qb = _ws_quiet_block(user, folder)
+    if qb:
+        return JSONResponse(status_code=qb.get("code", 423), content=qb)
     _ws_cleanup_locks(folder)
     key = _ws_lock_key(folder, relpath)
     cur = _ws_locks.get(key)
@@ -6940,7 +7011,7 @@ async def workspace_delete(request: Request, wid: int):
 
 
 @app.get("/api/coding/workspace/poll")
-async def workspace_poll(request: Request, since: float = 0.0):
+async def workspace_poll(request: Request, since: float = 0.0, file: str = ""):
     """Live feed for the open workspace: recent change events, active file
     locks and the current file tree (mtimes compared by the client)."""
     user, err = _require_auth(request)
@@ -6959,8 +7030,18 @@ async def workspace_poll(request: Request, since: float = 0.0):
         since = 0.0
     events = [e for e in _ws_read_events(folder) if float(e.get("at") or 0) > since]
     tree = _build_file_tree(folder, patterns=_read_omniiignore(folder))
+    try:
+        bucket = _ws_presence.setdefault(os.path.abspath(folder), {})
+        bucket[user["id"]] = {"user": user.get("username", ""), "user_id": user["id"],
+                              "at": time.time(), "file": (file or "")[:200]}
+    except Exception:
+        pass
+    _ws_prune_presence(folder)
+    online = sorted((_ws_presence.get(os.path.abspath(folder)) or {}).values(),
+                    key=lambda v: v.get("user") or "")
     return {"active": True, "events": events, "locks": _ws_live_locks(folder),
-            "tree": tree, "since": since,
+            "tree": tree, "since": since, "online": online,
+            "quiet": _ws_quiet_active(ws["id"]), "run_cmd": _ws_run_cmd(folder),
             "token": _ws_pubsub.get(os.path.abspath(folder), 0)}
 
 
@@ -7003,6 +7084,10 @@ async def workspace_context(request: Request):
             lines.append(f"{who} removed {e.get('extra', {}).get('member')}")
         elif t == "workspace_created":
             lines.append(f"{who} created this workspace")
+        elif t == "comment":
+            lines.append(f"{who} commented on {rel}")
+        elif t == "lock_request":
+            lines.append(f"{who} asked for {rel} to be released")
     return {"active": True, "summary": "\n".join(lines[-20:]), "events": events,
             "owner": ws.get("owner_id"), "name": ws.get("name") or ""}
 
@@ -7029,7 +7114,8 @@ async def workspace_lock(request: Request, req: WsLockBody):
         return {"status": "ok", "locked": False, "path": req.path}
     errd = _ws_take_lock(user, folder, req.path)
     if errd:
-        return JSONResponse(status_code=409, content=errd)
+        code = errd.pop("code", 409) if isinstance(errd, dict) else 409
+        return JSONResponse(status_code=code, content=errd)
     return {"status": "ok", "locked": True, "path": req.path}
 
 
@@ -7045,6 +7131,627 @@ async def workspace_unlock(request: Request, req: WsLockBody):
         return access_err
     _ws_release_lock(user, folder, req.path)
     return {"status": "ok"}
+
+
+# ---- Collaborative workspaces, batch 2: presence rides on poll; below are
+# comments, group chat, lock requests, quiet hours, run command, guest
+# invites, shared file history (undo anyone's change) and full export. ----
+_WS_COMMENT_CAP = 200
+_WS_CHAT_CAP = 200
+
+
+def _ws_json_list(folder, name):
+    try:
+        with open(os.path.join(folder, ".omniilink", name), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _ws_json_save(folder, name, items):
+    try:
+        os.makedirs(os.path.join(folder, ".omniilink"), exist_ok=True)
+        with open(os.path.join(folder, ".omniilink", name), "w", encoding="utf-8") as fh:
+            json.dump(items, fh)
+    except Exception:
+        pass
+
+
+def _ws_require_member(user, folder):
+    """(ws, err_response) for the caller's open folder."""
+    ws = _workspace_row(folder)
+    if not ws:
+        return None, JSONResponse(status_code=400, content={"error": "Not a workspace"})
+    if not (_workspace_role(user, folder) or ws.get("owner_id") == user["id"]):
+        return None, JSONResponse(status_code=403, content={"error": "Not a member"})
+    return ws, None
+
+
+def _ws_require_owner(user, ws):
+    if ws.get("owner_id") != user["id"] and not user.get("is_admin"):
+        return JSONResponse(status_code=403, content={"error": "Only the owner can do that"})
+    return None
+
+
+class WsCommentBody(BaseModel):
+    path: str = ""
+    line: int = 0
+    text: str = ""
+
+
+class WsResolveBody(BaseModel):
+    resolved: bool = True
+
+
+@app.post("/api/coding/workspace/lock-request")
+async def workspace_lock_request(request: Request, req: WsLockBody):
+    """Ask whoever holds a file to release it (accept/decline via busy bar)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    rel = (req.path or "").strip().replace("\\", "/").strip("/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    _ws_append_event(folder, {"type": "lock_request", "path": rel,
+                              "user": user.get("username", ""), "user_id": user["id"]})
+    return {"status": "ok"}
+
+
+@app.get("/api/coding/workspace/comments")
+async def workspace_comments_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    return {"comments": _ws_json_list(folder, "workspace-comments.json")}
+
+
+@app.post("/api/coding/workspace/comments")
+async def workspace_comment_add(request: Request, req: WsCommentBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    rel = (req.path or "").strip().replace("\\", "/").strip("/")
+    text = str(req.text or "").strip()[:2000]
+    if not rel or _bad_path(rel) or not text:
+        return JSONResponse(status_code=400, content={"error": "path and text required"})
+    try:
+        line = max(0, int(req.line or 0))
+    except Exception:
+        line = 0
+    items = _ws_json_list(folder, "workspace-comments.json")
+    item = {"id": secrets.token_hex(8), "path": rel, "line": line,
+            "user": user.get("username", ""), "user_id": user["id"],
+            "text": text, "at": time.time(), "resolved": False}
+    items.append(item)
+    _ws_json_save(folder, "workspace-comments.json", items[-_WS_COMMENT_CAP:])
+    _ws_append_event(folder, {"type": "comment", "path": rel,
+                              "user": user.get("username", ""), "user_id": user["id"]})
+    return {"status": "ok", "id": item["id"]}
+
+
+@app.post("/api/coding/workspace/comments/{cid}/resolve")
+async def workspace_comment_resolve(request: Request, cid: str, req: WsResolveBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    items = _ws_json_list(folder, "workspace-comments.json")
+    hit = next((c for c in items if c.get("id") == cid), None)
+    if not hit:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    if hit.get("user_id") != user["id"]:
+        oerr = _ws_require_owner(user, ws)
+        if oerr:
+            return oerr
+    hit["resolved"] = bool(req.resolved)
+    _ws_json_save(folder, "workspace-comments.json", items)
+    return {"status": "ok"}
+
+
+@app.delete("/api/coding/workspace/comments/{cid}")
+async def workspace_comment_delete(request: Request, cid: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    items = _ws_json_list(folder, "workspace-comments.json")
+    hit = next((c for c in items if c.get("id") == cid), None)
+    if not hit:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    if hit.get("user_id") != user["id"]:
+        oerr = _ws_require_owner(user, ws)
+        if oerr:
+            return oerr
+    _ws_json_save(folder, "workspace-comments.json", [c for c in items if c.get("id") != cid])
+    return {"status": "ok"}
+
+
+class WsChatBody(BaseModel):
+    text: str = ""
+
+
+@app.get("/api/coding/workspace/chat")
+async def workspace_chat_list(request: Request):
+    """Group chat for the workspace (private per-user chats are separate)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    return {"messages": _ws_json_list(folder, "workspace-chat.json")}
+
+
+@app.post("/api/coding/workspace/chat")
+async def workspace_chat_post(request: Request, req: WsChatBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    text = str(req.text or "").strip()[:2000]
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "Empty message"})
+    items = _ws_json_list(folder, "workspace-chat.json")
+    items.append({"user": user.get("username", ""), "user_id": user["id"],
+                  "text": text, "at": time.time()})
+    _ws_json_save(folder, "workspace-chat.json", items[-_WS_CHAT_CAP:])
+    return {"status": "ok"}
+
+
+class WsQuietBody(BaseModel):
+    enabled: bool = False
+    start_h: int = 22
+    end_h: int = 8
+
+
+@app.get("/api/workspaces/{wid}/quiet")
+async def workspace_quiet_get(request: Request, wid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    if not (_workspace_role(user, ws["folder"]) or ws.get("owner_id") == user["id"]):
+        return JSONResponse(status_code=403, content={"error": "Not a member"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT enabled, start_h, end_h FROM workspace_quiet"
+                         " WHERE workspace_id = ?", (wid,)).fetchone()
+    finally:
+        conn.close()
+    return {"enabled": bool(r["enabled"]) if r else False,
+            "start_h": int(r["start_h"]) if r else 22,
+            "end_h": int(r["end_h"]) if r else 8,
+            "active": _ws_quiet_active(wid)}
+
+
+@app.post("/api/workspaces/{wid}/quiet")
+async def workspace_quiet_set(request: Request, wid: int, req: WsQuietBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return oerr
+    try:
+        s, e = int(req.start_h) % 24, int(req.end_h) % 24
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Hours must be 0-23"})
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO workspace_quiet (workspace_id, enabled, start_h, end_h)"
+                     " VALUES (?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET"
+                     " enabled=excluded.enabled, start_h=excluded.start_h, end_h=excluded.end_h",
+                     (wid, 1 if req.enabled else 0, s, e))
+        conn.commit()
+    finally:
+        conn.close()
+    _ws_append_event(ws["folder"] or "", {"type": "quiet", "path": "",
+                                          "user": user.get("username", ""), "user_id": user["id"],
+                                          "extra": {"enabled": bool(req.enabled)}})
+    return {"status": "ok", "enabled": bool(req.enabled), "start_h": s, "end_h": e}
+
+
+class WsRunBody(BaseModel):
+    cmd: str = ""
+
+
+@app.get("/api/workspaces/{wid}/run")
+async def workspace_run_get(request: Request, wid: int):
+    """The shared run command — executing it runs server-side, so every
+    member gets the same result."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    if not (_workspace_role(user, ws["folder"]) or ws.get("owner_id") == user["id"]):
+        return JSONResponse(status_code=403, content={"error": "Not a member"})
+    return {"run_cmd": _ws_run_cmd(ws["folder"] or "")}
+
+
+@app.post("/api/workspaces/{wid}/run")
+async def workspace_run_set(request: Request, wid: int, req: WsRunBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return oerr
+    folder = ws["folder"] or ""
+    marker = _ws_marker(folder)
+    marker["run_cmd"] = str(req.cmd or "")[:500]
+    try:
+        os.makedirs(os.path.join(folder, ".omniilink"), exist_ok=True)
+        with open(os.path.join(folder, ".omniilink", "workspace.json"), "w", encoding="utf-8") as fh:
+            json.dump({**marker,
+                       "workspace_id": ws["id"],
+                       "name": marker.get("name") or ws.get("name") or ""}, fh)
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    return {"status": "ok", "run_cmd": marker["run_cmd"]}
+
+
+class WsInviteBody(BaseModel):
+    role: str = "edit"
+    hours: int = 72
+
+
+@app.post("/api/workspaces/{wid}/invites")
+async def workspace_invite_create(request: Request, wid: int, req: WsInviteBody):
+    """Time-limited guest link: anyone logged in who opens it joins."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return oerr
+    role = (req.role or "edit").strip().lower()
+    if role not in ("view", "edit"):
+        return JSONResponse(status_code=400, content={"error": "role must be view or edit"})
+    try:
+        hours = max(1, min(720, int(req.hours or 72)))
+    except Exception:
+        hours = 72
+    token = secrets.token_urlsafe(24)
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO workspace_invites (workspace_id, token, role, created_by, expires_at)"
+                     " VALUES (?, ?, ?, ?, ?)",
+                     (wid, token, role, user["id"], time.time() + hours * 3600))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok", "token": token, "url": "/workspaces?join=" + token,
+            "role": role, "expires_at": time.time() + hours * 3600}
+
+
+@app.get("/api/workspaces/{wid}/invites")
+async def workspace_invite_list(request: Request, wid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return oerr
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT token, role, expires_at, created_at FROM workspace_invites"
+                            " WHERE workspace_id = ? ORDER BY id DESC", (wid,)).fetchall()
+    finally:
+        conn.close()
+    now = time.time()
+    return {"invites": [{"token": r["token"], "url": "/workspaces?join=" + r["token"],
+                         "role": r["role"], "expired": float(r["expires_at"] or 0) <= now,
+                         "expires_at": r["expires_at"], "created_at": r["created_at"]} for r in rows]}
+
+
+@app.delete("/api/workspaces/{wid}/invites/{token}")
+async def workspace_invite_revoke(request: Request, wid: int, token: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return oerr
+    conn = get_db()
+    try:
+        n = conn.execute("DELETE FROM workspace_invites WHERE workspace_id = ? AND token = ?",
+                         (wid, token)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    return {"status": "ok"}
+
+
+class WsJoinBody(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/workspaces/join")
+async def workspace_join(request: Request, req: WsJoinBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    token = (req.token or "").strip()
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "Invite token required"})
+    conn = get_db()
+    try:
+        inv = conn.execute("SELECT * FROM workspace_invites WHERE token = ?", (token,)).fetchone()
+        if not inv:
+            conn.close()
+            return JSONResponse(status_code=404, content={"error": "Invite not found"})
+        if float(inv["expires_at"] or 0) <= time.time():
+            conn.close()
+            return JSONResponse(status_code=410, content={"error": "Invite expired"})
+        ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (inv["workspace_id"],)).fetchone()
+        if not ws:
+            conn.close()
+            return JSONResponse(status_code=404, content={"error": "Workspace gone"})
+        if ws["owner_id"] == user["id"]:
+            conn.close()
+            return {"status": "ok", "already": True, "workspace_id": ws["id"],
+                    "folder": ws["folder"], "name": ws["name"], "role": "owner"}
+        members = conn.execute("SELECT user_id FROM workspace_members WHERE workspace_id = ?",
+                               (ws["id"],)).fetchall()
+        if user["id"] in [m["user_id"] for m in members]:
+            conn.close()
+            return {"status": "ok", "already": True, "workspace_id": ws["id"],
+                    "folder": ws["folder"], "name": ws["name"], "role": "edit"}
+        if len(members) >= _WS_MAX_MEMBERS:
+            conn.close()
+            return JSONResponse(status_code=400, content={
+                "error": f"A workspace can have at most {_WS_MAX_MEMBERS} members besides the owner"})
+        role = (inv["role"] or "edit") if (inv["role"] or "edit") in ("view", "edit") else "edit"
+        conn.execute("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+                     (ws["id"], user["id"], role))
+        conn.commit()
+        folder = ws["folder"] or ""
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _ws_append_event(folder, {"type": "member_added", "path": "",
+                              "user": user.get("username", ""), "user_id": user["id"],
+                              "extra": {"member": user.get("username", ""), "role": role,
+                                        "via": "invite"}})
+    return {"status": "ok", "already": False, "workspace_id": ws["id"],
+            "folder": folder, "name": ws["name"], "role": role}
+
+
+def _ws_user_map(ws_id):
+    """{user_id: username} for the owner + members (for shared history)."""
+    out = {}
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT owner_id FROM workspaces WHERE id = ?", (ws_id,)).fetchone()
+        mem = conn.execute("SELECT user_id FROM workspace_members WHERE workspace_id = ?",
+                           (ws_id,)).fetchall()
+        ids = ({ws["owner_id"]} if ws else set()) | {r["user_id"] for r in mem}
+        ids.discard(None)
+        for uid in ids:
+            u = conn.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
+            if u and u["username"]:
+                out[uid] = u["username"]
+    finally:
+        conn.close()
+    return out
+
+
+@app.get("/api/coding/workspace/file-versions")
+async def workspace_file_versions(request: Request, path: str, author: str = "", ts: float = 0.0):
+    """Every saved version of a file across ALL members (author-labelled) —
+    the basis for undoing anyone's change."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    rel = (path or "").strip().replace("\\", "/").strip("/")
+    if not rel or _bad_path(rel) or not _is_within(folder, os.path.join(folder, rel)):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if author or ts:
+        umap0 = _ws_user_map(ws["id"])
+        who = next((u for u in umap0.values() if u == (author or "").strip()), None)
+        if not who:
+            return JSONResponse(status_code=404, content={"error": "No versions by that author"})
+        try:
+            content = _coding_get_version(_safe_username(who), rel, float(ts or 0), folder)
+        except Exception:
+            content = None
+        if content is None:
+            return JSONResponse(status_code=404, content={"error": "Version not found"})
+        return {"path": rel, "author": who, "ts": ts, "content": content}
+    out = []
+    for uid, uname in _ws_user_map(ws["id"]).items():
+        try:
+            for v in _coding_list_versions(_safe_username(uname), rel, folder):
+                out.append({"ts": v.get("ts"), "size": v.get("size", 0),
+                            "author": uname, "author_id": uid})
+        except Exception:
+            continue
+    out.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return {"path": rel, "versions": out[:100]}
+
+
+class WsRestoreBody(BaseModel):
+    path: str = ""
+    ts: float = 0.0
+    author: str = ""
+
+
+@app.post("/api/coding/workspace/file-restore")
+async def workspace_file_restore(request: Request, req: WsRestoreBody):
+    """Restore a file to any member's saved version (undo anyone's change)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    ws, werr = _ws_require_member(user, folder)
+    if werr:
+        return werr
+    rel = (req.path or "").strip().replace("\\", "/").strip("/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    ck = _ws_enforce_lock(user, folder, rel)
+    if ck:
+        return ck
+    umap = _ws_user_map(ws["id"])
+    author = next((u for u in umap.values() if u == (req.author or "").strip()), None)
+    if not author:
+        return JSONResponse(status_code=404, content={"error": "No versions by that author"})
+    try:
+        ts = float(req.ts or 0)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Bad version"})
+    content = _coding_get_version(_safe_username(author), rel, ts, folder)
+    if content is None:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            current = f.read()
+        if current != content:
+            _coding_save_version(_safe_username(user["username"]), rel, current, folder)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    _ws_log_change(folder, "write", rel, user, user["id"], {"restored": True, "from": author})
+    return {"status": "ok", "path": rel, "size": len(content)}
+
+
+@app.get("/api/workspaces/{wid}/export")
+async def workspace_export(request: Request, wid: int):
+    """Zip the workspace folder INCLUDING its .omniilink history (chats,
+    events, comments) so the whole collaboration travels together."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    folder = ws["folder"] or ""
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    if not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "Folder not found"})
+
+    def collect():
+        files, total = [], 0
+        for root, dirs, names in os.walk(folder, followlinks=False):
+            dirs[:] = sorted(d for d in dirs
+                             if d not in IGNORE_DIRS and not os.path.islink(os.path.join(root, d)))
+            for name in sorted(names):
+                if name.startswith(".") and root != folder:
+                    continue
+                full = os.path.join(root, name)
+                if os.path.islink(full) or not os.path.isfile(full):
+                    continue
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    continue
+                files.append((full, os.path.relpath(full, folder).replace(os.sep, "/")))
+                total += size
+                if total > _ARCHIVE_MAX_BYTES:
+                    return None, 0, "Workspace is too large to export (over 512 MB)"
+                if len(files) > _ARCHIVE_MAX_FILES:
+                    return None, 0, "Too many files (over 200,000)"
+        return files, total, None
+
+    files, _total, err_msg = await asyncio.to_thread(collect)
+    if err_msg:
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Workspace folder is empty"})
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp.close()
+    try:
+        await asyncio.to_thread(_write_project_archive, "zip", files, tmp.name)
+    except Exception as e:
+        _remove_quiet(tmp.name)
+        return JSONResponse(status_code=500, content={"error": f"Export failed: {e}"})
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", (ws.get("name") or "workspace")) or "workspace"
+    return FileResponse(tmp.name, media_type="application/zip",
+                         filename=f"{base}-{time.strftime('%Y%m%d-%H%M%S')}.zip",
+                         background=BackgroundTask(_remove_quiet, tmp.name))
 
 
 @app.get("/api/coding/files")

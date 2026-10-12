@@ -4859,7 +4859,7 @@ async function processCodingActions(text,msgEl){
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
@@ -4901,7 +4901,7 @@ async function processCodingActions(text,msgEl){
     }catch(e){previewErr=e.message}
     if(previewErr){if(typeof trackPatchMiss==='function')trackPatchMiss(path,previewErr!=='File not found — create it first');toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
       msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode&&!reviewMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
@@ -6939,9 +6939,26 @@ async function loadProjectsPage(){
     if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
   }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load projects</p></div>'}
 }
+function getWsTemplates(){try{const r=JSON.parse(localStorage.getItem('omnilink_ws_templates')||'[]');return Array.isArray(r)?r:[]}catch(e){return[]}}
+function saveWsTemplates(t){try{localStorage.setItem('omnilink_ws_templates',JSON.stringify((t||[]).slice(0,20)))}catch(e){}}
 async function loadWorkspacesPage(){
   const body=document.getElementById('workspaces-body');if(!body)return;
   body.innerHTML='';body.style.maxWidth='920px';body.style.margin='0 auto';body.style.width='100%';
+  try{
+    try{
+      const q=new URLSearchParams(location.search||'');
+      const jt=q.get('join');
+      if(jt){
+        try{history.replaceState(null,'',location.pathname)}catch(e){}
+        try{
+          const jr=await authFetch(API+'/api/workspaces/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:jt})});
+          const jd=await jr.json().catch(()=>({}));
+          if(jr.ok&&!jd.already){showToast('Joined workspace','success');await openWorkspace({path:jd.folder,workspace_id:jd.workspace_id,name:jd.name,role:jd.role});return}
+          showToast(jr.ok?'Already in that workspace':(jd.error||'Invite did not work'),jr.ok?'info':'error');
+        }catch(e){showToast(e.message,'error')}
+      }
+    }catch(e){}
+  }catch(e){}
   try{
     const r=await authFetch(API+'/api/workspaces');if(!r.ok)throw new Error('offline');
     const d=await r.json();const items=d.workspaces||[];
@@ -6955,6 +6972,7 @@ async function loadWorkspacesPage(){
       card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(w.name||'workspace')+'</div><div class="proj-meta">'+(w.file_count||0)+' files · '+escapeHtml(roleTxt)+' · '+(w.member_count||0)+' members'+(w.owner_name&&w.role!=='owner'?' · by '+escapeHtml(w.owner_name):'')+'</div></div>';
       const btnRow=document.createElement('div');btnRow.style.cssText='display:flex;gap:6px;flex-shrink:0';
       const op=document.createElement('button');op.className='btn btn-primary btn-sm';op.textContent='Open';op.onclick=async e=>{e.stopPropagation();await openWorkspace({path:wpath,workspace_id:w.workspace_id||w.id,name:w.name,role:w.role})};btnRow.appendChild(op);
+      const ex=document.createElement('button');ex.className='btn btn-ghost btn-sm';ex.textContent='Export';ex.title='Download a zip of the folder plus its chats and history';ex.onclick=e=>{e.stopPropagation();window.open(API+'/api/workspaces/'+(w.workspace_id||w.id)+'/export','_blank')};btnRow.appendChild(ex);
       if(w.role==='owner'){
         const mg=document.createElement('button');mg.className='btn btn-ghost btn-sm';mg.textContent='Members';mg.onclick=async e=>{e.stopPropagation();await openWorkspaceMembersModal(w.workspace_id||w.id);loadWorkspacesPage()};btnRow.appendChild(mg);
         const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async e=>{e.stopPropagation();if(!await appConfirm('Delete this workspace? Members lose access.'))return;await authFetch(API+'/api/workspaces/'+(w.workspace_id||w.id),{method:'DELETE'});showToast('Workspace deleted','info');loadWorkspacesPage()};btnRow.appendChild(del);
@@ -6967,7 +6985,11 @@ async function loadWorkspacesPage(){
     create.innerHTML='<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Create a workspace</div><div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Turn one of your saved projects into a shared workspace, then invite up to 5 people from Members.</div>';
     const fld=document.createElement('select');fld.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);margin-bottom:8px;box-sizing:border-box';create.appendChild(fld);
     const name=document.createElement('input');name.placeholder='Workspace name (optional)';name.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);box-sizing:border-box;margin-bottom:8px';create.appendChild(name);
+    const tmplab=document.createElement('div');tmplab.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:4px';tmplab.textContent='Invite template (optional)';create.appendChild(tmplab);
+    const tmpl=document.createElement('select');tmpl.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);margin-bottom:8px;box-sizing:border-box';create.appendChild(tmpl);
     const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Create & open';create.appendChild(go);
+    const tplFill=()=>{tmpl.innerHTML='';const o0=document.createElement('option');o0.value='';o0.textContent='No template — invite later';tmpl.appendChild(o0);getWsTemplates().forEach((t,i)=>{const o=document.createElement('option');o.value=String(i);o.textContent=t.name+' ('+(t.members||[]).length+' people)';tmpl.appendChild(o)})};
+    tplFill();
     go.onclick=async()=>{
       const folder=fld.value;
       if(!folder){appAlert('Choose a folder for the workspace');return}
@@ -6976,11 +6998,53 @@ async function loadWorkspacesPage(){
         const rr=await authFetch(API+'/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.value.trim(),folder})});
         const dd=await rr.json().catch(()=>({}));
         if(!rr.ok){showToast((dd&&dd.error)||'Could not create workspace','error');go.disabled=false;go.textContent='Create & open';return}
-        showToast('Workspace created','success');
+        let invited=0;
+        if(tmpl.value!==''){
+          const t=getWsTemplates()[parseInt(tmpl.value,10)];
+          if(t&&t.members)for(const mb of t.members){
+            try{
+              const sr=await authFetch(API+'/api/workspaces/'+dd.workspace_id+'/share?role='+((mb.role==='view')?'view':'edit'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:mb.username})});
+              if(sr.ok)invited++;
+            }catch(e){}
+          }
+        }
+        showToast('Workspace created'+(invited?' — invited '+invited:''),'success');
         await openWorkspace({path:folder,workspace_id:dd.workspace_id,name:dd.name||name.value.trim()||'',role:'owner'});
       }catch(e){showToast('Could not create: '+e.message,'error');go.disabled=false;go.textContent='Create & open'}
     };
     body.appendChild(create);
+    const tbox=document.createElement('div');tbox.style.cssText='margin-top:16px;padding:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm)';
+    tbox.innerHTML='<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Workspace templates</div><div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Save who is in a workspace (usernames + roles) and re-invite them in one tap on the next one.</div>';
+    const tnm=document.createElement('input');tnm.placeholder='Template name';tnm.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);box-sizing:border-box;margin-bottom:8px';tbox.appendChild(tnm);
+    const tsrc=document.createElement('select');tsrc.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);margin-bottom:8px;box-sizing:border-box';tbox.appendChild(tsrc);
+    const tsave=document.createElement('button');tsave.className='btn btn-ghost btn-sm';tsave.textContent='Save template from workspace';tbox.appendChild(tsave);
+    const tlist=document.createElement('div');tlist.style.cssText='margin-top:10px';tbox.appendChild(tlist);
+    body.appendChild(tbox);
+    const ownedWs=items.filter(w=>w.role==='owner');
+    tsrc.innerHTML='';ownedWs.forEach(w=>{const o=document.createElement('option');o.value=String(w.workspace_id||w.id);o.textContent=w.name||'workspace';tsrc.appendChild(o)});
+    if(!ownedWs.length){const o=document.createElement('option');o.value='';o.textContent='(you own no workspaces yet)';tsrc.appendChild(o)}
+    const trefresh=()=>{
+      tlist.innerHTML='';
+      getWsTemplates().forEach((t,i)=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=t.name+' · '+(t.members||[]).length+' people';row.appendChild(nm);
+        const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=()=>{const tt=getWsTemplates();tt.splice(i,1);saveWsTemplates(tt);trefresh();tplFill()};row.appendChild(del);
+        tlist.appendChild(row);
+      });
+    };
+    trefresh();
+    tsave.onclick=async()=>{
+      const nm=tnm.value.trim();const wid=tsrc.value;
+      if(!nm){appAlert('Name the template first');return}
+      if(!wid){appAlert('You need to own a workspace to copy members from');return}
+      try{
+        const mr=await authFetch(API+'/api/workspaces/'+wid+'/members');const md=mr.ok?await mr.json().catch(()=>({})):({});
+        const members=(md.members||[]).map(x=>({username:x.username,role:x.role||'edit'})).filter(x=>x.username);
+        if(!members.length){appAlert('That workspace has no members to save');return}
+        const tt=getWsTemplates();tt.unshift({name:nm,members});saveWsTemplates(tt);
+        tnm.value='';trefresh();tplFill();showToast('Template saved','success');
+      }catch(e){showToast(e.message,'error')}
+    };
     const wsPaths={};items.forEach(w=>{const p=w.folder||w.path;if(p)wsPaths[p]=1});
     const opts=[];
     if(codingFolder&&!wsPaths[codingFolder]){try{opts.push({path:codingFolder,label:'Current folder ('+String(codingFolder).split(/[\\/]/).filter(Boolean).pop()+')'})}catch(e){}}
@@ -7052,7 +7116,7 @@ async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!pa
 // ========== PUBLIC FORKS (contribute changes) + COLLABORATIVE WORKSPACES ==========
 var currentPublicFork=null;
 var currentWorkspace=null;
-var wsActive=false,wsTimer=null,wsFolder='',wsLastEvents=0,wsLastSig='',wsLastLocks=[],wsFirstPoll=true,wsLockedPaths=[],wsExplicitLive=false,wsWaitingForLocks=false,wsSkippedLocked=[];
+var wsActive=false,wsTimer=null,wsFolder='',wsLastEvents=0,wsLastSig='',wsLastLocks=[],wsFirstPoll=true,wsLockedPaths=[],wsExplicitLive=false,wsWaitingForLocks=false,wsSkippedLocked=[],wsLastOnline=[],wsRecentEvents=[],wsQuietShown=false,wsFollow=0,wsFollowFile='';
 function treeSig(tree){let s='';const walk=a=>{(a||[]).forEach(n=>{if(n&&n.type==='dir')walk(n.children);else if(n)s+=n.path+'|'+(n.size||0)+';'})};walk(tree);return s}
 async function openCodingFolderPath(path,opts){
   opts=opts||{};
@@ -7114,9 +7178,37 @@ function renderCodingMetaBar(){
   }else if(currentWorkspace){
     bar.style.display='flex';bar.style.background='var(--accent-dim)';bar.style.border='1px solid var(--accent)';bar.style.color='var(--accent-light)';
     const role=(currentWorkspace.role==='view')?'view only':((currentWorkspace.role==='owner'||currentWorkspace.owner===(window.__user&&window.__user.id))?'you own':'can edit');
-    const span=document.createElement('span');span.style.fontWeight=600;span.textContent='Workspace: '+(currentWorkspace.name||'collab')+' · '+role+(wsActive?' · LIVE':'');bar.appendChild(span);
+    const span=document.createElement('span');span.style.fontWeight=600;span.textContent='Workspace: '+(currentWorkspace.name||'collab')+' · '+role+(wsActive?' · LIVE':'')+(wsQuietShown?' · quiet hours':'');bar.appendChild(span);
+    try{
+      const myId=(window.__user&&window.__user.id)||0;
+      const online=(wsLastOnline||[]).filter(o=>o&&o.user_id);
+      if(online.length){
+        const av=document.createElement('span');av.style.cssText='display:inline-flex;align-items:center;gap:4px';
+        online.slice(0,6).forEach(o=>{
+          const nm=String(o.user||'?');let h=0;for(const c of nm)h=(h*31+c.charCodeAt(0))>>>0;
+          const b=document.createElement('span');b.textContent=nm.slice(0,1).toUpperCase();
+          b.title=nm+(o.user_id===myId?' (you)':'')+(o.file?' · viewing '+o.file:'');
+          b.style.cssText='width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;background:hsl('+(h%360)+',55%,42%);border:1px solid var(--border)';
+          av.appendChild(b);
+        });
+        bar.appendChild(av);
+        const others=online.filter(o=>o.user_id!==myId);
+        if(others.length){
+          const fs=document.createElement('select');fs.title='Follow a collaborator';
+          fs.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-size:10px;padding:2px 4px;outline:none;max-width:130px';
+          const off=document.createElement('option');off.value='0';off.textContent='Follow…';fs.appendChild(off);
+          others.forEach(o=>{const op=document.createElement('option');op.value=String(o.user_id);op.textContent='Follow '+(o.user||'them');if(String(wsFollow)===String(o.user_id))op.selected=true;fs.appendChild(op)});
+          fs.onchange=()=>{wsFollow=parseInt(fs.value||'0',10)||0;wsFollowFile='';showToast(wsFollow?'Following '+((others.find(o=>o.user_id===wsFollow)||{}).user||'them'):'Follow off','info')};
+          bar.appendChild(fs);
+        }
+      }
+    }catch(e){}
     const mb=document.createElement('button');mb.className='btn btn-ghost btn-sm';mb.textContent='Members';mb.onclick=()=>openWorkspaceMembersModal(currentWorkspace.id);bar.appendChild(mb);
     const lb=document.createElement('button');lb.className='btn btn-ghost btn-sm';lb.textContent=wsActive?'Pause live':'Go live';lb.onclick=()=>{if(wsActive)wsStopLive();else wsStartLive()};bar.appendChild(lb);
+    const cb=document.createElement('button');cb.className='btn btn-ghost btn-sm';cb.textContent='Chat';cb.onclick=()=>openWsChatModal();bar.appendChild(cb);
+    const rb=document.createElement('button');rb.className='btn btn-ghost btn-sm';rb.textContent='▶ Run';rb.onclick=()=>wsRunShared();bar.appendChild(rb);
+    const hb=document.createElement('button');hb.className='btn btn-ghost btn-sm';hb.textContent='History';hb.onclick=()=>openWsHistoryModal();bar.appendChild(hb);
+    const cm=document.createElement('button');cm.className='btn btn-ghost btn-sm';cm.textContent='Comments';cm.onclick=()=>openWsCommentsModal();bar.appendChild(cm);
   }
   if(typeof wsRenderBusyBar==='function')wsRenderBusyBar(wsLastLocks||[]);
 }
@@ -7236,16 +7328,43 @@ async function openWorkspace(ws){
 }
 function wsStopLive(){wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}renderCodingMetaBar()}
 function wsStartLive(){if(!codingFolder||!currentWorkspace)return;wsActive=true;wsExplicitLive=true;wsFirstPoll=true;wsLastEvents=0;wsLastSig=treeSig(typeof window!=='undefined'&&window.lastCodingTree||[]);renderCodingMetaBar();if(wsTimer)clearInterval(wsTimer);wsTimer=setInterval(wsPollOnce,3000);wsPollOnce()}
+function wsDigest(newest,evs){
+  try{
+    if(!currentWorkspace||!currentWorkspace.id)return;
+    const k='omnilink_ws_seen_'+currentWorkspace.id;
+    let seen=0;try{seen=parseFloat(localStorage.getItem(k)||'0')||0}catch(e){}
+    if(wsFirstPoll&&seen&&newest>seen){
+      const n=evs.filter(e=>parseFloat(e.at||0)>seen).length;
+      if(n>0)addCodingSystemMsg('While you were away: '+n+' change'+(n!==1?'s':'')+'.');
+    }
+    if(newest>seen){try{localStorage.setItem(k,String(newest))}catch(e){}}
+  }catch(e){}
+}
+function wsFollowTick(online){
+  try{
+    if(!wsFollow||!online){if(!wsFollow)wsFollowFile='';return}
+    const t=online.find(o=>o.user_id===wsFollow);
+    const tf=t&&t.file;
+    if(tf&&tf!==wsFollowFile){wsFollowFile=tf;showToast('Following '+(t.user||'them')+' → '+tf,'info');if(typeof openFileActionModal==='function'){try{openFileActionModal(tf)}catch(e){}}}
+    if(!tf)wsFollowFile='';
+  }catch(e){}
+}
 async function wsPollOnce(){
   if(!wsActive||!codingFolder)return;
   try{
-    const r=await authFetch(API+'/api/coding/workspace/poll?since='+encodeURIComponent(String(wsLastEvents||0)));
+    const r=await authFetch(API+'/api/coding/workspace/poll?since='+encodeURIComponent(String(wsLastEvents||0))+'&file='+encodeURIComponent(lastOpenedFile||''));
     if(!r.ok)return;
     const d=await r.json();
     if(!d.active){wsStopLive();renderCodingMetaBar();return}
     const evs=d.events||[];
     let newest=wsLastEvents||0;
     evs.forEach(ev=>{const at=parseFloat(ev.at||0);if(at>newest)newest=at});
+    wsDigest(newest,evs);
+    wsLastOnline=d.online||[];
+    wsRecentEvents=evs.slice(-40);
+    if(d.run_cmd!==undefined&&currentWorkspace)currentWorkspace.run_cmd=d.run_cmd;
+    if(!!d.quiet!==!!wsQuietShown){wsQuietShown=!!d.quiet;renderCodingMetaBar()}
+    wsFollowTick(wsLastOnline);
     if(!wsFirstPoll){
       const myId=(window.__user&&window.__user.id)||null;
       evs.forEach(ev=>{
@@ -7258,6 +7377,9 @@ async function wsPollOnce(){
         else if(ev.type==='delete')msg=who+' deleted '+p;
         else if(ev.type==='rename')msg=who+' renamed '+p+' to '+(ev.to||'?');
         else if(ev.type==='upload')msg=who+' uploaded '+p;
+        else if(ev.type==='comment')msg=who+' commented on '+p;
+        else if(ev.type==='lock_request')msg=who+' asks you to release '+p+' — free it from the busy bar if you are done';
+        else if(ev.type==='quiet')msg='Quiet hours '+((ev.extra&&ev.extra.enabled)?'started — no new edits for now':'ended');
         else if(ev.type==='member_added')msg=who+' added '+(ev.extra&&ev.extra.member||'someone');
         else if(ev.type==='member_removed')msg=who+' removed '+(ev.extra&&ev.extra.member||'someone');
         else if(ev.type==='member_role')msg=who+" changed "+(ev.extra&&ev.extra.member||'a member')+"'s role to "+(ev.extra&&ev.extra.role||'edit');
@@ -7271,12 +7393,29 @@ async function wsPollOnce(){
     wsRenderBusyBar(wsLastLocks);
   }catch(e){}
 }
+async function wsAskRelease(path){
+  try{
+    const r=await authFetch(API+'/api/coding/workspace/lock-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const d=await r.json().catch(()=>({}));
+    showToast(r.ok?'Asked them to release '+path:(d.error||'Could not ask'),r.ok?'info':'error');
+  }catch(e){showToast(e.message,'error')}
+}
+async function wsReleaseFor(path){
+  try{
+    await authFetch(API+'/api/coding/workspace/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const i=wsLockedPaths.indexOf(path);if(i>=0)wsLockedPaths.splice(i,1);
+    showToast('Released '+path,'success');wsRenderBusyBar(wsLastLocks||[]);
+  }catch(e){showToast(e.message,'error')}
+}
 function wsRenderBusyBar(locks){
   locks=locks||[];
   const bar=document.getElementById('coding-meta-bar');
   if(!bar||!currentWorkspace)return;
   let old=bar.querySelector('.ws-busy');
   if(!old){old=document.createElement('span');old.className='ws-busy';bar.appendChild(old)}
+  let box=bar.querySelector('.ws-askbox');
+  if(!box){box=document.createElement('span');box.className='ws-askbox';box.style.cssText='display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap';bar.appendChild(box)}
+  box.innerHTML='';
   if(!wsActive){old.textContent='';return}
   const myId=(window.__user&&window.__user.id)||0;
   const theirs=locks.filter(l=>l.user_id!==myId);
@@ -7286,6 +7425,25 @@ function wsRenderBusyBar(locks){
   theirs.forEach(l=>parts.push((l.user||'someone')+' editing '+l.path));
   old.textContent=parts.length?('● '+parts.join(' · ')):'● live — nobody is editing';
   old.style.color=theirs.length?'#f0a030':'var(--success)';
+  try{
+    theirs.forEach(l=>{
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.style.cssText='font-size:10px;padding:1px 8px';b.textContent='Ask '+(l.user||'them');
+      b.title='Ask them to release '+l.path;b.onclick=()=>wsAskRelease(l.path);box.appendChild(b);
+    });
+    const cutoff=Date.now()/1000-600;
+    const asked={};
+    for(const e of (wsRecentEvents||[])){
+      if(!e||e.type!=='lock_request')continue;
+      if(e.user_id===myId)continue;
+      if(parseFloat(e.at||0)<cutoff)continue;
+      if(wsLockedPaths.indexOf(e.path)<0)continue;
+      if(asked[e.path])continue;asked[e.path]=e;
+    }
+    Object.keys(asked).forEach(p=>{
+      const b=document.createElement('button');b.className='btn btn-primary btn-sm';b.style.cssText='font-size:10px;padding:1px 8px';
+      b.textContent='Release '+p+' ('+(asked[p].user||'asked')+')';b.onclick=()=>wsReleaseFor(p);box.appendChild(b);
+    });
+  }catch(e){}
 }
 async function wsSecureTargets(text,beforeEl){
   wsWaitingForLocks=false;wsSkippedLocked=[];
@@ -7316,6 +7474,10 @@ async function wsSecureTargets(text,beforeEl){
           wsWaitingForLocks=true;
           if(!waited){waited=true;say('Waiting for file "'+f+'" — '+lockedBy+' is editing it. Your turn starts as soon as it is free.')}
         }
+        if(r.status===423){
+          wsWaitingForLocks=false;wsSkippedLocked.push({path:f,by:'quiet hours'});
+          say('File "'+f+'" is in quiet hours — no new edits right now, working on other files instead.');break
+        }
       }catch(e){}
       if(Date.now()-t0>=180000){wsWaitingForLocks=false;wsSkippedLocked.push({path:f,by:lockedBy});say('File "'+f+'" is still locked by '+lockedBy+' after 3 minutes — skipping it for now so the AI works on other files instead.');break}
       await new Promise(res=>setTimeout(res,2500));
@@ -7329,6 +7491,164 @@ async function wsReleaseMine(){
     try{await authFetch(API+'/api/coding/workspace/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})})}catch(e){}
   }
   if(paths.length&&typeof wsRenderBusyBar==='function'){try{wsRenderBusyBar(wsLastLocks||[])}catch(e){}}
+}
+// ---- Workspace batch 2: group chat, comments, shared history/undo, run ----
+var wsChatTimer=null;
+function wsChatStop(){try{if(wsChatTimer){clearInterval(wsChatTimer);wsChatTimer=null}}catch(e){}}
+async function openWsChatModal(){
+  if(!currentWorkspace){showToast('Open a workspace first','info');return}
+  wsChatStop();
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='560px';
+  m.innerHTML='<div class="modal-header"><h2>Workspace chat</h2></div><div class="modal-body"><div id="wsc-list" style="max-height:46vh;overflow:auto;margin-bottom:10px"></div><div style="display:flex;gap:6px"><input id="wsc-inp" placeholder="Message everyone…" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font)"/><button class="btn btn-primary btn-sm" id="wsc-send">Send</button></div></div><div class="modal-actions"><button class="btn btn-ghost" id="wsc-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  const close=()=>{wsChatStop();ov.remove()};
+  m.querySelector('#wsc-close').onclick=close;ov.onclick=e=>{if(e.target===ov)close()};
+  const body=m.querySelector('#wsc-list');
+  const render=msgs=>{
+    if(!msgs.length){body.innerHTML='<div class="tool-status">No messages yet — say hi.</div>';return}
+    body.innerHTML=msgs.map(x=>'<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="font-weight:600;color:var(--accent-light)">'+escapeHtml(x.user||'someone')+'</span> <span style="color:var(--text-muted);font-size:10.5px">'+new Date((x.at||0)*1000).toLocaleString()+'</span><div style="color:var(--text-primary);white-space:pre-wrap;margin-top:2px">'+escapeHtml(x.text||'')+'</div></div>').join('');
+    body.scrollTop=body.scrollHeight;
+  };
+  const refresh=async()=>{try{const r=await authFetch(API+'/api/coding/workspace/chat');if(!r.ok)return;const d=await r.json().catch(()=>({}));render(d.messages||[])}catch(e){}};
+  m.querySelector('#wsc-send').onclick=async()=>{
+    const inp=m.querySelector('#wsc-inp');const t=inp.value.trim();if(!t)return;
+    try{const r=await authFetch(API+'/api/coding/workspace/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});if(!r.ok){const d=await r.json().catch(()=>({}));showToast(d.error||'Could not send','error');return}inp.value='';refresh()}catch(e){showToast(e.message,'error')}
+  };
+  m.querySelector('#wsc-inp').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();m.querySelector('#wsc-send').click()}};
+  await refresh();
+  wsChatTimer=setInterval(()=>{try{if(!document.body.contains(ov)){wsChatStop();return}refresh()}catch(e){}},5000);
+}
+async function openWsCommentsModal(){
+  if(!currentWorkspace){showToast('Open a workspace first','info');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>File comments</h2></div><div class="modal-body" id="wcm-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="wcm-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#wcm-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#wcm-body');
+  const refresh=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/coding/workspace/comments');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=d.comments||[];
+      body.innerHTML='';
+      const form=document.createElement('div');form.style.cssText='padding:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;margin-bottom:12px';
+      form.innerHTML='<div style="font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:8px">New comment</div><div style="display:flex;gap:6px;margin-bottom:8px"><input id="wcm-path" placeholder="file (e.g. app.js)" style="flex:2;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 9px;color:var(--text-primary);font-size:12px;outline:none;font-family:var(--mono)"/><input id="wcm-line" type="number" min="0" placeholder="line" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 9px;color:var(--text-primary);font-size:12px;outline:none"/></div><textarea id="wcm-text" placeholder="@bob check this…" style="width:100%;min-height:64px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font);box-sizing:border-box"></textarea><div style="margin-top:8px"><button class="btn btn-primary btn-sm" id="wcm-add">Add comment</button></div>';
+      try{form.querySelector('#wcm-path').value=lastOpenedFile||''}catch(e){}
+      body.appendChild(form);
+      form.querySelector('#wcm-add').onclick=async()=>{
+        const p=form.querySelector('#wcm-path').value.trim(),ln=parseInt(form.querySelector('#wcm-line').value||'0',10)||0,tx=form.querySelector('#wcm-text').value.trim();
+        if(!p||!tx){appAlert('File and comment text are required');return}
+        try{const rr=await authFetch(API+'/api/coding/workspace/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p,line:ln,text:tx})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not add','error');return}showToast('Comment added','success');refresh()}catch(e){showToast(e.message,'error')}
+      };
+      const open=items.filter(c=>!c.resolved),done=items.filter(c=>c.resolved);
+      const sec=t=>{const s=document.createElement('div');s.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;padding:10px 2px 6px';s.textContent=t;body.appendChild(s)};
+      const myId=(window.__user&&window.__user.id)||0;
+      const isOwner=currentWorkspace&&(currentWorkspace.role==='owner'||currentWorkspace.owner===myId);
+      const row=c=>{
+        const d0=document.createElement('div');d0.style.cssText='padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px;opacity:'+(c.resolved?'.65':'1');
+        d0.innerHTML='<div style="display:flex;gap:8px;align-items:center"><span style="flex:1;font-family:var(--mono);color:var(--accent-light)">'+escapeHtml(c.path)+(c.line?':'+c.line:'')+'</span><span style="font-size:11px;color:var(--text-muted)">'+escapeHtml(c.user||'someone')+'</span></div><div style="color:var(--text-primary);white-space:pre-wrap;margin:4px 0">'+escapeHtml(c.text||'')+'</div>';
+        const btns=document.createElement('div');btns.style.cssText='display:flex;gap:6px;margin-top:4px';
+        if(c.user_id===myId||isOwner){
+          const rs=document.createElement('button');rs.className='btn btn-ghost btn-sm';rs.textContent=c.resolved?'Reopen':'Resolve';
+          rs.onclick=async()=>{await authFetch(API+'/api/coding/workspace/comments/'+c.id+'/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:!c.resolved})});refresh()};btns.appendChild(rs);
+          const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';
+          del.onclick=async()=>{if(!await appConfirm('Delete this comment?'))return;await authFetch(API+'/api/coding/workspace/comments/'+c.id,{method:'DELETE'});refresh()};btns.appendChild(del);
+        }
+        d0.appendChild(btns);return d0;
+      };
+      if(open.length){sec('Open ('+open.length+')');open.forEach(c=>body.appendChild(row(c)))}
+      if(done.length){sec('Resolved ('+done.length+')');done.forEach(c=>body.appendChild(row(c)))}
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No comments yet.';body.appendChild(e)}
+    }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load comments</div>'}
+  };
+  await refresh();
+}
+async function openWsHistoryModal(){
+  if(!currentWorkspace){showToast('Open a workspace first','info');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='680px';
+  m.innerHTML='<div class="modal-header"><h2>Workspace history</h2></div><div class="modal-body"><div style="display:flex;gap:6px;margin-bottom:10px"><input id="wsh-filter" placeholder="filter by file…" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 9px;color:var(--text-primary);font-size:12px;outline:none;font-family:var(--mono)"/></div><div id="wsh-list"></div><div id="wsh-ver" style="margin-top:10px"></div></div><div class="modal-actions"><button class="btn btn-ghost" id="wsh-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#wsh-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const list=m.querySelector('#wsh-list'),ver=m.querySelector('#wsh-ver'),filter=m.querySelector('#wsh-filter');
+  try{filter.value=lastOpenedFile||''}catch(e){}
+  const render=async()=>{
+    list.innerHTML='<div class="tool-status">Loading…</div>';ver.innerHTML='';
+    const q=(filter.value||'').trim().toLowerCase();
+    try{
+      const evs=(wsRecentEvents||[]).slice().reverse().filter(e=>['write','patch','create','delete','rename','upload'].indexOf(e.type)>=0&&(!q||String(e.path||'').toLowerCase().indexOf(q)>=0)).slice(0,60);
+      if(!evs.length){list.innerHTML='<div class="tool-status">No changes'+(q?' matching that file':' yet')+'.</div>';return}
+      list.innerHTML='';
+      evs.forEach(e=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px';
+        row.innerHTML='<span style="flex:1;min-width:0"><span style="font-family:var(--mono);color:var(--accent-light)">'+escapeHtml(e.path||'')+'</span><div style="color:var(--text-muted);font-size:11px">'+escapeHtml(e.user||'someone')+' · '+escapeHtml(e.type)+' · '+new Date((e.at||0)*1000).toLocaleString()+'</div></span>';
+        const hb=document.createElement('button');hb.className='btn btn-ghost btn-sm';hb.textContent='Versions';
+        hb.onclick=()=>wsHistoryVersions(e.path||'',ver);row.appendChild(hb);
+        list.appendChild(row);
+      });
+    }catch(e){list.innerHTML='<div style="color:var(--error);font-size:12px">Could not load history</div>'}
+  };
+  filter.oninput=()=>render();
+  await render();
+}
+async function wsHistoryVersions(path,box){
+  if(!path)return;
+  box.innerHTML='<div class="tool-status">Loading versions of '+escapeHtml(path)+'…</div>';
+  try{
+    const r=await authFetch(API+'/api/coding/workspace/file-versions?path='+encodeURIComponent(path));
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'load failed');
+    const vs=d.versions||[];
+    if(!vs.length){box.innerHTML='<div class="tool-status">No saved versions of this file yet.</div>';return}
+    box.innerHTML='';
+    vs.slice(0,30).forEach(v=>{
+      const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px';
+      row.innerHTML='<span style="flex:1;color:var(--text-secondary)">'+escapeHtml(v.author||'someone')+' · '+new Date((v.ts||0)*1000).toLocaleString()+' · '+Math.round((v.size||0)/102.4)/10+' KB</span>';
+      const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.textContent='View';
+      vw.onclick=async()=>{try{const rr=await authFetch(API+'/api/coding/workspace/file-versions?path='+encodeURIComponent(path)+'&author='+encodeURIComponent(v.author||'')+'&ts='+encodeURIComponent(v.ts));const dd=await rr.json().catch(()=>({}));if(!rr.ok)throw new Error(dd.error||'load failed');box.innerHTML='<div style="font-family:var(--mono);font-size:11px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap">'+escapeHtml(String(dd.content||'').slice(0,20000))+'</div>'}catch(e){showToast(e.message,'error')}};
+      row.appendChild(vw);
+      const rs=document.createElement('button');rs.className='btn btn-primary btn-sm';rs.textContent='Restore';
+      rs.onclick=async()=>{if(!await appConfirm('Restore '+path+' to '+v.author+'’s version? Current content is snapshotted first.'))return;try{const rr=await authFetch(API+'/api/coding/workspace/file-restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,ts:v.ts,author:v.author})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Restore failed','error');return}showToast('Restored','success');try{await refreshCodingTree()}catch(e){}}catch(e){showToast(e.message,'error')}};
+      row.appendChild(rs);
+      box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">'+escapeHtml(e.message)+'</div>'}
+}
+async function wsRunShared(){
+  if(!currentWorkspace){showToast('Open a workspace first','info');return}
+  try{
+    let cmd=currentWorkspace.run_cmd||'';
+    if(!cmd){
+      const r=await authFetch(API+'/api/workspaces/'+currentWorkspace.id+'/run');
+      const d=await r.json().catch(()=>({}));
+      cmd=(d&&d.run_cmd)||'';
+      if(currentWorkspace)currentWorkspace.run_cmd=cmd;
+    }
+    if(!cmd){
+      if(currentWorkspace.role==='owner'){showToast('Set a run command first (Members → Run command)','info');openWorkspaceMembersModal(currentWorkspace.id)}
+      else showToast('The owner has not set a run command yet','info');
+      return;
+    }
+    if(!await appConfirm('Run "'+cmd+'" in the shared folder? Same command, same folder for everyone.'))return;
+    showToast('Running…','info');
+    const out=await codingRunCmd(cmd);
+    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+    const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+    m.innerHTML='<div class="modal-header"><h2>Run: '+escapeHtml(cmd)+'</h2></div><div class="modal-body"><pre style="font-family:var(--mono);font-size:11.5px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:50vh;overflow:auto;white-space:pre-wrap">'+escapeHtml('exit '+out.exit_code+'\n'+(out.stdout||'')+(out.stderr?'\n--- stderr ---\n'+out.stderr:''))+'</pre></div><div class="modal-actions"><button class="btn btn-ghost" id="wsr-close">Close</button></div>';
+    ov.appendChild(m);document.body.appendChild(ov);
+    m.querySelector('#wsr-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  }catch(e){showToast(e.message,'error')}
+}
+function wsNoteConflict(path){
+  try{
+    if(!wsActive||!currentWorkspace||!path)return;
+    const myId=(window.__user&&window.__user.id)||0;
+    const now=Date.now()/1000;
+    const hit=(wsRecentEvents||[]).find(e=>(e.type==='write'||e.type==='patch'||e.type==='create')&&e.path===path&&e.user_id!==myId&&(now-parseFloat(e.at||0))<600);
+    if(hit)addCodingSystemMsg('Heads up: '+(hit.user||'a collaborator')+' edited '+path+' recently — double-check you did not overwrite their work. Re-read it if unsure.');
+  }catch(e){}
 }
 async function openWorkspacesModal(){
   const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
@@ -7439,6 +7759,55 @@ async function openWorkspaceMembersModal(wid){
         };
         add.appendChild(go);
         body.appendChild(add);
+        const qsec=document.createElement('div');qsec.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;padding:14px 2px 8px';qsec.textContent='Quiet hours (no new edits)';body.appendChild(qsec);
+        const qbox=document.createElement('div');qbox.style.cssText='display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)';qbox.innerHTML='<div class="tool-status">Loading…</div>';body.appendChild(qbox);
+        try{
+          const qr=await authFetch(API+'/api/workspaces/'+wid+'/quiet');const qd=qr.ok?await qr.json().catch(()=>({})):({});
+          qbox.innerHTML='';
+          const mkNum=(v)=>{const i=document.createElement('input');i.type='number';i.min='0';i.max='23';i.value=String(v);i.style.cssText='width:56px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text-primary);font-size:12px;outline:none';return i};
+          const en=document.createElement('input');en.type='checkbox';en.checked=!!qd.enabled;en.title='Enable quiet hours';
+          const s0=mkNum(qd.start_h!=null?qd.start_h:22),e0=mkNum(qd.end_h!=null?qd.end_h:8);
+          const ql=document.createElement('span');ql.textContent='from';const ql2=document.createElement('span');ql2.textContent='to (server time)';
+          const qs=document.createElement('button');qs.className='btn btn-primary btn-sm';qs.textContent='Save';
+          qs.onclick=async()=>{try{const rr=await authFetch(API+'/api/workspaces/'+wid+'/quiet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:en.checked,start_h:parseInt(s0.value,10)||0,end_h:parseInt(e0.value,10)||0})});const dd=await rr.json().catch(()=>({}));showToast(rr.ok?'Quiet hours saved':(dd.error||'Could not save'),rr.ok?'success':'error')}catch(e){showToast(e.message,'error')}};
+          qbox.appendChild(en);qbox.appendChild(ql);qbox.appendChild(s0);qbox.appendChild(ql2);qbox.appendChild(e0);qbox.appendChild(qs);
+        }catch(e){qbox.innerHTML='<div class="tool-status">Could not load quiet hours</div>'}
+        const rsec=document.createElement('div');rsec.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;padding:14px 2px 8px';rsec.textContent='Shared run command';body.appendChild(rsec);
+        const rbox=document.createElement('div');rbox.style.cssText='display:flex;gap:6px';rbox.innerHTML='<div class="tool-status">Loading…</div>';body.appendChild(rbox);
+        try{
+          const gr=await authFetch(API+'/api/workspaces/'+wid+'/run');const gd=gr.ok?await gr.json().catch(()=>({})):({});
+          rbox.innerHTML='';
+          const ri=document.createElement('input');ri.placeholder='e.g. python app.py  (empty = no shared run)';ri.value=(gd&&gd.run_cmd)||'';ri.style.cssText='flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12px;outline:none;font-family:var(--mono)';rbox.appendChild(ri);
+          const rs=document.createElement('button');rs.className='btn btn-primary btn-sm';rs.textContent='Save';
+          rs.onclick=async()=>{try{const rr=await authFetch(API+'/api/workspaces/'+wid+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:ri.value.trim()})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Run command saved','success');if(currentWorkspace&&currentWorkspace.id===wid)currentWorkspace.run_cmd=dd.run_cmd||''}catch(e){showToast(e.message,'error')}};
+          rbox.appendChild(rs);
+        }catch(e){rbox.innerHTML='<div class="tool-status">Could not load run command</div>'}
+        const isec=document.createElement('div');isec.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;padding:14px 2px 8px';isec.textContent='Guest links (join without picking a username)';body.appendChild(isec);
+        const ibox=document.createElement('div');ibox.innerHTML='<div class="tool-status">Loading…</div>';body.appendChild(ibox);
+        const iload=async()=>{
+          try{
+            const lr=await authFetch(API+'/api/workspaces/'+wid+'/invites');const ld=lr.ok?await lr.json().catch(()=>({})):({});
+            ibox.innerHTML='';
+            const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-bottom:8px';
+            const rs2=document.createElement('select');rs2.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 6px;color:var(--text-primary);font-size:12px';['edit','view'].forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v==='edit'?'can edit':'view only';rs2.appendChild(o)});
+            const hrs=document.createElement('select');hrs.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 6px;color:var(--text-primary);font-size:12px';[[24,'1 day'],[72,'3 days'],[168,'7 days']].forEach(h=>{const o=document.createElement('option');o.value=String(h[0]);o.textContent=h[1];if(h[0]===72)o.selected=true;hrs.appendChild(o)});
+            const mk=document.createElement('button');mk.className='btn btn-primary btn-sm';mk.textContent='New link';
+            mk.onclick=async()=>{try{const rr=await authFetch(API+'/api/workspaces/'+wid+'/invites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:rs2.value,hours:parseInt(hrs.value,10)})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not create','error');return}showToast('Guest link created','success');iload()}catch(e){showToast(e.message,'error')}};
+            form.appendChild(rs2);form.appendChild(hrs);form.appendChild(mk);ibox.appendChild(form);
+            const invs=(ld&&ld.invites)||[];
+            if(!invs.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No guest links yet.';ibox.appendChild(e)}
+            invs.forEach(iv=>{
+              const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:11.5px';
+              const tx=document.createElement('span');tx.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-secondary)';tx.textContent=iv.url+(iv.expired?' (expired)':'');row.appendChild(tx);
+              const cp=document.createElement('button');cp.className='btn btn-ghost btn-sm';cp.textContent='Copy';
+              cp.onclick=async()=>{try{await navigator.clipboard.writeText(location.origin+iv.url);showToast('Link copied','success')}catch(e){showToast('Copy failed — select it manually','error')}};row.appendChild(cp);
+              const rv=document.createElement('button');rv.className='btn btn-ghost btn-sm';rv.textContent='Revoke';
+              rv.onclick=async()=>{await authFetch(API+'/api/workspaces/'+wid+'/invites/'+encodeURIComponent(iv.token),{method:'DELETE'});iload()};row.appendChild(rv);
+              ibox.appendChild(row);
+            });
+          }catch(e){ibox.innerHTML='<div class="tool-status">Could not load invites</div>'}
+        };
+        iload();
       }
     }catch(e){body.innerHTML='<div style="color:var(--error);padding:20px;font-size:12px">Could not load members</div>'}
   };
