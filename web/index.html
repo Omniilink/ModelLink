@@ -3397,6 +3397,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
+  if(sysPrompt.indexOf('EDIT POLICY')<0)sysPrompt+='\nEDIT POLICY (the tool ladder — follow it strictly):\n- Changing an EXISTING file? The default tool is FILE_PATCH with a 3-8 line OLD block copied verbatim from a fresh read. Always reach for this first.\n- A full-file FILE_CREATE or FILE_EDIT over an existing path is allowed ONLY when (a) over 40% of the file lines change, (b) the file is under 40 lines, or (c) the file needs restructuring throughout. Anything else gets converted to targeted edits or bounced back for patching.\n- Never FILE_CREATE over a path that already exists — that is an edit, not a creation.\n- A small touch-up via full rewrite is the most expensive mistake you can make: it burns output, truncates mid-file, and overwrites collaborator changes.\n';
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
@@ -3730,7 +3731,7 @@ async function sendCodingMessage(){
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4854,13 +4855,13 @@ async function processCodingActions(text,msgEl){
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     const destructive=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructive){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_create&&!planMode&&!reviewMode&&!destructive){const result=await codingWriteFile(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))}
+    if(codingSettings.auto_create&&!planMode&&!reviewMode&&!destructive){const result=await codingWriteFileSmart(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFile(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFileSmart(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
@@ -6131,9 +6132,11 @@ async function codingAutoContinue(){
           patchMissFails=0;
           try{patchMissByFile={}}catch(e){}
         }
+        let rewriteNote='';
+        if((typeof rewriteFails!=='undefined')&&rewriteFails>=2)rewriteNote='\nSTOP REWRITING WHOLE FILES: '+rewriteFails+' of your recent writes replaced the entire file while changing under 35% of its lines. That wastes output, risks truncation mid-file, and stomps collaborator edits. Use FILE_PATCH with a 3-8 line OLD block copied verbatim from a fresh read — full rewrites are only for changes over 40% or files under 40 lines.';
         const lockHits=(results.text.match(/locked by another editor/gi)||[]).length;
         const lockNote=lockHits>0?'\nLOCKED FILES: '+lockHits+' of your blocks were rejected because a collaborator is editing those files — those changes did NOT land. Do not resend them. Continue with a todo that uses OTHER files; re-read a locked file before touching it again later. Work ONE todo at a time.':'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+rewriteNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -6507,6 +6510,81 @@ function locatePatchTarget(current,oldText){
     if(s!=null)return{start:off[s],end:off[s+inner.length],how:'blank-lines'};
   }
   return null;
+}
+var rewriteFails=0;
+function rewriteChangeRatio(curLines,nextLines){
+  const ops=diffLineOps(curLines.map(l=>String(l).replace(/\r$/,'')),nextLines.map(l=>String(l).replace(/\r$/,'')));
+  if(!ops)return 1;
+  let changed=0;for(const o of ops)if(o.t!==' ')changed++;
+  return changed/Math.max(1,curLines.length);
+}
+function rewriteAsHunks(current,next){
+  // Convert a full-file rewrite into targeted hunk edits when the change is
+  // small. Returns {ok, patched, hunks, ratio} or {ok:false, ratio} (caller
+  // falls back to the full write). Every hunk must locate UNIQUELY or the
+  // whole conversion is abandoned — never guess a location.
+  const curLines=String(current==null?'':current).split('\n');
+  const nextLines=String(next==null?'':next).split('\n');
+  const ratio=rewriteChangeRatio(curLines,nextLines);
+  const fail={ok:false,ratio:ratio};
+  if(curLines.length<=40||ratio>=0.35)return fail;
+  const hunks=unifiedDiffHunks(curLines.map(l=>l.replace(/\r$/,'')),nextLines.map(l=>l.replace(/\r$/,'')),3);
+  if(!hunks||!hunks.length||hunks.length>12)return fail;
+  const usesCRLF=curLines.some(l=>l.length&&l.charCodeAt(l.length-1)===13);
+  const flat=curLines.map(l=>l.replace(/\r$/,''));
+  const mapped=[];
+  for(const h of hunks){
+    const oldBlock=[];
+    for(const r of h.rows){
+      if(r.t===' '||r.t==='-')oldBlock.push(String(r.text).replace(/\r$/,''));
+    }
+    if(!oldBlock.length)return fail;
+    const keys=oldBlock.map(PATCH_KEY_INDENT);
+    const s=patchUniqueLineMatch(flat,keys,PATCH_KEY_INDENT);
+    if(s==null)return fail;
+    const fresh=flat.slice(s,s+oldBlock.length);
+    // Single pass: '-' consumes an old line, ' ' keeps it, '+' inserts.
+    // (A separate pointer for context lines misaligns after any deletion.)
+    const newBlock=[];
+    let k=0;
+    for(const r of h.rows){
+      if(r.t==='-'){k++}
+      else if(r.t===' '){newBlock.push(fresh[k]);k++}
+      else newBlock.push(String(r.text).replace(/\r$/,'')+(usesCRLF?'\r':''));
+    }
+    mapped.push({s:s,oldN:oldBlock.length,newBlock:newBlock});
+  }
+  mapped.sort((a,b)=>b.s-a.s);
+  const out=flat.slice();
+  for(const m of mapped)out.splice(m.s,m.oldN,...m.newBlock);
+  let patched=out.join('\n');
+  if(usesCRLF)patched=patched.replace(/\n/g,'\r\n').replace(/\r\r\n/g,'\r\n');
+  const norm=s=>String(s).replace(/\r/g,'').replace(/\n$/,'');
+  if(norm(patched)!==norm(next))return fail;
+  return{ok:true,patched:patched,hunks:hunks.length,ratio:ratio};
+}
+async function codingWriteFileSmart(path,content){
+  // Full-content writes to an EXISTING file go through the rewrite guard:
+  // small changes become targeted hunk edits (collision-safe, cheap),
+  // big ones proceed as full rewrites with a nudge to use FILE_PATCH.
+  // Returns codingWriteFile-shaped results plus {converted,hunks,ratio,note}.
+  let current=null,exists=false;
+  try{current=await codingReadFile(path);exists=true}catch(e){}
+  if(!exists)return codingWriteFile(path,content);
+  const conv=rewriteAsHunks(current,content);
+  if(conv.ok){
+    const r=await codingWriteFile(path,conv.patched);
+    if(r&&r.ok&&!r.noop){r.converted=true;r.hunks=conv.hunks;
+      r.note='Applied as '+conv.hunks+' targeted edit'+(conv.hunks!==1?'s':'')+' instead of a full rewrite — use FILE_PATCH next time.'}
+    return r;
+  }
+  const r=await codingWriteFile(path,content);
+  if(r&&r.ok&&!r.noop&&conv.ratio<0.35){
+    rewriteFails++;
+    r.note='Full rewrite changed only '+Math.round(conv.ratio*100)+'% of '+path+' — use FILE_PATCH next time.';
+  }
+  r.ratio=conv.ratio;r.mode='full';
+  return r;
 }
 // Replace OLD with NEW using the shared matcher. Returns {ok, patched, how} or
 // {ok:false, error}.
