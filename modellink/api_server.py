@@ -6690,8 +6690,22 @@ async def workspace_create(request: Request, req: WorkspaceCreate):
     folder = (req.folder or "").strip()
     if _bad_path(folder):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    if not _is_within(_user_data_dir(_safe_username(user["username"])), folder):
-        return JSONResponse(status_code=403, content={"error": "You can only turn your own folders into a workspace"})
+    udir = _user_data_dir(_safe_username(user["username"]))
+    if not (_is_within(udir, folder) and os.path.isdir(folder)):
+        # The folder pickers send a saved project *name* — resolve it to the
+        # real folder inside this user's projects directory.
+        pname = folder.replace("\\", "/").strip("/")
+        if _valid_project_name(pname):
+            pdir = os.path.join(_user_projects_dir(_safe_username(user["username"])), pname)
+            if os.path.isdir(pdir) and _is_within(
+                    _user_projects_dir(_safe_username(user["username"])), pdir):
+                folder = pdir
+            else:
+                return JSONResponse(status_code=400, content={"error": "Folder not found"})
+        elif not _is_within(udir, folder):
+            return JSONResponse(status_code=403, content={"error": "You can only turn your own folders into a workspace"})
+        else:
+            return JSONResponse(status_code=400, content={"error": "Folder not found"})
     if not os.path.isdir(folder):
         return JSONResponse(status_code=400, content={"error": "Folder not found"})
     name = (req.name or os.path.basename(folder.rstrip("\\/"))).strip()[:120]

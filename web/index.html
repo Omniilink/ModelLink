@@ -968,8 +968,12 @@ pre{max-width:100%}
         <span>Coding</span><span class="beta-tag">Beta</span>
       </div>
       <div class="nav-item" data-view="projects">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 012-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         <span>Projects</span><span class="beta-tag">Beta</span>
+      </div>
+      <div class="nav-item" data-view="workspaces">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        <span>Workspaces</span><span class="beta-tag">Beta</span>
       </div>
       <div class="nav-cap">Tools</div>
       <div class="nav-item" data-view="more">
@@ -1451,6 +1455,10 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
       <div class="view-panel" id="projects-view">
         <div class="view-header"><h2>Projects <span class="beta-tag">Beta</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
         <div class="view-body" id="projects-body"></div>
+      </div>
+      <div class="view-panel" id="workspaces-view">
+        <div class="view-header"><h2>Workspaces <span class="beta-tag">Beta</span></h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
+        <div class="view-body" id="workspaces-body"></div>
       </div>
       <div class="view-panel" id="more-view">
         <div class="view-header"><h2>More Tools</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
@@ -1942,6 +1950,7 @@ function switchView(view){
   document.getElementById('coding-view').classList.toggle('open',view==='coding');
   document.getElementById('providers-view').classList.toggle('open',view==='providers');
   document.getElementById('projects-view').classList.toggle('open',view==='projects');
+  document.getElementById('workspaces-view').classList.toggle('open',view==='workspaces');
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
@@ -1954,14 +1963,14 @@ function switchView(view){
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
-  if(view==='projects')loadProjectsPage();if(view==='prompts')renderPromptsPage();
+  if(view==='projects')loadProjectsPage();if(view==='workspaces')loadWorkspacesPage();if(view==='prompts')renderPromptsPage();
   if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',workspaces:'Workspaces',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -2012,7 +2021,7 @@ function preloadAppViews(){
   // deliberately skipped.
   const loaders=[
     ['settings',()=>loadSettingsData()],['api',()=>loadApiPage()],
-    ['providers',()=>renderProvidersPage()],['projects',()=>loadProjectsPage()],
+    ['providers',()=>renderProvidersPage()],['projects',()=>loadProjectsPage()],['workspaces',()=>loadWorkspacesPage()],
     ['prompts',()=>renderPromptsPage()],['usage',()=>loadUsage('24h')],
     ['agents',()=>admLoadAgents()],['tutorial',()=>setupOllamaLoad()],
   ];
@@ -6662,13 +6671,6 @@ async function loadProjectsPage(){
         card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view only':'can edit')+'</div></div>';
         card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openSharedProject(p)});
         body.appendChild(card)}}
-    const wss=data.workspaces||[];
-    if(wss.length){const wsTitle=document.createElement('div');wsTitle.className='usage-section-title';wsTitle.style.margin='16px 0 8px';wsTitle.textContent='Collaborative workspaces';body.appendChild(wsTitle);
-      for(const w of wss){const card=document.createElement('div');card.className='project-card'+(codingFolder===w.path?' active':'');
-        const badge=(w.role==='owner'?'you own · ':((w.role==='view')?'view only · ':'can edit · '))+'(+'+w.member_count+' members)';
-        card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(w.name)+'</div><div class="proj-meta">'+w.file_count+' files · workspace · '+escapeHtml(badge)+'</div></div>';
-        card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openWorkspace(w)});
-        body.appendChild(card)}}
     const puf=data.public_edits||[];
     if(puf.length){const puTitle=document.createElement('div');puTitle.className='usage-section-title';puTitle.style.margin='16px 0 8px';puTitle.textContent='Public — my copies';body.appendChild(puTitle);
       for(const f of puf){const card=document.createElement('div');card.className='project-card'+(codingFolder===f.path?' active':'');
@@ -6679,6 +6681,60 @@ async function loadProjectsPage(){
     const remoteBox=document.createElement('div');body.appendChild(remoteBox);
     if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
   }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load projects</p></div>'}
+}
+async function loadWorkspacesPage(){
+  const body=document.getElementById('workspaces-body');if(!body)return;
+  body.innerHTML='';body.style.maxWidth='920px';body.style.margin='0 auto';body.style.width='100%';
+  try{
+    const r=await authFetch(API+'/api/workspaces');if(!r.ok)throw new Error('offline');
+    const d=await r.json();const items=d.workspaces||[];
+    const intro=document.createElement('div');intro.style.cssText='font-size:12px;color:var(--text-secondary);margin-bottom:16px';intro.textContent='Code in the same folder with up to 5 people: everyone gets a private chat, changes arrive live, per-file locks stop edits colliding, and the AI sees what collaborators just did.';body.appendChild(intro);
+    const listTitle=document.createElement('div');listTitle.className='usage-section-title';listTitle.style.margin='4px 0 8px';listTitle.textContent=items.length?('Your workspaces ('+items.length+')'):'Your workspaces';body.appendChild(listTitle);
+    if(!items.length){const e=document.createElement('div');e.style.cssText='text-align:center;padding:24px;color:var(--text-muted)';e.innerHTML='<p style="font-size:13px;margin-bottom:4px">No workspaces yet</p><p style="font-size:12px">Create your first one below — pick one of your saved projects and invite people.</p>';body.appendChild(e)}
+    for(const w of items){
+      const wpath=w.folder||w.path||'';
+      const card=document.createElement('div');card.className='project-card'+(codingFolder&&codingFolder===wpath?' active':'');
+      const roleTxt=w.role==='owner'?'you own':(w.role==='view'?'view only':'can edit');
+      card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(w.name||'workspace')+'</div><div class="proj-meta">'+(w.file_count||0)+' files · '+escapeHtml(roleTxt)+' · '+(w.member_count||0)+' members'+(w.owner_name&&w.role!=='owner'?' · by '+escapeHtml(w.owner_name):'')+'</div></div>';
+      const btnRow=document.createElement('div');btnRow.style.cssText='display:flex;gap:6px;flex-shrink:0';
+      const op=document.createElement('button');op.className='btn btn-primary btn-sm';op.textContent='Open';op.onclick=async e=>{e.stopPropagation();await openWorkspace({path:wpath,workspace_id:w.workspace_id||w.id,name:w.name,role:w.role})};btnRow.appendChild(op);
+      if(w.role==='owner'){
+        const mg=document.createElement('button');mg.className='btn btn-ghost btn-sm';mg.textContent='Members';mg.onclick=async e=>{e.stopPropagation();await openWorkspaceMembersModal(w.workspace_id||w.id);loadWorkspacesPage()};btnRow.appendChild(mg);
+        const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async e=>{e.stopPropagation();if(!await appConfirm('Delete this workspace? Members lose access.'))return;await authFetch(API+'/api/workspaces/'+(w.workspace_id||w.id),{method:'DELETE'});showToast('Workspace deleted','info');loadWorkspacesPage()};btnRow.appendChild(del);
+      }
+      card.appendChild(btnRow);
+      card.addEventListener('click',async e=>{if(e.target.closest('button'))return;await openWorkspace({path:wpath,workspace_id:w.workspace_id||w.id,name:w.name,role:w.role})});
+      body.appendChild(card);
+    }
+    const create=document.createElement('div');create.style.cssText='margin-top:20px;padding:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm)';
+    create.innerHTML='<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Create a workspace</div><div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Turn one of your saved projects into a shared workspace, then invite up to 5 people from Members.</div>';
+    const fld=document.createElement('select');fld.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);margin-bottom:8px;box-sizing:border-box';create.appendChild(fld);
+    const name=document.createElement('input');name.placeholder='Workspace name (optional)';name.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);box-sizing:border-box;margin-bottom:8px';create.appendChild(name);
+    const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Create & open';create.appendChild(go);
+    go.onclick=async()=>{
+      const folder=fld.value;
+      if(!folder){appAlert('Choose a folder for the workspace');return}
+      go.disabled=true;go.textContent='Creating…';
+      try{
+        const rr=await authFetch(API+'/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.value.trim(),folder})});
+        const dd=await rr.json().catch(()=>({}));
+        if(!rr.ok){showToast((dd&&dd.error)||'Could not create workspace','error');go.disabled=false;go.textContent='Create & open';return}
+        showToast('Workspace created','success');
+        await openWorkspace({path:folder,workspace_id:dd.workspace_id,name:dd.name||name.value.trim()||'',role:'owner'});
+      }catch(e){showToast('Could not create: '+e.message,'error');go.disabled=false;go.textContent='Create & open'}
+    };
+    body.appendChild(create);
+    const wsPaths={};items.forEach(w=>{const p=w.folder||w.path;if(p)wsPaths[p]=1});
+    const opts=[];
+    if(codingFolder&&!wsPaths[codingFolder]){try{opts.push({path:codingFolder,label:'Current folder ('+String(codingFolder).split(/[\\/]/).filter(Boolean).pop()+')'})}catch(e){}}
+    try{
+      const pr=await authFetch(API+'/api/projects');const pd=pr.ok?await pr.json().catch(()=>({})):({});
+      (pd.projects||[]).forEach(p=>{if(p&&p.path&&!wsPaths[p.path])opts.push({path:p.path,label:'Saved: '+(p.name||p.path)})});
+    }catch(e){}
+    fld.innerHTML='';
+    if(!opts.length){const o=document.createElement('option');o.value='';o.textContent='No folders available — create a project first';fld.appendChild(o)}
+    else opts.forEach(o=>{const op=document.createElement('option');op.value=o.path;op.textContent=o.label;fld.appendChild(op)});
+  }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load workspaces</p></div>'}
 }
 function openProjectsModal(){document.getElementById('projects-modal').classList.add('open');loadProjectList();loadCreateTargets()}
 async function loadCreateTargets(){const sel=document.getElementById('new-project-target');if(!sel)return;const keep=sel.value||'cloud';sel.innerHTML='';const c0=document.createElement('option');c0.value='cloud';c0.textContent='Omniilink cloud';sel.appendChild(c0);
@@ -7060,12 +7116,12 @@ async function openWorkspacesModal(){
       };
       body.appendChild(create);
       const opts=[];
-      if(codingFolder&&window.__user && !(currentWorkspace&&currentWorkspace.id)){try{opts.push({name:'',label:'Current folder ('+String(codingFolder).split(/[\\/]/).filter(Boolean).pop()+')'})}catch(e){}}
+      if(codingFolder&&window.__user && !(currentWorkspace&&currentWorkspace.id)){try{opts.push({name:codingFolder,label:'Current folder ('+String(codingFolder).split(/[\\/]/).filter(Boolean).pop()+')'})}catch(e){}}
       try{
         const pr=await authFetch(API+'/api/projects');
         const pd=pr.ok?await pr.json().catch(()=>({})):({});
-        (pd.projects||[]).forEach(p=>{if(p&&p.name)opts.push({name:p.name,label:'Saved: '+p.name})});
-        (pd.workspaces||[]).filter(w=>w.role==='owner').forEach(w=>opts.push({name:w.path,label:'Already a workspace: '+(w.name||'unnamed')}));
+        (pd.projects||[]).forEach(p=>{if(p&&p.path)opts.push({name:p.path,label:'Saved: '+(p.name||p.path)})});
+        (pd.workspaces||[]).filter(w=>w.role==='owner').forEach(w=>opts.push({name:w.folder||w.path,label:'Already a workspace: '+(w.name||'unnamed')}));
       }catch(e){}
       fld.innerHTML='';opts.forEach(o=>{const op=document.createElement('option');op.value=o.name;op.textContent=o.label;fld.appendChild(op)});
     }catch(e){body.innerHTML='<div style="color:var(--error);padding:20px;font-size:12px">Could not load workspaces</div>'}
@@ -7775,6 +7831,8 @@ function renderUsageDoughnut(data){
   const ctx=canvas.getContext('2d');
   const dpr=window.devicePixelRatio||1;
   const rect=canvas.parentElement.getBoundingClientRect();
+  // Same hidden-panel guard as the token breakdown: skip while invisible.
+  if(!isFinite(rect.width)||rect.width<80)return;
   canvas.width=rect.width*dpr;canvas.height=180*dpr;
   canvas.style.width=rect.width+'px';canvas.style.height='180px';
   ctx.scale(dpr,dpr);
@@ -7862,6 +7920,10 @@ function renderUsageTokenBreakdown(data){
   const ctx=canvas.getContext('2d');
   const dpr=window.devicePixelRatio||1;
   const rect=canvas.parentElement.getBoundingClientRect();
+  // The usage view preloads while hidden (zero width): a negative radius
+  // would make ctx.arc throw and fail the whole 'tokens' panel. Skip the
+  // draw — navigating to Usage re-runs loadUsage while visible.
+  if(!isFinite(rect.width)||rect.width<80)return;
   const size=Math.min(rect.width,200);
   canvas.width=size*dpr;canvas.height=size*dpr;
   canvas.style.width=size+'px';canvas.style.height=size+'px';
@@ -7917,6 +7979,7 @@ function buildCmdList(query){
     {icon:'\u2699',label:'Settings',action:()=>{closeCmdPalette();navigate('settings')},keys:'Ctrl+,'},
     {icon:'\u2328',label:'Keyboard Shortcuts',action:()=>{closeCmdPalette();document.getElementById('shortcuts-modal').classList.add('open')}},
     {icon:'\uD83D\uDCCB',label:'Projects',action:()=>{closeCmdPalette();navigate('projects')}},
+    {icon:'👥',label:'Workspaces',action:()=>{closeCmdPalette();navigate('workspaces')}},
     {icon:'\u266B',label:'Prompts Library',action:()=>{closeCmdPalette();navigate('prompts')}},
     {icon:'\u2699',label:'API Keys',action:()=>{closeCmdPalette();navigate('api')}},
     {icon:'\uD83D\uDCCA',label:'Usage Dashboard',action:()=>{closeCmdPalette();navigate('usage')}},
@@ -10951,7 +11014,7 @@ async function loadRemoteProjectsInto(box, mode){
     }catch(e){}
   }
 }
-function refreshRemoteLists(){try{if(typeof loadProjectsSidebar==='function')loadProjectsSidebar()}catch(e){}try{if(typeof loadProjectList==='function')loadProjectList()}catch(e){}try{if(document.getElementById('projects-view').classList.contains('open')&&typeof loadProjectsPage==='function')loadProjectsPage()}catch(e){}}
+function refreshRemoteLists(){try{if(typeof loadProjectsSidebar==='function')loadProjectsSidebar()}catch(e){}try{if(typeof loadProjectList==='function')loadProjectList()}catch(e){}try{if(document.getElementById('projects-view').classList.contains('open')&&typeof loadProjectsPage==='function')loadProjectsPage()}catch(e){}try{if(document.getElementById('workspaces-view').classList.contains('open')&&typeof loadWorkspacesPage==='function')loadWorkspacesPage()}catch(e){}}
 function remoteRowFt(e,a,devName){
   const item=document.createElement('div');item.className='ft-item';item.style.cssText='padding:6px 12px;border-radius:6px;margin:2px 4px';
   item.innerHTML='<span style="font-size:12px">📁</span><div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px"><div style="font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+escapeHtml(e.name)+'</div><button class="del" style="width:18px;height:18px;border-radius:3px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:none;align-items:center;justify-content:center;font-size:11px;padding:0;flex-shrink:0" title="Delete folder">&times;</button><span style="font-size:10px;color:var(--text-muted)">'+escapeHtml(devName)+'</span></div>';
