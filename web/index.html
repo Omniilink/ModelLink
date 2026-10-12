@@ -12272,7 +12272,7 @@ async function openPublishModal(){
   let pubCoverData='';
   m.querySelector('#pub-cover').onchange=()=>{pubCoverData='';const f=m.querySelector('#pub-cover').files[0];if(!f)return;if(f.size>400000){appAlert('Cover image must be under ~400KB');m.querySelector('#pub-cover').value='';return}const rd=new FileReader();rd.onload=()=>{pubCoverData=String(rd.result||'')};rd.readAsDataURL(f)};
   ov.appendChild(m);document.body.appendChild(ov);
-  (function(){const dl=m.querySelector('#pub-dl');const ed=m.querySelector('#pub-edits');dl.onchange=()=>{ed.disabled=!dl.checked;if(!dl.checked)ed.checked=false;}})();
+  (function(){const dl=m.querySelector('#pub-dl');const ed=m.querySelector('#pub-edits');const sync=()=>{ed.disabled=!dl.checked;if(!dl.checked)ed.checked=false};dl.onchange=sync;sync()})();
   m.querySelector('#pub-cancel').onclick=()=>ov.remove();
   // Folder picker: current open folder + saved projects.
   const folderSel=m.querySelector('#pub-folder');
