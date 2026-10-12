@@ -282,44 +282,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_trademe_sold_at ON trademe_sold(sold_at);
 
-        CREATE TABLE IF NOT EXISTS scheduled_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            name TEXT DEFAULT '',
-            kind TEXT DEFAULT 'agent',
-            schedule TEXT DEFAULT '{}',
-            payload TEXT DEFAULT '{}',
-            enabled INTEGER DEFAULT 1,
-            last_run REAL,
-            next_run REAL,
-            last_status TEXT DEFAULT '',
-            last_output TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_jobs(enabled, next_run);
-
-        CREATE TABLE IF NOT EXISTS scheduled_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id INTEGER,
-            started REAL,
-            finished REAL,
-            status TEXT DEFAULT 'running',
-            output TEXT DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_scheduled_runs_job ON scheduled_runs(job_id, started);
-
-        CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            kind TEXT DEFAULT '',
-            title TEXT DEFAULT '',
-            body TEXT DEFAULT '',
-            job_id INTEGER,
-            read INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, read, created_at);
-
         CREATE TABLE IF NOT EXISTS project_chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
@@ -331,29 +293,6 @@ def init_db():
             tlen INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_project_chunks_user ON project_chunks(user_id);
-
-        CREATE TABLE IF NOT EXISTS arena_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            prompt TEXT DEFAULT '',
-            responses TEXT DEFAULT '[]',
-            winner TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_arena_user ON arena_runs(user_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            text TEXT DEFAULT '',
-            tags TEXT DEFAULT '',
-            importance INTEGER DEFAULT 3,
-            active INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            last_used TEXT,
-            expires_at REAL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, active);
 
         CREATE TABLE IF NOT EXISTS budgets (
             user_id INTEGER PRIMARY KEY,
@@ -386,6 +325,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_file_actions_user ON file_actions(user_id, created_at);
     """)
+    # Migration: retired features whose tables are no longer used.
+    conn.execute("DROP TABLE IF EXISTS scheduled_jobs")
+    conn.execute("DROP TABLE IF EXISTS scheduled_runs")
+    conn.execute("DROP TABLE IF EXISTS notifications")
+    conn.execute("DROP TABLE IF EXISTS arena_runs")
+    conn.execute("DROP TABLE IF EXISTS memories")
     # Migration: is_admin column (first user becomes admin)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
     if "is_admin" not in cols:
