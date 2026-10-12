@@ -7427,8 +7427,8 @@ function wsRenderBusyBar(locks){
   old.style.color=theirs.length?'#f0a030':'var(--success)';
   try{
     theirs.forEach(l=>{
-      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.style.cssText='font-size:10px;padding:1px 8px';b.textContent='Ask '+(l.user||'them');
-      b.title='Ask them to release '+l.path;b.onclick=()=>wsAskRelease(l.path);box.appendChild(b);
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.style.cssText='font-size:10px;padding:1px 8px';b.textContent='Ask · '+l.path;
+      b.title='Ask '+(l.user||'them')+' to release '+l.path;b.onclick=()=>wsAskRelease(l.path);box.appendChild(b);
     });
     const cutoff=Date.now()/1000-600;
     const asked={};
@@ -7603,15 +7603,20 @@ async function wsHistoryVersions(path,box){
     const vs=d.versions||[];
     if(!vs.length){box.innerHTML='<div class="tool-status">No saved versions of this file yet.</div>';return}
     box.innerHTML='';
+    const myId2=(window.__user&&window.__user.id)||0;
+    const canRestore=currentWorkspace&&(currentWorkspace.role==='owner'||currentWorkspace.owner===myId2||(window.__user&&window.__user.is_admin));
+    if(!canRestore){const n=document.createElement('div');n.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:6px';n.textContent='Versions are shared — everyone sees every author. Only the owner can restore.';box.appendChild(n)}
     vs.slice(0,30).forEach(v=>{
       const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px';
       row.innerHTML='<span style="flex:1;color:var(--text-secondary)">'+escapeHtml(v.author||'someone')+' · '+new Date((v.ts||0)*1000).toLocaleString()+' · '+Math.round((v.size||0)/102.4)/10+' KB</span>';
       const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.textContent='View';
       vw.onclick=async()=>{try{const rr=await authFetch(API+'/api/coding/workspace/file-versions?path='+encodeURIComponent(path)+'&author='+encodeURIComponent(v.author||'')+'&ts='+encodeURIComponent(v.ts));const dd=await rr.json().catch(()=>({}));if(!rr.ok)throw new Error(dd.error||'load failed');box.innerHTML='<div style="font-family:var(--mono);font-size:11px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap">'+escapeHtml(String(dd.content||'').slice(0,20000))+'</div>'}catch(e){showToast(e.message,'error')}};
       row.appendChild(vw);
-      const rs=document.createElement('button');rs.className='btn btn-primary btn-sm';rs.textContent='Restore';
-      rs.onclick=async()=>{if(!await appConfirm('Restore '+path+' to '+v.author+'’s version? Current content is snapshotted first.'))return;try{const rr=await authFetch(API+'/api/coding/workspace/file-restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,ts:v.ts,author:v.author})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Restore failed','error');return}showToast('Restored','success');try{await refreshCodingTree()}catch(e){}}catch(e){showToast(e.message,'error')}};
-      row.appendChild(rs);
+      if(canRestore){
+        const rs=document.createElement('button');rs.className='btn btn-primary btn-sm';rs.textContent='Restore';
+        rs.onclick=async()=>{if(!await appConfirm('Restore '+path+' to '+v.author+'’s version? Current content is snapshotted first.'))return;try{const rr=await authFetch(API+'/api/coding/workspace/file-restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,ts:v.ts,author:v.author})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Restore failed','error');return}showToast('Restored','success');try{await refreshCodingTree()}catch(e){}}catch(e){showToast(e.message,'error')}};
+        row.appendChild(rs);
+      }
       box.appendChild(row);
     });
   }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">'+escapeHtml(e.message)+'</div>'}

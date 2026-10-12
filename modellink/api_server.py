@@ -7652,7 +7652,8 @@ class WsRestoreBody(BaseModel):
 
 @app.post("/api/coding/workspace/file-restore")
 async def workspace_file_restore(request: Request, req: WsRestoreBody):
-    """Restore a file to any member's saved version (undo anyone's change)."""
+    """Restore a file to any member's saved version. Versions are shared
+    (every member sees every author's chain), but only the owner reverts."""
     user, err = _require_auth(request)
     if err:
         return err
@@ -7663,6 +7664,9 @@ async def workspace_file_restore(request: Request, req: WsRestoreBody):
     ws, werr = _ws_require_member(user, folder)
     if werr:
         return werr
+    oerr = _ws_require_owner(user, ws)
+    if oerr:
+        return JSONResponse(status_code=403, content={"error": "Only the workspace owner can restore versions"})
     rel = (req.path or "").strip().replace("\\", "/").strip("/")
     if not rel or _bad_path(rel):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
