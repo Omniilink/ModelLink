@@ -2416,7 +2416,7 @@ def _device_model_entries(user):
         st = _agents_load()
         agents = [dict(a) for a in st["agents"].values()]
     for a in agents:
-        if not _agent_visible(user, a):
+        if not _can_use_device_model(user, a):
             continue
         if "ollama" not in (a.get("caps") or ()):
             continue
@@ -5395,9 +5395,9 @@ async def chat_completions(request: Request):
                 agent = st["agents"].get(parts[1])
         if not agent:
             return JSONResponse(status_code=400, content={"error": "Invalid model name"})
-        if not _agent_visible(user, agent):
+        if not _can_use_device_model(user, agent):
             return JSONResponse(status_code=403, content={
-                "error": "This device's models belong to the account that paired it."})
+                "error": "This device's models belong to the account that paired it. Ask the owner to share the computer or its Ollama models."})
 
 
     # Optional generation controls from the UI menus: invalid values are
@@ -14464,6 +14464,7 @@ def _agent_public(a, viewer=None):
         out["access"] = "owner"
         out["shared_with"] = [_agent_owner_username(uid) or f"user {uid}"
                               for uid in _agent_shared_ids(a)]
+        out["ollama_shared_with"] = _ollama_share_names(_agent_owner_id(a), a.get("id") or "")
     else:
         try:
             out["access"] = ("shared" if int((viewer or {}).get("id") or 0)
@@ -14492,6 +14493,40 @@ def _agent_owner_id(agent) -> int:
         return int((agent or {}).get("owner_id") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _ollama_shared_with(uid, agent_id) -> bool:
+    """True when uid was explicitly granted a computer's Ollama models.
+
+    This grants INFERENCE ONLY (the model menu + /v1/chat/completions relay).
+    It never grants shell commands, files, pairing admin, pulls, or any other
+    agent endpoint — those stay behind _agent_visible.
+    """
+    try:
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT 1 FROM ollama_shares WHERE agent_id = ? AND shared_with_id = ?",
+                             (str(agent_id), int(uid))).fetchone()
+        finally:
+            conn.close()
+        return r is not None
+    except Exception:
+        return False
+
+
+def _can_use_device_model(user, agent) -> bool:
+    """Inference gate for a paired computer's Ollama models: the owning
+    account, a whole-computer share, or a models-only share."""
+    if not user or not isinstance(agent, dict):
+        return False
+    if _agent_visible(user, agent):
+        return True
+    try:
+        aid = str(agent.get("id") or "")
+        uid = int(user.get("id") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(aid) and _ollama_shared_with(uid, aid)
 
 
 def _agent_shared_ids(agent) -> list:
@@ -14823,6 +14858,12 @@ async def agents_delete(request: Request, agent_id: str):
         del st["agents"][str(agent_id)]
         st["commands"] = {k: c for k, c in st["commands"].items() if str(c.get("agent_id")) != str(agent_id)}
         _agents_save(st)
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM ollama_shares WHERE agent_id = ?", (str(agent_id),))
+        conn.commit()
+    finally:
+        conn.close()
     try:
         relay.drop_agent(agent_id)
     except Exception:
@@ -14904,6 +14945,106 @@ async def agents_unshare(request: Request, agent_id: str, username: str):
     return {"status": "ok", "shared_with": names}
 
 
+def _ollama_share_names(owner_id, agent_id) -> list:
+    """Usernames with a models-only share on one computer."""
+    out = []
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT shared_with_id FROM ollama_shares"
+                            " WHERE owner_id = ? AND agent_id = ? ORDER BY id",
+                            (owner_id, str(agent_id))).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        try:
+            out.append(_agent_owner_username(int(r["shared_with_id"])) or f"user {r['shared_with_id']}")
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+@app.get("/api/agents/{agent_id}/ollama-shares")
+async def agents_ollama_shares(request: Request, agent_id: str):
+    """Who may use this computer's Ollama models (owner only)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        owner_id = _agent_owner_id(a)
+    return {"status": "ok", "shared_with": _ollama_share_names(owner_id, agent_id)}
+
+
+class OllamaShareBody(BaseModel):
+    username: str = ""
+
+
+@app.post("/api/agents/{agent_id}/ollama-share")
+async def agents_ollama_share(request: Request, agent_id: str, req: OllamaShareBody):
+    """Share ONLY this computer's Ollama models with another account.
+
+    Inference-only: the recipient gets the models in their menu and may call
+    them through /v1/chat/completions. Shell commands, files, pulls, pairing
+    admin and every other agent endpoint stay owner-only. Only the
+    computer's owner can grant it, and it revokes instantly.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    username = str(req.username or "").strip().lower()
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    target = _share_target_user(username)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        owner_id = _agent_owner_id(a)
+    if int(target["id"]) == owner_id:
+        return JSONResponse(status_code=400, content={"error": "That user already owns this computer"})
+    conn = get_db()
+    try:
+        conn.execute("INSERT OR IGNORE INTO ollama_shares (owner_id, agent_id, shared_with_id)"
+                     " VALUES (?, ?, ?)", (owner_id, str(agent_id), int(target["id"])))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("ollama.share", user["username"], f"agent={agent_id} shared_with={target['username']}")
+    return {"status": "ok", "shared_with": _ollama_share_names(owner_id, agent_id)}
+
+
+@app.delete("/api/agents/{agent_id}/ollama-share/{username}")
+async def agents_ollama_unshare(request: Request, agent_id: str, username: str):
+    """Revoke a models-only share. Inference stops immediately."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    target_name = str(username or "").strip().lower()
+    if not target_name:
+        return JSONResponse(status_code=400, content={"error": "Username is required"})
+    with _AGENT_LOCK:
+        st, a = _agent_owner_record(user, agent_id)
+        if a is None:
+            return JSONResponse(status_code=404, content={"error": "Agent not found"})
+        owner_id = _agent_owner_id(a)
+    target = _share_target_user(target_name)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM ollama_shares WHERE owner_id = ? AND agent_id = ? AND shared_with_id = ?",
+                     (owner_id, str(agent_id), int(target["id"])))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("ollama.unshare", user["username"], f"agent={agent_id} unshared={target['username']}")
+    return {"status": "ok", "shared_with": _ollama_share_names(owner_id, agent_id)}
+
+
 @app.post("/api/agents/{agent_id}/transfer")
 async def agents_transfer(request: Request, agent_id: str):
     """Move computer ownership to another account and remove prior shares.
@@ -14937,6 +15078,12 @@ async def agents_transfer(request: Request, agent_id: str):
         a["transferred_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         a["transferred_by"] = user.get("username", "")
         _agents_save(st)
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM ollama_shares WHERE agent_id = ?", (str(agent_id),))
+        conn.commit()
+    finally:
+        conn.close()
     _audit("agent.transfer", user["username"],
            f"agent={agent_id} from={old_owner} to={target['username']}")
     return {"status": "ok", "owner": target["username"]}

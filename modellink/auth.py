@@ -54,6 +54,16 @@ def get_db() -> sqlite3.Connection:
 
 def init_db():
     conn = get_db()
+    try:
+        ocols = [r["name"] for r in conn.execute("PRAGMA table_info(ollama_shares)").fetchall()]
+    except Exception:
+        ocols = []
+    if ocols and "shared_with_id" not in ocols:
+        # Predecessor schema from an unshipped experiment: no shipped code
+        # ever read it (no history, no endpoints), so retire it to make room
+        # for the real models-only shares table created below.
+        conn.execute("DROP TABLE ollama_shares")
+        conn.commit()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -407,6 +417,16 @@ def init_db():
             FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token);
+
+        CREATE TABLE IF NOT EXISTS ollama_shares (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            agent_id TEXT NOT NULL DEFAULT '',
+            shared_with_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(owner_id, agent_id, shared_with_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ollama_shares_target ON ollama_shares(shared_with_id);
     """)
     # Migration: retired features whose tables are no longer used.
     conn.execute("DROP TABLE IF EXISTS scheduled_jobs")
