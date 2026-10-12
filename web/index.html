@@ -3338,18 +3338,19 @@ function codingOsBlock(kind){
   if(kind==='windows')return head+'\n- OS: Windows. Shell: cmd.exe (already a shell — NEVER prefix commands with cmd /c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed.\n- COMMAND REFERENCE (use exactly these forms): list files `dir /b`; list with sizes `dir`; show a file `type path\\to\\file`; make a folder `mkdir name`; delete a file `del name`; run Python `python file.py` (check `python --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install`; git as usual.\n- Validate browser JavaScript with `node --check file.js` (syntax only — do NOT execute browser scripts with node: document and window do not exist there).';
   return '';
 }
-async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
+var codingAttachFailures=[];
+async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';codingAttachFailures=[];try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
   if(!basePrompt)basePrompt='You are an Omniilink Coding Assistant.';
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
   // Small local models (3B-7B) blow their context on long file bodies: they
   // start ignoring the rules and produce malformed blocks. Past this budget,
   // attach a compact structural summary (paths, sizes, graph) instead, and let
   // the model read individual files through its own tool calls.
-  {const maxBytes=Number(localStorage.getItem('omnilink_attach_kb')||0)*1024;
-   const attached=codingAtFiles.slice(-12);
-   const totalBytes=attached.reduce((n,f)=>n+((allCodingFileSizes&&allCodingFileSizes[f])||0),0);
-   const useSummary=maxBytes>0&&totalBytes>maxBytes;
    let projectSummary='';
+   {const maxBytes=Number(localStorage.getItem('omnilink_attach_kb')||0)*1024;
+    const attached=codingAtFiles.slice(-12);
+    const totalBytes=attached.reduce((n,f)=>n+((allCodingFileSizes&&allCodingFileSizes[f])||0),0);
+    const useSummary=maxBytes>0&&totalBytes>maxBytes;
    if(attached.length>0&&useSummary){
      projectSummary+='\nPROJECT STRUCTURE (file bodies are NOT attached - read what you need):\n';
      const ranked=optRankFiles(attached,allCodingFileSizes);
@@ -3371,7 +3372,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';t
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
-  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}catch(e){}}}
+  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n';else sysPrompt+='\n--- FILE: '+fname+' (empty file) ---\n'}catch(e){const em=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- FILE: '+fname+' (could NOT be read: '+em+') ---\nAsk the user for this file instead of guessing its contents.\n';if(codingAttachFailures.indexOf(fname)<0)codingAttachFailures.push(fname+': '+em)}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
   if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
   // The server prompt already carries this block (api_server.py
@@ -3747,7 +3748,9 @@ async function sendCodingMessage(){
   const markWarmed=()=>{try{if(typeof window!=='undefined'){window._warmedModels=window._warmedModels||{};window._warmedModels[sendModel]=true}}catch(e){}};
   codingLiveReset();
   if(typeof wsActive!=='undefined'&&wsActive&&typeof wsSecureTargets==='function'){try{await wsSecureTargets(rawText+'\n'+((codingAtFiles||[]).join('\n')))}catch(e){}}
-  let liveT0=Date.now();  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
+  let liveT0=Date.now();  try{if(!codingAtFiles.length&&!lastOpenedFile&&codingFolder&&window.lastCodingTree&&window.lastCodingTree.length)autoAttachProjectFiles()}catch(e){}
+  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
+  try{if(codingAttachFailures.length)addCodingSystemMsg('Could not read '+codingAttachFailures.length+' attached file'+(codingAttachFailures.length!==1?'s':'')+': '+codingAttachFailures.slice(0,4).join('; ')+(codingAttachFailures.length>4?'…':''))}catch(e){}
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
@@ -5267,7 +5270,7 @@ function postCodingAssistant(text){
   const hist={role:'assistant',content:text};el._histRef=hist;
   codingHistory.push(hist);persistCodingChat();
 }
-function reportCodingLoopCrash(e){try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
+function reportCodingLoopCrash(e){try{console.error('coding loop error',e);const userStopped=(typeof codingStopRequested!=='undefined'&&codingStopRequested)||(e&&e.name==='AbortError');postCodingAssistant(userStopped?'Stopped.':'The auto-continue loop could not start: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to try again.')}catch(e2){}}
 async function getCodingSysPrompt(){try{return await buildCodingSystemPrompt()}catch(e){return'You are a coding assistant.'}}
 function setCodingLoopUI(on){
   const btn=document.getElementById('coding-send-btn');
@@ -6016,8 +6019,9 @@ async function codingAutoContinue(){
     }
   }catch(e){
     // Never die silently: a thrown error used to vanish here and the loop
-    // just stopped with no clue why.
-    try{console.error('coding loop error',e);postCodingAssistant('The auto-continue loop stopped on an internal error: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to resume from where it left off.')}catch(e2){}
+    // just stopped with no clue why. A user Stop (abort) is not an error.
+    const userStopped=codingStopRequested||(e&&e.name==='AbortError');
+    try{console.error('coding loop error',e);if(!userStopped)postCodingAssistant('The auto-continue loop stopped on an internal error: '+(e&&e.message?e.message:String(e))+'\n\nSay "continue" to resume from where it left off.')}catch(e2){}
   }
   if(codingStopRequested)addCodingSystemMsg('Stopped by user.');
   codingAutoLoop=false;codingStream=false;codingAbort=null;setCodingLoopUI(false);
