@@ -1630,6 +1630,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <div class="coding-filetree" id="coding-filetree"><div class="filetree-empty">Open a folder to see files</div></div>
           <div class="coding-main">
             <div class="coding-sticky-bar" id="coding-sticky-bar"><span>Tool actions detected</span><button onclick="copyAllCodeBlocks()">Copy All Code</button><button class="primary" onclick="applyAllToolBlocks()">Apply All</button></div>
+            <div id="coding-meta-bar" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;border-radius:var(--radius-xs);font-size:11px;margin:0 0 8px"></div>
             <div id="coding-plan-banner" style="display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px">Plan mode is ON — the model's actions are staged, nothing runs until you approve. <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="applyAllToolBlocks()">Run staged actions</button></div>
             <div id="optimise-banner" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;background:linear-gradient(90deg,var(--accent-dim),transparent);border:1px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-light);margin:0 0 8px"></div>
             <div class="coding-chat" id="coding-chat"></div>
@@ -2746,7 +2747,7 @@ function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
 function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
-function closeCodingFolder(){codingFolder=null;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
+function closeCodingFolder(){codingFolder=null;currentProjectShared=false;currentProjectRole='';currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsLastEvents=0;wsFolder='';wsLockedPaths=[];fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}try{const bar=document.getElementById('coding-meta-bar');if(bar)bar.style.display='none'}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
@@ -3382,6 +3383,8 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';t
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
   if(codingSplitPending)sysPrompt+='\nTODO GRANULARITY (your TODO_LIST is too coarse): split each open item into its own smaller steps — one file, one feature, or one check per item — and continue working in the SAME reply. Do NOT stop, restart, or ask anything: just emit a finer TODO_LIST with the already-done items still marked [x] and carry on with the next tool block.\n';
+  if(wsActive&&currentWorkspace){try{const cr=await authFetch(API+'/api/coding/workspace/context');if(cr.ok){const cd=await cr.json().catch(()=>({}));if(cd&&cd.active){const wsLabel=String(currentWorkspace.name||'collaborative').slice(0,48);const summary=String(cd.summary||'(no recent activity yet)').slice(0,1500);
+    sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- A file another user is actively editing (locked) must NOT be modified. If the task needs it, either make ONLY the required change and preserve every other edit intact, or tell the user it is locked.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n- If a write is rejected because the file is locked by someone else, do NOT fight it: re-read the file, wait, or describe the conflict to the user.\n'}}}catch(e){}}
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -3734,6 +3737,7 @@ async function sendCodingMessage(){
   contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-waitT0)/1000))+'s'}catch(e){}},1000);
   const markWarmed=()=>{try{if(typeof window!=='undefined'){window._warmedModels=window._warmedModels||{};window._warmedModels[sendModel]=true}}catch(e){}};
   codingLiveReset();
+  if(typeof wsActive!=='undefined'&&wsActive&&typeof wsSecureTargets==='function'){try{await wsSecureTargets(rawText+'\n'+((codingAtFiles||[]).join('\n')))}catch(e){}}
   let liveT0=Date.now();  let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
@@ -3764,6 +3768,7 @@ async function sendCodingMessage(){
   }
   settleSpinners(assistantEl);
   finishCodingLiveStats(assistantEl,Date.now()-liveT0,liveMsg);
+  if(!codingAutoLoop&&typeof wsActive!=='undefined'&&wsActive&&typeof wsReleaseMine==='function'){try{await wsReleaseMine()}catch(e){}}
   if(!aborted&&(!next.actionable||await isPlanMode()))await codingNotifyDone(fullText).catch(()=>{});
 }
 
@@ -6010,6 +6015,7 @@ async function codingAutoContinue(){
   settleSpinners(document.getElementById('coding-chat'));
   document.getElementById('coding-send-btn').disabled=false;
   settleInputAfterSend('coding-input');
+  if(typeof wsActive!=='undefined'&&wsActive&&typeof wsReleaseMine==='function'){try{await wsReleaseMine()}catch(e){}}
   await maybeOfferPendingFiles().catch(()=>{});
   if(troubledRun&&troubledProgress&&!codingStopRequested&&typeof requestFindingLog==='function'){await requestFindingLog().catch(()=>{})}
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
@@ -6656,6 +6662,20 @@ async function loadProjectsPage(){
         card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view only':'can edit')+'</div></div>';
         card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openSharedProject(p)});
         body.appendChild(card)}}
+    const wss=data.workspaces||[];
+    if(wss.length){const wsTitle=document.createElement('div');wsTitle.className='usage-section-title';wsTitle.style.margin='16px 0 8px';wsTitle.textContent='Collaborative workspaces';body.appendChild(wsTitle);
+      for(const w of wss){const card=document.createElement('div');card.className='project-card'+(codingFolder===w.path?' active':'');
+        const badge=(w.role==='owner'?'you own · ':((w.role==='view')?'view only · ':'can edit · '))+'(+'+w.member_count+' members)';
+        card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(w.name)+'</div><div class="proj-meta">'+w.file_count+' files · workspace · '+escapeHtml(badge)+'</div></div>';
+        card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openWorkspace(w)});
+        body.appendChild(card)}}
+    const puf=data.public_edits||[];
+    if(puf.length){const puTitle=document.createElement('div');puTitle.className='usage-section-title';puTitle.style.margin='16px 0 8px';puTitle.textContent='Public — my copies';body.appendChild(puTitle);
+      for(const f of puf){const card=document.createElement('div');card.className='project-card'+(codingFolder===f.path?' active':'');
+        const nm=(f.can_submit?'submit changes open':'forked');
+        card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(f.name)+'</div><div class="proj-meta">'+f.file_count+' files · fork of '+escapeHtml(f.pub_name||'a published project')+((f.submitted||f.can_submit)?' · '+(f.submitted?'submitted':'open to submit'):'')+'</div></div>';
+        card.querySelector('.proj-info').parentElement.addEventListener('click',async()=>{await openPublicForkFromEntry(f)});
+        body.appendChild(card)}}
     const remoteBox=document.createElement('div');body.appendChild(remoteBox);
     if(typeof loadRemoteProjectsInto==='function'){try{loadRemoteProjectsInto(remoteBox)}catch(e){}}
   }catch(e){body.innerHTML='<div style="text-align:center;padding:40px;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not load projects</p></div>'}
@@ -6685,11 +6705,23 @@ async function loadProjectList(){const list=document.getElementById('project-lis
         item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(p.name)+'</span><span class="meta">'+escapeHtml(p.owner||'shared')+' · '+(p.role==='view'?'view':'edit')+'</span>';
         item.querySelector('.name').parentElement.addEventListener('click',async()=>{await openSharedProject(p)});
         list.appendChild(item)}}
+    const wsItems=data.workspaces||[];
+    if(wsItems.length){const wsT=document.createElement('div');wsT.style.cssText='padding:12px 2px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';wsT.textContent='Workspaces';list.appendChild(wsT);
+      for(const w of wsItems){const item=document.createElement('div');item.className='project-item';if(codingFolder&&codingFolder===w.path)item.classList.add('active');
+        item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(w.name)+'</span><span class="meta">'+(w.role==='owner'?'you own':(w.role==='view'?'view':'edit'))+' · (+'+w.member_count+')</span>';
+        item.querySelector('.name').parentElement.addEventListener('click',async()=>{await openWorkspace(w);try{closeProjectsModal()}catch(e){}});
+        list.appendChild(item)}}
+    const pubItems=data.public_edits||[];
+    if(pubItems.length){const pubT=document.createElement('div');pubT.style.cssText='padding:12px 2px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';pubT.textContent='Public copies';list.appendChild(pubT);
+      for(const f of pubItems){const item=document.createElement('div');item.className='project-item';if(codingFolder&&codingFolder===f.path)item.classList.add('active');
+        item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(f.name)+'</span><span class="meta">'+escapeHtml(f.pub_name||'fork')+(f.submitted?' · submitted':'')+'</span>';
+        item.querySelector('.name').parentElement.addEventListener('click',async()=>{await openPublicForkFromEntry(f);try{closeProjectsModal()}catch(e){}});
+        list.appendChild(item)}}
     if(typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(list,'item')}catch(e){}}
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
 async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
-  codingFolder=data.folder;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
+  codingFolder=data.folder;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();renderCodingMetaBar();
   // Wait for auto-attach to complete so AI has file context immediately
   try{await autoAttachProjectFiles()}catch(e){}
   addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
@@ -6697,13 +6729,404 @@ async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!pa
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
   const role=String(p.role||'edit'),owner=String(p.owner||'');
   try{const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json().catch(()=>({}));if(!r.ok){appAlert(data.error||'Failed to open shared project');return}
-  codingFolder=data.folder;currentProjectShared=true;currentProjectRole=role;fsHandle=null;remoteCtx=null;allCodingFiles=[];
+  codingFolder=data.folder;currentProjectShared=true;currentProjectRole=role;fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];
   document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';
-  renderFileTree(data.tree||[]);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();
+  renderFileTree(data.tree||[]);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();renderCodingMetaBar();
   try{await autoAttachProjectFiles()}catch(e){}
   addCodingSystemMsg('Opened shared project: '+name+'\n'+(data.file_count||0)+' files ready.'+(owner?'\nOwner: '+owner:'')+'\nRole: '+(role==='view'?'view only':'can edit')+'.');
   updateProjectBadge(name,'shared · '+(role==='view'?'view only':'can edit'));closeProjectsModal();try{closeShareModal()}catch(e){}
   if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+// ========== PUBLIC FORKS (contribute changes) + COLLABORATIVE WORKSPACES ==========
+var currentPublicFork=null;
+var currentWorkspace=null;
+var wsActive=false,wsTimer=null,wsFolder='',wsLastEvents=0,wsLastSig='',wsLastLocks=[],wsFirstPoll=true,wsLockedPaths=[],wsExplicitLive=false;
+function treeSig(tree){let s='';const walk=a=>{(a||[]).forEach(n=>{if(n&&n.type==='dir')walk(n.children);else if(n)s+=n.path+'|'+(n.size||0)+';'})};walk(tree);return s}
+async function openCodingFolderPath(path,opts){
+  opts=opts||{};
+  if(!path){appAlert('Folder path is missing');return}
+  try{
+    const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok){appAlert(data.error||'Failed to open folder');return}
+    codingFolder=data.folder;
+    currentProjectShared=!!(opts.shared||opts.workspace||opts.publicFork);
+    currentProjectRole=(opts.role==='view')?'view':'edit';
+    fsHandle=null;remoteCtx=null;allCodingFiles=[];
+    document.getElementById('coding-close-btn').style.display='';
+    document.getElementById('coding-reconnect-btn').style.display='none';
+    currentPublicFork=opts.publicFork||null;
+    currentWorkspace=opts.workspace||null;
+    if(data.meta){
+      if(data.meta.public_fork&&!currentPublicFork){currentPublicFork=data.meta.public_fork;if(!currentPublicFork.project_id&&currentPublicFork.public_project_id)currentPublicFork.project_id=currentPublicFork.public_project_id}
+      if(data.meta.workspace&&!currentWorkspace)currentWorkspace={id:data.meta.workspace.id,name:data.meta.workspace.name,role:currentProjectRole};
+    }
+    if(currentWorkspace){
+      if(!currentWorkspace.id&&currentWorkspace.workspace_id)currentWorkspace.id=currentWorkspace.workspace_id;
+      try{const wr=await authFetch(API+'/api/workspaces/'+currentWorkspace.id+'/members');if(wr.ok){const wd=await wr.json().catch(()=>({}));currentWorkspace.owner=wd.owner;currentWorkspace.owner_name=wd.owner_name;const me=(wd.members||[]).find(x=>x.user_id===(window.__user&&window.__user.id));if(me)currentWorkspace.role=me.role;if(!me&&wd.owner!==(window.__user&&window.__user.id))currentWorkspace.role='view';}}catch(e){}
+    }
+    renderFileTree(data.tree||[]);
+    codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;
+    renderCodingMetaBar();
+    if(!opts.publicFork){try{await restoreCodingChat()}catch(e){}}
+    try{await autoAttachProjectFiles()}catch(e){}
+    addCodingSystemMsg(opts.msg||('Opened '+(opts.label||'folder'))+'\n'+(data.file_count||0)+' files ready.');
+    updateProjectBadge(opts.label||(String(path).split(/[\\/]/).filter(Boolean).pop()||'project'),opts.subtitle||'');
+    if(opts.workspace){wsFolder=codingFolder;wsLastEvents=0;wsLastSig='';wsLastLocks=[];wsFirstPoll=true;wsStartLive()}
+    try{closeProjectsModal()}catch(e){}
+    try{closeShareModal()}catch(e){}
+    if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}
+    return data;
+  }catch(e){appAlert('Error: '+e.message)}
+}
+async function openPublicFork(fd,p){
+  fd=fd||{};p=p||{};
+  const name=String(fd.name||(p.name?p.name+' — copy':'published copy'));
+  const data=await openCodingFolderPath(String(fd.folder||''),{
+    label:name,
+    subtitle:'public · fork of '+(p.name||'a published project'),
+    role:'edit',shared:true,
+    publicFork:{project_id:fd.project_id||p.id,pub_name:p.name||'',name:name,submitted:!!fd.submitted,fork_id:fd.fork_id}
+  });
+  if(data)renderCodingMetaBar();
+}
+function renderCodingMetaBar(){
+  const bar=document.getElementById('coding-meta-bar');
+  if(!bar)return;
+  bar.style.display='none';bar.innerHTML='';
+  if(currentPublicFork){
+    bar.style.display='flex';bar.style.background='var(--accent-dim)';bar.style.border='1px solid var(--accent)';bar.style.color='var(--accent-light)';
+    const span=document.createElement('span');span.style.fontWeight=600;span.textContent='Public copy · fork of '+(currentPublicFork.pub_name||currentPublicFork.name||'a published project');bar.appendChild(span);
+    if(currentPublicFork.submitted){const s=document.createElement('span');s.style.color='var(--success)';s.textContent='· submitted to author';bar.appendChild(s)}
+    const sub=document.createElement('button');sub.className='btn btn-primary btn-sm';sub.textContent=currentPublicFork.submitted?'Submit updated copy':'Submit changes to author';sub.onclick=()=>openSubmitForkModal();bar.appendChild(sub);
+  }else if(currentWorkspace){
+    bar.style.display='flex';bar.style.background='var(--accent-dim)';bar.style.border='1px solid var(--accent)';bar.style.color='var(--accent-light)';
+    const role=(currentWorkspace.role==='view')?'view only':((currentWorkspace.role==='owner'||currentWorkspace.owner===(window.__user&&window.__user.id))?'you own':'can edit');
+    const span=document.createElement('span');span.style.fontWeight=600;span.textContent='Workspace: '+(currentWorkspace.name||'collab')+' · '+role+(wsActive?' · LIVE':'');bar.appendChild(span);
+    const mb=document.createElement('button');mb.className='btn btn-ghost btn-sm';mb.textContent='Members';mb.onclick=()=>openWorkspaceMembersModal(currentWorkspace.id);bar.appendChild(mb);
+    const lb=document.createElement('button');lb.className='btn btn-ghost btn-sm';lb.textContent=wsActive?'Pause live':'Go live';lb.onclick=()=>{if(wsActive)wsStopLive();else wsStartLive()};bar.appendChild(lb);
+  }
+  if(typeof wsRenderBusyBar==='function')wsRenderBusyBar(wsLastLocks||[]);
+}
+async function openSubmitForkModal(){
+  const pid=currentPublicFork?currentPublicFork.project_id:null;
+  if(!pid){appAlert('No published project is linked to this copy');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='480px';
+  m.innerHTML='<div class="modal-header"><h2>Submit changes</h2></div><div class="modal-body">'+
+    '<p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Send the current files of this copy to '+escapeHtml(currentPublicFork.pub_name||'the author')+'. They review it and can publish it as a new revision. Your chat here is private and is never sent.</p>'+
+    '<div class="modal-field"><label>What did you change? (required)</label><textarea id="cf-desc" style="width:100%;min-height:110px" placeholder="Describe your changes, fixes or additions…"></textarea></div>'+
+    '<div class="modal-actions"><button class="btn btn-ghost" id="cf-cancel">Cancel</button><button class="btn btn-primary" id="cf-go">Submit changes</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#cf-cancel').onclick=()=>ov.remove();
+  m.querySelector('#cf-go').onclick=async()=>{
+    const desc=m.querySelector('#cf-desc').value.trim();
+    if(!desc){appAlert('Describe your changes first');return}
+    m.querySelector('#cf-go').disabled=true;m.querySelector('#cf-go').textContent='Submitting…';
+    try{
+      const r=await authFetch(API+'/api/public/projects/'+pid+'/contribute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({description:desc})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){showToast((d&&d.error)||'Submit failed','error');m.querySelector('#cf-go').disabled=false;m.querySelector('#cf-go').textContent='Submit changes';return}
+      ov.remove();showToast('Submitted — the author can now review it','success');
+      if(currentPublicFork)currentPublicFork.submitted=true;
+      renderCodingMetaBar();
+    }catch(e){showToast('Submit failed: '+e.message,'error');m.querySelector('#cf-go').disabled=false;m.querySelector('#cf-go').textContent='Submit changes'}
+  };
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+}
+async function openEditRequestModal(pid,pubName){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='480px';
+  m.innerHTML='<div class="modal-header"><h2>Edit request</h2></div><div class="modal-body">'+
+    '<p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Send a message to the author of '+escapeHtml(pubName||'this project')+' — a bug report, feature idea or change suggestion.</p>'+
+    '<div class="modal-field"><label>Message (required)</label><textarea id="er-msg" style="width:100%;min-height:110px" placeholder="What would you like changed or fixed?"></textarea></div>'+
+    '<div class="modal-actions"><button class="btn btn-ghost" id="er-cancel">Cancel</button><button class="btn btn-primary" id="er-go">Send</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#er-cancel').onclick=()=>ov.remove();
+  m.querySelector('#er-go').onclick=async()=>{
+    const msg=m.querySelector('#er-msg').value.trim();
+    if(!msg){appAlert('Write a message first');return}
+    m.querySelector('#er-go').disabled=true;m.querySelector('#er-go').textContent='Sending…';
+    try{
+      const r=await authFetch(API+'/api/public/projects/'+pid+'/edit-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){showToast((d&&d.error)||'Could not send','error');m.querySelector('#er-go').disabled=false;m.querySelector('#er-go').textContent='Send';return}
+      ov.remove();showToast('Edit request sent to the author','success');
+    }catch(e){showToast('Could not send: '+e.message,'error');m.querySelector('#er-go').disabled=false;m.querySelector('#er-go').textContent='Send'}
+  };
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+}
+async function openMyContributions(pid,pubName){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Contributions</h2></div><div class="modal-body" id="mc-body"><div class="tool-status">Loading…</div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#mc-body');
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/contributions');
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    body.innerHTML='';
+    const items=d.contributions||[];
+    if(!items.length){body.innerHTML='<div class="tool-status">No contributions yet.</div>';return}
+    const close=()=>{try{ov.remove()}catch(e){}};
+    items.forEach(c=>{
+      const row=document.createElement('div');row.style.cssText='padding:10px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+      const head=document.createElement('div');head.style.cssText='display:flex;gap:8px;align-items:center;margin-bottom:4px';
+      const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary);font-weight:600';nm.textContent=(c.username||'someone')+' · '+c.file_count+' files';
+      const st=document.createElement('span');st.className='prov';st.textContent=c.status||'pending';head.appendChild(nm);head.appendChild(st);row.appendChild(head);
+      if(c.description){const ds=document.createElement('div');ds.style.cssText='color:var(--text-secondary);white-space:pre-wrap;margin:4px 0';ds.textContent=c.description;row.appendChild(ds)}
+      if(c.status==='pending'){
+        const btns=document.createElement('div');btns.style.cssText='display:flex;gap:6px;margin-top:6px';
+        const ok=document.createElement('button');ok.className='btn btn-primary btn-sm';ok.textContent='Approve & republish';ok.onclick=async()=>{const rr=await authFetch(API+'/api/public/contributions/'+c.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'approve'})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast((dd&&dd.error)||'Could not approve','error');return}showToast('Approved — the project goes back for admin re-review','success');close()};btns.appendChild(ok);
+        const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=async()=>{await authFetch(API+'/api/public/contributions/'+c.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})});showToast('Rejected','info');close()};btns.appendChild(no);
+        row.appendChild(btns);
+      }
+      body.appendChild(row);
+    });
+  }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load contributions</div>'}
+}
+async function openMyEditRequests(pid){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Edit requests</h2></div><div class="modal-body" id="er-body"><div class="tool-status">Loading…</div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#er-body');
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/edit-requests');
+    if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    body.innerHTML='';
+    const items=d.edit_requests||[];
+    if(!items.length){body.innerHTML='<div class="tool-status">No edit requests yet.</div>';return}
+    items.forEach(er=>{
+      const row=document.createElement('div');row.style.cssText='padding:10px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+      const nm=document.createElement('div');nm.style.cssText='color:var(--text-primary);font-weight:600';nm.textContent=(er.username||'someone')+(er.read?'':' · NEW');row.appendChild(nm);
+      const msg=document.createElement('div');msg.style.cssText='color:var(--text-secondary);white-space:pre-wrap;margin:4px 0';msg.textContent=er.message||'';row.appendChild(msg);
+      if(!er.read){(async()=>{try{await authFetch(API+'/api/public/edit-requests/'+er.id+'/read',{method:'POST'})}catch(e){}})()}
+      body.appendChild(row);
+    });
+  }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load edit requests</div>'}
+}
+async function openWorkspace(ws){
+  ws=ws||{};
+  const name=String(ws.name||String(ws.path||ws.folder||'').split(/[\\/]/).filter(Boolean).pop()||'workspace');
+  const role=(ws.role==='view')?'view':'edit';
+  const data=await openCodingFolderPath(String(ws.path||ws.folder||''),{
+    label:name,
+    subtitle:'workspace · '+(role==='view'?'view only':'can edit'),
+    role:role,shared:true,
+    workspace:{id:ws.workspace_id||ws.id,name:name,role:ws.role||role,owner:ws.owner,owner_name:ws.owner_name}
+  });
+  if(data)renderCodingMetaBar();
+}
+function wsStopLive(){wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}renderCodingMetaBar()}
+function wsStartLive(){if(!codingFolder||!currentWorkspace)return;wsActive=true;wsExplicitLive=true;wsFirstPoll=true;wsLastEvents=0;wsLastSig=treeSig(typeof window!=='undefined'&&window.lastCodingTree||[]);renderCodingMetaBar();if(wsTimer)clearInterval(wsTimer);wsTimer=setInterval(wsPollOnce,3000);wsPollOnce()}
+async function wsPollOnce(){
+  if(!wsActive||!codingFolder)return;
+  try{
+    const r=await authFetch(API+'/api/coding/workspace/poll?since='+encodeURIComponent(String(wsLastEvents||0)));
+    if(!r.ok)return;
+    const d=await r.json();
+    if(!d.active){wsStopLive();renderCodingMetaBar();return}
+    const evs=d.events||[];
+    let newest=wsLastEvents||0;
+    evs.forEach(ev=>{const at=parseFloat(ev.at||0);if(at>newest)newest=at});
+    if(!wsFirstPoll){
+      const myId=(window.__user&&window.__user.id)||null;
+      evs.forEach(ev=>{
+        if(ev.user_id!=null&&myId!=null&&ev.user_id===myId)return;
+        const who=ev.user||'A collaborator';
+        const p=ev.path||'';
+        let msg='';
+        if(ev.type==='write'||ev.type==='patch')msg=who+' updated '+p;
+        else if(ev.type==='create')msg=who+' created '+p;
+        else if(ev.type==='delete')msg=who+' deleted '+p;
+        else if(ev.type==='rename')msg=who+' renamed '+p+' to '+(ev.to||'?');
+        else if(ev.type==='upload')msg=who+' uploaded '+p;
+        else if(ev.type==='member_added')msg=who+' added '+(ev.extra&&ev.extra.member||'someone');
+        else if(ev.type==='member_removed')msg=who+' removed '+(ev.extra&&ev.extra.member||'someone');
+        else if(ev.type==='member_role')msg=who+" changed "+(ev.extra&&ev.extra.member||'a member')+"'s role to "+(ev.extra&&ev.extra.role||'edit');
+        if(msg)addCodingSystemMsg('Live · '+msg);
+      });
+      const sig=treeSig(d.tree);
+      if(sig!==wsLastSig){wsLastSig=sig;renderFileTree(d.tree||[])}
+    }
+    wsLastEvents=newest;wsFirstPoll=false;
+    wsLastLocks=d.locks||[];
+    wsRenderBusyBar(wsLastLocks);
+  }catch(e){}
+}
+function wsRenderBusyBar(locks){
+  locks=locks||[];
+  const bar=document.getElementById('coding-meta-bar');
+  if(!bar||!currentWorkspace)return;
+  let old=bar.querySelector('.ws-busy');
+  if(!old){old=document.createElement('span');old.className='ws-busy';bar.appendChild(old)}
+  if(!wsActive){old.textContent='';return}
+  const myId=(window.__user&&window.__user.id)||0;
+  const theirs=locks.filter(l=>l.user_id!==myId);
+  const mine=locks.filter(l=>l.user_id===myId);
+  const parts=[];
+  if(mine.length){parts.push('you are editing '+mine.map(l=>l.path).join(', '))}
+  theirs.forEach(l=>parts.push((l.user||'someone')+' editing '+l.path));
+  old.textContent=parts.length?('● '+parts.join(' · ')):'● live — nobody is editing';
+  old.style.color=theirs.length?'#f0a030':'var(--success)';
+}
+async function wsSecureTargets(text){
+  if(!wsActive||!currentWorkspace||currentWorkspace.role==='view'||!codingFolder)return;
+  const focus={};
+  (codingAtFiles||[]).forEach(f=>{if(f)focus[f]=1});
+  if(lastOpenedFile)focus[lastOpenedFile]=1;
+  if(text){
+    try{
+      const paths=(String(text).match(/FILE_(?:CREATE|EDIT|PATCH)\s*:\s*[^\n]+/gi)||[]);
+      paths.forEach(p=>{const f=String(p).replace(/^FILE_(?:CREATE|EDIT|PATCH)\s*:\s*/i,'').trim().replace(/['"`]/g,'');if(f)focus[f]=1});
+    }catch(e){}
+  }
+  const targets=Object.keys(focus).slice(0,4);
+  if(!targets.length)return;
+  for(const f of targets){
+    if(wsLockedPaths.indexOf(f)>=0)continue;
+    const t0=Date.now();let waited=false;
+    for(;;){
+      if(codingStopRequested)break;
+      try{
+        const r=await authFetch(API+'/api/coding/workspace/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})});
+        if(r.ok){const d=await r.json().catch(()=>({}));if(d&&d.locked)wsLockedPaths.push(f);break}
+        if(r.status===409){
+          const d=await r.json().catch(()=>({}));
+          if(!waited){waited=true;addCodingSystemMsg('Waiting for file "'+f+'" — '+(d.locked_by||'another user')+' is editing it. Your turn starts as soon as it is free.')}
+        }
+      }catch(e){}
+      if(Date.now()-t0>=180000){addCodingSystemMsg('File "'+f+'" is still locked after 3 minutes — starting anyway. Re-read it before any edit.');break}
+      await new Promise(res=>setTimeout(res,2500));
+    }
+  }
+}
+async function wsReleaseMine(){
+  const paths=wsLockedPaths.slice();wsLockedPaths=[];
+  for(const f of paths){
+    try{await authFetch(API+'/api/coding/workspace/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})})}catch(e){}
+  }
+  if(paths.length&&typeof wsRenderBusyBar==='function'){try{wsRenderBusyBar(wsLastLocks||[])}catch(e){}}
+}
+async function openWorkspacesModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Collaborative workspaces</h2></div><div class="modal-body" id="ws-body"><div class="tool-status">Loading…</div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#ws-body');
+  const refresh=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/workspaces');
+      if(!r.ok)throw new Error('load failed');
+      const d=await r.json();
+      body.innerHTML='';
+      const sec=document.createElement('div');sec.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600;padding:6px 2px 8px';sec.textContent='Your workspaces';body.appendChild(sec);
+      const items=d.workspaces||[];
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='None yet — pick one of your saved projects below and invite up to 5 people.';body.appendChild(e)}
+      items.forEach(w=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=(w.name||'workspace')+' · '+(w.member_count||0)+' members · '+(w.role==='owner'?'you own':(w.role==='view'?'view only':'can edit'));row.appendChild(nm);
+        const op=document.createElement('button');op.className='btn btn-primary btn-sm';op.textContent='Open';op.onclick=async()=>{await openWorkspace({path:w.folder||w.path,workspace_id:w.workspace_id||w.id,name:w.name,role:w.role});try{ov.remove()}catch(e){}};row.appendChild(op);
+        if(w.role==='owner'){
+          const mg=document.createElement('button');mg.className='btn btn-ghost btn-sm';mg.textContent='Manage';mg.onclick=async()=>{await openWorkspaceMembersModal(w.workspace_id);refresh()};row.appendChild(mg);
+          const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this workspace? Members lose access.'))return;await authFetch(API+'/api/workspaces/'+w.workspace_id,{method:'DELETE'});showToast('Workspace deleted','info');refresh()};row.appendChild(del);
+        }
+        body.appendChild(row);
+      });
+      const create=document.createElement('div');create.style.cssText='margin-top:16px;padding:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm)';
+      create.innerHTML='<div style="font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Create a workspace</div>';
+      const warn=document.createElement('div');warn.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:8px';warn.textContent='Walk into one of your saved projects with up to 5 people: everyone gets a private chat, live file changes, per-file locks and a shared working copy.';create.appendChild(warn);
+      const fld=document.createElement('select');fld.id='ws-folder';fld.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);margin-bottom:8px;box-sizing:border-box';create.appendChild(fld);
+      const name=document.createElement('input');name.id='ws-name';name.placeholder='Workspace name (optional)';name.style.cssText='width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font);box-sizing:border-box;margin-bottom:8px';create.appendChild(name);
+      const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Create & open';create.appendChild(go);
+      go.onclick=async()=>{
+        const folder=fld.value;
+        if(!folder){appAlert('Choose a folder for the workspace');return}
+        go.disabled=true;go.textContent='Creating…';
+        try{
+          const r=await authFetch(API+'/api/workspaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.value.trim(),folder})});
+          const dd=await r.json().catch(()=>({}));
+          if(!r.ok){showToast((dd&&dd.error)||'Could not create workspace','error');go.disabled=false;go.textContent='Create & open';return}
+          showToast('Workspace created','success');
+          try{ov.remove()}catch(e){}
+          await openWorkspace({path:folder,workspace_id:dd.workspace_id,name:dd.name||name.value.trim()||'',role:'owner'});
+        }catch(e){showToast('Could not create: '+e.message,'error');go.disabled=false;go.textContent='Create & open'}
+      };
+      body.appendChild(create);
+      const opts=[];
+      if(codingFolder&&window.__user && !(currentWorkspace&&currentWorkspace.id)){try{opts.push({name:'',label:'Current folder ('+String(codingFolder).split(/[\\/]/).filter(Boolean).pop()+')'})}catch(e){}}
+      try{
+        const pr=await authFetch(API+'/api/projects');
+        const pd=pr.ok?await pr.json().catch(()=>({})):({});
+        (pd.projects||[]).forEach(p=>{if(p&&p.name)opts.push({name:p.name,label:'Saved: '+p.name})});
+        (pd.workspaces||[]).filter(w=>w.role==='owner').forEach(w=>opts.push({name:w.path,label:'Already a workspace: '+(w.name||'unnamed')}));
+      }catch(e){}
+      fld.innerHTML='';opts.forEach(o=>{const op=document.createElement('option');op.value=o.name;op.textContent=o.label;fld.appendChild(op)});
+    }catch(e){body.innerHTML='<div style="color:var(--error);padding:20px;font-size:12px">Could not load workspaces</div>'}
+  };
+  await refresh();
+}
+async function openWorkspaceMembersModal(wid){
+  wid=wid||(currentWorkspace&&currentWorkspace.id);
+  if(!wid){appAlert('No workspace open');return}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='560px';
+  m.innerHTML='<div class="modal-header"><h2>Workspace members</h2></div><div class="modal-body" id="wsm-body"><div class="tool-status">Loading…</div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#wsm-body');
+  const refresh=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/workspaces/'+wid+'/members');
+      if(!r.ok)throw new Error('load failed');
+      const d=await r.json();
+      body.innerHTML='';
+      const meId=(window.__user&&window.__user.id)||null;
+      const amOwner=meId===d.owner;
+      const ownerRow=document.createElement('div');ownerRow.style.cssText='display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+      const onm=document.createElement('span');onm.style.cssText='flex:1;color:var(--text-primary)';onm.textContent=(d.owner_name||'owner')+' (owner)';ownerRow.appendChild(onm);body.appendChild(ownerRow);
+      (d.members||[]).forEach(x=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=(x.username||('user #'+x.user_id))+(x.user_id===meId?' (you)':'');row.appendChild(nm);
+        if(amOwner){
+          const sel=document.createElement('select');sel.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:4px 6px;color:var(--text-primary);font-size:12px;font-family:var(--font)';
+          ['edit','view'].forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v==='edit'?'can edit':'view only';if((x.role||'edit')===v)o.selected=true;sel.appendChild(o)});
+          sel.onchange=async()=>{const rr=await authFetch(API+'/api/workspaces/'+wid+'/members/'+encodeURIComponent(x.username)+'/role?role='+sel.value,{method:'POST'});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast((dd&&dd.error)||'Could not change role','error')}else{showToast('Role updated — reloading','success')}refresh()};
+          row.appendChild(sel);
+          const rm=document.createElement('button');rm.className='btn btn-ghost btn-sm';rm.textContent='Remove';rm.onclick=async()=>{if(!appConfirm('Remove '+x.username+' from this workspace?'))return;const rr=await authFetch(API+'/api/workspaces/'+wid+'/members/'+encodeURIComponent(x.username),{method:'DELETE'});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast((dd&&dd.error)||'Could not remove','error')}else{showToast('Removed','info')}refresh()};row.appendChild(rm);
+        }else{
+          const role=document.createElement('span');role.className='prov';role.textContent=(x.role==='view')?'view only':'can edit';row.appendChild(role);
+        }
+        body.appendChild(row);
+      });
+      if(amOwner){
+        const add=document.createElement('div');add.style.cssText='margin-top:12px;display:flex;gap:6px';
+        const inp=document.createElement('input');inp.placeholder='Username to invite';inp.style.cssText='flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;outline:none;font-family:var(--font)';add.appendChild(inp);
+        const roleS=document.createElement('select');roleS.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 6px;color:var(--text-primary);font-size:12px;font-family:var(--font)';['edit','view'].forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v==='edit'?'can edit':'view only';roleS.appendChild(o)});add.appendChild(roleS);
+        const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Invite';go.onclick=async()=>{
+          const un=inp.value.trim();
+          if(!un){appAlert('Enter a username');return}
+          go.disabled=true;go.textContent='…';
+          const rr=await authFetch(API+'/api/workspaces/'+wid+'/share?role='+roleS.value,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:un})});
+          const dd=await rr.json().catch(()=>({}));
+          go.disabled=false;go.textContent='Invite';
+          if(!rr.ok){showToast((dd&&dd.error)||'Could not invite','error')}else{showToast('Invited '+un,'success');refresh()}
+        };
+        add.appendChild(go);
+        body.appendChild(add);
+      }
+    }catch(e){body.innerHTML='<div style="color:var(--error);padding:20px;font-size:12px">Could not load members</div>'}
+  };
+  await refresh();
+}
+async function openPublicForkFromEntry(f){await openPublicFork({folder:f.path,name:f.name,project_id:f.project_id,submitted:!!f.submitted},{id:f.project_id,name:f.pub_name||''})}
 async function createBlankProject(){const name=document.getElementById('new-project-name').value.trim();if(!name){appAlert('Enter a project name');return}
 const target=(document.getElementById('new-project-target')||{}).value||'cloud';
 if(target.indexOf('agent:')===0){const aid=target.slice(6);
@@ -10797,6 +11220,26 @@ function renderPublicDetail(p){
     const run=document.createElement('button');run.className='btn btn-primary btn-sm';run.textContent='▶ Run';run.onclick=()=>runPublicProject(pid,p.main_file,p.files||[]);row.appendChild(run);
   }
   const fv=document.createElement('button');fv.className='btn btn-ghost btn-sm';fv.textContent=(p.favorited?'♥ Favorited':'♡ Favorite');fv.onclick=async()=>{const rr=await authFetch(API+'/api/public/projects/'+pid+'/favorite',{method:'POST'});if(rr.ok){const d=await rr.json().catch(()=>({}));p.favorited=!!d.favorited;p.favorites=Math.max(0,(p.favorites||0)+(p.favorited?1:-1));renderPublicDetail(p)}};row.appendChild(fv);
+  if(!p.mine&&p.allow_edits){
+    const ed=document.createElement('button');ed.className='btn btn-primary btn-sm';ed.textContent='✎ Edit a copy';ed.onclick=async()=>{
+      ed.disabled=true;ed.textContent='Copying…';
+      try{
+        const rr=await authFetch(API+'/api/public/projects/'+pid+'/fork',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const dd=await rr.json().catch(()=>({}));
+        if(!rr.ok){showToast((dd&&dd.error)||'Could not fork','error');ed.disabled=false;ed.textContent='✎ Edit a copy';return}
+        showToast(dd.already?'Opening your copy…':'Forked — opening your copy','success');
+        await openPublicFork(dd,p);
+      }catch(e){showToast('Could not fork: '+e.message,'error');ed.disabled=false;ed.textContent='✎ Edit a copy'}
+    };row.appendChild(ed);
+    (async()=>{try{const r2=await authFetch(API+'/api/public/forks');const d2=await r2.json().catch(()=>({}));const mine=(d2.forks||[]).find(f=>f.project_id===pid);if(mine){ed.textContent=mine.submitted?'Open my copy (submitted)':'Open my copy';ed.style.background='var(--accent-dim)';ed.style.color='var(--accent-light)';ed.style.borderColor='var(--accent)';}}catch(e){}})();
+  }
+  if(!p.mine){
+    const req=document.createElement('button');req.className='btn btn-ghost btn-sm';req.textContent='✉ Submit edit request';req.onclick=()=>openEditRequestModal(pid,p.name);row.appendChild(req);
+  }
+  if(p.mine){
+    const contrib=document.createElement('button');contrib.className='btn btn-ghost btn-sm';contrib.textContent='📥 Contributions';contrib.onclick=async()=>{await openMyContributions(pid,p.name)};row.appendChild(contrib);
+    const ers=document.createElement('button');ers.className='btn btn-ghost btn-sm';ers.textContent='✉ Edit requests';ers.onclick=async()=>{await openMyEditRequests(pid,p.name)};row.appendChild(ers);
+  }
   if(p.mine){
     const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});navigate('public')};row.appendChild(del);
   }
@@ -10879,8 +11322,10 @@ async function openPublishModal(){
     '<div class="modal-field"><label>Model ID (optional, for 3D models)</label><input type="text" id="pub-model" placeholder="m123…" /></div>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked disabled /> Username shown on your project (required for share links)</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-edits" disabled title="Requires Allow downloads" /> Allow others to submit changes (they fork a copy, edit it, and submit back)</label>'+
     '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
   ov.appendChild(m);document.body.appendChild(ov);
+  (function(){const dl=m.querySelector('#pub-dl');const ed=m.querySelector('#pub-edits');dl.onchange=()=>{ed.disabled=!dl.checked;if(!dl.checked)ed.checked=false;}})();
   m.querySelector('#pub-cancel').onclick=()=>ov.remove();
   // Folder picker: current open folder + saved projects.
   const folderSel=m.querySelector('#pub-folder');
@@ -10948,6 +11393,7 @@ async function openPublishModal(){
       const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
         kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
         show_author:true,allow_download:m.querySelector('#pub-dl').checked,
+        allow_edits:m.querySelector('#pub-edits').checked,
         project_name:pubProjName,paths,main_file};
       const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const d=await r.json().catch(()=>({}));
@@ -10965,7 +11411,8 @@ async function openPublishModal(){
     }
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
-      show_author:true,allow_download:m.querySelector('#pub-dl').checked,files,main_file,
+      show_author:true,allow_download:m.querySelector('#pub-dl').checked,
+      allow_edits:m.querySelector('#pub-edits').checked,files,main_file,
       folder:(typeof codingFolder!=='undefined'?codingFolder:'')};
     const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));

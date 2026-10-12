@@ -6174,6 +6174,207 @@ def _coding_system_prompt(user_id: str = "") -> str:
 
 # Per-user coding states handled by _get_coding_state()
 
+# ---- Collaborative workspaces -----------------------------------------
+_WS_LOCK_TTL = 90
+_WS_EVENT_CAP = 200
+_WS_MAX_MEMBERS = 5
+_ws_locks = {}
+_ws_events_mutex = threading.Lock()
+_ws_pubsub = {}
+
+
+def _workspace_row(folder):
+    """Workspace row (or None) when `folder` has a workspace.json marker."""
+    try:
+        marker = os.path.join(os.path.abspath(folder or ""), ".omniilink", "workspace.json")
+        if not os.path.isfile(marker):
+            return None
+        with open(marker, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        ws_id = int(data.get("workspace_id") or 0)
+        if not ws_id:
+            return None
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return dict(row)
+    except Exception:
+        return None
+
+
+def _workspace_by_id(ws_id):
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (int(ws_id),)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return dict(row)
+    except Exception:
+        return None
+
+
+def _workspace_role(user, folder):
+    """'view'/'edit' when `user` is a member of the workspace for `folder`."""
+    try:
+        ws = _workspace_row(folder)
+        if not ws:
+            return None
+        conn = get_db()
+        try:
+            if ws["owner_id"] == user["id"] or user.get("is_admin"):
+                return "edit"
+            r = conn.execute("SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+                             (ws["id"], user["id"])).fetchone()
+        finally:
+            conn.close()
+        if not r:
+            return None
+        return (r["role"] or "edit")
+    except Exception:
+        return None
+
+
+def _ws_members(ws_id):
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT user_id, role FROM workspace_members WHERE workspace_id = ?",
+                            (ws_id,)).fetchall()
+        return [(r["user_id"], (r["role"] or "edit")) for r in rows]
+    finally:
+        conn.close()
+
+
+def _ws_events_file(folder):
+    return os.path.join(folder, ".omniilink", "workspace-events.json")
+
+
+def _ws_read_events(folder):
+    try:
+        with open(_ws_events_file(folder), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _ws_write_events(folder, events):
+    with _ws_events_mutex:
+        try:
+            os.makedirs(os.path.join(folder, ".omniilink"), exist_ok=True)
+            with open(_ws_events_file(folder), "w", encoding="utf-8") as fh:
+                json.dump(events[-_WS_EVENT_CAP:], fh)
+        except Exception:
+            pass
+
+
+def _ws_append_event(folder, ev):
+    """Record a change event + bump the pubsub token so pollers learn fast."""
+    ev = dict(ev)
+    ev.setdefault("at", time.time())
+    events = _ws_read_events(folder)
+    events.append(ev)
+    _ws_write_events(folder, events)
+    try:
+        t = time.time()
+        _ws_pubsub[os.path.abspath(folder)] = t
+        for key in list(_ws_pubsub.keys()):
+            if t - _ws_pubsub[key] > 1800:
+                _ws_pubsub.pop(key, None)
+    except Exception:
+        pass
+
+
+def _ws_chat_file(folder, user_id):
+    return os.path.join(folder, ".omniilink", f"chat-{user_id}.json")
+
+
+def _ws_lock_key(folder, relpath):
+    return (os.path.abspath(folder), os.path.normpath(relpath or "").lstrip("\\/"))
+
+
+def _ws_take_lock(user, folder, relpath):
+    """Claim a per-file lock. Returns an error dict or None on success."""
+    key = _ws_lock_key(folder, relpath)
+    now = time.time()
+    cur = _ws_locks.get(key)
+    if cur and now - cur["at"] < _WS_LOCK_TTL and cur["user_id"] != user["id"]:
+        return {"error": "File is locked by another editor", "locked_by": cur["username"], "locked_by_id": cur["user_id"]}
+    _ws_locks[key] = {"user_id": user["id"], "username": user.get("username", ""), "at": now}
+    _ws_append_event(folder, {"type": "lock", "path": relpath,
+                              "user": user.get("username", ""), "user_id": user["id"]})
+    return None
+
+
+def _ws_release_lock(user, folder, relpath):
+    key = _ws_lock_key(folder, relpath)
+    cur = _ws_locks.get(key)
+    if cur and cur["user_id"] == user["id"]:
+        del _ws_locks[key]
+        _ws_append_event(folder, {"type": "unlock", "path": relpath,
+                                  "user": user.get("username", ""), "user_id": user["id"]})
+
+
+def _ws_cleanup_locks(folder=None):
+    now = time.time()
+    for key in list(_ws_locks.keys()):
+        if folder and key[0] != os.path.abspath(folder):
+            continue
+        if now - _ws_locks[key]["at"] >= _WS_LOCK_TTL:
+            _ws_locks.pop(key, None)
+
+
+def _ws_live_locks(folder):
+    """Current non-stale locks for a folder (for the poll response)."""
+    _ws_cleanup_locks(folder)
+    out = []
+    for key, cur in _ws_locks.items():
+        if key[0] == os.path.abspath(folder):
+            out.append({"path": key[1], "user": cur["username"], "user_id": cur["user_id"], "at": cur["at"]})
+    return out
+
+
+def _ws_enforce_lock(user, folder, relpath):
+    """Server-side file lock for collaborator workspaces.
+
+    In a workspace folder, mutating `relpath` requires the caller to hold its
+    lock (client acquires it at send time). Returns an error JSONResponse
+    when another member currently holds it, else None (refreshing an existing
+    lock of the same user so long AI actions keep it alive)."""
+    if not _workspace_row(folder):
+        return None
+    _ws_cleanup_locks(folder)
+    key = _ws_lock_key(folder, relpath)
+    cur = _ws_locks.get(key)
+    if cur and cur["user_id"] != user["id"]:
+        return JSONResponse(status_code=409, content={
+            "error": "File is locked by another editor",
+            "locked_by": cur["username"], "locked_by_id": cur["user_id"]})
+    if cur:
+        cur["at"] = time.time()
+    else:
+        _ws_take_lock(user, folder, relpath)
+    return None
+
+
+def _ws_log_change(folder, evtype, relpath, user, user_id, extra=None):
+    """Record a workspace change event for the live feed, if folder is a workspace."""
+    if not folder or not os.path.isdir(folder):
+        return
+    if not os.path.isfile(os.path.join(folder, ".omniilink", "workspace.json")):
+        return
+    ev = {"type": evtype, "path": relpath, "user": user.get("username", ""), "user_id": user_id}
+    if extra:
+        ev.update(extra)
+    _ws_append_event(folder, ev)
+
+
 def _folder_shared_role(folder, user_id):
     """'view'/'edit' when `user_id` has a share on this exact folder, else None."""
     try:
@@ -6193,18 +6394,24 @@ def _folder_shared_role(folder, user_id):
 
 
 def _can_access_folder(user, folder) -> bool:
-    """True when the user owns/administers the folder or it is shared with them."""
+    """True when the user owns/administers the folder, it is shared with them,
+    or they are a member of its collaborative workspace."""
     if user.get("is_admin"):
         return True
     if _is_within(_user_data_dir(_safe_username(user["username"])), folder):
         return True
-    return _folder_shared_role(folder, user["id"]) is not None
+    if _folder_shared_role(folder, user["id"]) is not None:
+        return True
+    return _workspace_role(user, folder) is not None
 
 
 def _shared_write_block(user, folder):
-    """Read-only shared projects: block mutating endpoints for 'view' role."""
+    """Read-only shared projects / workspaces: block mutating endpoints."""
     if user.get("is_admin"):
         return None
+    if _workspace_role(user, folder) == "view":
+        return JSONResponse(status_code=403, content={
+            "error": "This workspace is read-only for you (view role)"})
     if _folder_shared_role(folder, user["id"]) == "view":
         return JSONResponse(status_code=403, content={
             "error": "This shared project is read-only (view role)"})
@@ -6439,8 +6646,21 @@ async def coding_open_folder(request: Request, req: CodingOpenFolder):
     _save_coding_folder(user_id, folder)
     tree = _build_file_tree(folder)
     file_count = _count_tree_files(tree)
+    meta = {"public_fork": None, "workspace": _workspace_row(folder)}
+    marker = os.path.join(folder, ".omniilink", "public-fork.json")
+    if os.path.isfile(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as fh:
+                meta["public_fork"] = json.load(fh)
+        except Exception:
+            pass
+    if meta["public_fork"]:
+        fork = _public_fork_for_folder(folder)
+        if fork:
+            meta["public_fork"]["submitted"] = bool(fork["submitted"])
+            meta["public_fork"]["fork_id"] = fork["id"]
     logger.info(f"[CODING] Opened folder: {folder} ({file_count} files) user={user.get('username','-')}")
-    return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count}
+    return {"status": "ok", "folder": folder, "tree": tree, "file_count": file_count, "meta": meta}
 
 @app.post("/api/coding/close-folder")
 async def coding_close_folder(request: Request):
@@ -6452,6 +6672,359 @@ async def coding_close_folder(request: Request):
     coding_state["folder"] = None
     _save_coding_folder(user_id, None)
     return {"status": "ok"}
+
+
+# ---- Collaborative workspace endpoints ----------------------------------
+class WorkspaceCreate(BaseModel):
+    name: str = ""
+    folder: str = ""
+    members: list = []
+
+
+@app.post("/api/workspaces")
+async def workspace_create(request: Request, req: WorkspaceCreate):
+    """Promote a folder the user owns into a collaborative workspace."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = (req.folder or "").strip()
+    if _bad_path(folder):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if not _is_within(_user_data_dir(_safe_username(user["username"])), folder):
+        return JSONResponse(status_code=403, content={"error": "You can only turn your own folders into a workspace"})
+    if not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "Folder not found"})
+    name = (req.name or os.path.basename(folder.rstrip("\\/"))).strip()[:120]
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT * FROM workspaces WHERE folder = ?", (folder,)).fetchone()
+        if existing:
+            ws = existing
+        else:
+            cur = conn.execute("INSERT INTO workspaces (folder, owner_id, name) VALUES (?, ?, ?)",
+                               (folder, user["id"], name))
+            ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (cur.lastrowid,)).fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        os.makedirs(os.path.join(folder, ".omniilink"), exist_ok=True)
+        with open(os.path.join(folder, ".omniilink", "workspace.json"), "w", encoding="utf-8") as f:
+            json.dump({"workspace_id": ws["id"], "name": name}, f)
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    _ws_append_event(folder, {"type": "workspace_created",
+                              "user": user.get("username", ""), "user_id": user["id"]})
+    return {"status": "ok", "workspace_id": ws["id"], "folder": folder,
+            "name": name, "members": _ws_members(ws["id"])}
+
+
+@app.get("/api/workspaces")
+async def workspace_list(request: Request):
+    """Workspaces I own or belong to (for the projects pickers)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT w.*, u.username AS owner_name FROM workspaces w"
+            " LEFT JOIN users u ON u.id = w.owner_id"
+            " WHERE w.owner_id = ? OR EXISTS (SELECT 1 FROM workspace_members m"
+            "       WHERE m.workspace_id = w.id AND m.user_id = ?)"
+            " ORDER BY w.created_at DESC", (user["id"], user["id"])).fetchall()
+        out = []
+        for w in rows:
+            try:
+                if not os.path.isdir(w["folder"] or ""):
+                    continue
+                file_count, dir_size = _scan_project_dir(w["folder"])
+            except Exception:
+                continue
+            out.append({"workspace_id": w["id"], "name": w["name"] or "",
+                        "folder": w["folder"], "owner_id": w["owner_id"],
+                        "owner_name": (w["owner_name"] or ""),
+                        "role": "owner" if w["owner_id"] == user["id"] else
+                                (_workspace_role(user, w["folder"]) or "view"),
+                        "file_count": file_count, "size_bytes": dir_size,
+                        "modified": os.path.getmtime(w["folder"]),
+                        "member_count": len(_ws_members(w["id"]))})
+        return {"workspaces": out}
+    finally:
+        conn.close()
+
+
+@app.get("/api/workspaces/{wid}/members")
+async def workspace_members_list(request: Request, wid: int):
+    """Member roster (usernames) for the workspace-modal UI."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ws = _workspace_by_id(wid)
+    if not ws:
+        return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+    if not (_workspace_role(user, ws["folder"]) or ws["owner_id"] == user["id"]):
+        return JSONResponse(status_code=403, content={"error": "Not a member"})
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT m.user_id, m.role, u.username FROM workspace_members m"
+            " JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ?", (wid,)).fetchall()
+        owner = conn.execute("SELECT username FROM users WHERE id = ?", (ws["owner_id"],)).fetchone()
+    finally:
+        conn.close()
+    return {"workspace_id": wid, "name": ws.get("name") or "",
+            "owner": ws["owner_id"], "owner_name": (owner["username"] if owner else ""),
+            "members": [{"user_id": r["user_id"], "username": r["username"] or "",
+                         "role": (r["role"] or "edit")} for r in rows]}
+
+
+@app.post("/api/workspaces/{wid}/share")
+async def workspace_share(request: Request, wid: int, role: str = "edit"):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    target = str((data or {}).get("username", "")).strip()
+    role = (role or "edit").strip().lower()
+    if role not in ("view", "edit"):
+        return JSONResponse(status_code=400, content={"error": "role must be view or edit"})
+    if not target:
+        return JSONResponse(status_code=400, content={"error": "username required"})
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (wid,)).fetchone()
+        if not ws:
+            return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+        if ws["owner_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the owner can share a workspace"})
+        target_user = conn.execute("SELECT id, username FROM users WHERE username = ? COLLATE NOCASE",
+                                   (target,)).fetchone()
+        if not target_user:
+            return JSONResponse(status_code=404, content={"error": "No such user"})
+        if target_user["id"] == ws["owner_id"]:
+            return JSONResponse(status_code=400, content={"error": "The owner is already a member"})
+        members = _ws_members(ws["id"])
+        if target_user["id"] in [m[0] for m in members]:
+            conn.execute("UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?",
+                         (role, wid, target_user["id"]))
+        else:
+            if len(members) >= _WS_MAX_MEMBERS:
+                return JSONResponse(status_code=400, content={
+                    "error": f"A workspace can have at most {_WS_MAX_MEMBERS} members besides the owner"})
+            conn.execute("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+                         (wid, target_user["id"], role))
+        conn.commit()
+        folder = ws["folder"] or ""
+    finally:
+        conn.close()
+    _ws_append_event(folder, {"type": "member_added", "path": "",
+                              "user": user.get("username", ""), "user_id": user["id"],
+                              "extra": {"member": target_user["username"], "role": role}})
+    return {"status": "ok", "members": _ws_members(wid)}
+
+
+@app.post("/api/workspaces/{wid}/members/{username}/role")
+async def workspace_set_role(request: Request, wid: int, username: str, role: str = "edit"):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    role = (role or "edit").strip().lower()
+    if role not in ("view", "edit"):
+        return JSONResponse(status_code=400, content={"error": "role must be view or edit"})
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (wid,)).fetchone()
+        if not ws:
+            return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+        if ws["owner_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the owner can change roles"})
+        tu = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+        if not tu:
+            return JSONResponse(status_code=404, content={"error": "No such user"})
+        n = conn.execute("UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?",
+                         (role, wid, tu["id"])).rowcount
+        conn.commit()
+        if not n:
+            return JSONResponse(status_code=404, content={"error": "Not a member"})
+        folder = ws["folder"] or ""
+    finally:
+        conn.close()
+    _ws_append_event(folder, {"type": "member_role", "path": "",
+                              "user": user.get("username", ""), "user_id": user["id"],
+                              "extra": {"member": username, "role": role}})
+    return {"status": "ok", "members": _ws_members(wid)}
+
+
+@app.delete("/api/workspaces/{wid}/members/{username}")
+async def workspace_remove_member(request: Request, wid: int, username: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (wid,)).fetchone()
+        if not ws:
+            return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+        if ws["owner_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the owner can remove members"})
+        tu = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+        if not tu:
+            return JSONResponse(status_code=404, content={"error": "No such user"})
+        if tu["id"] == ws["owner_id"]:
+            return JSONResponse(status_code=400, content={"error": "The owner cannot be removed"})
+        n = conn.execute("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+                         (wid, tu["id"])).rowcount
+        conn.commit()
+        if not n:
+            return JSONResponse(status_code=404, content={"error": "Not a member"})
+        folder = ws["folder"] or ""
+    finally:
+        conn.close()
+    _ws_append_event(folder, {"type": "member_removed", "path": "",
+                              "user": user.get("username", ""), "user_id": user["id"],
+                              "extra": {"member": username}})
+    return {"status": "ok", "members": _ws_members(wid)}
+
+
+@app.delete("/api/workspaces/{wid}")
+async def workspace_delete(request: Request, wid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (wid,)).fetchone()
+        if not ws:
+            return JSONResponse(status_code=404, content={"error": "Workspace not found"})
+        if ws["owner_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the owner can delete the workspace"})
+        folder = ws["folder"] or ""
+        conn.execute("DELETE FROM workspaces WHERE id = ?", (wid,))
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        marker = os.path.join(folder, ".omniilink", "workspace.json")
+        if os.path.isfile(marker):
+            os.remove(marker)
+    except OSError:
+        pass
+    _ws_append_event(folder, {"type": "workspace_deleted",
+                              "user": user.get("username", ""), "user_id": user["id"]})
+    _ws_pubsub.pop(os.path.abspath(folder), None)
+    return {"status": "ok"}
+
+
+@app.get("/api/coding/workspace/poll")
+async def workspace_poll(request: Request, since: float = 0.0):
+    """Live feed for the open workspace: recent change events, active file
+    locks and the current file tree (mtimes compared by the client)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws = _workspace_row(folder)
+    if not ws:
+        return {"active": False, "events": [], "locks": [], "tree": None, "since": since}
+    try:
+        since = float(since or 0)
+    except Exception:
+        since = 0.0
+    events = [e for e in _ws_read_events(folder) if float(e.get("at") or 0) > since]
+    tree = _build_file_tree(folder, patterns=_read_omniiignore(folder))
+    return {"active": True, "events": events, "locks": _ws_live_locks(folder),
+            "tree": tree, "since": since,
+            "token": _ws_pubsub.get(os.path.abspath(folder), 0)}
+
+
+@app.get("/api/coding/workspace/context")
+async def workspace_context(request: Request):
+    """Recent workspace activity, injected into the AI's coding prompt so the
+    second AI knows what collaborators (or an earlier AI session) just did."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    ws = _workspace_row(folder)
+    if not ws:
+        return {"active": False, "summary": "", "events": []}
+    events = _ws_read_events(folder)[-_WS_EVENT_CAP:]
+    events = [e for e in events if e.get("type") not in ("lock",)]
+    lines = []
+    for e in events[-40:]:
+        t = e.get("type")
+        who = e.get("user") or "someone"
+        rel = e.get("path") or ""
+        if t == "write":
+            lines.append(f"{who} wrote {rel}")
+        elif t == "patch":
+            lines.append(f"{who} edited {rel}")
+        elif t == "create":
+            lines.append(f"{who} created {rel}")
+        elif t == "delete":
+            lines.append(f"{who} deleted {rel}")
+        elif t == "rename":
+            lines.append(f"{who} renamed {rel} to {e.get('to') or '?'}")
+        elif t == "upload":
+            lines.append(f"{who} uploaded {rel}")
+        elif t == "member_added":
+            lines.append(f"{who} added {e.get('extra', {}).get('member')} as {e.get('extra', {}).get('role')}")
+        elif t == "member_removed":
+            lines.append(f"{who} removed {e.get('extra', {}).get('member')}")
+        elif t == "workspace_created":
+            lines.append(f"{who} created this workspace")
+    return {"active": True, "summary": "\n".join(lines[-20:]), "events": events,
+            "owner": ws.get("owner_id"), "name": ws.get("name") or ""}
+
+
+class WsLockBody(BaseModel):
+    path: str = ""
+    unlock: bool = False
+
+
+@app.post("/api/coding/workspace/lock")
+async def workspace_lock(request: Request, req: WsLockBody):
+    """Explicitly claim the lock for a file the caller is about to touch."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not _workspace_row(folder):
+        return JSONResponse(status_code=400, content={"error": "Not a workspace"})
+    if req.unlock:
+        _ws_release_lock(user, folder, req.path)
+        return {"status": "ok", "locked": False, "path": req.path}
+    errd = _ws_take_lock(user, folder, req.path)
+    if errd:
+        return JSONResponse(status_code=409, content=errd)
+    return {"status": "ok", "locked": True, "path": req.path}
+
+
+@app.post("/api/coding/workspace/unlock")
+async def workspace_unlock(request: Request, req: WsLockBody):
+    """Release the file lock the caller holds (called when the AI finishes)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    _ws_release_lock(user, folder, req.path)
+    return {"status": "ok"}
+
 
 @app.get("/api/coding/files")
 async def coding_list_files(request: Request):
@@ -6473,7 +7046,8 @@ async def coding_list_files(request: Request):
 async def coding_get_chat(request: Request):
     """Coding conversation for the open project, stored INSIDE the project
     folder (.omniilink/coding-chat.json) so it follows the project across
-    devices. Dotfiles are hidden from the file tree and auto-attach."""
+    devices. Dotfiles are hidden from the file tree and auto-attach. In a
+    collaborative workspace each member gets their own private chat file."""
     user, err = _require_auth(request)
     if err:
         return err
@@ -6482,6 +7056,8 @@ async def coding_get_chat(request: Request):
     if _folder_access_error(user, folder) or not folder or not os.path.isdir(folder):
         return {"history": [], "stored": False}
     path = os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+    if _workspace_row(folder):
+        path = _ws_chat_file(folder, user["id"])
     if not _is_within(folder, path):
         return {"history": [], "stored": False}
     try:
@@ -6516,6 +7092,8 @@ async def coding_save_chat(request: Request, req: CodingChatSave):
     if len(raw) > _CHAT_MAX_BYTES:
         return JSONResponse(status_code=413, content={"error": "Chat too large"})
     path = os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+    if _workspace_row(folder):
+        path = _ws_chat_file(folder, user["id"])
     if not _is_within(folder, path):
         return JSONResponse(status_code=403, content={"error": "Path outside project"})
     try:
@@ -7881,6 +8459,7 @@ def _pub_row(r):
         "can_update": bool(src_proj or src_folder),
         "source_project": src_proj,
         "allow_download": bool(r["allow_download"]),
+        "allow_edits": bool(1 if ("allow_edits" in r.keys() and r["allow_edits"]) else 0),
         "status": r["status"],
         "favorites": int(r["fav_count"] or 0),
         "main_file": mf,
@@ -7908,6 +8487,7 @@ async def public_submit(request: Request):
     # and the submitter is always credited.
     show_author = 1
     allow_download = 1 if data.get("allow_download", True) else 0
+    allow_edits = 1 if (data.get("allow_edits") and allow_download) else 0
     files = []
     total = 0
 
@@ -8015,10 +8595,10 @@ async def public_submit(request: Request):
     try:
         slug = _public_slug(conn, user["id"], name)
         cur = conn.execute(
-            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, status, main_file, slug, source_project, source_folder, source_paths)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, allow_edits, status, main_file, slug, source_project, source_folder, source_paths)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
             (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download,
-             main_file, slug, source_project, source_folder, source_paths))
+             allow_edits, main_file, slug, source_project, source_folder, source_paths))
         pid = cur.lastrowid
         for f in files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
@@ -8372,6 +8952,413 @@ async def public_update(request: Request, pid: int):
         conn.close()
     _audit("public.update", user.get("username", ""), f"{pid}")
     return {"status": "ok", "files": len(new_files), "review": "pending"}
+
+
+def _public_fork_dir(user_id: str) -> str:
+    """Per-user folder holding this account's forks of published projects."""
+    return _ensure_dir(os.path.join(_user_data_dir(user_id), "public_forks"))
+
+
+def _public_fork_folder_name(pub_name: str) -> str:
+    """A filesystem-safe, project-valid folder name derived from a publication."""
+    base = re.sub(r'[\\/:*?"<>|]+', "-", (pub_name or "Untitled").strip())
+    base = re.sub(r"\s+", " ", base).strip(" .") or "published-project"
+    return base[:80]
+
+
+def _public_fork_row_for(user_id: int, pid: int):
+    conn = get_db()
+    try:
+        return conn.execute(
+            "SELECT * FROM public_forks WHERE project_id = ? AND user_id = ?", (pid, user_id)).fetchone()
+    finally:
+        conn.close()
+
+
+def _public_fork_for_folder(folder: str):
+    """Row (or None) when `folder` is a user's fork of a published project."""
+    try:
+        norm = os.path.abspath(folder or "")
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT * FROM public_forks WHERE folder = ?", (norm,)).fetchone()
+        finally:
+            conn.close()
+        return r
+    except Exception:
+        return None
+
+
+def _public_read_fork_files(folder: str):
+    """Snapshot text files of a fork folder (same caps as a publish) for a
+    submission. Returns (files, total); each file is {path, size, content}
+    with binary files base64-encoded."""
+    files = []
+    total = 0
+    tree = _build_file_tree(folder)
+    walk = [tree]
+    paths = []
+    while walk:
+        cur = walk.pop()
+        for e in cur or []:
+            if e.get("type") == "dir":
+                walk.append(e.get("children") or [])
+            else:
+                paths.append(e.get("path") or e.get("name") or "")
+    for p in sorted(paths)[:200]:
+        full = os.path.join(folder, p)
+        if not _is_within(folder, full) or not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        if len(raw) > PUBLIC_FILE_MAX_BYTES:
+            continue
+        total += len(raw)
+        if total > PUBLIC_SUBMIT_MAX_BYTES:
+            break
+        try:
+            c = raw.decode("utf-8")
+        except Exception:
+            c = "base64:" + base64.b64encode(raw).decode()
+        files.append({"path": p, "size": len(raw), "content": c})
+    return files, total
+
+
+@app.post("/api/public/projects/{pid}/fork")
+async def public_fork(request: Request, pid: int):
+    """Copy a published project (allow_edits) into the caller's own folder so
+    they can work on it and submit the changes back. Idempotent per user."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] == user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "This is your own project"})
+        if not r["allow_edits"] and r["user_id"] != user["id"]:
+            return JSONResponse(status_code=403, content={"error": "This creator did not enable other-people edits"})
+        existing = _public_fork_row_for(user["id"], pid)
+        if existing:
+            return {"status": "ok", "already": True, "name": existing["name"],
+                    "folder": existing["folder"], "submitted": bool(existing["submitted"])}
+        files = conn.execute("SELECT path, content FROM public_project_files WHERE project_id = ? ORDER BY path",
+                             (pid,)).fetchall()
+    finally:
+        conn.close()
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Empty project — nothing to copy"})
+    user_id = _safe_username(user["username"])
+    base = _public_fork_dir(user_id)
+    base_name = _public_fork_folder_name(r["name"])
+    name, n = base_name, 2
+    while os.path.isdir(os.path.join(base, name)):
+        name = (base_name[:72].rstrip() + "-" + str(n))
+        n += 1
+    dest = os.path.join(base, name)
+    try:
+        os.makedirs(os.path.join(dest, ".omniilink"), exist_ok=True)
+        meta = {"public_project_id": pid, "name": r["name"], "forked_at": time.time()}
+        with open(os.path.join(dest, ".omniilink", "public-fork.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+    except OSError as e:
+        shutil.rmtree(dest, ignore_errors=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    seen = set()
+    for f in files:
+        rel = f["path"] or ""
+        if rel in seen or ".." in rel.split("/"):
+            continue
+        seen.add(rel)
+        full = os.path.join(dest, rel)
+        if not _is_within(dest, full):
+            continue
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            c = f["content"] or ""
+            data = base64.b64decode(c[7:]) if c.startswith("base64:") else c.encode("utf-8", "ignore")
+            with open(full, "wb") as fh:
+                fh.write(data)
+        except Exception:
+            continue
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO public_forks (project_id, user_id, folder, name) VALUES (?, ?, ?, ?)",
+                     (pid, user["id"], os.path.abspath(dest), name))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.fork", user.get("username", ""), f"{pid} {name}")
+    return {"status": "ok", "already": False, "name": name, "folder": os.path.abspath(dest), "submitted": False}
+
+
+@app.get("/api/public/forks")
+async def public_my_forks(request: Request):
+    """The published projects this user has forked (for the Public section)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT f.*, p.name AS pub_name, p.username AS author, p.allow_edits "
+            "FROM public_forks f LEFT JOIN public_projects p ON p.id = f.project_id"
+            " WHERE f.user_id = ? ORDER BY f.created_at DESC", (user["id"],)).fetchall()
+        out = []
+        for f in rows:
+            folder = f["folder"] or ""
+            try:
+                if not os.path.isdir(folder):
+                    continue
+                file_count, dir_size = _scan_project_dir(folder)
+                out.append({"name": f["name"], "path": folder, "file_count": file_count,
+                            "size_bytes": dir_size, "modified": os.path.getmtime(folder),
+                            "public": True, "project_id": f["project_id"],
+                            "pub_name": (f["pub_name"] or ""), "author": (f["author"] or ""),
+                            "submitted": bool(f["submitted"]), "fork_id": f["id"]})
+            except Exception:
+                continue
+        return {"forks": out}
+    finally:
+        conn.close()
+
+
+@app.post("/api/public/projects/{pid}/contribute")
+async def public_contribute(request: Request, pid: int):
+    """Submit the current state of the caller's fork back to the author.
+
+    A snapshot of the fork folder is stored server-side (the author applies
+    it later); this never writes into the published project itself."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    desc = str((data or {}).get("description", ""))[:2000]
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id, user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] == user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "You are the author"})
+        fork = conn.execute("SELECT * FROM public_forks WHERE project_id = ? AND user_id = ?",
+                            (pid, user["id"])).fetchone()
+    finally:
+        conn.close()
+    if not fork:
+        return JSONResponse(status_code=400, content={"error": "Fork this project before submitting changes"})
+    folder = fork["folder"] or ""
+    base = _public_fork_dir(_safe_username(user["username"]))
+    if not folder or not os.path.isdir(folder) or not _is_within(base, folder):
+        return JSONResponse(status_code=400, content={"error": "Your fork folder is missing — fork the project again"})
+    files, _total = _public_read_fork_files(folder)
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Your fork has no files — add something first"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO public_contributions (project_id, fork_id, user_id, username, description, status, files_json)"
+            " VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (pid, fork["id"], user["id"], user.get("username", ""), desc, json.dumps(files)))
+        cid = cur.lastrowid
+        conn.execute("UPDATE public_forks SET submitted = 1 WHERE id = ?", (fork["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.contribute", user.get("username", ""),
+           f"{pid} -> contribution {cid} ({len(files)} files)")
+    return {"status": "ok", "contribution_id": cid, "files": len(files)}
+
+
+@app.post("/api/public/projects/{pid}/edit-request")
+async def public_edit_request(request: Request, pid: int):
+    """Send the author a message: bug report, feature request, etc."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    message = str((data or {}).get("message", "")).strip()[:2000]
+    if not message:
+        return JSONResponse(status_code=400, content={"error": "Message is required"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] == user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "This is your own project"})
+        cur = conn.execute(
+            "INSERT INTO public_edit_requests (project_id, user_id, username, message)"
+            " VALUES (?, ?, ?, ?)", (pid, user["id"], user.get("username", ""), message))
+        rid = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.edit_request", user.get("username", ""), f"{pid} -> {rid}")
+    return {"status": "ok", "edit_request_id": rid}
+
+
+def _public_owner_or_admin(conn, r, user):
+    """Authorisation gate shared by the author-facing public endpoints."""
+    if not r:
+        return False
+    return r["user_id"] == user["id"] or bool(user.get("is_admin"))
+
+
+@app.get("/api/public/projects/{pid}/contributions")
+async def public_list_contributions(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id, user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if not _public_owner_or_admin(conn, r, user):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        rows = conn.execute(
+            "SELECT id, username, description, status, created_at,"
+            " (SELECT COUNT(*) FROM json_each(public_contributions.files_json)) AS file_count"
+            " FROM public_contributions WHERE project_id = ? ORDER BY created_at DESC", (pid,)).fetchall()
+        return {"contributions": [{
+            "id": x["id"], "username": x["username"] or "", "description": x["description"] or "",
+            "status": x["status"] or "pending", "created_at": x["created_at"],
+            "file_count": int(x["file_count"] or 0)} for x in rows]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/contributions/{cid}")
+async def public_contribution_detail(request: Request, cid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        c = conn.execute("SELECT * FROM public_contributions WHERE id = ?", (cid,)).fetchone()
+        if not c:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
+                            (c["project_id"],)).fetchone()
+        if not _public_owner_or_admin(conn, proj, user):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        try:
+            files = json.loads(c["files_json"] or "[]")
+        except Exception:
+            files = []
+        return {"id": c["id"], "project_id": c["project_id"], "username": c["username"] or "",
+                "description": c["description"] or "", "status": c["status"],
+                "created_at": c["created_at"], "files": files}
+    finally:
+        conn.close()
+
+
+@app.post("/api/public/contributions/{cid}/review")
+async def public_contribution_review(request: Request, cid: int):
+    """The author applies (or rejects) a submitted contribution.
+
+    Approving replaces the published snapshot with the contributor's files and
+    sends the project back to pending so an admin re-approves the revision."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    action = str((data or {}).get("action", "")).lower()
+    if action not in ("approve", "reject"):
+        return JSONResponse(status_code=400, content={"error": "action must be approve or reject"})
+    conn = get_db()
+    try:
+        c = conn.execute("SELECT * FROM public_contributions WHERE id = ?", (cid,)).fetchone()
+        if not c:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
+                            (c["project_id"],)).fetchone()
+        if not _public_owner_or_admin(conn, proj, user):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        if action == "approve":
+            try:
+                files = json.loads(c["files_json"] or "[]")
+            except Exception:
+                files = []
+            if not files:
+                return JSONResponse(status_code=400, content={"error": "Contribution has no files"})
+            allowed = {f["path"] for f in files}
+            main_file = conn.execute("SELECT main_file FROM public_projects WHERE id = ?",
+                                     (c["project_id"],)).fetchone()["main_file"] or ""
+            if main_file and main_file not in allowed:
+                main_file = ""
+            conn.execute("DELETE FROM public_project_files WHERE project_id = ?", (c["project_id"],))
+            for f in files:
+                conn.execute("INSERT INTO public_project_files (project_id, path, size, content)"
+                             " VALUES (?, ?, ?, ?)",
+                             (c["project_id"], f["path"], int(f.get("size") or 0), f.get("content") or ""))
+            conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ?,"
+                         " status = 'pending', approved_at = NULL WHERE id = ?",
+                         (main_file, json.dumps([f["path"] for f in files]), c["project_id"]))
+        conn.execute("UPDATE public_contributions SET status = ?, reviewed_at = datetime('now') WHERE id = ?",
+                     (action, cid))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.contribution_review", user.get("username", ""), f"{cid} {action}")
+    return {"status": "ok", "review": action}
+
+
+@app.get("/api/public/projects/{pid}/edit-requests")
+async def public_list_edit_requests(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id, user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if not _public_owner_or_admin(conn, r, user):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        rows = conn.execute(
+            "SELECT * FROM public_edit_requests WHERE project_id = ? ORDER BY created_at DESC",
+            (pid,)).fetchall()
+        return {"edit_requests": [{
+            "id": x["id"], "username": x["username"] or "", "message": x["message"] or "",
+            "read": bool(x["read"]), "created_at": x["created_at"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/public/edit-requests/{rid}/read")
+async def public_edit_request_read(request: Request, rid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        er = conn.execute("SELECT project_id FROM public_edit_requests WHERE id = ?", (rid,)).fetchone()
+        if not er:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
+                            (er["project_id"],)).fetchone()
+        if not _public_owner_or_admin(conn, proj, user):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("UPDATE public_edit_requests SET read = 1 WHERE id = ?", (rid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
 
 
 @app.get("/api/admin/public")
@@ -8774,6 +9761,10 @@ async def coding_file_upload(request: Request, path: str = ""):
     if _bad_path(rel) or not rel:
         await _drain_request_body(request)
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    ws_ck = _ws_enforce_lock(user, folder, rel)
+    if ws_ck:
+        await _drain_request_body(request)
+        return ws_ck
     full = os.path.join(folder, rel)
     if not _is_within(folder, full):
         await _drain_request_body(request)
@@ -8807,6 +9798,7 @@ async def coding_file_upload(request: Request, path: str = ""):
             pass
         return JSONResponse(status_code=500, content={"error": str(e)})
     try:
+        _ws_log_change(folder, "upload", rel, user, user["id"], {"size": size})
         return _coding_after_store(user, user_id, folder, rel, size)
     except _UploadRefused as refused:
         return JSONResponse(status_code=refused.status, content={"error": refused.error})
@@ -8924,6 +9916,10 @@ async def coding_file_upload_complete(request: Request, req: CodingUploadComplet
     if meta is None:
         return JSONResponse(status_code=404, content={"error": "Unknown or expired upload session"})
     rel = meta.get("rel", "")
+    ws_ck = _ws_enforce_lock(user, folder, rel)
+    if ws_ck:
+        shutil.rmtree(sdir, ignore_errors=True)
+        return ws_ck
     full = os.path.join(folder, rel)
     if _bad_path(rel) or not rel or not _is_within(folder, full):
         shutil.rmtree(sdir, ignore_errors=True)
@@ -8945,6 +9941,7 @@ async def coding_file_upload_complete(request: Request, req: CodingUploadComplet
         shutil.rmtree(sdir, ignore_errors=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
     shutil.rmtree(sdir, ignore_errors=True)
+    _ws_log_change(folder, "upload", rel, user, user["id"], {"size": size})
     try:
         return _coding_after_store(user, user_id, folder, rel, size)
     except _UploadRefused as refused:
@@ -8979,6 +9976,9 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         return blk
     if _bad_path(req.path) or len(req.content) > 5 * 1024 * 1024:
         return JSONResponse(status_code=400, content={"error": "Invalid path or content too large (max 5MB)"})
+    ws_ck = _ws_enforce_lock(user, folder, req.path)
+    if ws_ck:
+        return ws_ck
     quota_err = _check_quota(user, _safe_username(user["username"]), len(req.content.encode("utf-8", "ignore")))
     if quota_err:
         return quota_err
@@ -9013,6 +10013,8 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
             added, removed = len(req.content.splitlines()), 0
         _action_log(_safe_username(user["username"]), req.path,
                     "write" if vts is not None else "create", vts, added, removed)
+        _ws_log_change(folder, "write" if vts is not None else "create",
+                       req.path, user, user["id"], {"added": added, "removed": removed})
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
@@ -9132,6 +10134,9 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
     if (_bad_path(req.path) or len(req.old_text) > 5 * 1024 * 1024
             or len(req.new_text) > 5 * 1024 * 1024):
         return JSONResponse(status_code=400, content={"error": "Invalid path or text too large (max 5MB)"})
+    ws_ck = _ws_enforce_lock(user, folder, req.path)
+    if ws_ck:
+        return ws_ck
     full = os.path.join(folder, req.path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -9174,6 +10179,8 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         except Exception:
             added, removed = 0, 0
         _action_log(_safe_username(user["username"]), req.path, "patch", vts, added, removed)
+        _ws_log_change(folder, "patch", req.path, user, user["id"],
+                       {"added": added, "removed": removed})
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
         return {"status": "ok", "path": req.path, "size": len(patched),
                 "added": added, "removed": removed}
@@ -9469,6 +10476,9 @@ async def coding_file_delete(request: Request, path: str):
         return blk
     if _bad_path(path):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    ws_ck = _ws_enforce_lock(user, folder, path)
+    if ws_ck:
+        return ws_ck
     full = os.path.join(folder, path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -9483,6 +10493,7 @@ async def coding_file_delete(request: Request, path: str):
             vts = None
         os.remove(full)
         _action_log(owner, path, "delete", vts)
+        _ws_log_change(folder, "delete", path, user, user["id"])
         logger.info(f"[CODING] Deleted file: {path} user={user.get('username','-')}")
         return {"status": "ok"}
     except Exception as e:
@@ -9508,6 +10519,9 @@ async def coding_rename(request: Request):
     access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
+    ws_ck = _ws_enforce_lock(user, folder, old_path)
+    if ws_ck:
+        return ws_ck
     full_old = os.path.join(folder, old_path)
     full_new = os.path.join(folder, new_path)
     if not _is_within(folder, full_old) or not _is_within(folder, full_new):
@@ -9518,6 +10532,7 @@ async def coding_rename(request: Request):
         return JSONResponse(status_code=409, content={"error": "Target already exists"})
     try:
         os.rename(full_old, full_new)
+        _ws_log_change(folder, "rename", old_path, user, user["id"], {"to": new_path})
         logger.info(f"[CODING] Renamed: {old_path} -> {new_path} user={user.get('username','-')}")
         return {"status": "ok"}
     except Exception as e:
@@ -10931,10 +11946,12 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
 
         # Restricted shell: the command always runs inside the user's own
 
-        # data dir. Client-supplied cwd is validated, never trusted, and
+        # data dir (or, for workspace members, inside the workspace folder).
+
+        # Client-supplied cwd is validated, never trusted, and
 
         # absolute/parent paths in the command are rejected.
-        base = _user_data_dir(user_id)
+        base = folder if _workspace_row(folder) else _user_data_dir(user_id)
         if req.cwd:
             cand = req.cwd if os.path.isabs(req.cwd) else os.path.join(folder or base, req.cwd)
             cand = os.path.normpath(cand)
@@ -11864,7 +12881,70 @@ async def list_projects(request: Request):
             logger.warning(f"[PROJECTS] skipped {path}: {e}")
             continue
     return {"projects": projects, "shared_projects": _shared_project_entries(user, projects_dir),
+            "public_edits": _public_fork_entries(user),
+            "workspaces": _workspace_entries(user),
             "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
+
+
+def _workspace_entries(user):
+    """Workspaces the user owns or belongs to (for the project pickers)."""
+    out = []
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT w.*, u.username AS owner_name FROM workspaces w"
+            " LEFT JOIN users u ON u.id = w.owner_id"
+            " WHERE w.owner_id = ? OR EXISTS (SELECT 1 FROM workspace_members m"
+            "       WHERE m.workspace_id = w.id AND m.user_id = ?)"
+            " ORDER BY w.created_at DESC", (user["id"], user["id"])).fetchall()
+    finally:
+        conn.close()
+    for w in rows:
+        folder = w["folder"] or ""
+        try:
+            if not os.path.isdir(folder):
+                continue
+            fc, ds = _scan_project_dir(folder)
+            out.append({"name": w["name"] or os.path.basename(folder.rstrip("\\/")),
+                        "path": folder, "workspace": True, "workspace_id": w["id"],
+                        "owner": (w["owner_name"] or ""),
+                        "role": ("owner" if w["owner_id"] == user["id"]
+                                 else (_workspace_role(user, folder) or "view")),
+                        "file_count": fc, "size_bytes": ds,
+                        "modified": os.path.getmtime(folder),
+                        "member_count": len(_ws_members(w["id"]))})
+        except Exception:
+            continue
+    return out
+
+
+def _public_fork_entries(user):
+    """The published-project forks this user owns (Public section entries)."""
+    out = []
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT f.id AS fork_id, f.name, f.folder, f.submitted, f.created_at,"
+            " p.id AS project_id, p.name AS pub_name, p.username AS author, p.allow_edits"
+            " FROM public_forks f LEFT JOIN public_projects p ON p.id = f.project_id"
+            " WHERE f.user_id = ? ORDER BY f.created_at DESC", (user["id"],)).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        folder = r["folder"] or ""
+        try:
+            if not os.path.isdir(folder):
+                continue
+            file_count, dir_size = _scan_project_dir(folder)
+            out.append({"name": r["name"], "path": folder, "file_count": file_count,
+                        "size_bytes": dir_size, "modified": os.path.getmtime(folder),
+                        "public": True, "project_id": r["project_id"],
+                        "pub_name": (r["pub_name"] or ""), "author": (r["author"] or ""),
+                        "submitted": bool(r["submitted"]), "fork_id": r["fork_id"],
+                        "can_submit": bool(r["allow_edits"])})
+        except Exception:
+            continue
+    return out
 
 
 @app.get("/api/projects/tree")

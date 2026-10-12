@@ -324,6 +324,70 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_file_actions_user ON file_actions(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS public_forks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            folder TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            submitted INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, user_id),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_forks_user ON public_forks(user_id);
+
+        CREATE TABLE IF NOT EXISTS public_contributions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            fork_id INTEGER,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            files_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now')),
+            reviewed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_contrib_project ON public_contributions(project_id, status);
+
+        CREATE TABLE IF NOT EXISTS public_edit_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            message TEXT DEFAULT '',
+            read INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_public_editreq_project ON public_edit_requests(project_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder TEXT UNIQUE,
+            owner_id INTEGER,
+            name TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces(owner_id);
+
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT DEFAULT 'edit',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(workspace_id, user_id),
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id);
     """)
     # Migration: retired features whose tables are no longer used.
     conn.execute("DROP TABLE IF EXISTS scheduled_jobs")
@@ -367,6 +431,10 @@ def init_db():
                 n += 1
             seen.add(slug)
             conn.execute("UPDATE public_projects SET slug = ? WHERE id = ?", (slug, r["id"]))
+    if pcols and "allow_edits" not in pcols:
+        # "Allow others to submit changes": the owner opts into edits, which
+        # lets visitors fork a copy, work on it, and submit it back.
+        conn.execute("ALTER TABLE public_projects ADD COLUMN allow_edits INTEGER DEFAULT 0")
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
     except Exception:
