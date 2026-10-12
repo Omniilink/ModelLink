@@ -3268,6 +3268,7 @@ function openOmniiignoreEditor(){
   });
 }
 function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
+function addCodingSystemMsgBefore(text,beforeEl){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';if(beforeEl&&beforeEl.parentNode===chat)chat.insertBefore(msg,beforeEl);else chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
 function autoAttachProjectFiles(){
   // Hand the model the project source up front so it never burns rounds
   // re-reading files via shell (whose output the harness truncates).
@@ -3378,12 +3379,12 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   // The server prompt already carries this block (api_server.py
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
   // for identical output. Only add it when it is genuinely missing.
-  if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block. Split it SMALL: one file, one feature, or one check per item — one giant item covering the whole task is wrong, break it into its parts so progress is verifiable step by step.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- PACK every round: emit all independent actions in ONE reply — several FILE_CREATE/FILE_EDIT blocks and several RUN_COMMANDs together. Spending a whole round on one action wastes the budget you declared.\n- Never end a round with prose only while steps remain and any [ ] todo is open: either send the next tool blocks or say plainly what blocks you.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
+  if(sysPrompt.indexOf('STEP PLANNING')<0)sysPrompt+='\nSTEP PLANNING (how this run is budgeted):\n- At the START of a task, before any tool block, write ONE line declaring how many tool rounds YOU judge it needs: PLAN-STEPS: N  (one round = one reply that runs tool blocks).\n- PLAN-STEPS is ONLY a round counter — it does NOT replace your TODO_LIST. For any task with 2+ steps you still start with a TODO_LIST block. Split it SMALL: one file, one feature, or one check per item — one giant item covering the whole task is wrong, break it into its parts so progress is verifiable step by step.\n- Count GENEROUSLY: inspection + one round per file + a verification round + a round per likely fix (a 3-file website is roughly 6-8 rounds). A plan of 1-2 steps for a multi-file task is wrong; under-declaring costs a round.\n- You get exactly N rounds — there is no other cap. Never stop early because of a counter: finish when the work is verified.\n- PACK every round — but only inside the ONE todo you are working: emit its independent actions (several FILE_* blocks and/or RUN_COMMANDs for that single item) in ONE reply. Never pack blocks for two different todos into one reply. Spending a whole round on one action wastes the budget you declared.\n- Never end a round with prose only while steps remain and any [ ] todo is open: either send the next tool blocks or say plainly what blocks you.\n- If mid-run you realize you need more, write a new line PLAN-STEPS: M with a higher number and the harness grants it (you may recount up to 3 times).\n';
   // A model that never writes a TODO_LIST leaves the harness nothing to track,
   // which is exactly how a run stalls after one file. Make it mandatory and
   // show the exact syntax, and require re-emitting it every round so the
   // checkmarks stay truthful.
-  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If one step covers several files or features, write one item per file/feature — never bundle them into a single big item.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n';
+  if(sysPrompt.indexOf('TODO_LIST CONTRACT')<0)sysPrompt+='\nTODO_LIST CONTRACT (mandatory, this is how you track your own work):\n- Syntax, exactly:\nTODO_LIST:\n- [ ] first step\n- [ ] second step\nEND_TODO_LIST\n- Your FIRST reply on any task with 2 or more steps MUST contain a TODO_LIST block before any FILE_* or RUN_COMMAND block. Never describe steps in prose instead — prose is not tracked, the block is.\n- Every reply after that MUST re-emit the whole TODO_LIST with finished items marked [x]. That is how you know what is next; never rely on memory of the earlier message.\n- Close an item with [x] only when that specific work is DONE and verified. Leave it [ ] if it failed or was skipped.\n- One file, one feature, or one check per item. Never one item for the whole task.\n- If one step covers several files or features, write one item per file/feature — never bundle them into a single big item.\n- If a tool result shows something did not land, keep that item [ ] and fix it — do not mark it done and move on.\n- Never stop mid-task to ask about splitting your list: fix the granularity yourself in your next TODO_LIST and carry straight on.\n- ONE TODO AT A TIME: each reply may advance ONLY the first open [ ] item. Never emit FILE_* blocks for files belonging to two different todos in one reply — parallel edits collide (especially with collaborators editing too) and oversized replies get cut off mid-file. Finish the current item (written and verified) before starting the next; if it is blocked, say what blocks it and stop.\n';
   // The repeated-failure pattern: the same doomed command re-run every round.
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
@@ -3744,13 +3745,14 @@ async function sendCodingMessage(){
   contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';
   const waitT0=Date.now();
   const stopWait=()=>{try{if(contentEl._waitTimer){clearInterval(contentEl._waitTimer);contentEl._waitTimer=null}}catch(e){}};
-  contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-waitT0)/1000))+'s'}catch(e){}},1000);
+  contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent=(typeof wsWaitingForLocks!=='undefined'&&wsWaitingForLocks?'Waiting for others to finish up… ':'Waiting for model… ')+Math.max(1,Math.round((Date.now()-waitT0)/1000))+'s'}catch(e){}},1000);
   const markWarmed=()=>{try{if(typeof window!=='undefined'){window._warmedModels=window._warmedModels||{};window._warmedModels[sendModel]=true}}catch(e){}};
   codingLiveReset();
-  if(typeof wsActive!=='undefined'&&wsActive&&typeof wsSecureTargets==='function'){try{await wsSecureTargets(rawText+'\n'+((codingAtFiles||[]).join('\n')))}catch(e){}}
+  if(typeof wsActive!=='undefined'&&wsActive&&typeof wsSecureTargets==='function'){try{await wsSecureTargets(rawText+'\n'+((codingAtFiles||[]).join('\n')),assistantEl)}catch(e){try{wsWaitingForLocks=false}catch(e2){}}}
   let liveT0=Date.now();  try{if(!codingAtFiles.length&&!lastOpenedFile&&codingFolder&&window.lastCodingTree&&window.lastCodingTree.length)autoAttachProjectFiles()}catch(e){}
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
   try{if(codingAttachFailures.length)addCodingSystemMsg('Could not read '+codingAttachFailures.length+' attached file'+(codingAttachFailures.length!==1?'s':'')+': '+codingAttachFailures.slice(0,4).join('; ')+(codingAttachFailures.length>4?'…':''))}catch(e){}
+  try{if(typeof wsSkippedLocked!=='undefined'&&wsSkippedLocked.length){codingHistory.push({role:'user',content:'LOCK STATUS: the following files are still locked by collaborators and could NOT be secured — do NOT emit FILE_* blocks for them this turn, work on your one current todo using other files instead: '+wsSkippedLocked.map(s=>s.path+' (held by '+s.by+')').join(', ')+'.'})}}catch(e){}
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
@@ -5211,7 +5213,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run'];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: '];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -5377,6 +5379,8 @@ function codingErrorHint(resultsText){
     hints.push(ref[1]+' is not defined: if this JavaScript file is loaded by an HTML page, uses browser APIs, or depends on a CDN global, do NOT require() it and do NOT run it under node. Validate it with node --check <file> (syntax only) and verify it by previewing the HTML page. Only use require()/module.exports when both files are server-side Node/CommonJS modules with no browser dependency.');
   if(/Old text not found/i.test(t))
     hints.push('Patch OLD text must match the CURRENT file exactly — copy it verbatim (indentation and whitespace matter) and use a small OLD block of 3-8 unique lines. Re-read the file first if you have not seen it this session; never rebuild OLD from memory.');
+  if(/locked by another editor/i.test(t))
+    hints.push('FILE LOCKED BY A COLLABORATOR: that file is being edited right now by someone else — your change was NOT applied. Do NOT resend blocks for it. Work on a different file/todo instead, and only touch the locked file again after a fresh read shows it is free. If every remaining todo needs locked files, reply in plain text saying which files you are waiting on instead of retrying.');
   // JSX / TypeScript run straight under node is a syntax error you cannot
   // "fix" by patching the file: node has no JSX transform. The session log
   // showed a model loop forever patching render(<Foo/>) for exactly this.
@@ -5463,7 +5467,7 @@ async function streamCodingTurn(messages){
 const contentEl=assistantEl.querySelector('.coding-msg-content');
   let modelWarmed=false;try{modelWarmed=!!(typeof window!=='undefined'&&window._warmedModels&&window._warmedModels[selectedModel])}catch(e){}
   if(isOllamaModel(selectedModel)&&!modelWarmed){try{contentEl.innerHTML=loadingModelHtml()}catch(e){}}
-  else{contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent='Waiting for model… '+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
+  else{contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent=(typeof wsWaitingForLocks!=='undefined'&&wsWaitingForLocks?'Waiting for others to finish up… ':'Waiting for model… ')+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
   const stopTurnWait=()=>{try{if(contentEl._waitTimer){clearInterval(contentEl._waitTimer);contentEl._waitTimer=null}}catch(e){}};
   codingLiveReset();
   const liveT0=Date.now();
@@ -5850,7 +5854,7 @@ async function codingAutoContinue(){
             :'\nSTOP REPEATING: the identical result is back for a third time on the same action. Change route completely (different tool, different approach), or reply in plain text saying what is blocking you instead of retrying.';
         }
         const stepsLeft=Math.max(0,codingPlanSteps-codingRounds);
-        const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — batch every independent action (several file blocks and/or commands) into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
+        const budgetNote=stepsLeft>0?'\nBUDGET: '+stepsLeft+' of '+codingPlanSteps+' rounds left. Use them — batch every independent action for the single todo you are working into this reply rather than one per round, and do NOT answer with prose only while todos are still open.':'';
         // Writes that changed nothing, and a reply the model already sent.
         // Both are dead ends; naming them stops the exact loop in the logs.
         const noopNote=results.noops>0?'\nNOTE: '+results.noops+' of the file blocks you sent this round (+0 -0) matched the file EXACTLY — they wrote nothing. Those features are NOT implemented. Write the missing code (do not resend what is already there), or state plainly that you are stuck.':'';
@@ -5890,7 +5894,9 @@ async function codingAutoContinue(){
           patchMissFails=0;
           try{patchMissByFile={}}catch(e){}
         }
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        const lockHits=(results.text.match(/locked by another editor/gi)||[]).length;
+        const lockNote=lockHits>0?'\nLOCKED FILES: '+lockHits+' of your blocks were rejected because a collaborator is editing those files — those changes did NOT land. Do not resend them. Continue with a todo that uses OTHER files; re-read a locked file before touching it again later. Work ONE todo at a time.':'';
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -6799,7 +6805,7 @@ async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!pa
 // ========== PUBLIC FORKS (contribute changes) + COLLABORATIVE WORKSPACES ==========
 var currentPublicFork=null;
 var currentWorkspace=null;
-var wsActive=false,wsTimer=null,wsFolder='',wsLastEvents=0,wsLastSig='',wsLastLocks=[],wsFirstPoll=true,wsLockedPaths=[],wsExplicitLive=false;
+var wsActive=false,wsTimer=null,wsFolder='',wsLastEvents=0,wsLastSig='',wsLastLocks=[],wsFirstPoll=true,wsLockedPaths=[],wsExplicitLive=false,wsWaitingForLocks=false,wsSkippedLocked=[];
 function treeSig(tree){let s='';const walk=a=>{(a||[]).forEach(n=>{if(n&&n.type==='dir')walk(n.children);else if(n)s+=n.path+'|'+(n.size||0)+';'})};walk(tree);return s}
 async function openCodingFolderPath(path,opts){
   opts=opts||{};
@@ -7034,7 +7040,8 @@ function wsRenderBusyBar(locks){
   old.textContent=parts.length?('● '+parts.join(' · ')):'● live — nobody is editing';
   old.style.color=theirs.length?'#f0a030':'var(--success)';
 }
-async function wsSecureTargets(text){
+async function wsSecureTargets(text,beforeEl){
+  wsWaitingForLocks=false;wsSkippedLocked=[];
   if(!wsActive||!currentWorkspace||currentWorkspace.role==='view'||!codingFolder)return;
   const focus={};
   (codingAtFiles||[]).forEach(f=>{if(f)focus[f]=1});
@@ -7047,23 +7054,27 @@ async function wsSecureTargets(text){
   }
   const targets=Object.keys(focus).slice(0,4);
   if(!targets.length)return;
+  const say=t=>{try{if(beforeEl)addCodingSystemMsgBefore(t,beforeEl);else addCodingSystemMsg(t)}catch(e){try{addCodingSystemMsg(t)}catch(e2){}}};
   for(const f of targets){
     if(wsLockedPaths.indexOf(f)>=0)continue;
-    const t0=Date.now();let waited=false;
+    const t0=Date.now();let waited=false,lockedBy='another user';
     for(;;){
-      if(codingStopRequested)break;
+      if(codingStopRequested){wsWaitingForLocks=false;break}
       try{
         const r=await authFetch(API+'/api/coding/workspace/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})});
-        if(r.ok){const d=await r.json().catch(()=>({}));if(d&&d.locked)wsLockedPaths.push(f);break}
+        if(r.ok){const d=await r.json().catch(()=>({}));if(d&&d.locked)wsLockedPaths.push(f);wsWaitingForLocks=false;break}
         if(r.status===409){
           const d=await r.json().catch(()=>({}));
-          if(!waited){waited=true;addCodingSystemMsg('Waiting for file "'+f+'" — '+(d.locked_by||'another user')+' is editing it. Your turn starts as soon as it is free.')}
+          lockedBy=d.locked_by||'another user';
+          wsWaitingForLocks=true;
+          if(!waited){waited=true;say('Waiting for file "'+f+'" — '+lockedBy+' is editing it. Your turn starts as soon as it is free.')}
         }
       }catch(e){}
-      if(Date.now()-t0>=180000){addCodingSystemMsg('File "'+f+'" is still locked after 3 minutes — starting anyway. Re-read it before any edit.');break}
+      if(Date.now()-t0>=180000){wsWaitingForLocks=false;wsSkippedLocked.push({path:f,by:lockedBy});say('File "'+f+'" is still locked by '+lockedBy+' after 3 minutes — skipping it for now so the AI works on other files instead.');break}
       await new Promise(res=>setTimeout(res,2500));
     }
   }
+  wsWaitingForLocks=false;
 }
 async function wsReleaseMine(){
   const paths=wsLockedPaths.slice();wsLockedPaths=[];
