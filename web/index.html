@@ -7285,6 +7285,8 @@ async function openMyContributions(pid,pubName){
       if(c.status==='pending'){
         const btns=document.createElement('div');btns.style.cssText='display:flex;gap:6px;margin-top:6px';
         const ok=document.createElement('button');ok.className='btn btn-primary btn-sm';ok.textContent='Approve & republish';ok.onclick=async()=>{const rr=await authFetch(API+'/api/public/contributions/'+c.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'approve'})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast((dd&&dd.error)||'Could not approve','error');return}showToast('Approved — the project goes back for admin re-review','success');close()};btns.appendChild(ok);
+        const mg=document.createElement('button');mg.className='btn btn-primary btn-sm';mg.textContent='Merge live';mg.title='Apply immediately, no re-review';
+        mg.onclick=async()=>{if(!await appConfirm('Apply these files immediately with no re-review?'))return;const rr=await authFetch(API+'/api/public/contributions/'+c.id+'/merge',{method:'POST'});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast((dd&&dd.error)||'Could not merge','error');return}showToast('Merged and live','success');close()};btns.appendChild(mg);
         const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=async()=>{await authFetch(API+'/api/public/contributions/'+c.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})});showToast('Rejected','info');close()};btns.appendChild(no);
         row.appendChild(btns);
       }
@@ -11328,6 +11330,24 @@ async function admLoadReview(){
       if(p.status!=='rejected'){const no=document.createElement('button');no.className='btn btn-ghost btn-sm';no.textContent='Reject';no.onclick=()=>admReviewSubmit(p.id,'reject');acts.appendChild(no);}
       card.appendChild(acts);box.appendChild(card);
     });
+    try{
+      const rr=await authFetch(API+'/api/admin/public/reports');const dd=rr.ok?await rr.json().catch(()=>({})):({});
+      const reps=(dd&&dd.reports)||[];
+      if(reps.length){
+        const rt=document.createElement('div');rt.className='usage-section-title';rt.style.margin='18px 0 8px';rt.textContent='User reports ('+reps.length+')';box.appendChild(rt);
+        reps.forEach(x=>{
+          const card=document.createElement('div');card.className='prompt-card';
+          card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(x.project_name||('project #'+x.project_id))+'</span></div><div class="prompt-content"></div>';
+          card.querySelector('.prompt-content').textContent='Reported by '+(x.username||'someone')+': '+(x.reason||'');
+          const acts=document.createElement('div');acts.className='prompt-actions';
+          const dis=document.createElement('button');dis.className='btn btn-ghost btn-sm';dis.textContent='Dismiss';
+          dis.onclick=async()=>{await authFetch(API+'/api/admin/public/reports/'+x.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'dismiss'})});admLoadReview()};acts.appendChild(dis);
+          const rem=document.createElement('button');rem.className='btn btn-ghost btn-sm';rem.textContent='Remove project';
+          rem.onclick=async()=>{if(!await appConfirm('Remove this project from Public?'))return;await authFetch(API+'/api/admin/public/reports/'+x.id+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove'})});admLoadReview()};acts.appendChild(rem);
+          card.appendChild(acts);box.appendChild(card);
+        });
+      }
+    }catch(e){}
   }catch(e){box.innerHTML='<div class="tool-status">Load failed: '+escapeHtml(e.message)+'</div>'}
 }
 async function admReviewSubmit(pid,action){
@@ -11842,7 +11862,7 @@ async function loadPublicView(){
     '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
     '<input id="pub-search" placeholder="Search projects…" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)" />'+
     '<select id="pub-kind" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none"><option value="">All types</option><option value="project">Projects</option><option value="model">3D models</option><option value="asset">Assets</option></select>'+
-    '<select id="pub-sort" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none"><option value="new">Newest</option><option value="top">Top favorited</option></select></div>'+
+    '<select id="pub-sort" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none"><option value="new">Newest</option><option value="top">Top favorited</option><option value="rated">Top rated</option><option value="downloads">Most downloaded</option><option value="views">Most viewed</option></select></div>'+
     '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" data-pubtab="projects">Projects</button><button class="btn btn-ghost btn-sm" data-pubtab="assets">Assets</button></div>'+
     '<div id="pub-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px"></div></div>';
   var sq=host.querySelector('#pub-search'),sk=host.querySelector('#pub-kind'),ss=host.querySelector('#pub-sort');
@@ -11876,8 +11896,8 @@ async function loadPublicList(){
       card.onclick=()=>openPublicDetail(p.id);
       const nm=document.createElement('div');nm.textContent=p.name||'Untitled';nm.style.cssText='font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:6px';
       const ds=document.createElement('div');ds.textContent=(p.description||'').slice(0,120);ds.style.cssText='font-size:11.5px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px;min-height:34px';
-      const meta=document.createElement('div');meta.style.cssText='font-size:11px;color:var(--text-muted);display:flex;gap:8px;align-items:center';
-      meta.innerHTML='<span>'+escapeHtml(p.kind||'project')+'</span><span>♥ '+(p.favorites||0)+'</span>'+(p.author?'<span>by '+escapeHtml(p.author)+'</span>':'');
+      const meta=document.createElement('div');meta.style.cssText='font-size:11px;color:var(--text-muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+      meta.innerHTML='<span>'+escapeHtml(p.kind||'project')+'</span><span>♥ '+(p.favorites||0)+'</span>'+(p.rating_count?'<span>★ '+p.rating_avg+' ('+p.rating_count+')</span>':'')+'<span>👁 '+(p.views||0)+'</span>'+(p.comment_count?'<span>💬 '+p.comment_count+'</span>':'')+(p.author?'<span>by '+escapeHtml(p.author)+'</span>':'');
       card.appendChild(nm);card.appendChild(ds);card.appendChild(meta);
       list.appendChild(card);
     });
@@ -11895,7 +11915,23 @@ function renderPublicDetail(p){
   const wrap=document.createElement('div');wrap.style.cssText='padding:20px;display:flex;flex-direction:column;gap:14px;max-width:760px';
   const back=document.createElement('button');back.className='btn btn-ghost btn-sm';back.textContent='← Back to Public';back.style.alignSelf='flex-start';back.onclick=()=>navigate('public');wrap.appendChild(back);
   const title=document.createElement('h2');title.style.margin='0';title.textContent=p.name||'Untitled';wrap.appendChild(title);
-  const sub=document.createElement('div');sub.className='tool-result-sub';sub.textContent=(p.kind||'project')+(p.username?' · by '+p.username:'')+' · ♥ '+(p.favorites||0);wrap.appendChild(sub);
+  if(p.cover){const cv=document.createElement('img');cv.src=p.cover;cv.alt='';cv.style.cssText='max-width:100%;border-radius:var(--radius-sm);border:1px solid var(--border)';wrap.appendChild(cv)}
+  const sub=document.createElement('div');sub.className='tool-result-sub';
+  let subT=(p.kind||'project')+(p.username?' · by '+p.username:'')+' · ♥ '+(p.favorites||0);
+  if(p.rating_count)subT+=' · ★ '+p.rating_avg+' ('+p.rating_count+')';
+  subT+=' · 👁 '+(p.views||0)+' · ⬇ '+(p.downloads||0);
+  if(p.version_count>1)subT+=' · v'+p.version_count;
+  if(p.visibility==='unlisted')subT+=' · unlisted link';
+  if(p.coauthors&&p.coauthors.length)subT+=' · with '+p.coauthors.join(', ');
+  sub.textContent=subT;wrap.appendChild(sub);
+  if(!p.mine){
+    const rateRow=document.createElement('div');rateRow.style.cssText='display:flex;gap:4px;align-items:center;font-size:12px;color:var(--text-secondary)';
+    const rl=document.createElement('span');rl.textContent='Rate:';rateRow.appendChild(rl);
+    for(let s=1;s<=5;s++){const st=document.createElement('button');st.className='btn btn-ghost btn-sm';st.textContent=(s<=(p.my_rating||0)?'★':'☆');st.title=s+' star'+(s!==1?'s':'');
+      st.onclick=async()=>{try{const rr=await authFetch(API+'/api/public/projects/'+pid+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stars:s})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not rate','error');return}p.rating_avg=dd.rating_avg;p.rating_count=dd.rating_count;p.my_rating=s;renderPublicDetail(p)}catch(e){showToast(e.message,'error')}};
+      rateRow.appendChild(st)}
+    wrap.appendChild(rateRow);
+  }
   if(p.description){const ds=document.createElement('div');ds.style.cssText='font-size:13px;line-height:1.65;color:var(--text-primary);white-space:pre-wrap';ds.textContent=p.description;wrap.appendChild(ds)}
   const share=publicShareUrl(p);
   if(share){
@@ -11938,6 +11974,26 @@ function renderPublicDetail(p){
   if(!p.mine){
     const req=document.createElement('button');req.className='btn btn-ghost btn-sm';req.textContent='✉ Submit edit request';req.onclick=()=>openEditRequestModal(pid,p.name);row.appendChild(req);
   }
+  const sv=document.createElement('button');sv.className='btn btn-ghost btn-sm';sv.textContent='🔖 Save';sv.onclick=()=>openSaveCollectionModal(pid);row.appendChild(sv);
+  if(share){
+    const em=document.createElement('button');em.className='btn btn-ghost btn-sm';em.textContent='Embed';
+    em.onclick=async()=>{const snip='<iframe src="'+share+'" width="100%" height="600" style="border:1px solid #333;border-radius:8px" loading="lazy"></iframe>';try{await navigator.clipboard.writeText(snip);showToast('Embed code copied','success')}catch(e){showToast('Copy failed — grab the link above','error')}};
+    row.appendChild(em);
+  }
+  if(!p.mine){
+    const rp=document.createElement('button');rp.className='btn btn-ghost btn-sm';rp.textContent='⚠ Report';
+    rp.onclick=()=>{
+      const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+      const m=document.createElement('div');m.className='modal';m.style.maxWidth='440px';
+      m.innerHTML='<div class="modal-header"><h2>Report project</h2></div><div class="modal-body"><div class="modal-field"><label>What is wrong? (required)</label><textarea id="rp-why" style="width:100%;min-height:90px" placeholder="Spam, abuse, broken, stolen…"></textarea></div><div class="modal-actions"><button class="btn btn-ghost" id="rp-cancel">Cancel</button><button class="btn btn-primary" id="rp-go">Send report</button></div></div>';
+      ov.appendChild(m);document.body.appendChild(ov);
+      m.querySelector('#rp-cancel').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+      m.querySelector('#rp-go').onclick=async()=>{
+        const why=m.querySelector('#rp-why').value.trim();if(!why){appAlert('Say what is wrong first');return}
+        try{const rr=await authFetch(API+'/api/public/projects/'+pid+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:why})});if(!rr.ok)throw new Error('send failed');ov.remove();showToast('Reported — an admin will review it','success')}catch(e){showToast(e.message,'error')}
+      };
+    };row.appendChild(rp);
+  }
   if(p.mine){
     const contrib=document.createElement('button');contrib.className='btn btn-ghost btn-sm';contrib.textContent='📥 Contributions';contrib.onclick=async()=>{await openMyContributions(pid,p.name)};row.appendChild(contrib);
     const ers=document.createElement('button');ers.className='btn btn-ghost btn-sm';ers.textContent='✉ Edit requests';ers.onclick=async()=>{await openMyEditRequests(pid,p.name)};row.appendChild(ers);
@@ -11946,7 +12002,190 @@ function renderPublicDetail(p){
     const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';del.onclick=async()=>{if(!appConfirm('Delete this published project?'))return;await authFetch(API+'/api/public/projects/'+pid,{method:'DELETE'});navigate('public')};row.appendChild(del);
   }
   wrap.appendChild(row);
+  pubRenderVersions(wrap,pid);
+  pubRenderComments(wrap,pid,p);
+  pubRenderBounties(wrap,pid);
+  pubRenderRemixes(wrap,pid);
+  if(p.mine)pubRenderCoauthors(wrap,pid);
   host.appendChild(wrap);
+}
+function pubSection(wrap,title){
+  const s=document.createElement('div');s.style.cssText='background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px';
+  const h=document.createElement('div');h.style.cssText='font-size:11px;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px';h.textContent=title;s.appendChild(h);
+  wrap.appendChild(s);return s;
+}
+async function pubRenderVersions(wrap,pid){
+  const sec=pubSection(wrap,'Version history');const box=document.createElement('div');box.innerHTML='<div class="tool-status">Loading…</div>';sec.appendChild(box);
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/versions');if(!r.ok)throw new Error('load failed');
+    const d=await r.json();const vs=d.versions||[];
+    if(!vs.length){box.innerHTML='<div class="tool-status">No versions yet.</div>';return}
+    box.innerHTML='';
+    vs.forEach(v=>{
+      const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px';
+      const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent='v'+v.version+(v.changelog?' — '+v.changelog:'');row.appendChild(nm);
+      const dt=document.createElement('span');dt.style.cssText='color:var(--text-muted);font-size:11px';try{dt.textContent=new Date(v.created_at+'Z').toLocaleString()}catch(e){dt.textContent=v.created_at||''};row.appendChild(dt);
+      const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.textContent='Files';
+      vw.onclick=()=>pubVersionFiles(pid,v);row.appendChild(vw);
+      box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load versions</div>'}
+}
+async function pubVersionFiles(pid,v){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Version '+v.version+'</h2></div><div class="modal-body" id="pv-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="pv-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#pv-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#pv-body');
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/versions/'+v.id);if(!r.ok)throw new Error('load failed');
+    const d=await r.json();const files=d.files||[];
+    if(!files.length){body.innerHTML='<div class="tool-status">Empty version.</div>';return}
+    body.innerHTML='';
+    files.forEach(f=>{
+      const row=document.createElement('div');row.style.cssText='padding:7px 0;border-bottom:1px solid var(--border);font-size:12px';
+      row.innerHTML='<div style="font-family:var(--mono);color:var(--accent-light)">'+escapeHtml(f.path)+' <span style="color:var(--text-muted)">('+Math.round((f.size||0)/102.4)/10+' KB)</span></div>';
+      const vw=document.createElement('button');vw.className='btn btn-ghost btn-sm';vw.style.marginTop='4px';vw.textContent='View';
+      vw.onclick=()=>{
+        let content=String(f.content||'');
+        if(content.indexOf('base64:')===0){try{content=atob(content.slice(7))}catch(e){content='(binary file)'}}
+        const pre=document.createElement('pre');pre.style.cssText='font-family:var(--mono);font-size:11px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;margin-top:6px';pre.textContent=content.slice(0,20000);
+        row.appendChild(pre);vw.remove();
+      };
+      row.appendChild(vw);body.appendChild(row);
+    });
+  }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load version</div>'}
+}
+async function pubRenderComments(wrap,pid,p){
+  const sec=pubSection(wrap,'Comments');const box=document.createElement('div');sec.appendChild(box);
+  const draw=async()=>{
+    box.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/public/projects/'+pid+'/comments');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=d.comments||[];
+      box.innerHTML='';
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No comments yet — be the first.';box.appendChild(e)}
+      items.forEach(c=>{
+        const row=document.createElement('div');row.style.cssText='padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        row.innerHTML='<div><span style="font-weight:600;color:var(--text-primary)">'+escapeHtml(c.username||'someone')+'</span> <span style="font-size:10.5px;color:var(--text-muted)">'+escapeHtml(c.created_at||'')+'</span></div><div style="color:var(--text-primary);white-space:pre-wrap;margin-top:2px">'+escapeHtml(c.text||'')+'</div>';
+        if(c.mine||p.mine){
+          const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.style.marginTop='4px';del.textContent='Delete';
+          del.onclick=async()=>{await authFetch(API+'/api/public/projects/'+pid+'/comments/'+c.id,{method:'DELETE'});draw()};
+          row.appendChild(del);
+        }
+        box.appendChild(row);
+      });
+      const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-top:10px';
+      const inp=document.createElement('input');inp.placeholder='Write a comment…';inp.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font)';form.appendChild(inp);
+      const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Post';
+      go.onclick=async()=>{const t=inp.value.trim();if(!t)return;try{const rr=await authFetch(API+'/api/public/projects/'+pid+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});if(!rr.ok)throw new Error('post failed');draw()}catch(e){showToast(e.message,'error')}};
+      form.appendChild(go);box.appendChild(form);
+    }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load comments</div>'}
+  };
+  await draw();
+}
+async function pubRenderBounties(wrap,pid){
+  const sec=pubSection(wrap,'Bounties');const box=document.createElement('div');sec.appendChild(box);
+  const draw=async()=>{
+    box.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/public/projects/'+pid+'/bounties');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=d.bounties||[];
+      box.innerHTML='';
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No bounties — request a feature and maybe someone builds it.';box.appendChild(e)}
+      items.forEach(b=>{
+        const row=document.createElement('div');row.style.cssText='padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        row.innerHTML='<div><span style="font-weight:600;color:var(--text-primary)">'+escapeHtml(b.username||'someone')+'</span> <span style="font-size:10.5px;color:var(--text-muted)">'+escapeHtml(b.created_at||'')+'</span></div><div style="color:var(--text-primary);white-space:pre-wrap;margin-top:2px">'+escapeHtml(b.text||'')+'</div>';
+        if(b.mine){const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.style.marginTop='4px';del.textContent='Remove';del.onclick=async()=>{await authFetch(API+'/api/public/projects/'+pid+'/bounties/'+b.id,{method:'DELETE'});draw()};row.appendChild(del)}
+        box.appendChild(row);
+      });
+      const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-top:10px';
+      const inp=document.createElement('input');inp.placeholder='Request a feature…';inp.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font)';form.appendChild(inp);
+      const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Add';
+      go.onclick=async()=>{const t=inp.value.trim();if(!t)return;try{const rr=await authFetch(API+'/api/public/projects/'+pid+'/bounties',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});if(!rr.ok)throw new Error('add failed');draw()}catch(e){showToast(e.message,'error')}};
+      form.appendChild(go);box.appendChild(form);
+    }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load bounties</div>'}
+  };
+  await draw();
+}
+async function pubRenderRemixes(wrap,pid){
+  const sec=pubSection(wrap,'Remixes');const box=document.createElement('div');box.innerHTML='<div class="tool-status">Loading…</div>';sec.appendChild(box);
+  try{
+    const r=await authFetch(API+'/api/public/projects/'+pid+'/remixes');if(!r.ok)throw new Error('load failed');
+    const d=await r.json();
+    const forks=d.forks||[],landed=d.contributions||[];
+    if(!forks.length&&!landed.length){box.innerHTML='<div class="tool-status">No remixes yet — fork it from “Edit a copy”.</div>';return}
+    box.innerHTML='';
+    forks.forEach(f=>{
+      const row=document.createElement('div');row.style.cssText='font-size:12px;color:var(--text-secondary);padding:4px 0';
+      row.textContent='⑂ '+(f.by||'someone')+' forked'+(f.name?' as “'+f.name+'”':'')+(f.submitted?' · submitted back':'');
+      box.appendChild(row);
+    });
+    landed.forEach(c=>{
+      const row=document.createElement('div');row.style.cssText='font-size:12px;color:var(--text-secondary);padding:4px 0';
+      row.textContent='✓ '+(c.username||'someone')+' landed: '+(c.description||'').slice(0,90);
+      box.appendChild(row);
+    });
+  }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load remixes</div>'}
+}
+async function pubRenderCoauthors(wrap,pid){
+  const sec=pubSection(wrap,'Co-authors');const box=document.createElement('div');sec.appendChild(box);
+  const draw=async()=>{
+    box.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/public/projects/'+pid+'/coauthors');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=d.coauthors||[];
+      box.innerHTML='';
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='Just you. Co-authors can update the project and review contributions.';box.appendChild(e)}
+      items.forEach(u=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;font-size:12.5px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=u;row.appendChild(nm);
+        const rm=document.createElement('button');rm.className='btn btn-ghost btn-sm';rm.textContent='Remove';
+        rm.onclick=async()=>{await authFetch(API+'/api/public/projects/'+pid+'/coauthors/'+encodeURIComponent(u),{method:'DELETE'});draw()};row.appendChild(rm);
+        box.appendChild(row);
+      });
+      const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-top:10px';
+      const inp=document.createElement('input');inp.placeholder='Username to add…';inp.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font)';form.appendChild(inp);
+      const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Add';
+      go.onclick=async()=>{const u=inp.value.trim();if(!u)return;try{const rr=await authFetch(API+'/api/public/projects/'+pid+'/coauthors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not add','error');return}draw()}catch(e){showToast(e.message,'error')}};
+      form.appendChild(go);box.appendChild(form);
+    }catch(e){box.innerHTML='<div style="color:var(--error);font-size:12px">Could not load co-authors</div>'}
+  };
+  await draw();
+}
+async function openSaveCollectionModal(pid){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='440px';
+  m.innerHTML='<div class="modal-header"><h2>Save to collection</h2></div><div class="modal-body" id="sc-body"><div class="tool-status">Loading…</div></div><div class="modal-actions"><button class="btn btn-ghost" id="sc-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('#sc-close').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const body=m.querySelector('#sc-body');
+  const draw=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/public/collections');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=d.collections||[];
+      body.innerHTML='';
+      const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-bottom:10px';
+      const inp=document.createElement('input');inp.placeholder='New collection…';inp.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none';form.appendChild(inp);
+      const go=document.createElement('button');go.className='btn btn-primary btn-sm';go.textContent='Create';
+      go.onclick=async()=>{const n=inp.value.trim();if(!n)return;await authFetch(API+'/api/public/collections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});draw()};
+      form.appendChild(go);body.appendChild(form);
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No collections yet.';body.appendChild(e)}
+      items.forEach(c=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary)';nm.textContent=c.name+' ('+c.count+')';row.appendChild(nm);
+        const add=document.createElement('button');add.className='btn btn-primary btn-sm';add.textContent='Save here';
+        add.onclick=async()=>{try{const rr=await authFetch(API+'/api/public/collections/'+c.id+'/items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:pid})});if(!rr.ok)throw new Error('save failed');showToast('Saved','success');ov.remove()}catch(e){showToast(e.message,'error')}};
+        row.appendChild(add);
+        const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';
+        del.onclick=async()=>{await authFetch(API+'/api/public/collections/'+c.id,{method:'DELETE'});draw()};row.appendChild(del);
+        body.appendChild(row);
+      });
+    }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load collections</div>'}
+  };
+  await draw();
 }
 async function openPublicDetail(pid){
   var host=document.getElementById('public-body');if(!host)return;
@@ -12025,7 +12264,13 @@ async function openPublishModal(){
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-author" checked disabled /> Username shown on your project (required for share links)</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-dl" checked /> Allow downloads</label>'+
     '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-edits" disabled title="Requires Allow downloads" /> Allow others to submit changes (they fork a copy, edit it, and submit back)</label>'+
+    '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pub-unlisted" /> Unlisted (hidden from the directory, anyone with the link can view)</label>'+
+    '<div class="modal-field"><label>Changelog (goes in version history)</label><input type="text" id="pub-log" placeholder="v1 — first release" /></div>'+
+    '<div class="modal-field"><label>Cover image (optional)</label><input type="file" id="pub-cover" accept="image/*" /></div>'+
     '<div class="modal-actions"><button class="btn btn-ghost" id="pub-cancel">Cancel</button><button class="btn btn-primary" id="pub-submit">Submit for review</button></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  let pubCoverData='';
+  m.querySelector('#pub-cover').onchange=()=>{pubCoverData='';const f=m.querySelector('#pub-cover').files[0];if(!f)return;if(f.size>400000){appAlert('Cover image must be under ~400KB');m.querySelector('#pub-cover').value='';return}const rd=new FileReader();rd.onload=()=>{pubCoverData=String(rd.result||'')};rd.readAsDataURL(f)};
   ov.appendChild(m);document.body.appendChild(ov);
   (function(){const dl=m.querySelector('#pub-dl');const ed=m.querySelector('#pub-edits');dl.onchange=()=>{ed.disabled=!dl.checked;if(!dl.checked)ed.checked=false;}})();
   m.querySelector('#pub-cancel').onclick=()=>ov.remove();
@@ -12096,6 +12341,8 @@ async function openPublishModal(){
         kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
         show_author:true,allow_download:m.querySelector('#pub-dl').checked,
         allow_edits:m.querySelector('#pub-edits').checked,
+        visibility:m.querySelector('#pub-unlisted').checked?'unlisted':'public',
+        changelog:m.querySelector('#pub-log').value.trim(),cover:pubCoverData,
         project_name:pubProjName,paths,main_file};
       const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const d=await r.json().catch(()=>({}));
@@ -12114,7 +12361,9 @@ async function openPublishModal(){
     const body={name:m.querySelector('#pub-name').value.trim(),description:m.querySelector('#pub-desc').value.trim(),
       kind:m.querySelector('#pub-kind').value,model_id:m.querySelector('#pub-model').value.trim(),
       show_author:true,allow_download:m.querySelector('#pub-dl').checked,
-      allow_edits:m.querySelector('#pub-edits').checked,files,main_file,
+      allow_edits:m.querySelector('#pub-edits').checked,
+      visibility:m.querySelector('#pub-unlisted').checked?'unlisted':'public',
+      changelog:m.querySelector('#pub-log').value.trim(),cover:pubCoverData,files,main_file,
       folder:(typeof codingFolder!=='undefined'?codingFolder:'')};
     const r=await authFetch(API+'/api/public/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json().catch(()=>({}));
@@ -12151,15 +12400,23 @@ async function openMyPublished(){
           if(extra==='mine'){
             const up=document.createElement('button');up.className='btn btn-ghost btn-sm';up.textContent='Update';
             up.onclick=async()=>{
-              if(!(await appConfirm('Update "'+(p.name||'Untitled')+'" to the latest version of the original project?\n\nIt will be sent for re-approval and hidden from Public until an admin approves it again.')))return;
-              up.disabled=true;up.textContent='Updating…';
-              try{
-                const rr=await authFetch(API+'/api/public/projects/'+p.id+'/update',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-                const dd=await rr.json().catch(()=>({}));
-                if(!rr.ok)throw new Error(dd.error||('HTTP '+rr.status));
-                showToast('Updated ('+(dd.files||0)+' file'+((dd.files===1)?'':'s')+') — sent for re-approval','success');
-                openMyPublishedRefresh(ov);
-              }catch(e){showToast('Update failed: '+e.message,'error');up.disabled=false;up.textContent='Update'}
+              const uov=document.createElement('div');uov.className='modal-overlay open';uov.style.zIndex=410;
+              const um=document.createElement('div');um.className='modal';um.style.maxWidth='440px';
+              um.innerHTML='<div class="modal-header"><h2>Update published copy</h2></div><div class="modal-body"><p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Update "'+escapeHtml(p.name||'Untitled')+'" to the latest version of the original project? It goes back for re-approval and hides from Public until approved again.</p><div class="modal-field"><label>Changelog (optional)</label><input type="text" id="up-log" placeholder="v2 — what changed" /></div><div class="modal-actions"><button class="btn btn-ghost" id="up-cancel">Cancel</button><button class="btn btn-primary" id="up-go">Update</button></div></div>';
+              uov.appendChild(um);document.body.appendChild(uov);
+              um.querySelector('#up-cancel').onclick=()=>uov.remove();uov.onclick=e=>{if(e.target===uov)uov.remove()};
+              um.querySelector('#up-go').onclick=async()=>{
+                const log=um.querySelector('#up-log').value.trim();
+                um.querySelector('#up-go').disabled=true;um.querySelector('#up-go').textContent='Updating…';
+                try{
+                  const rr=await authFetch(API+'/api/public/projects/'+p.id+'/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({changelog:log})});
+                  const dd=await rr.json().catch(()=>({}));
+                  if(!rr.ok)throw new Error(dd.error||('HTTP '+rr.status));
+                  uov.remove();
+                  showToast('Updated ('+(dd.files||0)+' file'+((dd.files===1)?'':'s')+') — sent for re-approval','success');
+                  openMyPublishedRefresh(ov);
+                }catch(e){showToast('Update failed: '+e.message,'error');um.querySelector('#up-go').disabled=false;um.querySelector('#up-go').textContent='Update'}
+              };
             };
             row.appendChild(up);
           }

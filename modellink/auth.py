@@ -378,6 +378,88 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_public_editreq_project ON public_edit_requests(project_id, created_at);
 
+        CREATE TABLE IF NOT EXISTS public_project_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            changelog TEXT DEFAULT '',
+            files_json TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pubver_project ON public_project_versions(project_id, version);
+
+        CREATE TABLE IF NOT EXISTS public_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            text TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pubcomments_project ON public_comments(project_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS public_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            status TEXT DEFAULT 'open',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS public_collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS public_collection_items (
+            collection_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(collection_id, project_id),
+            FOREIGN KEY (collection_id) REFERENCES public_collections(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS public_bounties (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            text TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pubbounty_project ON public_bounties(project_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS public_coauthors (
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, user_id),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS public_ratings (
+            project_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            stars INTEGER DEFAULT 5,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, user_id),
+            FOREIGN KEY (project_id) REFERENCES public_projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS workspaces (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             folder TEXT UNIQUE,
@@ -474,6 +556,14 @@ def init_db():
         # "Allow others to submit changes": the owner opts into edits, which
         # lets visitors fork a copy, work on it, and submit it back.
         conn.execute("ALTER TABLE public_projects ADD COLUMN allow_edits INTEGER DEFAULT 0")
+    if pcols and "view_count" not in pcols:
+        conn.execute("ALTER TABLE public_projects ADD COLUMN view_count INTEGER DEFAULT 0")
+    if pcols and "download_count" not in pcols:
+        conn.execute("ALTER TABLE public_projects ADD COLUMN download_count INTEGER DEFAULT 0")
+    if pcols and "visibility" not in pcols:
+        conn.execute("ALTER TABLE public_projects ADD COLUMN visibility TEXT DEFAULT 'public'")
+    if pcols and "cover" not in pcols:
+        conn.execute("ALTER TABLE public_projects ADD COLUMN cover TEXT DEFAULT ''")
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
     except Exception:

@@ -9196,7 +9196,48 @@ def _pub_row(r):
         "favorites": int(r["fav_count"] or 0),
         "main_file": mf,
         "created_at": r["created_at"],
+        "views": int(r["view_count"] or 0) if "view_count" in r.keys() else 0,
+        "downloads": int(r["download_count"] or 0) if "download_count" in r.keys() else 0,
+        "visibility": (r["visibility"] or "public") if "visibility" in r.keys() else "public",
+        "has_cover": bool((r["cover"] or "") if "cover" in r.keys() else ""),
     }
+
+
+def _pub_extras(conn, pid, user_id):
+    """Ratings, comment/version counts for listings and detail payloads."""
+    try:
+        ag = conn.execute("SELECT COUNT(*) c, COALESCE(AVG(stars),0) a FROM public_ratings"
+                          " WHERE project_id = ?", (pid,)).fetchone()
+        my = conn.execute("SELECT stars FROM public_ratings WHERE project_id = ? AND user_id = ?",
+                          (pid, user_id)).fetchone()
+        cc = conn.execute("SELECT COUNT(*) c FROM public_comments WHERE project_id = ?", (pid,)).fetchone()
+        vc = conn.execute("SELECT COUNT(*) c FROM public_project_versions WHERE project_id = ?",
+                          (pid,)).fetchone()
+        return {"rating_avg": round(float(ag["a"] or 0), 1), "rating_count": int(ag["c"] or 0),
+                "my_rating": int(my["stars"]) if my else 0,
+                "comment_count": int(cc["c"] or 0), "version_count": int(vc["c"] or 0)}
+    except Exception:
+        return {"rating_avg": 0.0, "rating_count": 0, "my_rating": 0,
+                "comment_count": 0, "version_count": 0}
+
+
+def _public_snapshot_version(conn, pid, changelog=""):
+    """Snapshot the current files as a new numbered version (cap 10)."""
+    try:
+        cur = conn.execute("SELECT COALESCE(MAX(version),0) AS v FROM public_project_versions"
+                           " WHERE project_id = ?", (pid,)).fetchone()
+        v = int(cur["v"] or 0) + 1
+        files = conn.execute("SELECT path, size, content FROM public_project_files"
+                             " WHERE project_id = ? ORDER BY path", (pid,)).fetchall()
+        payload = [{"path": f["path"], "size": f["size"], "content": f["content"]} for f in files]
+        conn.execute("INSERT INTO public_project_versions (project_id, version, changelog, files_json)"
+                     " VALUES (?, ?, ?, ?)", (pid, v, (changelog or "")[:500], json.dumps(payload)))
+        conn.execute("DELETE FROM public_project_versions WHERE project_id = ? AND id NOT IN"
+                     " (SELECT id FROM public_project_versions WHERE project_id = ?"
+                     "  ORDER BY version DESC LIMIT 10)", (pid, pid))
+        return v
+    except Exception:
+        return 0
 
 
 @app.post("/api/public/submit")
@@ -9220,6 +9261,11 @@ async def public_submit(request: Request):
     show_author = 1
     allow_download = 1 if data.get("allow_download", True) else 0
     allow_edits = 1 if (data.get("allow_edits") and allow_download) else 0
+    visibility = "unlisted" if str(data.get("visibility", "")).lower() == "unlisted" else "public"
+    cover = str(data.get("cover") or "")
+    if cover and (not cover.startswith("data:image/") or len(cover) > 400000):
+        return JSONResponse(status_code=400, content={"error": "Cover must be an image under ~400KB"})
+    changelog = str(data.get("changelog", ""))[:500]
     files = []
     total = 0
 
@@ -9327,14 +9373,16 @@ async def public_submit(request: Request):
     try:
         slug = _public_slug(conn, user["id"], name)
         cur = conn.execute(
-            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, allow_edits, status, main_file, slug, source_project, source_folder, source_paths)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            "INSERT INTO public_projects (user_id, username, show_author, name, description, kind, allow_download, allow_edits, status, main_file, slug, source_project, source_folder, source_paths, visibility, cover)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
             (user["id"], user.get("username", ""), show_author, name, desc, kind, allow_download,
-             allow_edits, main_file, slug, source_project, source_folder, source_paths))
+             allow_edits, main_file, slug, source_project, source_folder, source_paths,
+             visibility, cover))
         pid = cur.lastrowid
         for f in files:
             conn.execute("INSERT INTO public_project_files (project_id, path, size, content) VALUES (?, ?, ?, ?)",
                          (pid, f["path"], f["size"], f["content"]))
+        _public_snapshot_version(conn, pid, changelog or "Published")
         conn.commit()
     finally:
         conn.close()
@@ -9349,7 +9397,7 @@ async def public_list(request: Request, q: str = "", kind: str = "", sort: str =
         return err
     conn = get_db()
     try:
-        where = ["status = 'approved'"]
+        where = ["status = 'approved'", "COALESCE(visibility,'public') = 'public'"]
         params: list = []
         if kind in PUBLIC_KINDS:
             where.append("kind = ?")
@@ -9358,11 +9406,25 @@ async def public_list(request: Request, q: str = "", kind: str = "", sort: str =
             where.append("(name LIKE ? OR description LIKE ? OR username LIKE ?)")
             like = f"%{q.strip()[:60]}%"
             params += [like, like, like]
-        order = "fav_count DESC, created_at DESC" if sort == "top" else "created_at DESC"
+        if sort == "top":
+            order = "fav_count DESC, created_at DESC"
+        elif sort == "rated":
+            order = "(SELECT COALESCE(AVG(stars),0) FROM public_ratings r WHERE r.project_id = public_projects.id) DESC, created_at DESC"
+        elif sort == "downloads":
+            order = "COALESCE(download_count,0) DESC, created_at DESC"
+        elif sort == "views":
+            order = "COALESCE(view_count,0) DESC, created_at DESC"
+        else:
+            order = "created_at DESC"
         rows = conn.execute(
             f"SELECT * FROM public_projects WHERE {' AND '.join(where)} ORDER BY {order} LIMIT 200",
             params).fetchall()
-        return {"projects": [_pub_row(r) for r in rows]}
+        out = []
+        for r in rows:
+            row = _pub_row(r)
+            row.update(_pub_extras(conn, r["id"], _user["id"]))
+            out.append(row)
+        return {"projects": out}
     finally:
         conn.close()
 
@@ -9377,6 +9439,18 @@ def _public_payload(conn, r, user):
     out["files"] = [{"path": f["path"], "size": f["size"]} for f in files]
     out["favorited"] = bool(fav)
     out["mine"] = r["user_id"] == user["id"]
+    out.update(_pub_extras(conn, r["id"], user["id"]))
+    try:
+        out["cover"] = (r["cover"] or "") if "cover" in r.keys() else ""
+    except Exception:
+        out["cover"] = ""
+    try:
+        co = conn.execute("SELECT u.username FROM public_coauthors c JOIN users u ON u.id = c.user_id"
+                          " WHERE c.project_id = ? ORDER BY u.username", (r["id"],)).fetchall()
+        out["coauthors"] = [x["username"] for x in co]
+    except Exception:
+        out["coauthors"] = []
+    out["my_coauthor"] = _public_coauthor(conn, r["id"], user["id"])
     return out
 
 
@@ -9392,6 +9466,14 @@ async def public_detail(request: Request, pid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
             return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"]:
+            try:
+                conn.execute("UPDATE public_projects SET view_count = COALESCE(view_count,0)+1 WHERE id = ?",
+                             (r["id"],))
+                conn.commit()
+                r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (r["id"],)).fetchone()
+            except Exception:
+                pass
         return _public_payload(conn, r, user)
     finally:
         conn.close()
@@ -9416,6 +9498,14 @@ async def public_by_slug(request: Request, username: str, slug: str):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
             return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"]:
+            try:
+                conn.execute("UPDATE public_projects SET view_count = COALESCE(view_count,0)+1 WHERE id = ?",
+                             (r["id"],))
+                conn.commit()
+                r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (r["id"],)).fetchone()
+            except Exception:
+                pass
         return _public_payload(conn, r, user)
     finally:
         conn.close()
@@ -9435,6 +9525,13 @@ async def public_download(request: Request, pid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         if not r["allow_download"] and r["user_id"] != user["id"] and not user.get("is_admin"):
             return JSONResponse(status_code=403, content={"error": "The creator disabled downloads"})
+        if r["user_id"] != user["id"]:
+            try:
+                conn.execute("UPDATE public_projects SET download_count = COALESCE(download_count,0)+1"
+                             " WHERE id = ?", (pid,))
+                conn.commit()
+            except Exception:
+                pass
         files = conn.execute("SELECT path, content FROM public_project_files WHERE project_id = ? ORDER BY path",
                              (pid,)).fetchall()
     finally:
@@ -9579,6 +9676,7 @@ async def public_review(request: Request, pid: int):
     try:
         if action == "approve":
             conn.execute("UPDATE public_projects SET status = 'approved', approved_at = datetime('now') WHERE id = ?", (pid,))
+            _public_snapshot_version(conn, pid, "Approved")
         else:
             conn.execute("UPDATE public_projects SET status = 'rejected' WHERE id = ?", (pid,))
         conn.commit()
@@ -9604,8 +9702,15 @@ async def public_update(request: Request, pid: int):
         r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
         if not r:
             return JSONResponse(status_code=404, content={"error": "Not found"})
-        if r["user_id"] != user["id"] and not user.get("is_admin"):
+        if not _public_owner_or_admin(conn, r, user, pid):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
+        changelog = ""
+        try:
+            raw = await request.body()
+            if raw:
+                changelog = str((json.loads(raw) or {}).get("changelog", ""))[:500]
+        except Exception:
+            pass
 
         def _col(name):
             try:
@@ -9679,6 +9784,7 @@ async def public_update(request: Request, pid: int):
         conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ?,"
                      " status = 'pending', approved_at = NULL WHERE id = ?",
                      (main_file, json.dumps([f["path"] for f in new_files]), pid))
+        _public_snapshot_version(conn, pid, changelog or "Updated from source")
         conn.commit()
     finally:
         conn.close()
@@ -9941,11 +10047,28 @@ async def public_edit_request(request: Request, pid: int):
     return {"status": "ok", "edit_request_id": rid}
 
 
-def _public_owner_or_admin(conn, r, user):
-    """Authorisation gate shared by the author-facing public endpoints."""
+def _public_coauthor(conn, pid, user_id) -> bool:
+    try:
+        return conn.execute("SELECT 1 FROM public_coauthors WHERE project_id = ? AND user_id = ?",
+                            (pid, user_id)).fetchone() is not None
+    except Exception:
+        return False
+
+
+def _public_owner_or_admin(conn, r, user, project_id=None):
+    """Authorisation gate shared by the author-facing public endpoints
+    (co-authors share every author power except delete)."""
     if not r:
         return False
-    return r["user_id"] == user["id"] or bool(user.get("is_admin"))
+    if r["user_id"] == user["id"] or bool(user.get("is_admin")):
+        return True
+    pid = project_id
+    if pid is None:
+        try:
+            pid = r["id"] if "id" in r.keys() else None
+        except Exception:
+            pid = None
+    return bool(pid) and _public_coauthor(conn, pid, user["id"])
 
 
 @app.get("/api/public/projects/{pid}/contributions")
@@ -9958,7 +10081,7 @@ async def public_list_contributions(request: Request, pid: int):
         r = conn.execute("SELECT id, user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
         if not r:
             return JSONResponse(status_code=404, content={"error": "Not found"})
-        if not _public_owner_or_admin(conn, r, user):
+        if not _public_owner_or_admin(conn, r, user, pid):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
         rows = conn.execute(
             "SELECT id, username, description, status, created_at,"
@@ -9984,7 +10107,7 @@ async def public_contribution_detail(request: Request, cid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
                             (c["project_id"],)).fetchone()
-        if not _public_owner_or_admin(conn, proj, user):
+        if not _public_owner_or_admin(conn, proj, user, c["project_id"]):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
         try:
             files = json.loads(c["files_json"] or "[]")
@@ -10019,7 +10142,7 @@ async def public_contribution_review(request: Request, cid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
                             (c["project_id"],)).fetchone()
-        if not _public_owner_or_admin(conn, proj, user):
+        if not _public_owner_or_admin(conn, proj, user, c["project_id"]):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
         if action == "approve":
             try:
@@ -10041,6 +10164,8 @@ async def public_contribution_review(request: Request, cid: int):
             conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ?,"
                          " status = 'pending', approved_at = NULL WHERE id = ?",
                          (main_file, json.dumps([f["path"] for f in files]), c["project_id"]))
+            _public_snapshot_version(conn, c["project_id"],
+                                     "Contribution by " + (c["username"] or "someone"))
         conn.execute("UPDATE public_contributions SET status = ?, reviewed_at = datetime('now') WHERE id = ?",
                      (action, cid))
         conn.commit()
@@ -10048,6 +10173,55 @@ async def public_contribution_review(request: Request, cid: int):
         conn.close()
     _audit("public.contribution_review", user.get("username", ""), f"{cid} {action}")
     return {"status": "ok", "review": action}
+
+
+@app.post("/api/public/contributions/{cid}/merge")
+async def public_contribution_merge(request: Request, cid: int):
+    """One-click merge: apply a contribution's files live, no re-review.
+
+    Unlike approve (which sends the revision back to pending for an admin),
+    merge publishes immediately and records a version, so trusted authors can
+    land small fixes in one tap.
+    """
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        c = conn.execute("SELECT * FROM public_contributions WHERE id = ?", (cid,)).fetchone()
+        if not c:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
+                            (c["project_id"],)).fetchone()
+        if not _public_owner_or_admin(conn, proj, user, c["project_id"]):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        if (c["status"] or "") == "approved":
+            return JSONResponse(status_code=400, content={"error": "Already merged"})
+        try:
+            files = json.loads(c["files_json"] or "[]")
+        except Exception:
+            files = []
+        if not files:
+            return JSONResponse(status_code=400, content={"error": "Contribution has no files"})
+        main_file = conn.execute("SELECT main_file FROM public_projects WHERE id = ?",
+                                 (c["project_id"],)).fetchone()["main_file"] or ""
+        if main_file and main_file not in {f["path"] for f in files}:
+            main_file = ""
+        conn.execute("DELETE FROM public_project_files WHERE project_id = ?", (c["project_id"],))
+        for f in files:
+            conn.execute("INSERT INTO public_project_files (project_id, path, size, content)"
+                         " VALUES (?, ?, ?, ?)",
+                         (c["project_id"], f["path"], int(f.get("size") or 0), f.get("content") or ""))
+        conn.execute("UPDATE public_projects SET main_file = ?, source_paths = ? WHERE id = ?",
+                     (main_file, json.dumps([f["path"] for f in files]), c["project_id"]))
+        _public_snapshot_version(conn, c["project_id"], "Merged contribution by " + (c["username"] or "someone"))
+        conn.execute("UPDATE public_contributions SET status = 'approved', reviewed_at = datetime('now')"
+                     " WHERE id = ?", (cid,))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.contribution_merge", user.get("username", ""), str(cid))
+    return {"status": "ok", "review": "approved"}
 
 
 @app.get("/api/public/projects/{pid}/edit-requests")
@@ -10060,7 +10234,7 @@ async def public_list_edit_requests(request: Request, pid: int):
         r = conn.execute("SELECT id, user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
         if not r:
             return JSONResponse(status_code=404, content={"error": "Not found"})
-        if not _public_owner_or_admin(conn, r, user):
+        if not _public_owner_or_admin(conn, r, user, pid):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
         rows = conn.execute(
             "SELECT * FROM public_edit_requests WHERE project_id = ? ORDER BY created_at DESC",
@@ -10084,13 +10258,521 @@ async def public_edit_request_read(request: Request, rid: int):
             return JSONResponse(status_code=404, content={"error": "Not found"})
         proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?",
                             (er["project_id"],)).fetchone()
-        if not _public_owner_or_admin(conn, proj, user):
+        if not _public_owner_or_admin(conn, proj, user, er["project_id"]):
             return JSONResponse(status_code=403, content={"error": "Not yours"})
         conn.execute("UPDATE public_edit_requests SET read = 1 WHERE id = ?", (rid,))
         conn.commit()
     finally:
         conn.close()
     return {"status": "ok"}
+
+
+def _public_visible(conn, pid, user):
+    """Project row visible to the caller (approved, own, or admin)."""
+    r = conn.execute("SELECT * FROM public_projects WHERE id = ?", (pid,)).fetchone()
+    if not r:
+        return None
+    if r["status"] != "approved" and r["user_id"] != user["id"] and not user.get("is_admin"):
+        return None
+    return r
+
+
+@app.get("/api/public/projects/{pid}/versions")
+async def public_versions(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute("SELECT id, version, changelog, created_at FROM public_project_versions"
+                            " WHERE project_id = ? ORDER BY version DESC", (pid,)).fetchall()
+        return {"versions": [{"id": x["id"], "version": x["version"], "changelog": x["changelog"] or "",
+                              "created_at": x["created_at"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/versions/{vid}")
+async def public_version_detail(request: Request, pid: int, vid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        v = conn.execute("SELECT * FROM public_project_versions WHERE id = ? AND project_id = ?",
+                         (vid, pid)).fetchone()
+        if not v:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        try:
+            files = json.loads(v["files_json"] or "[]")
+        except Exception:
+            files = []
+        return {"id": v["id"], "version": v["version"], "changelog": v["changelog"] or "",
+                "created_at": v["created_at"], "files": files}
+    finally:
+        conn.close()
+
+
+class PubRateBody(BaseModel):
+    stars: int = 5
+
+
+@app.post("/api/public/projects/{pid}/rate")
+async def public_rate(request: Request, pid: int, req: PubRateBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    try:
+        stars = max(1, min(5, int(req.stars)))
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "stars must be 1-5"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id, status FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r or (r["status"] != "approved" and r["user_id"] != user["id"]):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] == user["id"]:
+            return JSONResponse(status_code=400, content={"error": "You cannot rate your own project"})
+        conn.execute("INSERT INTO public_ratings (project_id, user_id, stars) VALUES (?, ?, ?)"
+                     " ON CONFLICT(project_id, user_id) DO UPDATE SET stars = excluded.stars",
+                     (pid, user["id"], stars))
+        conn.commit()
+        ag = conn.execute("SELECT COUNT(*) c, COALESCE(AVG(stars),0) a FROM public_ratings"
+                          " WHERE project_id = ?", (pid,)).fetchone()
+        return {"status": "ok", "rating_avg": round(float(ag["a"] or 0), 1),
+                "rating_count": int(ag["c"] or 0)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/comments")
+async def public_comments_list(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute("SELECT id, username, text, created_at, user_id FROM public_comments"
+                            " WHERE project_id = ? ORDER BY created_at ASC LIMIT 300", (pid,)).fetchall()
+        return {"comments": [{"id": x["id"], "username": x["username"] or "", "text": x["text"] or "",
+                              "created_at": x["created_at"], "mine": x["user_id"] == user["id"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+class PubCommentBody(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/public/projects/{pid}/comments")
+async def public_comment_add(request: Request, pid: int, req: PubCommentBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    text = str(req.text or "").strip()[:1000]
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "Empty comment"})
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        cur = conn.execute("INSERT INTO public_comments (project_id, user_id, username, text)"
+                           " VALUES (?, ?, ?, ?)",
+                           (pid, user["id"], user.get("username", ""), text))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/projects/{pid}/comments/{cid}")
+async def public_comment_delete(request: Request, pid: int, cid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        c = conn.execute("SELECT * FROM public_comments WHERE id = ? AND project_id = ?",
+                         (cid, pid)).fetchone()
+        if not c:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if c["user_id"] != user["id"] and not _public_owner_or_admin(conn, proj, user, pid) \
+                and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("DELETE FROM public_comments WHERE id = ?", (cid,))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+class PubReportBody(BaseModel):
+    reason: str = ""
+
+
+@app.post("/api/public/projects/{pid}/report")
+async def public_report(request: Request, pid: int, req: PubReportBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    reason = str(req.reason or "").strip()[:500]
+    if not reason:
+        return JSONResponse(status_code=400, content={"error": "Say what is wrong"})
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        conn.execute("INSERT INTO public_reports (project_id, user_id, username, reason)"
+                     " VALUES (?, ?, ?, ?)", (pid, user["id"], user.get("username", ""), reason))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/public/reports")
+async def admin_public_reports(request: Request):
+    _admin, err = _require_admin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT r.*, p.name AS project_name FROM public_reports r"
+            " LEFT JOIN public_projects p ON p.id = r.project_id"
+            " WHERE r.status = 'open' ORDER BY r.created_at DESC LIMIT 200").fetchall()
+        return {"reports": [{
+            "id": x["id"], "project_id": x["project_id"],
+            "project_name": x["project_name"] or "(removed)",
+            "username": x["username"] or "", "reason": x["reason"] or "",
+            "created_at": x["created_at"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/public/reports/{rid}/review")
+async def admin_public_report_review(request: Request, rid: int):
+    _admin, err = _require_admin(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    action = str((data or {}).get("action", "")).lower()
+    if action == "dismiss":
+        status, remove = "dismissed", False
+    elif action == "remove":
+        status, remove = "actioned", True
+    else:
+        return JSONResponse(status_code=400, content={"error": "action must be dismiss or remove"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT * FROM public_reports WHERE id = ?", (rid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if remove:
+            conn.execute("DELETE FROM public_projects WHERE id = ?", (r["project_id"],))
+        conn.execute("UPDATE public_reports SET status = ? WHERE id = ?", (status, rid))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("public.report_review", _admin.get("username", ""), f"{rid} {action}")
+    return {"status": "ok"}
+
+
+@app.get("/api/public/collections")
+async def public_collections_mine(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT c.*, (SELECT COUNT(*) FROM public_collection_items i"
+                            " WHERE i.collection_id = c.id) AS n FROM public_collections c"
+                            " WHERE c.user_id = ? ORDER BY c.created_at DESC", (user["id"],)).fetchall()
+        return {"collections": [{"id": x["id"], "name": x["name"] or "", "count": int(x["n"] or 0),
+                                 "created_at": x["created_at"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+class PubCollectionBody(BaseModel):
+    name: str = ""
+
+
+@app.post("/api/public/collections")
+async def public_collection_create(request: Request, req: PubCollectionBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    name = str(req.name or "").strip()[:80]
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "Name required"})
+    conn = get_db()
+    try:
+        cur = conn.execute("INSERT INTO public_collections (user_id, name) VALUES (?, ?)",
+                           (user["id"], name))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/collections/{cid}")
+async def public_collection_delete(request: Request, cid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        n = conn.execute("DELETE FROM public_collections WHERE id = ? AND user_id = ?",
+                         (cid, user["id"])).rowcount
+        conn.commit()
+        if not n:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/public/collections/{cid}/items")
+async def public_collection_add(request: Request, cid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    try:
+        pid = int((data or {}).get("project_id") or 0)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "project_id required"})
+    conn = get_db()
+    try:
+        col = conn.execute("SELECT id FROM public_collections WHERE id = ? AND user_id = ?",
+                           (cid, user["id"])).fetchone()
+        if not col:
+            return JSONResponse(status_code=404, content={"error": "Collection not found"})
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        conn.execute("INSERT OR IGNORE INTO public_collection_items (collection_id, project_id)"
+                     " VALUES (?, ?)", (cid, pid))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/collections/{cid}/items/{pid}")
+async def public_collection_remove(request: Request, cid: int, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        col = conn.execute("SELECT id FROM public_collections WHERE id = ? AND user_id = ?",
+                           (cid, user["id"])).fetchone()
+        if not col:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        conn.execute("DELETE FROM public_collection_items WHERE collection_id = ? AND project_id = ?",
+                     (cid, pid))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/collections/{cid}")
+async def public_collection_detail(request: Request, cid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        col = conn.execute("SELECT * FROM public_collections WHERE id = ? AND user_id = ?",
+                           (cid, user["id"])).fetchone()
+        if not col:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute(
+            "SELECT p.* FROM public_projects p JOIN public_collection_items i ON i.project_id = p.id"
+            " WHERE i.collection_id = ? AND p.status = 'approved' ORDER BY p.created_at DESC",
+            (cid,)).fetchall()
+        out = []
+        for r in rows:
+            row = _pub_row(r)
+            row.update(_pub_extras(conn, r["id"], user["id"]))
+            out.append(row)
+        return {"id": col["id"], "name": col["name"] or "", "projects": out}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/bounties")
+async def public_bounties_list(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute("SELECT id, username, text, created_at, user_id FROM public_bounties"
+                            " WHERE project_id = ? ORDER BY created_at ASC LIMIT 100", (pid,)).fetchall()
+        return {"bounties": [{"id": x["id"], "username": x["username"] or "", "text": x["text"] or "",
+                              "created_at": x["created_at"], "mine": x["user_id"] == user["id"]} for x in rows]}
+    finally:
+        conn.close()
+
+
+class PubBountyBody(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/public/projects/{pid}/bounties")
+async def public_bounty_add(request: Request, pid: int, req: PubBountyBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    text = str(req.text or "").strip()[:500]
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "Say what you want"})
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        cur = conn.execute("INSERT INTO public_bounties (project_id, user_id, username, text)"
+                           " VALUES (?, ?, ?, ?)",
+                           (pid, user["id"], user.get("username", ""), text))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/projects/{pid}/bounties/{bid}")
+async def public_bounty_delete(request: Request, pid: int, bid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        b = conn.execute("SELECT * FROM public_bounties WHERE id = ? AND project_id = ?",
+                         (bid, pid)).fetchone()
+        if not b:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        proj = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if b["user_id"] != user["id"] and not _public_owner_or_admin(conn, proj, user, pid) \
+                and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Not yours"})
+        conn.execute("DELETE FROM public_bounties WHERE id = ?", (bid,))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/coauthors")
+async def public_coauthors_list(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        rows = conn.execute("SELECT u.username FROM public_coauthors c JOIN users u ON u.id = c.user_id"
+                            " WHERE c.project_id = ? ORDER BY u.username", (pid,)).fetchall()
+        return {"coauthors": [x["username"] for x in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/public/projects/{pid}/coauthors")
+async def public_coauthor_add(request: Request, pid: int):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    username = str((data or {}).get("username", "")).strip().lower()
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "Username required"})
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the author can add co-authors"})
+        target = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if not target:
+            return JSONResponse(status_code=404, content={"error": "No such user"})
+        if target["id"] == r["user_id"]:
+            return JSONResponse(status_code=400, content={"error": "That user is the author already"})
+        conn.execute("INSERT OR IGNORE INTO public_coauthors (project_id, user_id) VALUES (?, ?)",
+                     (pid, target["id"]))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/public/projects/{pid}/coauthors/{username}")
+async def public_coauthor_remove(request: Request, pid: int, username: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT user_id FROM public_projects WHERE id = ?", (pid,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        if r["user_id"] != user["id"] and not user.get("is_admin"):
+            return JSONResponse(status_code=403, content={"error": "Only the author can remove co-authors"})
+        target = conn.execute("SELECT id FROM users WHERE username = ?",
+                              (str(username or '').strip().lower(),)).fetchone()
+        if target:
+            conn.execute("DELETE FROM public_coauthors WHERE project_id = ? AND user_id = ?",
+                         (pid, target["id"]))
+            conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/projects/{pid}/remixes")
+async def public_remixes(request: Request, pid: int):
+    """Forks and landed contributions: the project's remix lineage."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        if _public_visible(conn, pid, user) is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        forks = conn.execute(
+            "SELECT f.name, f.submitted, f.created_at, u.username AS by_user FROM public_forks f"
+            " LEFT JOIN users u ON u.id = f.user_id WHERE f.project_id = ?"
+            " ORDER BY f.created_at DESC LIMIT 50", (pid,)).fetchall()
+        landed = conn.execute(
+            "SELECT username, description, created_at FROM public_contributions"
+            " WHERE project_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 50",
+            (pid,)).fetchall()
+        return {
+            "forks": [{"name": f["name"] or "", "by": f["by_user"] or "",
+                       "submitted": bool(f["submitted"]), "created_at": f["created_at"]} for f in forks],
+            "contributions": [{"username": c["username"] or "", "description": c["description"] or "",
+                               "created_at": c["created_at"]} for c in landed]}
+    finally:
+        conn.close()
 
 
 @app.get("/api/admin/public")
