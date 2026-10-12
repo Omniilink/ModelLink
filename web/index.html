@@ -3756,7 +3756,7 @@ async function sendCodingMessage(){
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
   codingStream=true;
   let sendCtrl=new AbortController();codingAbort=sendCtrl;
-  let fullText='';
+  let fullText='';let liveMsg=null;
   let aborted=false;
   let next={blocks:false,actionable:false};
   try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...await resolveHistoryImages(compactCodingMessages(codingHistory.slice(-20)))]})});
@@ -3769,8 +3769,8 @@ async function sendCodingMessage(){
     if(contentEl._streamFlush){contentEl._streamFlush();contentEl._streamFlush=null}
     contentEl._streamArgs=null;contentEl._streamRaf=0;
     contentEl.querySelectorAll('.stream-code-note').forEach(n=>n.remove());
-    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);const liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding',true);scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
-  }catch(e){stopWait();if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
+    const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding',true);scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
+  }catch(e){stopWait();if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);try{codingHistory.push({role:'user',content:'The previous reply failed with an error and its work did not complete: '+String((e&&e.message)||e).slice(0,300)+'\nIf the error looks transient, retry the unfinished work next turn; if it looks permanent (auth, missing model, quota), say so plainly and stop.'})}catch(e2){}maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
   if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
@@ -5213,7 +5213,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: '];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed '];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -5486,7 +5486,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
   };
   const firstErr=await pump(messages);
   stopTurnWait();
-  if(firstErr){contentEl.textContent=firstErr;return{error:firstErr}}
+  if(firstErr){contentEl.textContent=firstErr;try{if(!codingStopRequested){codingHistory.push({role:'user',content:'The previous reply failed with an error and its work did not complete: '+String(firstErr).slice(0,300)+'\nIf the error looks transient, retry the unfinished work; if it looks permanent (auth, missing model, quota), say so plainly and stop.'});persistCodingChat()}}catch(e){}return{error:firstErr}}
   // Output limit cut the reply mid-file? Continue EXACTLY where it stopped and
   // stitch the pieces, instead of discarding the partial block and asking for
   // the whole oversized file again (which just truncates the same way).
@@ -5918,6 +5918,12 @@ async function codingAutoContinue(){
         persistCodingChat();
         if(tT.error)break;
         continue;
+      }
+      const deniedHits=(results.text.match(/cancelled|skipped|denied/gi)||[]).length;
+      if(deniedHits>0&&!codingStopRequested){
+        const deniedLines=results.text.split('\n').filter(l=>/cancelled|skipped|denied/i.test(l)).slice(0,6).join('\n');
+        codingHistory.push({role:'user',content:'The user declined '+deniedHits+' proposed action'+(deniedHits!==1?'s':'')+' this round and they were NOT executed:\n'+deniedLines+'\nDo not re-propose the declined actions unchanged. Either do different work from the open todos, or ask in plain text what the user wants changed — never silently repeat a declined action.'});
+        persistCodingChat();
       }
       const open=openTodoTexts();
       if(open.length===0){
