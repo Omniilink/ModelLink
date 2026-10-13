@@ -7535,7 +7535,13 @@ async def merge_device_get(request: Request):
         return err
     row = _merge_device_row(user["id"])
     aid = str(row.get("agent_id") or "")
-    out = {"agent_id": aid, "enabled": bool(row.get("enabled")), "model": _ws_merge_model()}
+    enabled = bool(row.get("enabled"))
+    host = ("device" if (enabled and aid) else ("server" if enabled else ""))
+    out = {"agent_id": aid, "enabled": enabled, "host": host, "model": _ws_merge_model()}
+    reachable, tags, oerr = _server_ollama_tags()
+    out["server"] = {"reachable": reachable,
+                     "installed": (_ws_merge_model() in tags) if reachable else False,
+                     "models": len(tags)}
     if aid:
         with _AGENT_LOCK:
             a = _agents_load()["agents"].get(aid)
@@ -7560,7 +7566,10 @@ async def merge_device_set(request: Request, req: MergeDeviceBody):
         return {"status": "ok", "enabled": False}
     aid = str(req.agent_id or "").strip()
     if not aid:
-        return JSONResponse(status_code=400, content={"error": "agent_id required"})
+        # Empty id = the OmniLink Server itself hosts this user's merges.
+        _merge_set_device(user["id"], "", True)
+        _audit("merge.device", user.get("username", ""), "server")
+        return {"status": "ok", "agent_id": "", "enabled": True, "host": "server"}
     with _AGENT_LOCK:
         a = _agents_load()["agents"].get(aid)
     if not a or _agent_owner_id(a) != int(user["id"]):
@@ -7617,7 +7626,10 @@ async def merge_status(request: Request):
         return err
     reachable, tags, oerr = _server_ollama_tags()
     model = _ws_merge_model()
-    out = {"enabled": _ws_merge_enabled(), "model": model,
+    _row = _merge_device_row(user["id"])
+    _host = ("device" if (_row.get("enabled") and _row.get("agent_id"))
+             else ("server" if _row.get("enabled") else ""))
+    out = {"enabled": _ws_merge_enabled(), "model": model, "host": _host,
            "default_model": _WS_MERGE_DEFAULT_MODEL,
            "ollama_url": _ollama_current_url(), "reachable": reachable,
            "model_installed": (model in tags) if reachable else False,
