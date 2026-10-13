@@ -829,11 +829,16 @@ class RateLimiter:
         self._cooldowns: dict = {}
         self._lock = threading.Lock()
 
-    def can_request(self, model: str) -> bool:
+    def can_request(self, model: str, local: bool = False) -> bool:
+        """True when a request may proceed. `local=True` is for self-hosted
+        models (Ollama): they honour the failure cooldown but are NOT subject
+        to cloud provider RPM quotas — it's the user's own hardware."""
         with self._lock:
             now = time.time()
             if model in self._cooldowns and now < self._cooldowns[model]:
                 return False
+            if local:
+                return True
             limits = MODEL_RATE_LIMITS.get(model, {"rpm": 10, "tpm": 100000})
             times = self._request_times.get(model, [])
             recent = [t for t in times if now - t < 60]
@@ -841,9 +846,17 @@ class RateLimiter:
                 return False
             return True
 
+    def cooldown_remaining(self, model: str) -> int:
+        with self._lock:
+            until = self._cooldowns.get(model, 0)
+            return max(0, int(round(until - time.time())))
+
     def record_request(self, model: str, tokens: int = 0):
         with self._lock:
             now = time.time()
+            # A successful request clears any lingering failure cooldown so a
+            # transient hiccup (e.g. a slow first load) self-heals immediately.
+            self._cooldowns.pop(model, None)
             if model not in self._request_times:
                 self._request_times[model] = []
             self._request_times[model].append(now)
@@ -1644,8 +1657,12 @@ class MultiProviderBalancer:
             raise RuntimeError(
                 f"Ollama model '{tag}' is not installed on the server.{hint}"
                 f" Run `ollama pull {tag}` on the server, then try again.")
-        if not self.rate_limiter.can_request(label):
-            raise RuntimeError(f"Ollama model '{tag}' is cooling down after a recent failure — try again shortly.")
+        if not self.rate_limiter.can_request(label, local=True):
+            left = self.rate_limiter.cooldown_remaining(label)
+            raise RuntimeError(
+                f"Ollama model '{tag}' is cooling down after a recent failure — "
+                f"try again in about {left}s." if left > 0 else
+                f"Ollama model '{tag}' is not ready — try again shortly.")
         base = OLLAMA_BASE_URL
         sess = self._session_for("ollama")
         use_tools = bool((opts or {}).get("tools"))
