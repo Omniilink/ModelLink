@@ -8480,6 +8480,341 @@ async def coding_save_chat(request: Request, req: CodingChatSave):
     return {"status": "ok"}
 
 
+# ---- Background coding runs (server-side) -------------------------------
+# A coding task the SERVER drives, so it keeps going after the tab/browser
+# closes. File actions (create/edit/patch/delete) apply automatically;
+# shell commands are queued for the user to approve (the browser executes
+# them through the normal, sandboxed run-command path and posts the output
+# back). Progress lives in a per-user run record the Runs panel polls.
+_CODING_RUN_MAX_ROUNDS = 40
+_coding_runs = {}   # user_id -> run dict (one active run per user)
+
+
+def _coding_run_history_path(user, folder):
+    if _workspace_row(folder):
+        return _ws_chat_file(folder, user["id"])
+    return os.path.join(folder, CODING_CHAT_DIR, CODING_CHAT_FILE)
+
+
+def _coding_run_load_history(user, folder):
+    try:
+        with open(_coding_run_history_path(user, folder), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        hist = d.get("history") if isinstance(d, dict) else None
+        if isinstance(hist, list):
+            return hist
+    except Exception:
+        pass
+    return []
+
+
+def _coding_run_save_history(user, folder, history):
+    try:
+        path = _coding_run_history_path(user, folder)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        raw = json.dumps({"updated": time.time(), "history": history[-500:]})
+        if len(raw) <= _CHAT_MAX_BYTES:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(raw)
+            os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _coding_run_model(messages, model, user_keys, opts):
+    """One non-streaming model call. Returns (text, used_model).
+    Monkeypatched in tests so the loop is verifiable without a provider."""
+    return lb.generate(messages, model, 0.7, 16000, False, user_keys=user_keys, opts=opts)
+
+
+def _coding_run_strip(text):
+    c = str(text or "")
+    c = c.replace("\r\n", "\n")
+    c = re.sub(r"FILE_CREATE:[^\n]*\n[\s\S]*?(?:END_FILE_CREATE|$)", "", c)
+    c = re.sub(r"FILE_EDIT:[^\n]*\n[\s\S]*?(?:END_FILE_EDIT|$)", "", c)
+    c = re.sub(r"FILE_PATCH:[^\n]*\n[\s\S]*?(?:END_FILE_PATCH|$)", "", c)
+    c = re.sub(r"FILE_DELETE:[^\n]*", "", c)
+    c = re.sub(r"RUN_COMMAND:[^\n]*\n[\s\S]*?(?:END_RUN_COMMAND|$)", "", c)
+    c = re.sub(r"TODO_LIST:\n[\s\S]*?END_TODO_LIST", "", c)
+    c = re.sub(r"MERGE_INTENT:[^\n]*\n[\s\S]*?(?:END_MERGE_INTENT|$)", "", c)
+    c = re.sub(r"^[ \t]*(?:PLAN-STEPS|LOCK_RESERVE|VERDICT)[^\n]*", "", c, flags=re.M)
+    return re.sub(r"\n{3,}", "\n\n", c).strip()
+
+
+def _coding_run_parse(text):
+    t = str(text or "")
+    creates = re.findall(r"FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)", t)
+    edits = re.findall(r"FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)", t)
+    patches = re.findall(r"FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)", t)
+    deletes = re.findall(r"FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)", t)
+    commands = [c.strip() for c in re.findall(r"RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)", t, re.M)]
+    return creates, edits, patches, deletes, commands
+
+
+def _coding_run_write(user, folder, rel, content):
+    rel = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or _bad_path(rel):
+        return {"ok": False, "path": rel, "error": "invalid path"}
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full):
+        return {"ok": False, "path": rel, "error": "outside project"}
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        prev = None
+        if os.path.isfile(full):
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                prev = f.read()
+            if prev == content:
+                return {"ok": True, "path": rel, "noop": True}
+            _coding_save_version(_safe_username(user["username"]), rel, prev, folder)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+        _action_log(_safe_username(user["username"]), rel,
+                    "write" if prev is not None else "create", None)
+        _ws_log_change(folder, "write" if prev is not None else "create", rel, user, user["id"])
+        return {"ok": True, "path": rel}
+    except Exception as e:
+        return {"ok": False, "path": rel, "error": str(e)}
+
+
+def _coding_run_patch(user, folder, rel, old, new):
+    rel = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or _bad_path(rel):
+        return {"ok": False, "path": rel, "error": "invalid path"}
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return {"ok": False, "path": rel, "error": "file not found"}
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            current = f.read()
+        patched = _apply_patch_server(current, old, new)
+        if patched is None:
+            return {"ok": False, "path": rel, "error": "old text not found"}
+        if patched == current:
+            return {"ok": True, "path": rel, "noop": True}
+        _coding_save_version(_safe_username(user["username"]), rel, current, folder)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(patched)
+        _action_log(_safe_username(user["username"]), rel, "patch", None)
+        _ws_log_change(folder, "patch", rel, user, user["id"])
+        return {"ok": True, "path": rel}
+    except Exception as e:
+        return {"ok": False, "path": rel, "error": str(e)}
+
+
+def _coding_run_delete(user, folder, rel):
+    rel = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    full = os.path.join(folder, rel)
+    if not rel or _bad_path(rel) or not _is_within(folder, full) or not os.path.isfile(full):
+        return {"ok": False, "path": rel, "error": "file not found"}
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            _coding_save_version(_safe_username(user["username"]), rel, f.read(), folder)
+        os.remove(full)
+        _action_log(_safe_username(user["username"]), rel, "delete", None)
+        _ws_log_change(folder, "delete", rel, user, user["id"])
+        return {"ok": True, "path": rel}
+    except Exception as e:
+        return {"ok": False, "path": rel, "error": str(e)}
+
+
+def _coding_run_public(run, since=0):
+    return {"id": run["id"], "status": run["status"], "message": run["message"],
+            "folder": run["folder"], "model": run.get("used_model") or run["model"],
+            "rounds": run["rounds"], "error": run.get("error", ""),
+            "created": run["created"], "updated": run["updated"],
+            "pending": run.get("pending", []),
+            "log": run["log"][since:], "log_len": len(run["log"])}
+
+
+def _coding_run_log(run, kind, text, **extra):
+    e = {"t": time.time(), "kind": kind, "text": str(text)[:2000]}
+    e.update(extra)
+    run["log"].append(e)
+    run["updated"] = time.time()
+
+
+async def _coding_run_iterate(user, run):
+    folder = run["folder"]
+    sysprompt = _coding_system_prompt(_safe_username(user["username"]))
+    opts = {"temperature": 0.7, "max_tokens": 16000}
+    user_keys = None
+    if not user.get("is_admin"):
+        try:
+            user_keys = get_user_provider_keys(user["id"])
+        except Exception:
+            user_keys = None
+    while run["rounds"] < _CODING_RUN_MAX_ROUNDS and run["status"] == "running":
+        run["rounds"] += 1
+        messages = [{"role": "system", "content": sysprompt}] + run["history"][-40:]
+        try:
+            text, used = await asyncio.to_thread(_coding_run_model, messages, run["model"], user_keys, opts)
+        except Exception as e:
+            run["status"] = "error"
+            run["error"] = str(e)[:300]
+            _coding_run_log(run, "error", run["error"])
+            break
+        run["used_model"] = used
+        run["history"].append({"role": "assistant", "content": text})
+        shown = _coding_run_strip(text)
+        if shown:
+            _coding_run_log(run, "assistant", shown)
+        creates, edits, patches, deletes, commands = _coding_run_parse(text)
+        results = []
+        for rel, content in creates:
+            r = _coding_run_write(user, folder, rel, content)
+            _coding_run_log(run, "tool", ("Created " if r.get("ok") else "Create failed: ") + rel, ok=r.get("ok"), path=rel)
+            results.append("- Create %s: %s" % (rel, "ok" if r.get("ok") else r.get("error")))
+        for rel, content in edits:
+            r = _coding_run_write(user, folder, rel, content)
+            _coding_run_log(run, "tool", ("Wrote " if r.get("ok") else "Write failed: ") + rel, ok=r.get("ok"), path=rel)
+            results.append("- Edit %s: %s" % (rel, "ok" if r.get("ok") else r.get("error")))
+        for rel, old, new in patches:
+            r = _coding_run_patch(user, folder, rel, old, new)
+            _coding_run_log(run, "tool", ("Patched " if r.get("ok") else "Patch failed: ") + rel, ok=r.get("ok"), path=rel)
+            results.append("- Patch %s: %s" % (rel, "ok" if r.get("ok") else r.get("error")))
+        for rel in deletes:
+            r = _coding_run_delete(user, folder, rel)
+            _coding_run_log(run, "tool", ("Deleted " if r.get("ok") else "Delete failed: ") + rel, ok=r.get("ok"), path=rel)
+            results.append("- Delete %s: %s" % (rel, "ok" if r.get("ok") else r.get("error")))
+        _coding_run_save_history(user, folder, run["history"])
+        if commands:
+            run["pending"] = [{"id": secrets.token_hex(6), "command": c} for c in commands[:5]]
+            run["status"] = "awaiting_approval"
+            _coding_run_log(run, "system", "Waiting for you to approve %d command(s)." % len(run["pending"]))
+            return
+        if not (creates or edits or patches or deletes):
+            run["status"] = "done"
+            break
+        run["history"].append({"role": "user", "content":
+            "Tool results:\n" + "\n".join(results)
+            + "\nContinue the task. If it is finished, reply with a short summary and no tool blocks."})
+        _coding_run_log(run, "system", "sent results back to the AI")
+    if run["status"] == "running":
+        run["status"] = "done"
+        if run["rounds"] >= _CODING_RUN_MAX_ROUNDS:
+            run["error"] = "reached the round limit"
+    _coding_run_save_history(user, folder, run["history"])
+
+
+class CodingRunStart(BaseModel):
+    message: str = ""
+    model: str = "omniilink"
+
+
+@app.post("/api/coding/run")
+async def coding_run_start(request: Request, req: CodingRunStart):
+    """Start a server-side coding run that keeps going without the browser."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "Open a project folder first"})
+    msg = str(req.message or "").strip()
+    if not msg:
+        return JSONResponse(status_code=400, content={"error": "Message required"})
+    model = str(req.model or "omniilink")
+    if not re.fullmatch(r"[a-zA-Z0-9._/:-]{1,80}", model):
+        model = "omniilink"
+    cur = _coding_runs.get(user["id"])
+    if cur and cur["status"] in ("running", "awaiting_approval"):
+        return JSONResponse(status_code=409, content={"error": "A run is already going — stop it first"})
+    run = {"id": secrets.token_hex(8), "user_id": user["id"], "username": user.get("username", ""),
+           "folder": folder, "model": model, "message": msg, "status": "running",
+           "rounds": 0, "log": [], "pending": [], "error": "",
+           "history": _coding_run_load_history(user, folder), "created": time.time(),
+           "updated": time.time()}
+    run["history"].append({"role": "user", "content": msg})
+    _coding_run_log(run, "user", msg)
+    _coding_runs[user["id"]] = run
+    _audit("coding.run.start", user.get("username", ""), f"{run['id']} {msg[:60]}")
+    asyncio.create_task(_coding_run_iterate(dict(user), run))
+    return _coding_run_public(run)
+
+
+@app.get("/api/coding/runs")
+async def coding_runs_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    run = _coding_runs.get(user["id"])
+    return {"run": _coding_run_public(run, 0) if run else None}
+
+
+@app.get("/api/coding/run")
+async def coding_run_status(request: Request, since: int = 0):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    run = _coding_runs.get(user["id"])
+    if not run:
+        return {"run": None}
+    try:
+        since = max(0, int(since))
+    except Exception:
+        since = 0
+    return {"run": _coding_run_public(run, since)}
+
+
+@app.post("/api/coding/run/stop")
+async def coding_run_stop(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    run = _coding_runs.get(user["id"])
+    if not run:
+        return {"status": "ok", "stopped": False}
+    run["status"] = "stopped"
+    run["pending"] = []
+    _coding_run_log(run, "system", "Stopped by you.")
+    _coding_run_save_history(user, run["folder"], run["history"])
+    return {"status": "ok", "stopped": True}
+
+
+class CodingRunCommandResult(BaseModel):
+    id: str = ""
+    cmd_id: str = ""
+    output: str = ""
+    denied: bool = False
+
+
+@app.post("/api/coding/run/command-result")
+async def coding_run_approval(request: Request, req: CodingRunCommandResult):
+    """The browser ran an approved command (via the sandboxed run-command
+    path) and posts the output here; the run resumes."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    run = _coding_runs.get(user["id"])
+    if not run or run["id"] != req.id:
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
+    pend = run.get("pending") or []
+    hit = next((p for p in pend if p["id"] == req.cmd_id), None)
+    if not hit:
+        return JSONResponse(status_code=404, content={"error": "Command not pending"})
+    if req.denied:
+        run["history"].append({"role": "user", "content":
+            "The user DECLINED to run: " + hit["command"] + ". Do not re-run it; continue with other work or stop."})
+        _coding_run_log(run, "system", "You declined: " + hit["command"])
+    else:
+        out = str(req.output or "")[:6000]
+        run["history"].append({"role": "user", "content":
+            "Command: " + hit["command"] + "\nOutput:\n" + out
+            + "\nContinue the task. If finished, reply with a short summary and no tool blocks."})
+        _coding_run_log(run, "tool", "Ran: " + hit["command"] + "\n" + out[:400])
+    run["pending"] = [p for p in pend if p["id"] != req.cmd_id]
+    if not run["pending"] and run["status"] == "awaiting_approval":
+        run["status"] = "running"
+        asyncio.create_task(_coding_run_iterate(dict(user), run))
+    return _coding_run_public(run)
+
+
 # ---- Chat image attachments: persisted per user, referenced by chats ----
 _CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 _CHAT_IMAGE_MIME = {"image/png": "png", "image/jpeg": "jpg",

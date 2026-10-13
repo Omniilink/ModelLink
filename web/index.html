@@ -1664,6 +1664,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="togglePlanMode()" id="coding-plan-btn" title="Plan mode: stage actions without running them">Plan</button>
            <button onclick="openOptimiseMenu(event)" id="coding-optimise-btn" title="Optimise this project: audit, speed up, fix errors and add missing features">Optimise</button>
            <button onclick="openRunToolsModal()" title="Run tools: retry a todo, diff the run, recipes, tests, git">Run tools</button>
+           <button onclick="openRunsPanel()" id="coding-runs-btn" title="Background runs: the server keeps working even if you close this tab">Runs</button>
           <select id="coding-dl-format" title="Archive format" onchange="localStorage.setItem('omnilink_dl_format',this.value)"><option value="zip">.zip</option><option value="targz">.tar.gz</option></select>
           <button onclick="downloadProject()" title="Compress the whole project and download it">Download project</button>
            <button onclick="clearCodingChat()" title="Clear this coding chat">Clear Chat</button>
@@ -7789,6 +7790,105 @@ async function restoreLastCodingFolder(){
       publicFork:meta.public_fork||null
     });
   }catch(e){}
+}
+// ---- Background runs (server-side): keep going with the tab closed -------
+var codingRunTimer=null,codingRunId='',codingRunSeen=0,codingRunNotified=false;
+function runsNotify(title,body){
+  try{if(window.Notification&&Notification.permission==='granted'){new Notification(title,{body:body||''})}}catch(e){}
+  try{showToast(title,'info')}catch(e){}
+}
+function runsPaint(run){
+  const b=document.getElementById('runs-body');if(!b)return;
+  if(!run){b.innerHTML='<div class="tool-status">No background run.</div>';return}
+  const st=run.status;
+  const color=st==='done'?'var(--success)':st==='error'||st==='stopped'?'var(--error)':'var(--warning)';
+  let h='<div style="font-size:12px;margin-bottom:8px">Status: <b style="color:'+color+'">'+escapeHtml(st)+'</b>'
+    +' · '+escapeHtml(String(run.model||''))+' · '+run.rounds+' round'+(run.rounds===1?'':'s')
+    +' · <span style="color:var(--text-muted)">'+escapeHtml(String(run.message||'').slice(0,80))+'</span></div>';
+  (run.pending||[]).forEach(p=>{
+    h+='<div style="border:1px solid var(--warning);border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+      +'<div style="font-size:11px;color:var(--warning);margin-bottom:4px">Approve this command to continue:</div>'
+      +'<div style="font-family:var(--mono);font-size:12px;color:var(--text-primary);margin-bottom:6px">'+escapeHtml(p.command)+'</div>'
+      +'<button class="btn btn-primary btn-sm" onclick="runApprove(\''+p.id+'\')">Run it</button> '
+      +'<button class="btn btn-ghost btn-sm" onclick="runDeny(\''+p.id+'\')">Skip</button></div>';
+  });
+  h+='<div style="max-height:44vh;overflow:auto;font-size:12px">';
+  (run.log||[]).forEach(e=>{
+    const k=e.kind;const c=k==='error'?'var(--error)':k==='tool'?'var(--accent-light)':k==='user'?'var(--text-primary)':k==='assistant'?'var(--text-primary)':'var(--text-muted)';
+    const pre=(k==='tool'||k==='system')?'<span style="color:var(--text-muted)">· </span>':'';
+    h+='<div style="color:'+c+';white-space:pre-wrap;padding:3px 0;border-bottom:1px solid var(--border)">'+pre+escapeHtml(String(e.text||'').slice(0,600))+'</div>';
+  });
+  h+='</div>';
+  if(st==='running'||st==='awaiting_approval'){
+    h+='<div style="margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="runStop()">Stop run</button></div>';
+  }
+  b.innerHTML=h;
+}
+async function runsPoll(){
+  try{
+    const r=await authFetch(API+'/api/coding/run?since='+codingRunSeen);
+    const d=await r.json().catch(()=>({}));
+    const run=d&&d.run;
+    if(!run){return}
+    codingRunId=run.id;
+    codingRunSeen=run.log_len||codingRunSeen;
+    runsPaint(run);
+    if((run.status==='done'||run.status==='error'||run.status==='stopped')&&!codingRunNotified){
+      codingRunNotified=true;
+      if(run.status==='done')runsNotify('Background run finished',String(run.message||'').slice(0,120));
+      else if(run.status==='error')runsNotify('Background run failed',String(run.error||'').slice(0,120));
+      try{refreshCodingTree()}catch(e){}
+      try{restoreCodingChat()}catch(e){}
+      if(codingRunTimer){clearInterval(codingRunTimer);codingRunTimer=null}
+    }
+  }catch(e){}
+}
+async function openRunsPanel(){
+  try{if(window.Notification&&Notification.permission==='default')Notification.requestPermission()}catch(e){}
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='640px';
+  m.innerHTML='<div class="modal-header"><h2>Background runs</h2></div><div class="modal-body">'
+    +'<div style="display:flex;gap:6px;margin-bottom:12px"><input id="runs-task" placeholder="Task to run in the background (keeps going if you close the tab)…" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:12.5px;outline:none;font-family:var(--font)"/><button class="btn btn-primary btn-sm" id="runs-start">Start</button></div>'
+    +'<div id="runs-body"><div class="tool-status">Loading…</div></div></div>'
+    +'<div class="modal-actions"><button class="btn btn-ghost" id="runs-close">Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  const close=()=>{if(codingRunTimer){clearInterval(codingRunTimer);codingRunTimer=null}ov.remove()};
+  m.querySelector('#runs-close').onclick=close;ov.onclick=e=>{if(e.target===ov)close()};
+  const inp=m.querySelector('#runs-task');
+  m.querySelector('#runs-start').onclick=async()=>{
+    const task=inp.value.trim();if(!task){appAlert('Type a task first');return}
+    try{
+      const rr=await authFetch(API+'/api/coding/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:task,model:selectedModel})});
+      const dd=await rr.json().catch(()=>({}));
+      if(!rr.ok){showToast((dd&&dd.error)||'Could not start','error');return}
+      inp.value='';codingRunSeen=0;codingRunNotified=false;runsPoll();
+      if(codingRunTimer)clearInterval(codingRunTimer);
+      codingRunTimer=setInterval(runsPoll,2500);
+    }catch(e){showToast(e.message,'error')}
+  };
+  inp.onkeydown=e=>{if(e.key==='Enter')m.querySelector('#runs-start').click()};
+  runsPoll();
+  if(codingRunTimer)clearInterval(codingRunTimer);
+  codingRunTimer=setInterval(runsPoll,2500);
+}
+async function runStop(){try{await authFetch(API+'/api/coding/run/stop',{method:'POST'})}catch(e){}runsPoll()}
+async function runApprove(cmdId){
+  // Run the approved command through the normal, sandboxed path, then hand
+  // the output back to the server-side run so it continues.
+  const b=document.getElementById('runs-body');
+  try{
+    const r=await authFetch(API+'/api/coding/run?since=0');const d=await r.json().catch(()=>({}));
+    const p=((d.run&&d.run.pending)||[]).find(x=>x.id===cmdId);if(!p)return;
+    if(b)b.insertAdjacentHTML('afterbegin','<div class="tool-status">Running command…</div>');
+    const out=await codingRunCmd(p.command);
+    const output=String((out.stdout||'')+(out.stderr?'\n--- stderr ---\n'+out.stderr:'')+(out.exit_code!=null?'\n(exit '+out.exit_code+')':''));
+    await authFetch(API+'/api/coding/run/command-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunId,cmd_id:cmdId,output})});
+  }catch(e){showToast(e.message,'error')}
+  runsPoll();
+}
+async function runDeny(cmdId){
+  try{await authFetch(API+'/api/coding/run/command-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunId,cmd_id:cmdId,denied:true})})}catch(e){}
+  runsPoll();
 }
 async function mergeStatusRender(){
   const box=document.getElementById('merge-status-box');if(!box)return;
