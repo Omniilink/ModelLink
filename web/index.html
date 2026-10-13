@@ -3360,7 +3360,7 @@ function handleCodingKey(e){const dd=document.getElementById('at-dropdown');cons
 async function loadAllCodingFiles(force){if(!codingFolder||(!force&&allCodingFiles.length>0))return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
   allCodingFiles=[];allCodingFileSizes={};function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else{allCodingFiles.push(p);if(typeof e.size==='number')allCodingFileSizes[p]=e.size}}}flatten(tree,'')}catch(e){}}
 
-function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const refMatch=before.match(/\/reference\s+([^\n]*)$/);if(refMatch){showRefDropdown(refMatch[1]||'');return}const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
+function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const slashMatch=before.match(/(^|\n)\/(\w*)$/);if(slashMatch){showSlashPalette(slashMatch[2]||'');return}const refMatch=before.match(/\/reference\s+([^\n]*)$/);if(refMatch){showRefDropdown(refMatch[1]||'');return}const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
 async function showRefDropdown(query){
   const dd=document.getElementById('at-dropdown');if(!dd)return;dd.innerHTML='';
   let items=[];try{items=await refProjectList()}catch(e){}
@@ -3375,6 +3375,138 @@ function insertRefProject(name){
   const val=input.value;const cursor=input.selectionStart;
   const before=val.slice(0,cursor),after=val.slice(cursor);
   const newBefore=before.replace(/\/reference\s+[^\n]*$/,'/reference "'+name+'" ');
+  input.value=newBefore+after;input.selectionStart=input.selectionEnd=newBefore.length;input.focus();closeAtDropdown();
+}
+const SLASH_COMMANDS=[
+  {cmd:'reference',desc:'Attach another project or file (read-only)',usage:'/reference "Proj" [file]'},
+  {cmd:'read',desc:'Attach an open-project file',usage:'/read <path>'},
+  {cmd:'tree',desc:'Attach a folder listing',usage:'/tree [dir]'},
+  {cmd:'new',desc:'Create an empty file now',usage:'/new <path>'},
+  {cmd:'delete',desc:'Delete a file (asks first)',usage:'/delete <path>'},
+  {cmd:'rename',desc:'Rename a file',usage:'/rename <old> <new>'},
+  {cmd:'run',desc:'Run a shell command (asks first)',usage:'/run <command>'},
+  {cmd:'search',desc:'Search project contents',usage:'/search <query>'},
+  {cmd:'diff',desc:'File history, or this-run diff',usage:'/diff [path]'},
+  {cmd:'undo',desc:'Recent changes (undo any)',usage:'/undo'},
+  {cmd:'clear',desc:'Clear this chat',usage:'/clear'},
+  {cmd:'attach',desc:'Attach all project files',usage:'/attach'},
+  {cmd:'plan',desc:'Toggle plan mode',usage:'/plan'},
+  {cmd:'help',desc:'Show all commands',usage:'/help'}
+];
+var codingTreeSnips=[];
+function splitSlashArgs(s){
+  const out=[];let cur='',q=null;
+  const str=String(s||'');
+  for(let i=0;i<str.length;i++){const c=str[i];
+    if(q){if(c===q)q=null;else cur+=c}
+    else if(c==='"'||c==="'")q=c;
+    else if(/\s/.test(c)){if(cur){out.push(cur);cur=''}}
+    else cur+=c}
+  if(cur)out.push(cur);
+  return out;
+}
+function parseSlashCommands(text){
+  // [{cmd,args}] in order + text with command LINES stripped. Unknown
+  // /words and /reference (handled by its own parser) pass through. Pure.
+  const found=[];
+  const cleaned=String(text||'').replace(/(^|\n)\/([a-z]+)([^\n]*)/g,(m,pre,cmd,rest)=>{
+    const lc=String(cmd||'').toLowerCase();
+    if(lc==='reference')return m;
+    const def=SLASH_COMMANDS.find(d=>d.cmd===lc);
+    if(!def)return m;
+    found.push({cmd:lc,args:splitSlashArgs(rest)});
+    return pre;
+  });
+  return{found:found,cleaned:cleaned.replace(/[ \t]+\n/g,'\n').trim()};
+}
+function slashHelp(){
+  addCodingSystemMsg('Slash commands:\n'+SLASH_COMMANDS.map(c=>'/'+c.cmd+' — '+c.desc+' ('+c.usage+')').join('\n'));
+}
+async function execSlashCommands(rawText){
+  const parsed=parseSlashCommands(rawText);
+  let attached=false;
+  for(const a of parsed.found){
+    try{
+      const args=a.args||[];
+      if(a.cmd==='help'){slashHelp()}
+      else if(a.cmd==='clear'){try{await clearCodingChat()}catch(e){}try{codingAtFiles=[];codingRefFiles=[];codingTreeSnips=[];updateAtIndicator()}catch(e){}}
+      else if(a.cmd==='attach'){try{await attachAllFiles();attached=true}catch(e){showToast(e.message,'error')}}
+      else if(a.cmd==='plan'){try{await togglePlanMode()}catch(e){}}
+      else if(a.cmd==='undo'){try{await openActivityModal()}catch(e){}}
+      else if(a.cmd==='search'){try{openSearchModal(args.join(' '))}catch(e){}}
+      else if(a.cmd==='diff'){try{if(args[0])openFileHistoryModal(args[0]);else openRunDiffModal()}catch(e){}}
+      else if(a.cmd==='read'){
+        const p=args[0];
+        if(!p){showToast('Usage: /read <path>','error');break}
+        try{const c=await codingReadFile(p);if(!codingAtFiles.includes(p))codingAtFiles.push(p);attached=true;updateAtIndicator();showToast('Attached '+p,'success')}catch(e){addCodingSystemMsg('Could not attach '+p+': '+e.message)}
+      }
+      else if(a.cmd==='tree'){
+        const dir=String(args[0]||'').replace(/\/+$/,'');
+        try{
+          let tree;
+          if(fsHandle)tree=await fsBuildTree(fsHandle);
+          else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)throw new Error((data&&data.error)||'no files');tree=data.tree}
+          const names=[];
+          (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path&&(!dir||n.path===dir||n.path.indexOf(dir+'/')===0))names.push(n.path)}})(tree);
+          names.sort();const list=names.slice(0,200);
+          codingTreeSnips.push({label:'tree'+(dir?':'+dir:''),text:list.join('\n')+(names.length>200?'\n...and '+(names.length-200)+' more':'')});
+          attached=true;showToast('Attached listing ('+list.length+' files)','success');
+        }catch(e){addCodingSystemMsg('Could not list files: '+e.message)}
+      }
+      else if(a.cmd==='new'){
+        const p=args[0];
+        if(!p){showToast('Usage: /new <path>','error');break}
+        try{const r=await codingWriteFile(p,'');if(r&&r.ok){showToast('Created '+p,'success');try{await refreshCodingTree()}catch(e){}}else showToast((r&&r.error)||'Create failed','error')}catch(e){showToast(e.message,'error')}
+      }
+      else if(a.cmd==='delete'){
+        const p=args[0];
+        if(!p){showToast('Usage: /delete <path>','error');break}
+        if(!(await appConfirm('Delete "'+p+'"?')))break;
+        try{
+          if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(p)});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}
+          else if(fsHandle){await fsDeleteFile(p)}
+          else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||'Delete failed')}
+          refreshCodingTree();showToast('Deleted '+p,'success');
+        }catch(e){showToast('Delete failed: '+e.message,'error')}
+      }
+      else if(a.cmd==='rename'){
+        const from=args[0],to=args[1];
+        if(!from||!to){showToast('Usage: /rename <old> <new>','error');break}
+        if(!(await appConfirm('Rename "'+from+'" to "'+to+'"?')))break;
+        try{
+          const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:from,new_path:to})});
+          const d=await r.json().catch(()=>({}));
+          if(!r.ok)throw new Error((d&&d.error)||'Rename failed');
+          refreshCodingTree();showToast('Renamed to '+to,'success');
+        }catch(e){showToast('Rename failed: '+e.message,'error')}
+      }
+      else if(a.cmd==='run'){
+        const cmd=args.join(' ');
+        if(!cmd){showToast('Usage: /run <command>','error');break}
+        if(!(await appConfirm('Run "'+cmd+'"?')))break;
+        try{
+          const out=await codingRunCmd(cmd);
+          addCodingSystemMsg('Ran: '+cmd+' (exit '+(out.exit_code==null?'?':out.exit_code)+')\n'+String((out.stdout||'')+(out.stderr?'\n--- stderr ---\n'+out.stderr:'')).slice(0,2000));
+        }catch(e){showToast(e.message,'error')}
+      }
+    }catch(e){showToast(a.cmd+': '+e.message,'error')}
+  }
+  return{cleaned:parsed.cleaned,attached:attached};
+}
+function showSlashPalette(filter){
+  const dd=document.getElementById('at-dropdown');if(!dd)return;dd.innerHTML='';
+  const q=String(filter||'').toLowerCase();
+  const items=SLASH_COMMANDS.filter(c=>!q||c.cmd.indexOf(q)===0||c.desc.toLowerCase().indexOf(q)>-1);
+  if(!items.length){dd.innerHTML='<div class="at-dropdown-empty">No matching command</div>';dd.classList.add('open');return}
+  items.forEach((c,i)=>{const item=document.createElement('div');item.className='at-dropdown-item'+(i===0?' selected':'');item.innerHTML='<span style="opacity:.5">/</span> <span><b>'+escapeHtml(c.cmd)+'</b> <span style="opacity:.6">'+escapeHtml(c.desc)+'</span></span>';item.onclick=()=>insertSlashCommand(c.cmd);dd.appendChild(item)});
+  dd.classList.add('open');
+  dd.style.maxHeight='260px';dd.style.overflowY='auto';
+}
+function insertSlashCommand(cmd){
+  const input=document.getElementById('coding-input');if(!input)return;
+  const val=input.value;const cursor=input.selectionStart;
+  const before=val.slice(0,cursor),after=val.slice(cursor);
+  const newBefore=before.replace(/(^|\n)\/\w*$/,'$1/'+cmd+' ');
   input.value=newBefore+after;input.selectionStart=input.selectionEnd=newBefore.length;input.focus();closeAtDropdown();
 }
 async function showAtDropdown(query){await loadAllCodingFiles();const dd=document.getElementById('at-dropdown');dd.innerHTML='';const filtered=allCodingFiles.filter(f=>f.toLowerCase().includes(query)).slice(0,30);
@@ -3483,6 +3615,12 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n';else sysPrompt+='\n--- FILE: '+fname+' (empty file) ---\n'}catch(e){const em=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- FILE: '+fname+' (could NOT be read: '+em+') ---\nAsk the user for this file instead of guessing its contents.\n';if(codingAttachFailures.indexOf(fname)<0)codingAttachFailures.push(fname+': '+em)}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
+  if(typeof codingTreeSnips!=='undefined'&&codingTreeSnips.length>0){
+    sysPrompt+='\nWORKSPACE LISTINGS via /tree (read-only — file names for orientation):\n';
+    for(const s of codingTreeSnips.slice(-4)){
+      sysPrompt+='\n--- LISTING: '+s.label+' ---\n'+String(s.text||'').slice(0,8000)+'\n--- END LISTING ---\n';
+    }
+  }
   if(typeof codingRefFiles!=='undefined'&&codingRefFiles.length>0){
     sysPrompt+='\nREFERENCED CONTENT FROM OTHER PROJECTS (read-only context — never write outside the open folder, use plain relative paths):\n';
     for(const rf of codingRefFiles.slice(0,12)){
@@ -3518,6 +3656,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   // State the rule up front instead of only hinting after the fact.
   if(sysPrompt.indexOf('FILE_PATCH RULES')<0)sysPrompt+='\nFILE_PATCH RULES (apply to every FILE_PATCH block):\n- OLD must be copied VERBATIM from the file as it exists right now: identical characters, identical indentation (tabs stay tabs), no re-wrapping, no added or removed blank lines, no "..." elisions, no smart quotes.\n- OLD is 3-8 CONSECUTIVE lines that appear EXACTLY ONCE in the file. Short and unique beats long and comprehensive.\n- NEVER reconstruct OLD from memory or from a summary. If you have not read the file in THIS session, read it first with a command or FILE_EDIT, then patch.\n- If a patch reports "Old text not found", do NOT resend the same OLD. Re-read the file and copy the exact lines from that output.\n- Prefer FILE_PATCH over rewriting a whole file to change a few lines.\n';
   if(sysPrompt.indexOf('EDIT POLICY')<0)sysPrompt+='\nEDIT POLICY (the tool ladder — follow it strictly):\n- Changing an EXISTING file? The default tool is FILE_PATCH with a 3-8 line OLD block copied verbatim from a fresh read. Always reach for this first.\n- A full-file FILE_CREATE or FILE_EDIT over an existing path is allowed ONLY when (a) over 40% of the file lines change, (b) the file is under 40 lines, or (c) the file needs restructuring throughout. Anything else gets converted to targeted edits or bounced back for patching.\n- Never FILE_CREATE over a path that already exists — that is an edit, not a creation.\n- A small touch-up via full rewrite is the most expensive mistake you can make: it burns output, truncates mid-file, and overwrites collaborator changes.\n';
+  if(sysPrompt.indexOf('SPLIT AND MERGE')<0)sysPrompt+='\nSPLIT AND MERGE (move code between files without retyping it — never re-emit file bodies to split or combine files):\n- Split one file into several with FILE_SPLIT:<source path>, then repeating PART:<new file> / LINES:a-b (1-based, inclusive) / optional REPLACE-WITH: lines left behind. Ranges must not overlap. The harness moves the exact lines — you never re-emit them. Omit REPLACE-WITH to just remove those lines (they still land in the new file).\n- Example (pull CSS and JS out of index.html):\nFILE_SPLIT:index.html\nPART:styles.css\nLINES:12-48\nREPLACE-WITH:\n<link rel="stylesheet" href="styles.css">\nPART:app.js\nLINES:60-120\nREPLACE-WITH:\n<script src="app.js"><\/script>\nEND_FILE_SPLIT\n- Combine files with FILE_MERGE:<dest>, FROM:<path> lines and one SEPARATOR:<text> line on a single line ({file} becomes each following file name):\nFILE_MERGE:bundle.js\nFROM:a.js\nFROM:b.js\nSEPARATOR:// ---- {file} ----\nEND_FILE_MERGE\n';
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
@@ -3850,9 +3989,11 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
-  const refParsed=parseRefCommands(rawText);
+  const slash=await execSlashCommands(rawText);
+  const refParsed=parseRefCommands(slash.cleaned);
   try{codingRefCache={}}catch(e){}
   let cleanText=parseAtFiles(refParsed.cleaned);updateAtIndicator();
+  if(!cleanText&&!cimgs.length&&!slash.attached&&!refParsed.refs.length&&!codingAtFiles.length&&!lastOpenedFile){try{settleInputAfterSend('coding-input')}catch(e){}return}
   document.getElementById('coding-sticky-bar').classList.remove('visible');
   if(refParsed.refs.length){
     try{
@@ -5021,14 +5162,18 @@ async function processCodingActions(text,msgEl){
   const reviewMode=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
   const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const webFetches=[...parseText.matchAll(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g)].map(m=>({url:m[0].replace(/^WEB_FETCH:[ \t]*\r?\n?/,'').replace(/\nEND_WEB_FETCH$/,'').trim()}));
-  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  const fileSplits=(typeof parseSplitBlocks==='function')?parseSplitBlocks(parseText):[];
+  const fileMerges=(typeof parseMergeBlocks==='function')?parseMergeBlocks(parseText):[];
+  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+fileSplits.length+fileMerges.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   const hadTodos=parseCodingTodos(parseText);
   // A turn that writes files but never declared a TODO_LIST leaves the loop
   // blind. Derive one from the files it touched so the next round has real
   // "open work" to refer to.
   const filePathsHere=[...fileCreates,...fileEdits,...filePatches].map(m=>m[1].trim()).filter(Boolean);
+  for(const s of fileSplits){if(s.source)filePathsHere.push(s.source);for(const p of (s.parts||[]))if(p.file)filePathsHere.push(p.file)}
+  for(const mg of fileMerges){if(mg.dest)filePathsHere.push(mg.dest)}
   if(!hadTodos)synthesizeCodingTodos(parseText,filePathsHere);
-  const autoFile=fileCreates.length+fileEdits.length+filePatches.length,autoCmd=commands.length;
+  const autoFile=fileCreates.length+fileEdits.length+filePatches.length+fileSplits.length+fileMerges.length,autoCmd=commands.length;
   if(autoFile+autoCmd>0){stickyBar.classList.add('visible');stickyBar.querySelector('span').textContent=autoFile+' file action'+(autoFile!==1?'s':'')+' + '+autoCmd+' command'+(autoCmd!==1?'s':'')+' detected'}else stickyBar.classList.remove('visible');
   const contentEl=msgEl.querySelector('.coding-msg-content');
      if(contentEl&&hasToolBlocks){const cleaned=stripCodeForChat(cleanCodingProse(text));if(cleaned)contentEl.innerHTML=renderContent(cleaned);else{const parts=[];if(autoFile)parts.push(autoFile+' file action'+(autoFile!==1?'s':''));if(autoCmd)parts.push(autoCmd+' command'+(autoCmd!==1?'s':''));if(questions.length)parts.push(questions.length+' question'+(questions.length!==1?'s':''));if(webFetches.length)parts.push(webFetches.length+' fetch'+(webFetches.length!==1?'es':''));contentEl.innerHTML='<span style="color:var(--text-muted);font-size:12px">'+escapeHtml(parts.length?parts.join(' · ')+' — see cards below':'Working…')+'</span>'}}
@@ -5105,7 +5250,37 @@ async function processCodingActions(text,msgEl){
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';const recordDel=()=>{if(typeof recordCodingVersion==='function')recordCodingVersion(['(deleted) '+path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Delete',path,{ok:true}))};
     ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok){refreshCodingTree();recordDel()}return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree();recordDel()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok){refreshCodingTree();recordDel();if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(path)}}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
-    const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+    const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';    bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  for(const op of fileSplits){
+    const label='Split '+op.source+' → '+(op.parts||[]).map(p=>p.file).join(', ');
+    if(seenBlocks.has('S|'+op.source+'|'+JSON.stringify(op.parts)))continue;
+    seenBlocks.add('S|'+op.source+'|'+JSON.stringify(op.parts));
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';
+    toolDiv.innerHTML='<div class="tool-label">'+escapeHtml(label)+'</div><div style="font-size:11px;color:var(--text-muted)">'+(op.parts||[]).map(p=>escapeHtml(p.file+' (lines '+p.from+'-'+p.to+')')).join('<br>')+'</div>';
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode){
+      const result=await codingSplitFile(op.source,op.parts||[]);
+      const msg=result.ok?('Split complete: '+result.moved.join(', ')):(result.error||'Split failed');
+      toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';
+      if(result.ok){refreshCodingTree();if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}}
+      if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Split',op.source,result));
+    }
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Split';ab.onclick=async()=>{const result=await codingSplitFile(op.source,op.parts||[]);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(result.ok?'Split complete':result.error)+'</span>';if(result.ok){refreshCodingTree();if(typeof recordCodingVersion==='function')recordCodingVersion([op.source]).catch(()=>{})}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Split',op.source,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  for(const op of fileMerges){
+    const label='Merge '+(op.sources||[]).join(' + ')+' → '+op.dest;
+    if(seenBlocks.has('M|'+op.dest+'|'+(op.sources||[]).join('|')))continue;
+    seenBlocks.add('M|'+op.dest+'|'+(op.sources||[]).join('|'));
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';
+    toolDiv.innerHTML='<div class="tool-label">'+escapeHtml(label)+'</div>';
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode){
+      const result=await codingMergeFiles(op.dest,op.sources||[],op.sep);
+      const msg=result.ok?('Merged '+result.n+' files into '+result.dest):(result.error||'Merge failed');
+      toolDiv.innerHTML+='<div style="color:'+(result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';
+      if(result.ok){refreshCodingTree();if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}}
+      if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Merge',op.dest,result));
+    }
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Merge';ab.onclick=async()=>{const result=await codingMergeFiles(op.dest,op.sources||[],op.sep);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(result.ok?'Merged!':result.error)+'</span>';if(result.ok){refreshCodingTree();if(typeof recordCodingVersion==='function')recordCodingVersion([op.dest]).catch(()=>{})}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Merge',op.dest,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of commands){const cmd=sanitizeCommand(match[1]);if(!cmd)continue;const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-cmd';toolDiv.dataset.cmd=cmd;toolDiv.innerHTML='<div class="tool-label">Running: '+escapeHtml(cmd)+'</div>';
     if(codingSettings.auto_command&&!planMode&&!reviewMode){toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));toolDiv.innerHTML+='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Run';ab.onclick=async()=>{toolDiv.classList.add('running');const result=await codingRunCmd(cmd);toolDiv.classList.remove('running');toolDiv.innerHTML=toolDiv.innerHTML.replace('>Running: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): ')).replace('>Run command: ','>'+(result.exit_code===0?'Ran: ':'Ran (exit '+result.exit_code+'): '));bar.innerHTML='<div class="cmd-result '+cmdResultClass(result)+' collapsed" onclick="this.classList.toggle(\'collapsed\')" title="Click to expand">'+fmtCmdResult(result)+'</div>';if(typeof recordToolOutcome==='function'&&typeof cmdToolRec==='function')recordToolOutcome(msgEl,cmdToolRec(cmd,result))};const db=document.createElement('button');db.className='deny';db.textContent='Skip';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
@@ -10815,6 +10990,109 @@ async function optApplyBlocks(path,reply){
     if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(m[1].trim());
   }
   return applied?{ok:true,applied:applied}:{ok:false,applied:0};
+}
+// ---- FILE_SPLIT / FILE_MERGE: move code between files without retyping ---
+// The model declares line ranges; the harness moves the exact lines. This is
+// how a split avoids the classic failure of re-emitting whole files.
+function parseSplitBlocks(text){
+  const out=[];
+  const re=/FILE_SPLIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:\nEND_FILE_SPLIT|$)/g;
+  let m;
+  while((m=re.exec(String(text||'')))){
+    const source=m[1].trim();
+    const parts=[];let cur=null,inRep=false;
+    for(const ln of String(m[2]||'').split('\n')){
+      const pm=ln.match(/^\s*PART:\s*(.+?)\s*$/);
+      if(pm){cur={file:pm[1].trim(),from:0,to:0,replace:null};parts.push(cur);inRep=false;continue}
+      const lm=ln.match(/^\s*LINES:\s*(\d+)\s*-\s*(\d+)\s*$/);
+      if(lm&&cur&&!inRep){cur.from=parseInt(lm[1],10);cur.to=parseInt(lm[2],10);continue}
+      if(/^\s*REPLACE-WITH:\s*$/.test(ln)&&cur){cur.replace=[];inRep=true;continue}
+      if(inRep&&cur)cur.replace.push(ln);
+    }
+    for(const p of parts){if(p.replace)while(p.replace.length&&p.replace[p.replace.length-1].trim()==='')p.replace.pop()}
+    out.push({source:source,parts:parts});
+  }
+  return out;
+}
+function validateSplitParts(totalLines,parts){
+  if(!parts.length)return 'no PART: blocks (need PART: <file> + LINES: a-b each)';
+  if(parts.length>10)return 'at most 10 parts per split';
+  for(const p of parts){
+    if(!p.file||p.file.length>200||/\.\./.test(p.file.replace(/\\/g,'/').split('/')))return 'bad part file: '+(p.file||'(missing)');
+    if(!(p.from>=1)||!(p.to>=p.from))return 'bad LINES for '+p.file+' (want LINES: a-b, a>=1, b>=a)';
+    if(p.to>totalLines)return p.file+': lines '+p.from+'-'+p.to+' exceed the file ('+totalLines+' lines)';
+  }
+  const ord=parts.slice().sort((a,b)=>a.from-b.from);
+  for(let i=1;i<ord.length;i++)if(ord[i].from<=ord[i-1].to)return 'overlapping ranges: '+ord[i-1].file+' and '+ord[i].file;
+  return null;
+}
+async function codingSplitFile(source,parts){
+  let current=null;
+  try{current=await codingReadFile(source)}catch(e){return{ok:false,error:'Could not read '+source+' — '+(e&&e.message?e.message:String(e))}}
+  if(current==null)return{ok:false,error:'File not found — create it first'};
+  const lines=String(current).split('\n');
+  const bad=validateSplitParts(lines.length,parts);
+  if(bad)return{ok:false,error:bad};
+  const usesCRLF=lines.some(l=>l.length&&l.charCodeAt(l.length-1)===13);
+  const norm=lines.map(l=>l.replace(/\r$/,''));
+  const ordered=parts.slice().sort((a,b)=>b.from-a.from);
+  const made=[];
+  try{
+    for(const p of ordered){
+      const chunk=norm.slice(p.from-1,p.to);
+      const body=chunk.join(usesCRLF?'\r\n':'\n');
+      const r=await codingWriteFile(p.file,body);
+      if(!r||!r.ok)throw new Error(p.file+': '+((r&&r.error)||'write failed'));
+      made.push(p.file);
+      if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(p.file);
+    }
+    const rest=norm.slice();
+    for(const p of ordered)rest.splice(p.from-1,p.to-p.from+1,...(p.replace||[]));
+    const updated=rest.join(usesCRLF?'\r\n':'\n');
+    const r2=await codingWriteFile(source,updated);
+    if(!r2||!r2.ok)throw new Error(source+': '+((r2&&r2.error)||'write failed'));
+    if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(source);
+    if(typeof recordCodingVersion==='function'){try{recordCodingVersion([source].concat(made))}catch(e){}}
+    return{ok:true,moved:made.slice().reverse(),source:source};
+  }catch(e){return{ok:false,error:e.message,partial:made}}
+}
+function parseMergeBlocks(text){
+  const out=[];
+  const re=/FILE_MERGE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:\nEND_FILE_MERGE|$)/g;
+  let m;
+  while((m=re.exec(String(text||'')))){
+    const dest=m[1].trim();
+    const sources=[];let sep='\n\n';
+    for(const ln of String(m[2]||'').split('\n')){
+      const fm=ln.match(/^\s*FROM:\s*(.+?)\s*$/);
+      if(fm){sources.push(fm[1].trim());continue}
+      const sm=ln.match(/^\s*SEPARATOR:\s*([\s\S]*)$/);
+      if(sm)sep=sm[1];
+    }
+    out.push({dest:dest,sources:sources.filter(Boolean).slice(0,10),sep:sep});
+  }
+  return out;
+}
+async function codingMergeFiles(dest,sources,sep){
+  if(!dest||/\.\./.test(String(dest).replace(/\\/g,'/').split('/')))return{ok:false,error:'bad destination'};
+  if(!sources.length)return{ok:false,error:'no FROM: files'};
+  if(sources.length>10)return{ok:false,error:'at most 10 sources per merge'};
+  const parts=[];
+  let total=0;
+  for(const s of sources){
+    let c=null;
+    try{c=await codingReadFile(s)}catch(e){return{ok:false,error:'Could not read '+s+' — '+(e&&e.message?e.message:String(e))}}
+    if(c==null)return{ok:false,error:'File not found: '+s};
+    parts.push({path:s,content:String(c)});
+    total+=String(c).length;
+    if(total>1000000)return{ok:false,error:'merged result over 1MB — merge fewer files'};
+  }
+  const chunks=parts.map((p,i)=>i===0?p.content:String(sep).split('{file}').join(p.path)+p.content);
+  const r=await codingWriteFile(dest,chunks.join(''));
+  if(!r||!r.ok)return{ok:false,error:(r&&r.error)||'write failed'};
+  if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(dest);
+  if(typeof recordCodingVersion==='function'){try{recordCodingVersion([dest])}catch(e){}}
+  return{ok:true,dest:dest,n:sources.length};
 }
 async function optFixFinding(path,line,rule,level){
   if(typeof optRunning!=='undefined'&&optRunning){showToast('An optimise run is already going','info');return}
