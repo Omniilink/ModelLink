@@ -3580,6 +3580,19 @@ function codingOsBlock(kind){
 var codingAttachFailures=[];
 var codingRefFiles=[];
 var codingRefCache={};
+var codingMergeIntent='',codingMergeIntents={};
+function codingIntentFor(path){try{return (codingMergeIntents&&codingMergeIntents[path])||codingMergeIntent||''}catch(e){return codingMergeIntent||''}}
+function parseMergeIntents(text){
+  // MERGE_INTENT: <path>\n<short summary>\nEND_MERGE_INTENT — what an AI plans
+  // to do to a file, handed to the server-side merge model on a collision.
+  const out={};let m;
+  const re=/MERGE_INTENT:\s*([^\n]+)\n([\s\S]*?)(?:\nEND_MERGE_INTENT|$)/g;
+  while((m=re.exec(String(text||'')))){
+    const key=String(m[1]||'').trim().replace(/['"`]/g,'');
+    if(key)out[key]=String(m[2]||'').trim().slice(0,600);
+  }
+  return out;
+}
 async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';codingAttachFailures=[];try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
   if(!basePrompt)basePrompt='You are an Omniilink Coding Assistant.';
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
@@ -3664,7 +3677,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   // derail the model and leave half-finished work behind.
   if(codingSplitPending)sysPrompt+='\nTODO GRANULARITY (your TODO_LIST is too coarse): split each open item into its own smaller steps — one file, one feature, or one check per item — and continue working in the SAME reply. Do NOT stop, restart, or ask anything: just emit a finer TODO_LIST with the already-done items still marked [x] and carry on with the next tool block.\n';
   if(wsActive&&currentWorkspace){try{const cr=await authFetch(API+'/api/coding/workspace/context');if(cr.ok){const cd=await cr.json().catch(()=>({}));if(cd&&cd.active){const wsLabel=String(currentWorkspace.name||'collaborative').slice(0,48);const summary=String(cd.summary||'(no recent activity yet)').slice(0,1500);
-    sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- LOCKS ARE TRANSIENT: a file is claimed only while one of your FILE_* blocks executes, then released. Never assume a file stays yours between rounds.\n- For a substantial edit across multiple files, RESERVE them first so nobody grabs them mid-request: emit one LOCK_RESERVE: <path> line per file (before the FILE_* blocks that need them, max 4). Reserves unlock automatically when your turn chain ends.\n- A file another user holds right now must NOT be modified: if a write is rejected as locked, do NOT resend it — work a different todo, and re-read the file before touching it later.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n'}}}catch(e){}}
+    sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- FILES ARE NOT LOCKED. Several people (and their AIs) may edit the same file. When two edits collide, a small server-side model merges them automatically, so you NEVER wait for a file and you are NEVER blocked.\n- Before you change any file, emit a one-line summary of what you are about to do so the merge model understands your intent:\nMERGE_INTENT: <path>\n<one short sentence: what and why>\nEND_MERGE_INTENT\nEmit one per file you are about to edit, before the FILE_* blocks.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Keep edits small and targeted (FILE_PATCH). Small, well-described changes merge cleanly with someone else\'s; large rewrites collide and lose detail.\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n- If a live notice says your work was auto-merged, re-read the file to pick up the combined result before continuing.\n'}}}catch(e){}}
   if((typeof codingReviewModeOn==='function')&&codingReviewModeOn())sysPrompt+='\nREVIEW MODE (the user enabled it): audit ONLY. Do NOT emit FILE_CREATE/FILE_EDIT/FILE_PATCH/FILE_DELETE blocks and do NOT run state-changing commands — read-only inspection (cat, ls, grep, node --check) is allowed. Deliver a findings list ordered by severity, then end with VERDICT:PASS and a short summary. Never write files in this mode.\n';
   return sysPrompt}
 
@@ -4022,7 +4035,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -5166,6 +5179,7 @@ async function processCodingActions(text,msgEl){
   const fileMerges=(typeof parseMergeBlocks==='function')?parseMergeBlocks(parseText):[];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+fileSplits.length+fileMerges.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   const hadTodos=parseCodingTodos(parseText);
+  try{const mi=(typeof parseMergeIntents==='function')?parseMergeIntents(parseText):{};codingMergeIntents=mi;const mk=Object.keys(mi);codingMergeIntent=mk.length?mi[mk[0]]:''}catch(e){}
   // A turn that writes files but never declared a TODO_LIST leaves the loop
   // blind. Derive one from the files it touched so the next round has real
   // "open work" to refer to.
@@ -6747,7 +6761,7 @@ async function codingWriteFile(path,content){
       if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}
       return{ok:true,added:lines,removed:0};
     }
-    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content,intent:(typeof codingIntentFor==='function'?codingIntentFor(path):'')})});
     const data=await r.json();
     if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
@@ -6995,7 +7009,7 @@ async function codingPatchFile(path,oldText,newText){
   try{
     const remote=isRemote();
     if(!remote&&!fsHandle){
-const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
+const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText,intent:(typeof codingIntentFor==='function'?codingIntentFor(path):'')})});
 const data=await r.json();
 if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
@@ -8035,6 +8049,7 @@ async function wsPollOnce(){
         else if(ev.type==='comment')msg=who+' commented on '+p;
         else if(ev.type==='lock_request')msg=who+' asks you to release '+p+' — free it from the busy bar if you are done';
         else if(ev.type==='quiet')msg='Quiet hours '+((ev.extra&&ev.extra.enabled)?'started — no new edits for now':'ended');
+        else if(ev.type==='merge')msg=(ev.extra&&ev.extra.ok)?('Server AI '+(ev.extra&&ev.extra.note||('merged changes in '+p))):('Could not auto-merge '+p+' — '+((ev.extra&&ev.extra.note)||'re-read the file before your next edit'));
         else if(ev.type==='member_added')msg=who+' added '+(ev.extra&&ev.extra.member||'someone');
         else if(ev.type==='member_removed')msg=who+' removed '+(ev.extra&&ev.extra.member||'someone');
         else if(ev.type==='member_role')msg=who+" changed "+(ev.extra&&ev.extra.member||'a member')+"'s role to "+(ev.extra&&ev.extra.role||'edit');
@@ -8101,7 +8116,9 @@ function wsRenderBusyBar(locks){
   }catch(e){}
 }
 async function wsSecureTargets(text,beforeEl){
-  wsWaitingForLocks=false;wsSkippedLocked=[];
+  // Locks are gone: concurrent edits are reconciled server-side by the AI
+  // merge, so there is nothing to wait for. Kept as a no-op for callers.
+  wsWaitingForLocks=false;wsSkippedLocked=[];return;
   if(!wsActive||!currentWorkspace||currentWorkspace.role==='view'||!codingFolder)return;
   const focus={};
   (codingAtFiles||[]).forEach(f=>{if(f)focus[f]=1});
@@ -8141,6 +8158,8 @@ async function wsSecureTargets(text,beforeEl){
   wsWaitingForLocks=false;
 }
 async function wsReleaseMine(){
+  // No locks are taken any more; nothing to release.
+  wsLockedPaths=[];return;
   const paths=wsLockedPaths.slice();wsLockedPaths=[];
   for(const f of paths){
     try{await authFetch(API+'/api/coding/workspace/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})})}catch(e){}

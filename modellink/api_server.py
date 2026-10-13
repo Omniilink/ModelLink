@@ -1876,11 +1876,13 @@ class CodingOpenFolder(BaseModel):
 class CodingFileWrite(BaseModel):
     path: str
     content: str
+    intent: str = ""
 
 class CodingFilePatch(BaseModel):
     path: str
     old_text: str
     new_text: str
+    intent: str = ""
 
 class CodingRunCommand(BaseModel):
     command: str
@@ -6426,29 +6428,218 @@ def _ws_live_locks(folder):
 
 
 def _ws_enforce_lock(user, folder, relpath):
-    """Server-side file lock for collaborator workspaces.
+    """Workspace write gate.
 
-    In a workspace folder, mutating `relpath` requires the caller to hold its
-    lock (client acquires it at send time). Returns an error JSONResponse
-    when another member currently holds it, else None (refreshing an existing
-    lock of the same user so long AI actions keep it alive)."""
+    File LOCKS ARE OFF: concurrent edits to the same file are reconciled by
+    the server-side AI merge (see _ws_merge_run) instead of blocking anyone.
+    Only owner-set quiet hours still gate writes. Returns an error
+    JSONResponse or None.
+    """
     if not _workspace_row(folder):
         return None
     qb = _ws_quiet_block(user, folder)
     if qb:
         return JSONResponse(status_code=qb.get("code", 423), content=qb)
-    _ws_cleanup_locks(folder)
-    key = _ws_lock_key(folder, relpath)
-    cur = _ws_locks.get(key)
-    if cur and cur["user_id"] != user["id"]:
-        return JSONResponse(status_code=409, content={
-            "error": "File is locked by another editor",
-            "locked_by": cur["username"], "locked_by_id": cur["user_id"]})
-    if cur:
-        cur["at"] = time.time()
-    else:
-        _ws_take_lock(user, folder, relpath)
     return None
+
+
+# ---- Workspace AI merge: lock-free concurrency --------------------------
+# When two members change the same file, a small local model on the server
+# (default Qwen2.5-Coder 3B via Ollama) is given the current file plus each
+# AI's MERGE_INTENT summary and produces the smallest FILE_PATCH that lands
+# both changes. Text-only: it never gets shell/file tools. Runs in the
+# background so no request ever blocks. Configure with OMNIILINK_MERGE_MODEL
+# and OMNIILINK_MERGE_ENABLED (see DOCKER.md / server setup notes).
+_WS_MERGE_DEFAULT_MODEL = "qwen2.5-coder:3b"
+_WS_MERGE_MAX_BYTES = 90 * 1024
+_WS_MERGE_TIMEOUT = 300
+_WS_INTENT_TTL = 240
+_WS_INTENT_LOCK = threading.Lock()
+_WS_MERGE_LOCK = threading.Lock()
+_ws_intents = {}   # absfolder -> {rel: [ {user_id, username, intent, at, content} ]}
+_WS_MERGE_SYSTEM = (
+    "You are a precise code-merge assistant. You are given ONE file's CURRENT "
+    "content and the INTENT of two or more AIs that each wanted to change it. "
+    "Produce the merged file by emitting ONLY FILE_PATCH blocks (OLD:/NEW:) that "
+    "apply the needed changes onto the CURRENT content. Rules: make the SMALLEST "
+    "possible change; never rewrite, reformat or restyle unrelated code; never "
+    "delete things you were not asked to change; if an edit is already present, "
+    "skip it; if two edits conflict, combine them so both intents are satisfied. "
+    "Output only FILE_PATCH blocks and nothing else."
+)
+
+
+def _ws_merge_model() -> str:
+    return (os.environ.get("OMNIILINK_MERGE_MODEL") or _WS_MERGE_DEFAULT_MODEL).strip()
+
+
+def _ws_merge_enabled() -> bool:
+    if os.environ.get("OMNIILINK_MERGE_ENABLED") == "0":
+        return False
+    return bool(_ws_merge_model())
+
+
+def _ws_intent_key(folder, rel):
+    return (os.path.abspath(folder or ""), os.path.normpath(rel or "").lstrip("\\/"))
+
+
+def _ws_record_intent(user, folder, rel, intent, content=None):
+    """Record this user's edit intent for a file; returns how many OTHER
+    members currently have a live intent for it."""
+    absf, r = _ws_intent_key(folder, rel)
+    now = time.time()
+    with _WS_INTENT_LOCK:
+        bucket = _ws_intents.setdefault(absf, {})
+        lst = bucket.setdefault(r, [])
+        lst[:] = [e for e in lst
+                  if now - float(e.get("at") or 0) < _WS_INTENT_TTL
+                  and e.get("user_id") != user["id"]]
+        lst.append({"user_id": user["id"], "username": user.get("username", ""),
+                    "intent": str(intent or "")[:1500], "at": now, "content": content})
+        return len([e for e in lst if e.get("user_id") != user["id"]])
+
+
+def _ws_take_intents(folder, rel):
+    absf, r = _ws_intent_key(folder, rel)
+    now = time.time()
+    with _WS_INTENT_LOCK:
+        bucket = _ws_intents.get(absf) or {}
+        return [e for e in (bucket.get(r) or []) if now - float(e.get("at") or 0) < _WS_INTENT_TTL]
+
+
+def _ws_clear_intents(folder, rel):
+    absf, r = _ws_intent_key(folder, rel)
+    with _WS_INTENT_LOCK:
+        bucket = _ws_intents.get(absf)
+        if bucket:
+            bucket.pop(r, None)
+
+
+def _ws_merge_model_call(model: str, system: str, user_text: str) -> str:
+    """One-shot, non-streaming Ollama /api/chat call. Raises on any failure.
+    Monkeypatched in tests so the merge logic is verifiable without a model."""
+    base = (_ollama_current_url() or "").rstrip("/")
+    if not base:
+        raise RuntimeError("No Ollama URL configured")
+    body = json.dumps({
+        "model": model, "stream": False,
+        "options": {"temperature": 0.1, "num_ctx": 16384, "num_predict": 4096},
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user_text}],
+    }).encode("utf-8")
+    req = urllib.request.Request(base + "/api/chat", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return str((data.get("message") or {}).get("content") or "")
+
+
+def _apply_patch_server(current, old_text, new_text):
+    hit = _locate_patch_target(current, old_text)
+    if not hit:
+        return None
+    cur = _patch_trim(current)
+    return cur[:hit[0]] + _patch_trim(new_text) + cur[hit[1]:]
+
+
+def _ws_merge_build_prompt(rel, current, participants):
+    parts = ["The CURRENT content of %s is between the markers." % rel,
+             "===== CURRENT FILE =====", current, "===== END CURRENT FILE =====", ""]
+    for i, p in enumerate(participants, 1):
+        parts.append("--- Edit %d by %s ---" % (i, p.get("username") or "a member"))
+        parts.append("Intent: " + (p.get("intent") or "(no summary given)"))
+        if p.get("content"):
+            parts.append("They wanted the file to become:")
+            parts.append("<<<PROPOSED>>>")
+            parts.append(str(p["content"]))
+            parts.append("<<<END PROPOSED>>>")
+        parts.append("")
+    parts.append("Emit FILE_PATCH blocks (FILE_PATCH:<path> / OLD: / NEW: / "
+                 "END_FILE_PATCH) that bring the CURRENT file to the merged result. "
+                 "Change only what is needed.")
+    return "\n".join(parts)
+
+
+def _ws_merge_run(user, folder, rel):
+    """Blocking merge of one file from its live intents. Returns a dict."""
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return {"ok": False, "error": "file missing"}
+    try:
+        if os.path.getsize(full) > _WS_MERGE_MAX_BYTES:
+            return {"ok": False, "error": "file over the merge size limit", "oversize": True}
+        with open(full, "r", encoding="utf-8") as fh:
+            current = fh.read()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    participants = _ws_take_intents(folder, rel)
+    if len(participants) < 2:
+        return {"ok": True, "skipped": True, "reason": "no concurrent edits"}
+    try:
+        reply = _ws_merge_model_call(_ws_merge_model(), _WS_MERGE_SYSTEM,
+                                     _ws_merge_build_prompt(rel, current, participants))
+    except Exception as e:
+        return {"ok": False, "unavailable": True, "error": str(e)[:200]}
+    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
+                         reply or "", re.S)
+    if not patches:
+        return {"ok": True, "skipped": True, "reason": "merge model proposed no changes"}
+    out = current
+    applied = 0
+    for old_text, new_text in patches:
+        res = _apply_patch_server(out, old_text, new_text)
+        if res is None or res == out:
+            continue
+        out = res
+        applied += 1
+    if not applied or out == current:
+        return {"ok": True, "skipped": True, "reason": "proposed patches did not apply"}
+    with _WS_MERGE_LOCK:
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                backup = fh.read()
+            _coding_save_version(_safe_username(user["username"]), rel, backup, folder)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write(out)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    _ws_clear_intents(folder, rel)
+    _ws_log_change(folder, "merge", rel, user, user["id"],
+                   {"by": [p.get("username") for p in participants][:5], "patches": applied})
+    return {"ok": True, "merged": True, "patches": applied,
+            "members": [p.get("username") for p in participants][:5]}
+
+
+def _ws_maybe_merge(user, folder, rel, loop):
+    """Kick off a background merge when 2+ members are editing one file."""
+    if not _ws_merge_enabled() or not _workspace_row(folder):
+        return
+    if len(_ws_take_intents(folder, rel)) < 2:
+        return
+
+    def _job():
+        try:
+            res = _ws_merge_run(user, folder, rel)
+        except Exception as e:
+            res = {"ok": False, "error": str(e)[:200]}
+        try:
+            if res.get("merged"):
+                note = "auto-merged changes from " + ", ".join(res.get("members") or []) \
+                       + " (" + str(res.get("patches")) + " edits)"
+                _ws_append_event(folder, {"type": "merge", "path": rel, "user": "server-ai",
+                                          "user_id": user["id"], "extra": {"ok": True, "note": note}})
+            elif res.get("unavailable"):
+                _ws_append_event(folder, {"type": "merge", "path": rel, "user": "server-ai",
+                                          "user_id": user["id"],
+                                          "extra": {"ok": False,
+                                                    "note": "merge model unavailable — re-read the file before your next edit"}})
+        except Exception:
+            pass
+
+    try:
+        loop.run_in_executor(None, _job)
+    except Exception:
+        threading.Thread(target=_job, daemon=True).start()
 
 
 def _ws_log_change(folder, evtype, relpath, user, user_id, extra=None):
@@ -7142,6 +7333,53 @@ async def workspace_unlock(request: Request, req: WsLockBody):
         return access_err
     _ws_release_lock(user, folder, req.path, quiet=bool(req.transient))
     return {"status": "ok"}
+
+
+class MergeIntentBody(BaseModel):
+    path: str = ""
+    intent: str = ""
+
+
+@app.post("/api/coding/workspace/merge-intent")
+async def workspace_merge_intent(request: Request, req: MergeIntentBody):
+    """Record an AI's edit intent for a file before it changes it. Returns how
+    many OTHER members are editing the same file right now."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not _workspace_row(folder):
+        return {"status": "ok", "workspace": False, "conflict": 0, "others": []}
+    rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    others = _ws_record_intent(user, folder, rel, req.intent)
+    return {"status": "ok", "workspace": True, "conflict": others,
+            "merge_enabled": _ws_merge_enabled(), "merge_model": _ws_merge_model()}
+
+
+@app.post("/api/coding/workspace/merge-now")
+async def workspace_merge_now(request: Request, req: MergeIntentBody):
+    """Manually run the merge for a file (the UI's 'Merge now')."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not _workspace_row(folder):
+        return JSONResponse(status_code=400, content={"error": "Not a workspace"})
+    rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if not _ws_merge_enabled():
+        return JSONResponse(status_code=503, content={"error": "Merge is disabled on this server"})
+    res = await asyncio.to_thread(_ws_merge_run, user, folder, rel)
+    return res
 
 
 # ---- Collaborative workspaces, batch 2: presence rides on poll; below are
@@ -11603,6 +11841,11 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
     ws_ck = _ws_enforce_lock(user, folder, req.path)
     if ws_ck:
         return ws_ck
+    if _workspace_row(folder):
+        try:
+            _ws_record_intent(user, folder, req.path, getattr(req, "intent", ""), req.content)
+        except Exception:
+            pass
     quota_err = _check_quota(user, _safe_username(user["username"]), len(req.content.encode("utf-8", "ignore")))
     if quota_err:
         return quota_err
@@ -11640,6 +11883,10 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         _ws_log_change(folder, "write" if vts is not None else "create",
                        req.path, user, user["id"], {"added": added, "removed": removed})
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
+        try:
+            _ws_maybe_merge(user, folder, req.path, asyncio.get_running_loop())
+        except Exception:
+            pass
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
     except Exception as e:
@@ -11761,6 +12008,12 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
     ws_ck = _ws_enforce_lock(user, folder, req.path)
     if ws_ck:
         return ws_ck
+    if _workspace_row(folder):
+        try:
+            _ws_record_intent(user, folder, req.path, getattr(req, "intent", ""),
+                              (req.old_text or "")[:4000] + "\n=> " + (req.new_text or "")[:4000])
+        except Exception:
+            pass
     full = os.path.join(folder, req.path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -11806,6 +12059,10 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         _ws_log_change(folder, "patch", req.path, user, user["id"],
                        {"added": added, "removed": removed})
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
+        try:
+            _ws_maybe_merge(user, folder, req.path, asyncio.get_running_loop())
+        except Exception:
+            pass
         return {"status": "ok", "path": req.path, "size": len(patched),
                 "added": added, "removed": removed}
     except Exception as e:
@@ -13679,6 +13936,8 @@ async def coding_get_settings(request: Request):
     settings["host_os"] = sys.platform
     settings["upload_limit_mb"] = UPLOAD_LIMIT_MB
     settings["upload_chunk_mb"] = UPLOAD_CHUNK_BYTES // (1024 * 1024)
+    settings["merge_model"] = _ws_merge_model()
+    settings["merge_enabled"] = _ws_merge_enabled()
     return settings
 
 @app.post("/api/coding/settings")
