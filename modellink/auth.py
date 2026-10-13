@@ -661,6 +661,22 @@ def init_db():
                          ("names_reconciled_v1", "1"))
     except Exception:
         pass
+    # ONE-TIME: clear all issued share links (preview-share links and project
+    # share links) so they are regenerated fresh next time they are created.
+    # Guarded by a flag: runs once, ever; later links are untouched.
+    try:
+        done = conn.execute("SELECT value FROM server_meta WHERE key = ?",
+                            ("links_cleared_v1",)).fetchone()
+        if not done:
+            for _tbl in ("shared_previews", "project_links"):
+                try:
+                    conn.execute("DELETE FROM %s" % _tbl)
+                except Exception:
+                    pass
+            conn.execute("INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)",
+                         ("links_cleared_v1", "1"))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
