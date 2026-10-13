@@ -1705,7 +1705,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                 </button>
                 <input type="file" id="coding-img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleCodingImageFiles(this.files);this.value=''" />
-                <textarea id="coding-input" placeholder="Message (type @ to attach files)..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)" onfocus="onComposerFocus()"></textarea>
+                <textarea id="coding-input" placeholder="Message (@ files, /reference project [file])..." rows="1" onkeydown="handleCodingKey(event)" oninput="handleCodingInput(event)" onfocus="onComposerFocus()"></textarea>
                 <button class="send-btn" id="coding-send-btn" onclick="sendCodingMessage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
               </div>
             </div>
@@ -3259,11 +3259,15 @@ function updateAtIndicator(){
   // Never render a non-string: a stray object here stringifies to
   // "[object Object]" and the user sees that instead of a file name.
   codingAtFiles=(codingAtFiles||[]).filter(f=>typeof f==='string'&&f);
-  if(codingAtFiles.length===0){ind.innerHTML='';ind.style.display='none';return}
+  try{codingRefFiles=(codingRefFiles||[]).filter(f=>f&&typeof f.project==='string')}catch(e){}
+  if(codingAtFiles.length===0&&codingRefFiles.length===0){ind.innerHTML='';ind.style.display='none';return}
   ind.style.display='flex';
   ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f.split('/').pop())
     +'<span class="at-file-dir">'+escapeHtml((f.indexOf('/')>-1?f.slice(0,f.lastIndexOf('/')):''))+'</span>'
-    +'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('');
+    +'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')
+    +codingRefFiles.map((f,i)=>'<span class="at-file-tag" title="Reference from another project (read-only)">'+escapeHtml(f.path?String(f.path).split('/').pop():(f.project||''))
+    +'<span class="at-file-dir">'+escapeHtml(f.path?(f.project||''):'reference')+'</span>'
+    +'<button onclick="removeRefFile('+i+')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('');
 }
 var omniiignorePatterns=[];
 async function loadOmniiignore(){try{const r=await authFetch(API+'/api/coding/omniiignore');if(r.ok){const d=await r.json();omniiignorePatterns=d.patterns||[]}}catch(e){}}
@@ -3356,13 +3360,70 @@ function handleCodingKey(e){const dd=document.getElementById('at-dropdown');cons
 async function loadAllCodingFiles(force){if(!codingFolder||(!force&&allCodingFiles.length>0))return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
   allCodingFiles=[];allCodingFileSizes={};function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else{allCodingFiles.push(p);if(typeof e.size==='number')allCodingFileSizes[p]=e.size}}}flatten(tree,'')}catch(e){}}
 
-function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
+function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const refMatch=before.match(/\/reference\s+([^\n]*)$/);if(refMatch){showRefDropdown(refMatch[1]||'');return}const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
+async function showRefDropdown(query){
+  const dd=document.getElementById('at-dropdown');if(!dd)return;dd.innerHTML='';
+  let items=[];try{items=await refProjectList()}catch(e){}
+  const q=String(query||'').toLowerCase().replace(/^"/,'');
+  const filtered=items.filter(p=>p.name&&p.name.toLowerCase().indexOf(q)>-1).slice(0,12);
+  if(!filtered.length){dd.innerHTML='<div class="at-dropdown-empty">No matching project — type the full name in quotes</div>';dd.classList.add('open');return}
+  filtered.forEach((p,i)=>{const item=document.createElement('div');item.className='at-dropdown-item'+(i===0?' selected':'');item.innerHTML='<span style="opacity:.5">◈</span> <span>'+escapeHtml(p.name)+'</span>'+(p.shared?'<span class="lang">shared</span>':'');item.onclick=()=>insertRefProject(p.name);dd.appendChild(item)});
+  dd.classList.add('open');
+}
+function insertRefProject(name){
+  const input=document.getElementById('coding-input');if(!input)return;
+  const val=input.value;const cursor=input.selectionStart;
+  const before=val.slice(0,cursor),after=val.slice(cursor);
+  const newBefore=before.replace(/\/reference\s+[^\n]*$/,'/reference "'+name+'" ');
+  input.value=newBefore+after;input.selectionStart=input.selectionEnd=newBefore.length;input.focus();closeAtDropdown();
+}
 async function showAtDropdown(query){await loadAllCodingFiles();const dd=document.getElementById('at-dropdown');dd.innerHTML='';const filtered=allCodingFiles.filter(f=>f.toLowerCase().includes(query)).slice(0,30);
   if(filtered.length===0){dd.innerHTML='<div class="at-dropdown-empty">No matching files</div>';dd.classList.add('open');return}
   for(let i=0;i<filtered.length;i++){const f=filtered[i];const item=document.createElement('div');item.className='at-dropdown-item'+(i===0?' selected':'');const lang=getLangForFile(f.split('/').pop());item.innerHTML='<span style="opacity:.5">\u25A1</span> <span>'+escapeHtml(f)+'</span>'+(lang?'<span class="lang">'+lang+'</span>':'');item.onclick=()=>insertAtFile(f);dd.appendChild(item)}dd.classList.add('open')}
 function closeAtDropdown(){document.getElementById('at-dropdown').classList.remove('open')}
 function insertAtFile(path){const input=document.getElementById('coding-input');const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const after=val.slice(cursor);const newBefore=before.replace(/@\S*$/,'@'+path+' ');input.value=newBefore+after;input.selectionStart=input.selectionEnd=newBefore.length;input.focus();closeAtDropdown();if(!codingAtFiles.includes(path)){codingAtFiles.push(path);updateAtIndicator()}}
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
+var codingRefProjectsCache={at:0,items:[]};
+async function refProjectList(){
+  const now=Date.now();
+  if(now-codingRefProjectsCache.at<300000&&codingRefProjectsCache.items.length)return codingRefProjectsCache.items;
+  const r=await authFetch(API+'/api/projects');const d=r.ok?await r.json().catch(()=>({})):({});
+  const items=(d.projects||[]).map(p=>({name:p.name,shared:false})).concat((d.shared_projects||[]).map(p=>({name:p.name,shared:true})));
+  codingRefProjectsCache={at:now,items:items};
+  return items;
+}
+function parseRefCommands(text){
+  // /reference "Some Project" [path] — stripped from the message, resolved
+  // at send time. A bare trailing word is prose, not a path: paths must look
+  // like files (a dot or slash) unless quoted. Pure: {refs, cleaned}.
+  const refs=[];let m;const re=/\/reference\s+(?:"([^"]+)"|(\S+))(?:\s+(?:"([^"]+)"|(\S*[./]\S*)))?/g;
+  while((m=re.exec(String(text||'')))){
+    const proj=String(m[1]||m[2]||'').trim();
+    if(!proj)continue;
+    const p=String(m[3]||m[4]||'').trim();
+    refs.push({project:proj,path:p||null});
+  }
+  return{refs:refs,cleaned:String(text||'').replace(re,'').replace(/[ \t]+\n/g,'\n').trim()};
+}
+function removeRefFile(i){try{codingRefFiles.splice(i,1)}catch(e){}updateAtIndicator()}
+async function refResolveProject(name){
+  const items=await refProjectList();
+  const low=String(name||'').toLowerCase();
+  return items.find(p=>String(p.name||'').toLowerCase()===low)||null;
+}
+async function refReadFile(project,path){
+  const r=await authFetch(API+'/api/projects/file?name='+encodeURIComponent(project)+'&path='+encodeURIComponent(path));
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+  if(d.encoding==='base64')return '(binary file, '+d.path+')';
+  return d.content||'';
+}
+async function refProjectTree(project){
+  const r=await authFetch(API+'/api/projects/tree?name='+encodeURIComponent(project));
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error((d&&d.error)||'load failed');
+  return d.tree||[];
+}
 
 function codingExecOs(cs){
   // Effective command-execution OS, straight from the server. The server owns
@@ -3385,6 +3446,8 @@ function codingOsBlock(kind){
   return '';
 }
 var codingAttachFailures=[];
+var codingRefFiles=[];
+var codingRefCache={};
 async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';codingAttachFailures=[];try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
   if(!basePrompt)basePrompt='You are an Omniilink Coding Assistant.';
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
@@ -3420,6 +3483,26 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
   if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n';else sysPrompt+='\n--- FILE: '+fname+' (empty file) ---\n'}catch(e){const em=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- FILE: '+fname+' (could NOT be read: '+em+') ---\nAsk the user for this file instead of guessing its contents.\n';if(codingAttachFailures.indexOf(fname)<0)codingAttachFailures.push(fname+': '+em)}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
+  if(typeof codingRefFiles!=='undefined'&&codingRefFiles.length>0){
+    sysPrompt+='\nREFERENCED CONTENT FROM OTHER PROJECTS (read-only context — never write outside the open folder, use plain relative paths):\n';
+    for(const rf of codingRefFiles.slice(0,12)){
+      const key=rf.project+'\n'+(rf.path||'');
+      try{
+        let content=(typeof codingRefCache!=='undefined')?codingRefCache[key]:undefined;
+        if(content===undefined){
+          if(rf.path){content=await refReadFile(rf.project,rf.path)}
+          else{
+            const tree=await refProjectTree(rf.project);const names=[];
+            (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.path)names.push(n.path)}})(tree);
+            content='Project '+rf.project+' contains '+names.length+' files:\n'+names.slice(0,100).join('\n');
+            if(names.length>100)content+='\n...and '+(names.length-100)+' more';
+          }
+          try{if(typeof codingRefCache!=='undefined')codingRefCache[key]=content}catch(e){}
+        }
+        if(content)sysPrompt+='\n--- REF: '+rf.project+(rf.path?'/'+rf.path:' (file list)')+' ---\n'+String(content).slice(0,30000)+'\n--- END REF ---\n';
+      }catch(e){const msg=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- REF: '+rf.project+(rf.path?'/'+rf.path:'')+' (could NOT be read: '+msg+') ---\n';try{codingAttachFailures.push('ref '+rf.project+(rf.path?'/'+rf.path:'')+': '+msg)}catch(e2){}}
+    }
+  }
   if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
   // The server prompt already carries this block (api_server.py
   // DEFAULT_CODING_PROMPT): appending it again cost ~235 tokens every turn
@@ -3767,7 +3850,37 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
-  const cleanText=parseAtFiles(rawText);updateAtIndicator();document.getElementById('coding-sticky-bar').classList.remove('visible');
+  const refParsed=parseRefCommands(rawText);
+  try{codingRefCache={}}catch(e){}
+  let cleanText=parseAtFiles(refParsed.cleaned);updateAtIndicator();
+  document.getElementById('coding-sticky-bar').classList.remove('visible');
+  if(refParsed.refs.length){
+    try{
+      for(const rr of refParsed.refs){
+        const hit=await refResolveProject(rr.project);
+        if(!hit){addCodingSystemMsg('Reference skipped — no project named "'+rr.project+'".');continue}
+        if(rr.path){
+          if(!codingRefFiles.some(x=>x.project===hit.name&&x.path===rr.path))codingRefFiles.push({project:hit.name,path:rr.path});
+        }else{
+          try{
+            const tree=await refProjectTree(hit.name);
+            if(!codingRefFiles.some(x=>x.project===hit.name&&!x.path))codingRefFiles.push({project:hit.name,path:null});
+            const exts=/\.(html?|css|js|mjs|cjs|jsx?|tsx?|json|py|md|txt)$/i;
+            const cands=[];
+            (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path&&exts.test(n.name))cands.push(n)}})(tree);
+            cands.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
+            let budget=5;
+            for(const f of cands){
+              if(budget<=0)break;
+              if(typeof f.size==='number'&&f.size>50000)continue;
+              if(!codingRefFiles.some(x=>x.project===hit.name&&x.path===f.path)){codingRefFiles.push({project:hit.name,path:f.path,auto:true});budget--}
+            }
+          }catch(e){addCodingSystemMsg('Could not read project "'+hit.name+'": '+e.message)}
+        }
+      }
+    }catch(e){}
+    updateAtIndicator();
+  }
   codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;

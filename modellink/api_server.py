@@ -14630,6 +14630,55 @@ def _public_fork_entries(user):
     return out
 
 
+@app.get("/api/projects/file")
+async def project_file(request: Request, name: str = "", path: str = ""):
+    """Read one file from another project the caller can access (for
+    /reference context). Read-only: resolved server-side, never trusted."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    want = (name or "").strip().replace("\\", "/").strip("/")
+    if not want or ".." in want.split("/") or want.startswith("."):
+        return JSONResponse(status_code=400, content={"error": "Bad project name"})
+    user_id = _safe_username(user["username"])
+    projects_dir = _user_projects_dir(user_id)
+    folder = ""
+    cand = os.path.join(projects_dir, want)
+    if os.path.isdir(cand) and _is_within(projects_dir, cand):
+        folder = cand
+    else:
+        for s in _shared_project_entries(user, projects_dir):
+            if (s.get("name") or "").lower() == want.lower():
+                folder = s.get("path") or ""
+                break
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    p = (path or "").strip().lstrip("/").replace("\\", "/")
+    if not p or ".." in p.split("/"):
+        return JSONResponse(status_code=400, content={"error": "Bad path"})
+    full = os.path.join(folder, p)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        if os.path.getsize(full) > 200000:
+            return JSONResponse(status_code=400, content={"error": "File too large (200KB max)"})
+    except OSError:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        with open(full, "r", encoding="utf-8", errors="strict") as f:
+            return {"project": want, "path": p, "encoding": "text", "content": f.read()}
+    except (UnicodeDecodeError, ValueError):
+        try:
+            with open(full, "rb") as f:
+                return {"project": want, "path": p, "encoding": "base64",
+                        "content": base64.b64encode(f.read()).decode()}
+        except OSError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/api/projects/tree")
 async def project_tree(request: Request, name: str = ""):
     """File tree for one saved project (for the publish picker)."""
