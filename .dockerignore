@@ -1,0 +1,22 @@
+# Keep the (possibly multi-GB) model out of the build context so every
+# `docker compose up --build` stays fast. The merge container mounts ./models
+# instead of copying it.
+models
+*.gguf
+.git
+.gitignore
+.dockerignore
+user_data
+venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+tunnel.log
+omnilink.db
+network_usage.json
+bw_usage.json
+cobaltv18
+companion/build
+*.wixpdb
+__pycache__/

@@ -6485,6 +6485,12 @@ def _merge_env(name: str, default: str = "") -> str:
     return default
 
 
+def _merge_ollama_url() -> str:
+    """Where the merge model lives: a dedicated Ollama (its own container)
+    when OMNIILINK_MERGE_OLLAMA_URL is set, else the server's own Ollama."""
+    return (_merge_env("OMNIILINK_MERGE_OLLAMA_URL") or _ollama_current_url() or "").rstrip("/")
+
+
 def _ws_merge_model() -> str:
     return (_merge_env("OMNIILINK_MERGE_MODEL")
             or _merge_env("OLLAMA_MODEL")
@@ -6549,7 +6555,7 @@ def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str 
         resp = relay.open_response(str(agent_id), "/api/chat", body,
                                    read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
         return str((resp.json().get("message") or {}).get("content") or "")
-    base = (_ollama_current_url() or "").rstrip("/")
+    base = _merge_ollama_url()
     if not base:
         raise RuntimeError("No Ollama URL configured")
     req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
@@ -7585,7 +7591,7 @@ async def merge_device_set(request: Request, req: MergeDeviceBody):
 
 def _server_ollama_tags():
     """(reachable, tags, error) for the server's own Ollama."""
-    url = (_ollama_current_url() or "").rstrip("/")
+    url = _merge_ollama_url()
     if not url:
         return False, [], "No Ollama URL configured"
     try:
@@ -7631,7 +7637,7 @@ async def merge_status(request: Request):
              else ("server" if _row.get("enabled") else ""))
     out = {"enabled": _ws_merge_enabled(), "model": model, "host": _host,
            "default_model": _WS_MERGE_DEFAULT_MODEL,
-           "ollama_url": _ollama_current_url(), "reachable": reachable,
+           "ollama_url": _merge_ollama_url(), "reachable": reachable,
            "model_installed": (model in tags) if reachable else False,
            "tags": tags[:60], "error": oerr, "max_bytes": _WS_MERGE_MAX_BYTES,
            "intent_ttl": _WS_INTENT_TTL}

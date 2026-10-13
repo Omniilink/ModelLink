@@ -26,3 +26,5 @@ cloudflare/
 Procfile
 render.yaml
 runtime.txt
+# Trained model weights (mounted into the merge container, never committed)
+*.gguf
