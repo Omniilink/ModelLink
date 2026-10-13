@@ -12393,22 +12393,29 @@ function admAgo(t){t=Number(t)||0;if(!t)return 'never';const s=Math.max(0,Date.n
 async function admLoadAgents(){const box=document.getElementById('adm-agents');try{try{const hr=await authFetch(API+'/api/health');const hd=await hr.json();document.getElementById('adm-api-build').textContent='api '+(hd.build||'?')}catch(e){}
 const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';
   try{const mr=await authFetch(API+'/api/merge-device');window.__mergeDev=mr.ok?await mr.json().catch(()=>({})):({})}catch(e){window.__mergeDev={}}
+  try{const sr=await authFetch(API+'/api/coding/merge-status');window.__mergeStatus=sr.ok?await sr.json().catch(()=>({})):({})}catch(e){window.__mergeStatus={}}
+  // Workspace-merge runner: the server itself, or one of your own computers.
+  try{
+    const md=window.__mergeDev||{},ms=window.__mergeStatus||{};
+    const own=(d.agents||[]).filter(a=>a&&a.is_owner&&(a.caps||[]).indexOf('ollama')>-1);
+    const active=md.enabled&&md.agent_id;
+    const wrap=document.createElement('div');wrap.style.cssText='width:100%;padding:8px 2px 10px;border-bottom:1px solid var(--border);margin-bottom:4px';
+    const lbl=document.createElement('div');lbl.style.cssText='font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px';lbl.textContent='Workspace merges run on';wrap.appendChild(lbl);
+    const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+    const mk=(text,on,fn,title)=>{const b=document.createElement('button');b.className='btn btn-sm '+(on?'btn-primary':'btn-ghost');b.textContent=text;if(title)b.title=title;b.onclick=fn;return b};
+    const srvState=!ms.reachable?' — Ollama offline':(ms.model_installed===false?' — model not installed':'');
+    row.appendChild(mk('This server'+srvState,!active,()=>admUseServerMerges(),'Run workspace merges on the OmniLink server'+(ms.model?(' ('+ms.model+')'):'')));
+    own.forEach(a=>row.appendChild(mk(a.name||('agent '+a.id),active&&String(md.agent_id)===String(a.id),()=>admToggleMergeDevice(a.id,true),'Run workspace merges on '+(a.name||'this computer'))));
+    if(!own.length){const t=document.createElement('span');t.style.cssText='font-size:11px;color:var(--text-muted)';t.textContent='— pair a computer that shares Ollama to run merges on it instead';row.appendChild(t)}
+    wrap.appendChild(row);box.appendChild(wrap);
+  }catch(e){}
   const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
-  if(!(d.agents||[]).length){box.innerHTML='<div class="tool-status">No computers paired yet. Generate a pairing code above, then run the agent on the client.</div>';return}
+  if(!(d.agents||[]).length){const e=document.createElement('div');e.className='tool-status';e.textContent='No computers paired yet. Generate a pairing code above, then run the agent on the client.';box.appendChild(e);return}
   d.agents.forEach(a=>{const caps=Array.isArray(a.caps)?a.caps:[];const chip=caps.indexOf('ollama')>-1?'<span class="act-provider" style="font-size:10px;border:1px solid var(--border);border-radius:10px;padding:0 6px;margin-left:6px" title="Shares its local Ollama models with your account">ollama</span>':(a.online?'<span class="act-time" style="font-size:10px;margin-left:6px" title="Update Omniilink Server on that computer to share its Ollama models">no model relay</span>':'');
   const item=document.createElement('div');item.className='usage-activity-item';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span>'+chip+'<span class="act-time">'+escapeHtml(admAgo(a.last_seen))+'</span>';box.appendChild(item);
     const access=document.createElement('div');access.className='act-detail';access.style.cssText='width:100%;white-space:normal';const shared=Array.isArray(a.shared_with)?a.shared_with:[];const mshared=Array.isArray(a.ollama_shared_with)?a.ollama_shared_with:[];access.textContent='Owner: '+(a.owner||'unknown')+(a.is_owner?((shared.length?' · shared with '+shared.join(', '):' · private')+(mshared.length?' · models: '+mshared.join(', '):'')):a.access==='shared'?' · shared with you':' · temporary support access');item.appendChild(access);
     if(caps.indexOf('ollama')>-1){const mb=document.createElement('button');mb.className='btn btn-ghost btn-sm';mb.style.marginLeft='auto';mb.textContent='Models';mb.title='Check the Ollama models this computer shares';mb.onclick=()=>admAgentOllama(a.id);item.appendChild(mb)}
-    if(a.is_owner&&caps.indexOf('ollama')>-1){
-      const on=!!(window.__mergeDev&&window.__mergeDev.enabled&&String(window.__mergeDev.agent_id)===String(a.id));
-      const mm=document.createElement('button');mm.className='btn btn-ghost btn-sm';mm.style.marginLeft='auto';
-      mm.textContent=on?'Merge AI: on':'Merge AI: off';
-      mm.title=on?('This computer runs your workspace merges ('+(window.__mergeDev.model||'')+')'):'Use this computer to run workspace merges (installs the model)';
-      mm.title+=' — only affects workspaces you are in';
-      if(on)mm.style.borderColor='var(--accent)';
-      mm.onclick=()=>admToggleMergeDevice(a.id,!on);
-      item.appendChild(mm);
-    }
+
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
   const shareSel=document.getElementById('adm-share-agent');if(shareSel){shareSel.innerHTML='';const owned=(d.agents||[]).filter(x=>x&&x.is_owner);if(!owned.length){const o=document.createElement('option');o.value='';o.textContent='No computers owned by you';shareSel.appendChild(o)}owned.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=(x.name||('agent '+x.id))+' ('+(x.hostname||'no hostname')+')';shareSel.appendChild(o)})}
@@ -12418,6 +12425,15 @@ function admShareTarget(){const id=(document.getElementById('adm-share-agent')||
 async function admShareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Shared with '+t.username+(d.shared_with&&d.shared_with.length?' — access: '+d.shared_with.join(', '):''),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admUnshareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share/'+encodeURIComponent(t.username),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Removed access for '+t.username,'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admShareOllama(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/ollama-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast(t.username+' can now use this computer\u2019s Ollama models (shell and files stay private)'+(d.shared_with&&d.shared_with.length?' — models access: '+d.shared_with.join(', '):''),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
+async function admUseServerMerges(){
+  try{
+    const r=await authFetch(API+'/api/merge-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:'',enabled:false})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast(d.error||'Could not set','error');return}
+    showToast('Workspace merges will run on the OmniLink server','info');
+    admLoadAgents();
+  }catch(e){showToast(e.message,'error')}
+}
 async function admToggleMergeDevice(agentId,on){
   try{
     const r=await authFetch(API+'/api/merge-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:agentId,enabled:!!on})});
