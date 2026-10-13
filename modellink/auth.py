@@ -645,6 +645,15 @@ def init_db():
         ]):
             conn.execute("INSERT INTO forum_sections (name, description, sort) VALUES (?, ?, ?)",
                          (nm, ds, i))
+    # Reconcile display names with usernames (the account's email/handle name).
+    # Self-healing and idempotent: a no-op once every user matches, so running
+    # it on every boot is safe. Fixes accounts created before names were kept
+    # in step, and any name left behind by an older rename.
+    try:
+        conn.execute("UPDATE users SET name = username "
+                     "WHERE COALESCE(name, '') <> username")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -739,15 +748,18 @@ def create_user(username: str, password: str, name: str = "") -> dict:
         count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         is_admin = 1 if count == 0 else 0
         try:
+            # Display name follows the account name (email/handle), so a
+            # rename always changes what people see. `name` is kept in step
+            # with `username` everywhere; see change_username + init_db.
             cur = conn.execute(
                 "INSERT INTO users (username, password_hash, name, is_admin) VALUES (?, ?, ?, ?)",
-                (username, password_hash, name or username, is_admin)
+                (username, password_hash, username, is_admin)
             )
         except sqlite3.IntegrityError:
             return {"error": "Username already taken"}
         conn.commit()
         user_id = cur.lastrowid
-        return {"id": user_id, "username": username, "name": name or username,
+        return {"id": user_id, "username": username, "name": username,
                 "is_admin": is_admin}
     finally:
         conn.close()
@@ -971,7 +983,9 @@ def change_username(user_id: int, new_username: str) -> dict:
             if _auth_safe_username(r["username"]) == new_safe:
                 return {"error": "Username already taken"}
         try:
-            conn.execute("UPDATE users SET username = ? WHERE id = ?", (new, user_id))
+            # The display name tracks the username, so renaming a user also
+            # changes the name shown across the app (chat, projects, etc.).
+            conn.execute("UPDATE users SET username = ?, name = ? WHERE id = ?", (new, new, user_id))
         except sqlite3.IntegrityError:
             return {"error": "Username already taken"}
         # Keep denormalized copies in step so history/forums/public show the
