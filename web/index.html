@@ -3246,7 +3246,17 @@ async function previewFileScanned(path){
     const csp=r.headers.get('Content-Security-Policy')||'';
     if(csp.indexOf('sandbox')>=0){appAlert('Preview server is out of date: it still sandboxes real tabs, so games cannot capture input.\n\nRun update.bat on the server, wait for it to restart, then Preview again.');try{if(tab)tab.close()}catch(e){}return}
   }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
-  const url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
+  // Clean, shareable URL for the user's OWN project: /api/preview/<user>/<project>/<file>.
+  // Workspaces/shared/remote folders fall back to the token URL (sandboxed frame).
+  let url='';
+  try{
+    const uname=(window.__user&&window.__user.username)||'';
+    const proj=String(codingFolder||'').split(/[\\/]/).filter(Boolean).pop()||'';
+    if(uname&&proj&&!fsHandle&&!isRemote()&&!currentProjectShared){
+      url=API+'/api/preview/'+encodeURIComponent(uname)+'/'+encodeURIComponent(proj)+'/'+String(path).split('/').map(encodeURIComponent).join('/');
+    }
+  }catch(e){}
+  if(!url)url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
   if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
   showToast('Popup blocked — allow popups for full preview; using in-app frame','error');
   frame.removeAttribute('srcdoc');

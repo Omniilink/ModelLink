@@ -9201,6 +9201,63 @@ async def coding_preview(request: Request, path: str):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+def _clean_preview_url(username, project, rel):
+    return "/api/preview/%s/%s/%s" % (
+        urllib.parse.quote(username, safe=""),
+        urllib.parse.quote(project, safe=""),
+        urllib.parse.quote(rel.replace("\\", "/"), safe="/"))
+
+
+@app.get("/api/preview/{username}/{project}/{path:path}")
+async def clean_preview(request: Request, username: str, project: str, path: str):
+    """Readable preview URL: /api/preview/<username>/<project>/<file>.
+
+    Real-tab mode (no sandbox) so games/keyboard/fullscreen work like the
+    file opened from disk. Session-authed and path-contained; the in-app
+    sandboxed frame keeps using /api/coding/preview. Assets and multi-page
+    links are rewritten to the same clean scheme.
+    """
+    from fastapi.responses import Response as _Response
+    import mimetypes as _mimetypes
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uname = (username or "").strip().lower()
+    proj = (project or "").strip()
+    if not uname or not _valid_project_name(proj):
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    projects_dir = _user_projects_dir(_safe_username(uname))
+    folder = os.path.join(projects_dir, proj)
+    if not _is_within(projects_dir, folder) or not os.path.isdir(folder):
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    access_err = _folder_access_error(user, folder)
+    if access_err:
+        return access_err
+    rel = (path or "").strip().lstrip("/").replace("\\", "/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    ext = os.path.splitext(rel)[1].lower()
+    try:
+        if os.path.getsize(full) > 2 * 1024 * 1024:
+            return JSONResponse(status_code=400, content={"error": "File too large"})
+        with open(full, "rb") as f:
+            content = f.read()
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    if ext in (".html", ".htm"):
+        def _u(r):
+            return _clean_preview_url(uname, proj, r)
+        content = _rewrite_preview_assets(content, rel, user["id"], url_for=_u, page_url_for=_u)
+        return _Response(content=content, media_type="text/html", headers={
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+    mime = _ASSET_MIME_OVERRIDES.get(ext) or _mimetypes.guess_type(rel)[0] or "application/octet-stream"
+    return _Response(content=content, media_type=mime, headers={
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
 _ASSET_MIME_OVERRIDES = {
     ".js": "text/javascript",
     ".mjs": "text/javascript",
