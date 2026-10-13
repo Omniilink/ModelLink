@@ -1772,7 +1772,7 @@ if(location.search.indexOf('diag')!==-1){
 const API='';
 const API_BASE=window.location.origin;
 let selectedModel='omniilink',chatHistory=[],isStreaming=false,terminalOpen=false,logSource=null,settingsData={},allModels=[],currentChatId=null,messageCounter=0,globalCodeIdx=0;
-let currentView='chat',codingFolder='',currentProjectName='',currentProjectShared=false,currentProjectRole='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null,codingIgnoredFolders=[];
+let currentView='chat',codingFolder='',currentProjectName='',currentProjectShared=false,currentProjectOwner='',currentProjectRole='',codingHistory=[],codingTodos=[],codingTodosNew=false,codingStream=false,fsHandle=null,remoteCtx=null,allCodingFiles=[],allCodingFileSizes={},codingAtFiles=[],lastOpenedFile=null,lastFileContent=null,codingIgnoredFolders=[];
 
 // Chat stores are namespaced per signed-in account so two people sharing a
 // browser never read or overwrite each other's conversations. Before the
@@ -2805,7 +2805,7 @@ function applyCodingToolbarPermissions(){
   // Folder access now flows through Projects / the Reconnect button only.
 }
 function initCodingView(){if(codingFolder){document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display=fsHandle?'none':''}else{document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';loadProjectsSidebar()}applyCodingToolbarPermissions();updatePlanModeUI();startCodingWatcher();syncCodingModelSelect();setupCodingDragDrop();applyCodingTreeState();loadUploadLimits()}
-function closeCodingFolder(){codingFolder=null;currentProjectShared=false;currentProjectRole='';currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsLastEvents=0;wsFolder='';wsLockedPaths=[];fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}try{const bar=document.getElementById('coding-meta-bar');if(bar)bar.style.display='none'}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
+function closeCodingFolder(){codingFolder=null;currentProjectShared=false;currentProjectOwner='';currentProjectRole='';currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsLastEvents=0;wsFolder='';wsLockedPaths=[];fsHandle=null;remoteCtx=null;allCodingFiles=[];codingHistory=[];codingTodos=[];codingTodosWrote=[];try{renderCodingTodos()}catch(e){}try{document.getElementById('coding-chat').innerHTML=''}catch(e){}try{const bar=document.getElementById('coding-meta-bar');if(bar)bar.style.display='none'}catch(e){}authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{});document.getElementById('coding-close-btn').style.display='none';document.getElementById('coding-reconnect-btn').style.display='none';updateProjectBadge('');loadProjectsSidebar()}
 
 let projectsSidebarGen=0;
 async function loadProjectsSidebar(){
@@ -3246,13 +3246,14 @@ async function previewFileScanned(path){
     const csp=r.headers.get('Content-Security-Policy')||'';
     if(csp.indexOf('sandbox')>=0){appAlert('Preview server is out of date: it still sandboxes real tabs, so games cannot capture input.\n\nRun update.bat on the server, wait for it to restart, then Preview again.');try{if(tab)tab.close()}catch(e){}return}
   }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
-  // Clean, shareable URL for the user's OWN project: /api/preview/<user>/<project>/<file>.
-  // Workspaces/shared/remote folders fall back to the token URL (sandboxed frame).
+  // Clean, shareable URL: /api/preview/<owner>/<project>/<file>. The owner is the
+  // folder's owner (for workspaces/shared projects) so the link is stable and
+  // readable; the in-app sandboxed frame still uses the token URL.
   let url='';
   try{
-    const uname=(window.__user&&window.__user.username)||'';
+    const uname=currentProjectOwner||(window.__user&&window.__user.username)||'';
     const proj=String(codingFolder||'').split(/[\\/]/).filter(Boolean).pop()||'';
-    if(uname&&proj&&!fsHandle&&!isRemote()&&!currentProjectShared){
+    if(uname&&proj&&!fsHandle&&!isRemote()&&(currentProjectOwner||!currentProjectShared)){
       url=API+'/api/preview/'+encodeURIComponent(uname)+'/'+encodeURIComponent(proj)+'/'+String(path).split('/').map(encodeURIComponent).join('/');
     }
   }catch(e){}
@@ -7936,7 +7937,7 @@ async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!pa
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
   const role=String(p.role||'edit'),owner=String(p.owner||'');
   try{const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json().catch(()=>({}));if(!r.ok){appAlert(data.error||'Failed to open shared project');return}
-  codingFolder=data.folder;currentProjectShared=true;currentProjectRole=role;fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];
+  codingFolder=data.folder;currentProjectShared=true;currentProjectOwner=owner;currentProjectRole=role;fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];
   document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';
   renderFileTree(data.tree||[]);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();renderCodingMetaBar();
   try{await autoAttachProjectFiles()}catch(e){}
@@ -7957,6 +7958,7 @@ async function openCodingFolderPath(path,opts){
     if(!r.ok){appAlert(data.error||'Failed to open folder');return}
     codingFolder=data.folder;
     currentProjectShared=!!(opts.shared||opts.workspace||opts.publicFork);
+    currentProjectOwner='';
     currentProjectRole=(opts.role==='view')?'view':'edit';
     fsHandle=null;remoteCtx=null;allCodingFiles=[];
     document.getElementById('coding-close-btn').style.display='';
@@ -7970,6 +7972,7 @@ async function openCodingFolderPath(path,opts){
     if(currentWorkspace){
       if(!currentWorkspace.id&&currentWorkspace.workspace_id)currentWorkspace.id=currentWorkspace.workspace_id;
       try{const wr=await authFetch(API+'/api/workspaces/'+currentWorkspace.id+'/members');if(wr.ok){const wd=await wr.json().catch(()=>({}));currentWorkspace.owner=wd.owner;currentWorkspace.owner_name=wd.owner_name;const me=(wd.members||[]).find(x=>x.user_id===(window.__user&&window.__user.id));if(me)currentWorkspace.role=me.role;if(!me&&wd.owner!==(window.__user&&window.__user.id))currentWorkspace.role='view';}}catch(e){}
+      currentProjectOwner=currentWorkspace.owner_name||'';
     }
     renderFileTree(data.tree||[]);
     codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;

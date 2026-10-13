@@ -9228,8 +9228,26 @@ async def clean_preview(request: Request, username: str, project: str, path: str
         return JSONResponse(status_code=404, content={"error": "Not found"})
     projects_dir = _user_projects_dir(_safe_username(uname))
     folder = os.path.join(projects_dir, proj)
-    if not _is_within(projects_dir, folder) or not os.path.isdir(folder):
-        return JSONResponse(status_code=404, content={"error": "Not found"})
+    if not (_is_within(projects_dir, folder) and os.path.isdir(folder)):
+        # Not a saved project — it may be a collaborative workspace the owner
+        # promoted (the workspace folder can live anywhere under their data dir).
+        folder = ""
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT id FROM users WHERE username = ?", (uname,)).fetchone()
+            if row:
+                for w in conn.execute("SELECT folder, name FROM workspaces WHERE owner_id = ?",
+                                      (row["id"],)):
+                    wf = w["folder"] or ""
+                    if os.path.isdir(wf) and (
+                            os.path.basename(wf.rstrip("\\/")) == proj
+                            or (w["name"] or "") == proj):
+                        folder = wf
+                        break
+        finally:
+            conn.close()
+        if not folder:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
