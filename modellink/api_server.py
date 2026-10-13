@@ -15884,8 +15884,51 @@ async def open_project(request: Request, req: ProjectCreate):
     _save_coding_folder(user_id, path)
     tree = _build_file_tree(path)
     file_count = _count_tree_files(tree)
+    meta = {"public_fork": None, "workspace": _workspace_row(path)}
+    marker = os.path.join(path, ".omniilink", "public-fork.json")
+    if os.path.isfile(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as fh:
+                meta["public_fork"] = json.load(fh)
+        except Exception:
+            pass
+    if meta["public_fork"]:
+        fork = _public_fork_for_folder(path)
+        if fork:
+            meta["public_fork"]["submitted"] = bool(fork["submitted"])
+            meta["public_fork"]["fork_id"] = fork["id"]
     logger.info(f"[PROJECT] Opened: {name} ({file_count} files) user={user.get('username','-')}")
-    return {"status": "ok", "name": name, "folder": path, "tree": tree, "file_count": file_count}
+    return {"status": "ok", "name": name, "folder": path, "tree": tree, "file_count": file_count,
+            "meta": meta}
+
+@app.get("/api/coding/current")
+async def coding_current(request: Request):
+    """The folder this user last had open, so a refresh can reopen it."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    uid = _safe_username(user["username"])
+    folder = _get_coding_state(uid).get("folder")
+    if not folder or not os.path.isdir(folder) or _folder_access_error(user, folder):
+        return {"folder": None}
+    tree = _build_file_tree(folder)
+    meta = {"public_fork": None, "workspace": _workspace_row(folder)}
+    marker = os.path.join(folder, ".omniilink", "public-fork.json")
+    if os.path.isfile(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as fh:
+                meta["public_fork"] = json.load(fh)
+        except Exception:
+            pass
+    if meta["public_fork"]:
+        fork = _public_fork_for_folder(folder)
+        if fork:
+            meta["public_fork"]["submitted"] = bool(fork["submitted"])
+            meta["public_fork"]["fork_id"] = fork["id"]
+    shared = bool(_folder_shared_role(folder, user["id"])) or bool(meta["workspace"])
+    return {"folder": folder, "tree": tree, "file_count": _count_tree_files(tree),
+            "meta": meta, "name": os.path.basename(os.path.normpath(folder)),
+            "shared": shared}
 
 @app.delete("/api/projects/{name}")
 async def delete_project(request: Request, name: str):

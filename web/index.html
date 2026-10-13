@@ -7326,7 +7326,7 @@ function showAuthSignin(){if(authGoogleOnly){applyAuthMode();return}document.get
 async function doAuth(){const u=document.getElementById('auth-username').value.trim();const p=document.getElementById('auth-password').value;const errEl=document.getElementById('auth-error');errEl.style.display='none';if(!u||!p){errEl.textContent='Username and password required';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signin',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');document.getElementById('auth-username').value='';document.getElementById('auth-password').value='';checkAuth();showToast('Signed in','success')}else{errEl.textContent=data.error||'Invalid credentials';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 async function doSignup(){const u=document.getElementById('auth-signup-username').value.trim();const n=document.getElementById('auth-signup-name').value.trim();const p=document.getElementById('auth-signup-password').value;const errEl=document.getElementById('auth-signup-error');errEl.style.display='none';if(!u||u.length<3){errEl.textContent='Username must be 3+ characters';errEl.style.display='';return}if(!p||p.length<6){errEl.textContent='Password must be 6+ characters';errEl.style.display='';return}try{const r=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:u,password:p,name:n})});const data=await r.json();if(r.ok&&data.status==='ok'){document.getElementById('auth-modal').classList.remove('open');showToast('Account created! Signed in.','success');checkAuth()}else{errEl.textContent=data.error||'Signup failed';errEl.style.display=''}}catch(e){errEl.textContent='Connection error';errEl.style.display=''}}
 function applyAdminNav(){try{var admin=(window.__user&&window.__user.is_admin)?'':'none';var el=document.getElementById('nav-admin');if(el)el.style.display=admin;var tm=document.getElementById('nav-trademe');if(tm)tm.style.display=admin;var tt=document.getElementById('tab-trademe');if(tt)tt.style.display=admin}catch(_){}}
-async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}applyAdminNav();try{syncChatsFromServer()}catch(_){}try{preloadAppViews()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
+async function checkAuth(){try{const r=await fetch(API+'/api/auth/me',{credentials:'same-origin'});if(r.ok){const data=await r.json();window.__user=data.user||null;try{renderChatList()}catch(_){}try{restoreLastCodingFolder()}catch(_){}applyAdminNav();try{syncChatsFromServer()}catch(_){}try{preloadAppViews()}catch(_){}const nameEl=document.getElementById('status-text');if(nameEl)nameEl.textContent=data.user?.name||data.user?.username||'Connected';try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}try{const m=location.pathname.match(/^\/public\/([^\/]+)\/([^\/]+)$/);if(m&&typeof applyRoute==='function')applyRoute('public',null,{view:'public',pubUser:decodeURIComponent(m[1]),pubSlug:decodeURIComponent(m[2])})}catch(_){}return data.user}else{window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}}catch(e){window.__user=null;applyAdminNav();try{if(typeof applyCodingToolbarPermissions==='function')applyCodingToolbarPermissions()}catch(_){}showAuthModal()}} async function doSignOut(){await fetch(API+'/api/auth/signout',{method:'POST',credentials:'same-origin'});window.__user=null;applyAdminNav();showAuthModal()}
 
 function toggleTheme(){const current=getTheme();setTheme(current==='dark'?'light':'dark')}
 
@@ -7763,7 +7763,26 @@ async function openProject(name){try{const r=await authFetch(API+'/api/projects/
   codingFolder=data.folder;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();renderCodingMetaBar();
   // Wait for auto-attach to complete so AI has file context immediately
   try{await autoAttachProjectFiles()}catch(e){}
-  addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.');updateProjectBadge(name);closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+  // A project that is also a workspace opens AS that workspace (live, meta bar).
+  if(data.meta&&data.meta.workspace){currentWorkspace={id:data.meta.workspace.id,name:data.meta.workspace.name,role:'owner'};wsFolder=codingFolder;wsLastEvents=0;wsLastSig='';wsLastLocks=[];wsFirstPoll=true;renderCodingMetaBar();wsStartLive()}
+  addCodingSystemMsg('Opened project: '+name+'\n'+data.file_count+' files ready.'+(currentWorkspace?'\nThis project is a collaborative workspace — live mode is on.':''));updateProjectBadge(name,(currentWorkspace?('workspace · '+(currentWorkspace.name||'')):''));closeProjectsModal();if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}}catch(e){appAlert('Error: '+e.message)}}
+async function restoreLastCodingFolder(){
+  // On refresh, reopen whatever folder/workspace the server remembers for
+  // this user, silently (no view switch, no toast) so a reload keeps you
+  // exactly where you were.
+  try{
+    const r=await authFetch(API+'/api/coding/current');
+    if(!r.ok)return;
+    const d=await r.json().catch(()=>({}));
+    if(!d||!d.folder)return;
+    const meta=d.meta||{};
+    await openCodingFolderPath(d.folder,{
+      label:d.name||'',subtitle:(meta.workspace?'workspace':(d.shared?'shared':'')),silent:true,
+      workspace:meta.workspace||null,shared:!!d.shared,role:(meta.workspace?'edit':'edit'),
+      publicFork:meta.public_fork||null
+    });
+  }catch(e){}
+}
 async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
   const role=String(p.role||'edit'),owner=String(p.owner||'');
@@ -7808,12 +7827,12 @@ async function openCodingFolderPath(path,opts){
     renderCodingMetaBar();
     if(!opts.publicFork){try{await restoreCodingChat()}catch(e){}}
     try{await autoAttachProjectFiles()}catch(e){}
-    addCodingSystemMsg(opts.msg||('Opened '+(opts.label||'folder'))+'\n'+(data.file_count||0)+' files ready.');
+    if(!opts.silent)addCodingSystemMsg(opts.msg||('Opened '+(opts.label||'folder'))+'\n'+(data.file_count||0)+' files ready.');
     updateProjectBadge(opts.label||(String(path).split(/[\\/]/).filter(Boolean).pop()||'project'),opts.subtitle||'');
     if(opts.workspace){wsFolder=codingFolder;wsLastEvents=0;wsLastSig='';wsLastLocks=[];wsFirstPoll=true;wsStartLive()}
     try{closeProjectsModal()}catch(e){}
     try{closeShareModal()}catch(e){}
-    if(typeof navigate==='function'){try{navigate('coding')}catch(e){}}
+    if(!opts.silent&&typeof navigate==='function'){try{navigate('coding')}catch(e){}}
     return data;
   }catch(e){appAlert('Error: '+e.message)}
 }
