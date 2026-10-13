@@ -6533,23 +6533,124 @@ def _ws_clear_intents(folder, rel):
             bucket.pop(r, None)
 
 
-def _ws_merge_model_call(model: str, system: str, user_text: str) -> str:
-    """One-shot, non-streaming Ollama /api/chat call. Raises on any failure.
-    Monkeypatched in tests so the merge logic is verifiable without a model."""
+def _ws_merge_model_body(model, system, user_text):
+    return {"model": model, "stream": False,
+            "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 4096},
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user_text}]}
+
+
+def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str = "") -> str:
+    """One-shot, non-streaming Ollama /api/chat call. With agent_id the request
+    is relayed through that paired computer's Ollama instead of the server's.
+    Raises on any failure. Monkeypatched in tests."""
+    body = _ws_merge_model_body(model, system, user_text)
+    if agent_id:
+        resp = relay.open_response(str(agent_id), "/api/chat", body,
+                                   read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
+        return str((resp.json().get("message") or {}).get("content") or "")
     base = (_ollama_current_url() or "").rstrip("/")
     if not base:
         raise RuntimeError("No Ollama URL configured")
-    body = json.dumps({
-        "model": model, "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 4096},
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user_text}],
-    }).encode("utf-8")
-    req = urllib.request.Request(base + "/api/chat", data=body,
+    req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
         data = json.loads(resp.read().decode("utf-8", "replace"))
     return str((data.get("message") or {}).get("content") or "")
+
+
+def _merge_device_row(user_id) -> dict:
+    try:
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT * FROM merge_devices WHERE user_id = ?", (int(user_id),)).fetchone()
+        finally:
+            conn.close()
+        return dict(r) if r else {}
+    except Exception:
+        return {}
+
+
+def _merge_set_device(user_id, agent_id: str, enabled: bool):
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO merge_devices (user_id, agent_id, enabled, updated_at)"
+                     " VALUES (?, ?, ?, datetime('now'))"
+                     " ON CONFLICT(user_id) DO UPDATE SET agent_id=excluded.agent_id,"
+                     " enabled=excluded.enabled, updated_at=datetime('now')",
+                     (int(user_id), str(agent_id or ""), 1 if enabled else 0))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _merge_model_installed(agent_id, model) -> bool:
+    try:
+        return str(model) in [str(t) for t in scan_ollama_models(agent_id=str(agent_id))]
+    except Exception:
+        return False
+
+
+def _merge_pull_model(agent_id, model):
+    """Blocking pull of the merge model onto a paired computer (relay)."""
+    try:
+        resp = relay.open_response(str(agent_id), "/api/pull",
+                                   {"name": model, "stream": True},
+                                   read_timeout=3600.0, first_timeout=90.0)
+        for _ in resp.iter_lines():
+            pass
+    except Exception as e:
+        logger.warning(f"[MERGE] model install on {agent_id} failed: {e}")
+
+
+def _merge_ensure_model(agent_id, model):
+    """Install the merge model on the device if it is missing (background)."""
+    try:
+        if _merge_model_installed(agent_id, model):
+            return
+        threading.Thread(target=_merge_pull_model, args=(agent_id, model), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _ws_merge_pick_device(folder, participants):
+    """Choose a member's paired computer to run the merge, if one is set up.
+
+    Preference: participants in this merge first, then other workspace
+    members. The device must belong to that member, be online and share
+    Ollama. Returns (agent_id, owner_user_id) or ("", 0)."""
+    ids = []
+    for p in (participants or []):
+        try:
+            uid = int(p.get("user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        if uid and uid not in ids:
+            ids.append(uid)
+    try:
+        ws = _workspace_row(folder)
+        if ws:
+            for uid, _role in _ws_members(ws["id"]):
+                if uid and uid not in ids:
+                    ids.append(uid)
+            if ws.get("owner_id") and ws["owner_id"] not in ids:
+                ids.append(ws["owner_id"])
+    except Exception:
+        pass
+    with _AGENT_LOCK:
+        st = _agents_load()
+        agents = {str(k): dict(v) for k, v in st["agents"].items()}
+    for uid in ids:
+        row = _merge_device_row(uid)
+        if not row or not row.get("enabled") or not row.get("agent_id"):
+            continue
+        a = agents.get(str(row["agent_id"]))
+        if not a or "ollama" not in (a.get("caps") or []):
+            continue
+        if _agent_owner_id(a) != int(uid) or not _agent_online(a):
+            continue
+        return str(row["agent_id"]), uid
+    return "", 0
 
 
 def _apply_patch_server(current, old_text, new_text):
@@ -6593,11 +6694,25 @@ def _ws_merge_run(user, folder, rel):
     participants = _ws_take_intents(folder, rel)
     if len(participants) < 2:
         return {"ok": True, "skipped": True, "reason": "no concurrent edits"}
+    model = _ws_merge_model()
+    prompt = _ws_merge_build_prompt(rel, current, participants)
+    device_id, _dev_uid = _ws_merge_pick_device(folder, participants)
+    used_device = ""
     try:
-        reply = _ws_merge_model_call(_ws_merge_model(), _WS_MERGE_SYSTEM,
-                                     _ws_merge_build_prompt(rel, current, participants))
-    except Exception as e:
-        return {"ok": False, "unavailable": True, "error": str(e)[:200]}
+        if device_id:
+            used_device = str(device_id)
+            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt, agent_id=device_id)
+        else:
+            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
+    except Exception as e1:
+        if used_device:
+            try:
+                reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
+                used_device = ""
+            except Exception as e2:
+                return {"ok": False, "unavailable": True, "error": str(e2)[:200]}
+        else:
+            return {"ok": False, "unavailable": True, "error": str(e1)[:200]}
     patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
                          reply or "", re.S)
     if not patches:
@@ -6623,9 +6738,16 @@ def _ws_merge_run(user, folder, rel):
             return {"ok": False, "error": str(e)}
     _ws_clear_intents(folder, rel)
     _ws_log_change(folder, "merge", rel, user, user["id"],
-                   {"by": [p.get("username") for p in participants][:5], "patches": applied})
-    return {"ok": True, "merged": True, "patches": applied,
-            "members": [p.get("username") for p in participants][:5]}
+                   {"by": [p.get("username") for p in participants][:5], "patches": applied,
+                    "device": used_device})
+    out = {"ok": True, "merged": True, "patches": applied,
+           "members": [p.get("username") for p in participants][:5]}
+    if used_device:
+        try:
+            out["device"] = relay.device_name(used_device)
+        except Exception:
+            out["device"] = used_device
+    return out
 
 
 def _ws_maybe_merge(user, folder, rel, loop):
@@ -7398,6 +7520,58 @@ async def workspace_merge_now(request: Request, req: MergeIntentBody):
         return JSONResponse(status_code=503, content={"error": "Merge is disabled on this server"})
     res = await asyncio.to_thread(_ws_merge_run, user, folder, rel)
     return res
+
+
+class MergeDeviceBody(BaseModel):
+    agent_id: str = ""
+    enabled: bool = False
+
+
+@app.get("/api/merge-device")
+async def merge_device_get(request: Request):
+    """Which paired computer (if any) runs this user's workspace merges."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    row = _merge_device_row(user["id"])
+    aid = str(row.get("agent_id") or "")
+    out = {"agent_id": aid, "enabled": bool(row.get("enabled")), "model": _ws_merge_model()}
+    if aid:
+        with _AGENT_LOCK:
+            a = _agents_load()["agents"].get(aid)
+        a = dict(a) if a else None
+        if a and _agent_owner_id(a) == int(user["id"]):
+            online = _agent_online(a)
+            out["agent"] = {"name": a.get("name") or "", "online": online,
+                            "caps": a.get("caps") or []}
+            out["installed"] = _merge_model_installed(aid, _ws_merge_model()) if online else False
+    return out
+
+
+@app.post("/api/merge-device")
+async def merge_device_set(request: Request, req: MergeDeviceBody):
+    """Turn a user's own paired computer into the merge runner (and install
+    the model on it if missing)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    if not req.enabled:
+        _merge_set_device(user["id"], str(req.agent_id or ""), False)
+        return {"status": "ok", "enabled": False}
+    aid = str(req.agent_id or "").strip()
+    if not aid:
+        return JSONResponse(status_code=400, content={"error": "agent_id required"})
+    with _AGENT_LOCK:
+        a = _agents_load()["agents"].get(aid)
+    if not a or _agent_owner_id(a) != int(user["id"]):
+        return JSONResponse(status_code=404, content={"error": "No such computer of yours"})
+    if "ollama" not in (a.get("caps") or []):
+        return JSONResponse(status_code=400, content={
+            "error": "That computer does not share Ollama models"})
+    _merge_set_device(user["id"], aid, True)
+    _merge_ensure_model(aid, _ws_merge_model())
+    _audit("merge.device", user.get("username", ""), aid)
+    return {"status": "ok", "agent_id": aid, "enabled": True}
 
 
 # ---- Collaborative workspaces, batch 2: presence rides on poll; below are

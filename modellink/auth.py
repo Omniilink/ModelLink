@@ -532,6 +532,14 @@ def init_db():
             FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_project_links_token ON project_links(token);
+
+        CREATE TABLE IF NOT EXISTS merge_devices (
+            user_id INTEGER PRIMARY KEY,
+            agent_id TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
     """)
     # Migration: retired features whose tables are no longer used.
     conn.execute("DROP TABLE IF EXISTS scheduled_jobs")
