@@ -3706,7 +3706,7 @@ function findBareRunSpans(text){
   return spans;
 }
 function streamHasMarkers(t){
-  return t.indexOf('```')>-1||t.indexOf('FILE_')>-1||t.indexOf('RUN_COMMAND')>-1||t.indexOf('WEB_FETCH')>-1||t.indexOf('TODO_LIST')>-1||t.indexOf('QUESTION:')>-1||t.indexOf('PLAN-STEPS')>-1||t.indexOf('VERDICT')>-1;
+  return t.indexOf('```')>-1||t.indexOf('FILE_')>-1||t.indexOf('RUN_COMMAND')>-1||t.indexOf('WEB_FETCH')>-1||t.indexOf('TODO_LIST')>-1||t.indexOf('QUESTION:')>-1||t.indexOf('PLAN-STEPS')>-1||t.indexOf('VERDICT')>-1||t.indexOf('MERGE_INTENT')>-1;
 }
 function streamHiddenSpans(fullText){
   // Regions the chat must never render raw mid-stream. Mirrors the final
@@ -3720,7 +3720,7 @@ function streamHiddenSpans(fullText){
   let m;
   const fp=/```\w*\n[\s\S]*?\n```/g;
   while((m=fp.exec(fullText)))push(m.index,m.index+m[0].length);
-  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
+  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|MERGE_INTENT:[ \t]*\r?\n?[^\n]+?\n[\s\S]*?END_MERGE_INTENT|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
   while((m=bp.exec(fullText)))push(m.index,m.index+m[0].length);
   // Protocol lines: the parser reads them, the user never should.
   const pp1=/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*[ \t]*\r?\n?/gmi;
@@ -3746,7 +3746,7 @@ function streamHiddenSpans(fullText){
     const lines=fullText.split('\n');
     let acc=0;
     for(const ln of lines){
-      if(/^[ \t]*(```\w*|FILE_CREATE:|FILE_EDIT:|FILE_DELETE:|FILE_PATCH:|RUN_COMMAND:|WEB_FETCH:|TODO_LIST:|QUESTION:)/.test(ln)){
+      if(/^[ \t]*(```\w*|FILE_CREATE:|FILE_EDIT:|FILE_DELETE:|FILE_PATCH:|RUN_COMMAND:|WEB_FETCH:|TODO_LIST:|QUESTION:|MERGE_INTENT:)/.test(ln)){
         if(!merged.some(o=>acc>=o[0]&&acc<o[1])){merged.push([acc,fullText.length]);break}
       }
       acc+=ln.length+1;
@@ -4259,6 +4259,9 @@ function stripToolBlocks(text){
   c=c.replace(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g,'');
   c=c.replace(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g,'');
   c=c.replace(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,'');
+  // Workspace protocol the parser reads but the user must never see.
+  c=c.replace(/MERGE_INTENT:[ \t]*\r?\n?[^\n]+?\n[\s\S]*?(?:\nEND_MERGE_INTENT|$)/g,'');
+  c=c.replace(/^[ \t]*LOCK_RESERVE:[^\n]*\r?\n?/gmi,'');
   c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
   c=c.replace(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g,'');
   c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,'');
@@ -4271,7 +4274,7 @@ function stripProtocolLines(text){
   let c=String(text||'');
   c=c.replace(/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*\r?\n?/gmi,'');
   c=c.replace(/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi,'');
-  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST)[^\n]*\r?\n?/gmi,'');
+  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST|MERGE_INTENT|END_MERGE_INTENT|LOCK_RESERVE)[^\n]*\r?\n?/gmi,'');
   return c;
 }
 function stripJunkSpec(text){

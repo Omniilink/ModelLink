@@ -6491,6 +6491,18 @@ def _merge_ollama_url() -> str:
     return (_merge_env("OMNIILINK_MERGE_OLLAMA_URL") or _ollama_current_url() or "").rstrip("/")
 
 
+_WS_MERGE_CONFLICT_SYSTEM = (
+    "You resolve an edit conflict. A file changed while an AI was editing it, so "
+    "that AI's change no longer applies cleanly. You get the CURRENT file and the "
+    "change the AI INTENDED (its OLD/NEW, which may no longer match because the "
+    "file already changed). Apply the AI's intended change onto the CURRENT file "
+    "and COMBINE it with the changes already there so BOTH work. Emit ONLY "
+    "FILE_PATCH blocks (FILE_PATCH:<path> / OLD: / NEW: / END_FILE_PATCH) against "
+    "the CURRENT content. Make the SMALLEST change; never reformat or delete "
+    "unrelated code; if the intended change is already present, emit nothing."
+)
+
+
 def _ws_merge_model() -> str:
     return (_merge_env("OMNIILINK_MERGE_MODEL")
             or _merge_env("OLLAMA_MODEL")
@@ -6754,6 +6766,83 @@ def _ws_merge_run(user, folder, rel):
         except Exception:
             out["device"] = used_device
     return out
+
+
+def _ws_merge_conflict_prompt(rel, current, intent, old_text, new_text, participants):
+    parts = ["The CURRENT content of %s is between the markers." % rel,
+             "===== CURRENT FILE =====", current, "===== END CURRENT FILE =====", ""]
+    parts.append("--- The change THIS AI wanted (OLD may be stale) ---")
+    if intent:
+        parts.append("Intent: " + str(intent))
+    parts.append("OLD (may no longer match):")
+    parts.append(str(old_text or "")[:4000])
+    parts.append("NEW (what it wanted to write):")
+    parts.append(str(new_text or "")[:4000])
+    parts.append("")
+    others = [p for p in (participants or []) if p.get("intent") and p.get("intent") != intent]
+    if others:
+        parts.append("--- Other AIs recently editing this file (context) ---")
+        for p in others[:4]:
+            parts.append("- %s: %s" % (p.get("username") or "a member", p.get("intent")))
+        parts.append("")
+    parts.append("Emit FILE_PATCH blocks that add THIS AI's intended change to the "
+                 "CURRENT file, keeping the changes already present so both work.")
+    return "\n".join(parts)
+
+
+def _ws_merge_apply_intent(user, folder, rel, intent, old_text, new_text):
+    """Combine a stale patch with the current file via the merge model.
+    Returns {"patches": n, "content": text} or None (caller keeps the error)."""
+    full = os.path.join(folder, rel)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return None
+    try:
+        if os.path.getsize(full) > _WS_MERGE_MAX_BYTES:
+            return None
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            current = fh.read()
+    except Exception:
+        return None
+    participants = _ws_take_intents(folder, rel)
+    model = _ws_merge_model()
+    device_id, _uid = _ws_merge_pick_device(folder, participants)
+    prompt = _ws_merge_conflict_prompt(rel, current, intent, old_text, new_text, participants)
+    try:
+        if device_id:
+            try:
+                reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt, agent_id=device_id)
+            except Exception:
+                reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt)
+        else:
+            reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt)
+    except Exception:
+        return None
+    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
+                         reply or "", re.S)
+    if not patches:
+        return None
+    out = current
+    applied = 0
+    for o, n in patches:
+        res = _apply_patch_server(out, o, n)
+        if res is None or res == out:
+            continue
+        out = res
+        applied += 1
+    if not applied or out == current:
+        return None
+    with _WS_MERGE_LOCK:
+        try:
+            _coding_save_version(_safe_username(user["username"]), rel, current, folder)
+            with open(full, "w", encoding="utf-8") as fh:
+                fh.write(out)
+        except Exception:
+            return None
+    _ws_clear_intents(folder, rel)
+    _ws_log_change(folder, "merge", rel, user, user["id"],
+                   {"patches": applied, "conflict": True,
+                    "by": [p.get("username") for p in participants][:5]})
+    return {"patches": applied, "content": out}
 
 
 def _ws_maybe_merge(user, folder, rel, loop):
@@ -12330,6 +12419,23 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         old, new = req.old_text, req.new_text
         hit = _locate_patch_target(current, old)
         if hit is None:
+            # Concurrent-edit conflict: a collaborator (or their AI) changed
+            # this file, so this patch's OLD no longer matches. Instead of
+            # bouncing it back, let the merge model combine both changes.
+            if _workspace_row(folder) and _ws_merge_enabled():
+                merged = await asyncio.to_thread(
+                    _ws_merge_apply_intent, user, folder, req.path,
+                    getattr(req, "intent", ""), old, new)
+                if merged:
+                    _ws_append_event(folder, {
+                        "type": "merge", "path": req.path, "user": "server-ai",
+                        "user_id": user["id"],
+                        "extra": {"ok": True,
+                                  "note": "combined a conflicting edit from "
+                                          + (user.get("username") or "a member")
+                                          + " into " + req.path}})
+                    return {"status": "ok", "merged": True, "path": req.path,
+                            "size": len(merged["content"]), "added": 0, "removed": 0}
             return JSONResponse(status_code=404, content={
                 "error": "Old text not found — nothing was changed. "
                          + _patch_miss_reason(current, old),
