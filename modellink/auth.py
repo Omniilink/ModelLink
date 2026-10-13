@@ -645,13 +645,20 @@ def init_db():
         ]):
             conn.execute("INSERT INTO forum_sections (name, description, sort) VALUES (?, ?, ?)",
                          (nm, ds, i))
-    # Reconcile display names with usernames (the account's email/handle name).
-    # Self-healing and idempotent: a no-op once every user matches, so running
-    # it on every boot is safe. Fixes accounts created before names were kept
-    # in step, and any name left behind by an older rename.
+    # ONE-TIME: reset every account's display name to its username (the
+    # email/handle name). Guarded by a flag so it runs exactly once, ever —
+    # future boots leave names alone. Renames keep name in step from now on
+    # (see change_username); this only fixes accounts that drifted before.
     try:
-        conn.execute("UPDATE users SET name = username "
-                     "WHERE COALESCE(name, '') <> username")
+        conn.execute("CREATE TABLE IF NOT EXISTS server_meta ("
+                     "key TEXT PRIMARY KEY, value TEXT)")
+        done = conn.execute("SELECT value FROM server_meta WHERE key = ?",
+                            ("names_reconciled_v1",)).fetchone()
+        if not done:
+            conn.execute("UPDATE users SET name = username "
+                         "WHERE COALESCE(name, '') <> username")
+            conn.execute("INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)",
+                         ("names_reconciled_v1", "1"))
     except Exception:
         pass
     conn.commit()
