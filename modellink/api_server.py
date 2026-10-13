@@ -7574,6 +7574,99 @@ async def merge_device_set(request: Request, req: MergeDeviceBody):
     return {"status": "ok", "agent_id": aid, "enabled": True}
 
 
+def _server_ollama_tags():
+    """(reachable, tags, error) for the server's own Ollama."""
+    url = (_ollama_current_url() or "").rstrip("/")
+    if not url:
+        return False, [], "No Ollama URL configured"
+    try:
+        req = urllib.request.Request(url + "/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        return True, [str(m.get("name") or "") for m in (data.get("models") or [])], ""
+    except Exception as e:
+        return False, [], str(e)[:200]
+
+
+class MergeConfigBody(BaseModel):
+    model: str = ""
+    enabled: Optional[bool] = None
+
+
+@app.post("/api/merge/config")
+async def merge_config_set(request: Request, req: MergeConfigBody):
+    """Admin-only: choose the merge model / toggle the merge, persisted to .env."""
+    _user, err = _require_admin(request)
+    if err:
+        return err
+    model = str(req.model or "").strip()
+    if model and not re.fullmatch(r"[A-Za-z0-9._:\-/]{1,120}", model):
+        return JSONResponse(status_code=400, content={"error": "Invalid model name"})
+    if model:
+        _set_env_var("OMNIILINK_MERGE_MODEL", model)
+    if req.enabled is not None:
+        _set_env_var("OMNIILINK_MERGE_ENABLED", "1" if req.enabled else "0")
+    return {"status": "ok", "model": _ws_merge_model(), "enabled": _ws_merge_enabled()}
+
+
+@app.get("/api/coding/merge-status")
+async def merge_status(request: Request):
+    """Everything needed to see whether the merge model is actually working."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    reachable, tags, oerr = _server_ollama_tags()
+    model = _ws_merge_model()
+    out = {"enabled": _ws_merge_enabled(), "model": model,
+           "default_model": _WS_MERGE_DEFAULT_MODEL,
+           "ollama_url": _ollama_current_url(), "reachable": reachable,
+           "model_installed": (model in tags) if reachable else False,
+           "tags": tags[:60], "error": oerr, "max_bytes": _WS_MERGE_MAX_BYTES,
+           "intent_ttl": _WS_INTENT_TTL}
+    dev = _merge_device_row(user["id"])
+    if dev and dev.get("agent_id"):
+        with _AGENT_LOCK:
+            a = _agents_load()["agents"].get(str(dev["agent_id"]))
+        if a and _agent_owner_id(a) == int(user["id"]):
+            online = _agent_online(a)
+            out["device"] = {"id": a.get("id"), "name": a.get("name") or "",
+                             "enabled": bool(dev.get("enabled")), "online": online}
+            if online:
+                try:
+                    out["device"]["installed"] = _merge_model_installed(a["id"], model)
+                except Exception:
+                    out["device"]["installed"] = False
+    return out
+
+
+@app.post("/api/coding/merge-test")
+async def merge_test(request: Request):
+    """Round-trip a tiny prompt through the merge model (server or your device)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    if not _ws_merge_enabled():
+        return {"ok": False, "error": "Merge is disabled on this server"}
+    t0 = time.time()
+    agent_id = ""
+    dev = _merge_device_row(user["id"])
+    if dev and dev.get("enabled") and dev.get("agent_id"):
+        with _AGENT_LOCK:
+            a = _agents_load()["agents"].get(str(dev["agent_id"]))
+        if a and _agent_owner_id(a) == int(user["id"]) and "ollama" in (a.get("caps") or []) \
+                and _agent_online(a):
+            agent_id = str(a["id"])
+    try:
+        reply = _ws_merge_model_call(_ws_merge_model(),
+                                     "Reply with exactly: MERGE OK",
+                                     "Reply with exactly: MERGE OK", agent_id=agent_id)
+        return {"ok": True, "ms": int((time.time() - t0) * 1000), "model": _ws_merge_model(),
+                "device": agent_id, "reply": str(reply)[:200]}
+    except Exception as e:
+        return {"ok": False, "ms": int((time.time() - t0) * 1000),
+                "model": _ws_merge_model(), "device": agent_id, "error": str(e)[:300]}
+
+
 # ---- Collaborative workspaces, batch 2: presence rides on poll; below are
 # comments, group chat, lock requests, quiet hours, run command, guest
 # invites, shared file history (undo anyone's change) and full export. ----

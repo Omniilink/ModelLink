@@ -2594,6 +2594,10 @@ function renderSettings(){
     const oiBtn=document.createElement('button');oiBtn.className='btn btn-primary';oiBtn.style.cssText='font-size:11px;margin-top:8px';oiBtn.textContent='Save Omniiignore';
     oiBtn.onclick=()=>{const patterns=oiTa.value.split('\n').map(s=>s.trim()).filter(Boolean);authFetch(API+'/api/coding/omniiignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns})}).then(()=>{omniiignorePatterns=patterns;showToast('Omniiignore saved','success')})};
     oi.appendChild(oiTa);oi.appendChild(oiBtn);cs.appendChild(oi);
+    const mg=document.createElement('div');mg.style.marginTop='16px';
+    mg.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">Workspace merge AI</div><div id="merge-status-box" style="font-size:12px;color:var(--text-secondary);background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px">Checking…</div>';
+    cs.appendChild(mg);
+    try{mergeStatusRender()}catch(e){}
   }).catch(()=>{});
   body.appendChild(cs);
   // Server keys (admin only — shared by everyone, saved to server .env, live immediately)
@@ -7782,6 +7786,38 @@ async function restoreLastCodingFolder(){
       publicFork:meta.public_fork||null
     });
   }catch(e){}
+}
+async function mergeStatusRender(){
+  const box=document.getElementById('merge-status-box');if(!box)return;
+  box.textContent='Checking…';
+  try{
+    const r=await authFetch(API+'/api/coding/merge-status');const d=await r.json().catch(()=>({}));
+    const devBad=d.device&&d.device.enabled&&(!d.device.online||d.device.installed===false);
+    const ok=d.enabled&&d.reachable&&d.model_installed&&!devBad;
+    let line='Model: '+(d.model||'?')+(d.model===d.default_model?' (default)':'');
+    line+=' · '+(d.enabled?'enabled':'DISABLED');
+    line+=' · server '+(d.reachable?('reachable, '+(d.tags||[]).length+' models'):('UNREACHABLE — '+(d.error||'no response')));
+    line+=' · '+(d.model_installed?'model installed':'MODEL NOT INSTALLED');
+    if(d.device)line+=' · device '+d.device.name+(d.device.enabled?(' ('+(d.device.online?(d.device.installed?'ready':'model missing'):'offline')+')'):' (off)');
+    box.innerHTML='<div style="color:'+(ok?'var(--success)':'var(--warning)')+'">'+escapeHtml(line)+'</div>';
+    const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
+    const test=document.createElement('button');test.className='btn btn-primary btn-sm';test.textContent='Test merge model';
+    test.onclick=async()=>{test.disabled=true;test.textContent='Testing…';try{const rr=await authFetch(API+'/api/coding/merge-test',{method:'POST'});const dd=await rr.json().catch(()=>({}));if(dd.ok)showToast('Merge model OK ('+dd.ms+'ms'+(dd.device?' on your device':' on the server')+'): '+(dd.reply||''),'success');else showToast('Merge model failed: '+(dd.error||'unknown'),'error')}catch(e){showToast(e.message,'error')}test.disabled=false;test.textContent='Test merge model'};
+    row.appendChild(test);
+    if(window.__user&&window.__user.is_admin){
+      const sel=document.createElement('select');sel.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text-primary);font-size:12px';
+      const cur=d.model;let found=false;
+      (d.tags||[]).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;if(t===cur){o.selected=true;found=true}sel.appendChild(o)});
+      if(!found&&cur){const o=document.createElement('option');o.value=cur;o.textContent=cur+(d.model_installed?'':' (not installed)');o.selected=true;sel.appendChild(o)}
+      const save=document.createElement('button');save.className='btn btn-ghost btn-sm';save.textContent='Use this model';
+      save.onclick=async()=>{const cfgBody={model:sel.value,enabled:true};const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfgBody)});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge model set to '+dd.model+' — remember to ollama pull it on the server','success');mergeStatusRender()};
+      row.appendChild(sel);row.appendChild(save);
+      const tog=document.createElement('button');tog.className='btn btn-ghost btn-sm';tog.textContent=d.enabled?'Disable merge':'Enable merge';
+      tog.onclick=async()=>{await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!d.enabled})});mergeStatusRender()};
+      row.appendChild(tog);
+    }
+    box.appendChild(row);
+  }catch(e){box.textContent='Could not check merge status';}
 }
 async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
