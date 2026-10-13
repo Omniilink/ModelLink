@@ -6469,12 +6469,30 @@ _WS_MERGE_SYSTEM = (
 )
 
 
+def _merge_env(name: str, default: str = "") -> str:
+    """Config from the process env, falling back to the server's .env file
+    (which dotenv_values reads without exporting)."""
+    v = os.environ.get(name)
+    if v is not None and v != "":
+        return str(v).strip()
+    try:
+        from dotenv import dotenv_values
+        vals = dotenv_values(os.path.join(APP_DIR, ".env"))
+        if vals.get(name):
+            return str(vals[name]).strip()
+    except Exception:
+        pass
+    return default
+
+
 def _ws_merge_model() -> str:
-    return (os.environ.get("OMNIILINK_MERGE_MODEL") or _WS_MERGE_DEFAULT_MODEL).strip()
+    return (_merge_env("OMNIILINK_MERGE_MODEL")
+            or _merge_env("OLLAMA_MODEL")
+            or _WS_MERGE_DEFAULT_MODEL).strip()
 
 
 def _ws_merge_enabled() -> bool:
-    if os.environ.get("OMNIILINK_MERGE_ENABLED") == "0":
+    if _merge_env("OMNIILINK_MERGE_ENABLED", "1") == "0":
         return False
     return bool(_ws_merge_model())
 
@@ -6523,7 +6541,7 @@ def _ws_merge_model_call(model: str, system: str, user_text: str) -> str:
         raise RuntimeError("No Ollama URL configured")
     body = json.dumps({
         "model": model, "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 16384, "num_predict": 4096},
+        "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 4096},
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user_text}],
     }).encode("utf-8")
