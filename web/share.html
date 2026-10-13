@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shared project — Omniilink</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#0b0d12;color:#e8eaf0;font:14px/1.55 system-ui,sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:14px 18px;border-bottom:1px solid #232838;position:sticky;top:0;background:#0b0d12}
+  header h1{font-size:15px;margin:0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button{background:#1b2233;color:#e8eaf0;border:1px solid #2c3650;border-radius:8px;padding:7px 14px;font-size:12.5px;cursor:pointer}
+  button.primary{background:#2563eb;border-color:#2563eb;color:#fff}
+  main{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:0;min-height:calc(100vh - 57px)}
+  #files{border-right:1px solid #232838;overflow:auto;padding:10px}
+  .f{padding:6px 9px;border-radius:6px;font:12px ui-monospace,monospace;color:#aab3c5;cursor:pointer;word-break:break-all}
+  .f:hover{background:#151b29}.f.on{background:#1c2946;color:#fff}
+  #view{padding:16px;overflow:auto}
+  pre{background:#10141d;border:1px solid #232838;border-radius:8px;padding:14px;overflow:auto;font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}
+  .muted{color:#8a93a8;font-size:12.5px}
+  .err{color:#ff8f8f;padding:30px;text-align:center}
+</style>
+</head>
+<body>
+<header><h1 id="t">Shared project</h1><button class="primary" id="dl">Download .zip</button></header>
+<main><div id="files"></div><div id="view"><p class="muted">Pick a file to view it. Read-only — nothing here can be changed.</p></div></main>
+<script>
+(function(){
+  var tok=location.pathname.split('/').filter(Boolean).pop()||'';
+  var T=document.getElementById('t'),F=document.getElementById('files'),V=document.getElementById('view');
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  function walk(ns,out){(ns||[]).forEach(function(n){if(!n)return;if(n.type==='dir')walk(n.children,out);else if(n.path)out.push(n)})}
+  document.getElementById('dl').onclick=function(){location.href='/api/shared/'+encodeURIComponent(tok)+'/download'};
+  fetch('/api/shared/'+encodeURIComponent(tok)+'/tree').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){
+    T.textContent=d.name||'Shared project';
+    var flat=[];walk(d.tree||[],flat);
+    if(!flat.length){F.innerHTML='<p class="muted">Empty project.</p>';return}
+    flat.forEach(function(f){
+      var el=document.createElement('div');el.className='f';el.textContent=f.path;
+      el.onclick=function(){
+        F.querySelectorAll('.f').forEach(function(x){x.classList.remove('on')});el.classList.add('on');
+        V.innerHTML='<p class="muted">Loading…</p>';
+        fetch('/api/shared/'+encodeURIComponent(tok)+'/file?path='+encodeURIComponent(f.path)).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(fd){
+          var c=String(fd.content||'');
+          if(fd.encoding==='base64'){V.innerHTML='<p class="muted">Binary file — download the zip to use it.</p>';return}
+          var pre=document.createElement('pre');pre.textContent=c.slice(0,200000);V.innerHTML='';V.appendChild(pre);
+        }).catch(function(){V.innerHTML='<p class="err">Could not load file.</p>'});
+      };
+      F.appendChild(el);
+    });
+  }).catch(function(){document.body.innerHTML='<p class="err">This link is invalid or expired.</p>'});
+})();
+</script>
+</body>
+</html>

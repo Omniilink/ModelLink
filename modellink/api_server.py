@@ -14564,6 +14564,7 @@ async def list_projects(request: Request):
     return {"projects": projects, "shared_projects": _shared_project_entries(user, projects_dir),
             "public_edits": _public_fork_entries(user),
             "workspaces": _workspace_entries(user),
+            "meta": _project_meta_map(user_id),
             "dir": projects_dir, "storage_used_bytes": total_size, "storage_limit_bytes": _user_quota_bytes()}
 
 
@@ -14755,6 +14756,664 @@ async def import_project(request: Request, req: ProjectImport):
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
     logger.info(f"[PROJECT] Imported: {name} from {source} user={user.get('username','-')}")
     return {"status": "ok", "name": name, "path": dest}
+
+def _project_meta_map(user_id: str) -> dict:
+    """{project name: {tags, note, pinned, archived}} for the picker page."""
+    out = {}
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT name, tags, note, pinned, archived FROM project_meta"
+                            " WHERE user_id = ?", (user_id,)).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        try:
+            tags = json.loads(r["tags"] or "[]")
+            tags = [str(t)[:30] for t in tags if isinstance(t, str) and t.strip()][:12]
+        except Exception:
+            tags = []
+        out[r["name"]] = {"tags": tags, "note": r["note"] or "",
+                          "pinned": bool(r["pinned"]), "archived": bool(r["archived"])}
+    return out
+
+
+def _own_project_dir(user, user_id: str, name: str):
+    """Absolute folder for one of the caller's saved projects, or None."""
+    safe = (name or "").strip().replace("\\", "/").strip("/")
+    if not safe or not _valid_project_name(safe):
+        return None
+    projects_dir = _user_projects_dir(user_id)
+    path = os.path.join(projects_dir, safe)
+    if not _is_within(projects_dir, path) or not os.path.isdir(path):
+        return None
+    return path
+
+
+class ProjectMetaBody(BaseModel):
+    name: str = ""
+    tags: list = []
+    note: str = ""
+    pinned: bool = False
+    archived: bool = False
+
+
+@app.get("/api/projects/meta")
+async def project_meta_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return {"meta": _project_meta_map(_safe_username(user["username"]))}
+
+
+@app.post("/api/projects/meta")
+async def project_meta_set(request: Request, req: ProjectMetaBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _own_project_dir(user, user_id, req.name)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    tags = [str(t).strip()[:30] for t in (req.tags or []) if isinstance(t, str) and t.strip()][:12]
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO project_meta (user_id, name, tags, note, pinned, archived, updated_at)"
+                     " VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
+                     " ON CONFLICT(user_id, name) DO UPDATE SET tags=excluded.tags, note=excluded.note,"
+                     " pinned=excluded.pinned, archived=excluded.archived, updated_at=datetime('now')",
+                     (user_id, req.name.strip(), json.dumps(tags), str(req.note or "")[:2000],
+                      1 if req.pinned else 0, 1 if req.archived else 0))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+class ProjectDuplicateBody(BaseModel):
+    project: str = ""
+    name: str = ""
+
+
+@app.post("/api/projects/duplicate")
+async def project_duplicate(request: Request, req: ProjectDuplicateBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    src = _own_project_dir(user, user_id, req.project)
+    if not src:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    name = (req.name or "").strip()
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    projects_dir = _user_projects_dir(user_id)
+    dest = os.path.join(projects_dir, name)
+    if not _is_within(projects_dir, dest):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    if os.path.exists(dest):
+        return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    quota_err = _check_quota(user, user_id, _dir_size(src))
+    if quota_err:
+        return quota_err
+    try:
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*IGNORE_DIRS))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    conn = get_db()
+    try:
+        meta = _project_meta_map(user_id).get(req.project.strip(), {})
+        if meta.get("tags") or meta.get("note"):
+            conn.execute("INSERT OR IGNORE INTO project_meta (user_id, name, tags, note)"
+                         " VALUES (?, ?, ?, ?)",
+                         (user_id, name, json.dumps(meta.get("tags") or []), meta.get("note") or ""))
+            conn.commit()
+    finally:
+        conn.close()
+    logger.info(f"[PROJECT] Duplicated: {req.project} -> {name} user={user.get('username','-')}")
+    return {"status": "ok", "name": name, "path": dest}
+
+
+class ProjectArchiveBody(BaseModel):
+    name: str = ""
+    archived: bool = True
+
+
+@app.post("/api/projects/archive")
+async def project_archive(request: Request, req: ProjectArchiveBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    if not _own_project_dir(user, user_id, req.name):
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    meta = _project_meta_map(user_id).get(req.name.strip(), {})
+    meta["archived"] = bool(req.archived)
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO project_meta (user_id, name, tags, note, pinned, archived, updated_at)"
+                     " VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
+                     " ON CONFLICT(user_id, name) DO UPDATE SET archived=excluded.archived,"
+                     " updated_at=datetime('now')",
+                     (user_id, req.name.strip(), json.dumps(meta.get("tags") or []),
+                      meta.get("note") or "", 1 if meta.get("pinned") else 0,
+                      1 if meta.get("archived") else 0))
+        conn.commit()
+        return {"status": "ok", "archived": bool(req.archived)}
+    finally:
+        conn.close()
+
+
+def _project_backup_dir(user_id: str) -> str:
+    return _ensure_dir(os.path.join(_user_data_dir(user_id), "project_backups"))
+
+
+_PROJECT_BACKUP_KEEP = 5
+_PROJECT_IMPORT_MAX_BYTES = 256 * 1024 * 1024
+
+
+class ProjectBackupBody(BaseModel):
+    name: str = ""
+
+
+@app.post("/api/projects/backup")
+async def project_backup_create(request: Request, req: ProjectBackupBody):
+    """Snapshot a project zip now (manual backup, retention capped)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _own_project_dir(user, user_id, req.name)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    files, _total, err_msg = await asyncio.to_thread(_collect_project_files, folder)
+    if err_msg:
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Project folder is empty"})
+    bdir = _ensure_dir(os.path.join(_project_backup_dir(user_id), req.name.strip()))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp.close()
+    try:
+        await asyncio.to_thread(_write_project_archive, "zip", files, tmp.name)
+        dest = os.path.join(bdir, f"{stamp}.zip")
+        shutil.move(tmp.name, dest)
+    except Exception as e:
+        _remove_quiet(tmp.name)
+        return JSONResponse(status_code=500, content={"error": f"Backup failed: {e}"})
+    try:
+        olds = sorted(os.listdir(bdir))
+        for stale in olds[:-_PROJECT_BACKUP_KEEP]:
+            _remove_quiet(os.path.join(bdir, stale))
+    except OSError:
+        pass
+    return {"status": "ok", "ts": stamp}
+
+
+@app.get("/api/projects/backups")
+async def project_backup_list(request: Request, name: str = ""):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    out = {}
+
+    def _ls(nm):
+        bdir = os.path.join(_project_backup_dir(user_id), nm)
+        rows = []
+        try:
+            for fn in sorted(os.listdir(bdir), reverse=True):
+                if not fn.endswith(".zip"):
+                    continue
+                full = os.path.join(bdir, fn)
+                try:
+                    rows.append({"ts": fn[:-4], "size": os.path.getsize(full)})
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return rows
+
+    if name.strip():
+        if not _own_project_dir(user, user_id, name):
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        out[name.strip()] = _ls(name.strip())
+    else:
+        try:
+            projects_dir = _user_projects_dir(user_id)
+            for nm in sorted(os.listdir(projects_dir)):
+                if os.path.isdir(os.path.join(projects_dir, nm)):
+                    rows = _ls(nm)
+                    if rows:
+                        out[nm] = rows
+        except OSError:
+            pass
+    return {"backups": out}
+
+
+@app.get("/api/projects/backup/download")
+async def project_backup_download(request: Request, name: str = "", ts: str = ""):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    if not _own_project_dir(user, user_id, name):
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}", ts or ""):
+        return JSONResponse(status_code=400, content={"error": "Bad backup id"})
+    full = os.path.join(_project_backup_dir(user_id), name.strip(), ts + ".zip")
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "Backup not found"})
+    return FileResponse(full, media_type="application/zip",
+                         filename=f"{name.strip()}-{ts}.zip")
+
+
+class ProjectBackupRestoreBody(BaseModel):
+    name: str = ""
+    ts: str = ""
+
+
+@app.post("/api/projects/backup/restore")
+async def project_backup_restore(request: Request, req: ProjectBackupRestoreBody):
+    """Restore a backup (the live folder is snapshotted first, so the
+    restore itself is undoable via another backup)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _own_project_dir(user, user_id, req.name)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}", req.ts or ""):
+        return JSONResponse(status_code=400, content={"error": "Bad backup id"})
+    full = os.path.join(_project_backup_dir(user_id), req.name.strip(), req.ts + ".zip")
+    if not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "Backup not found"})
+    try:
+        with open(full, "rb") as fh:
+            data = fh.read()
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    pre = await asyncio.to_thread(_snapshot_project_folder, user_id, folder, req.name.strip())
+    if pre:
+        return JSONResponse(status_code=500, content={"error": pre})
+    err_msg = await asyncio.to_thread(_extract_zip_safe, data, folder)
+    if err_msg:
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    return {"status": "ok"}
+
+
+@app.post("/api/projects/backup/delete")
+async def project_backup_delete(request: Request, req: ProjectBackupRestoreBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    if not _own_project_dir(user, user_id, req.name):
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}", req.ts or ""):
+        return JSONResponse(status_code=400, content={"error": "Bad backup id"})
+    _remove_quiet(os.path.join(_project_backup_dir(user_id), req.name.strip(), req.ts + ".zip"))
+    return {"status": "ok"}
+
+
+def _snapshot_project_folder(user_id: str, folder: str, name: str):
+    """Zip the live folder into the backup store (retention capped).
+    Returns an error string or None."""
+    try:
+        files, _total, err_msg = _collect_project_files(folder)
+        if err_msg:
+            return err_msg
+        if not files:
+            return "Project folder is empty"
+        bdir = _ensure_dir(os.path.join(_project_backup_dir(user_id), name))
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        tmp.close()
+        try:
+            _write_project_archive("zip", files, tmp.name)
+            shutil.move(tmp.name, os.path.join(bdir, f"{stamp}.zip"))
+        except Exception as e:
+            _remove_quiet(tmp.name)
+            return f"Backup failed: {e}"
+        try:
+            olds = sorted(os.listdir(bdir))
+            for stale in olds[:-_PROJECT_BACKUP_KEEP]:
+                _remove_quiet(os.path.join(bdir, stale))
+        except OSError:
+            pass
+        return None
+    except Exception as e:
+        return str(e)
+
+
+def _extract_zip_safe(data: bytes, dest: str):
+    """Unpack a zip into dest, wiping dest first. Zip-slip proof, capped."""
+    if len(data) > _PROJECT_IMPORT_MAX_BYTES:
+        return "Archive too large (256MB max)"
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        return "Not a zip archive"
+    try:
+        infos = [i for i in zf.infolist() if not i.is_dir()]
+        if len(infos) > 200000:
+            return "Too many files in archive"
+        total = 0
+        for i in infos:
+            total += i.file_size
+            if total > _PROJECT_IMPORT_MAX_BYTES:
+                return "Archive too large (256MB max)"
+        names = [i.filename.replace("\\", "/") for i in infos]
+        prefix = ""
+        if names and all("/" in n for n in names):
+            first = names[0].split("/")[0]
+            if first and all(n == first or n.startswith(first + "/") for n in names):
+                prefix = first + "/"
+        for i in infos:
+            rel = i.filename.replace("\\", "/")
+            if prefix and (rel == prefix[:-1] or rel.startswith(prefix)):
+                rel = rel[len(prefix):]
+            rel = rel.strip("/")
+            if not rel or ".." in rel.split("/") or rel.startswith("."):
+                continue
+            full = os.path.normpath(os.path.join(dest, rel))
+            if not _is_within(dest, full):
+                continue
+            if i.file_size > 50 * 1024 * 1024:
+                continue
+            os.makedirs(os.path.dirname(full) or dest, exist_ok=True)
+            with zf.open(i) as src, open(full, "wb") as fh:
+                shutil.copyfileobj(src, fh, 1024 * 256)
+        for root, dirs, _files in os.walk(dest):
+            for d in list(dirs):
+                if d in IGNORE_DIRS:
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+        return None
+    except Exception as e:
+        return f"Extract failed: {e}"
+    finally:
+        try:
+            zf.close()
+        except Exception:
+            pass
+
+
+class ProjectLinkBody(BaseModel):
+    name: str = ""
+    hours: int = 72
+
+
+@app.post("/api/projects/links")
+async def project_link_create(request: Request, req: ProjectLinkBody):
+    """Expiring read-only link for one project (no account picking needed —
+    anyone logged in with the link gets view access)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    folder = _own_project_dir(user, user_id, req.name)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    try:
+        hours = max(1, min(720, int(req.hours or 72)))
+    except Exception:
+        hours = 72
+    token = secrets.token_urlsafe(32)
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO project_links (owner_id, name, folder, token, expires_at)"
+                     " VALUES (?, ?, ?, ?, ?)",
+                     (user["id"], req.name.strip(), folder, token, time.time() + hours * 3600))
+        conn.commit()
+    finally:
+        conn.close()
+    _audit("project.link", user.get("username", ""), req.name.strip())
+    return {"status": "ok", "token": token, "expires_at": time.time() + hours * 3600}
+
+
+@app.get("/api/projects/links")
+async def project_link_list(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT name, token, expires_at, created_at FROM project_links"
+                            " WHERE owner_id = ? ORDER BY id DESC", (user["id"],)).fetchall()
+    finally:
+        conn.close()
+    now = time.time()
+    return {"links": [{"name": r["name"], "token": r["token"],
+                       "expired": float(r["expires_at"] or 0) <= now,
+                       "expires_at": r["expires_at"], "created_at": r["created_at"]} for r in rows]}
+
+
+@app.delete("/api/projects/links/{token}")
+async def project_link_revoke(request: Request, token: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        n = conn.execute("DELETE FROM project_links WHERE owner_id = ? AND token = ?",
+                         (user["id"], token)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    return {"status": "ok"}
+
+
+def _shared_link_folder(token: str):
+    """(name, folder) for a live link token, else (None, None)."""
+    try:
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT name, folder, expires_at FROM project_links WHERE token = ?",
+                             (token,)).fetchone()
+        finally:
+            conn.close()
+        if not r or float(r["expires_at"] or 0) <= time.time():
+            return None, None
+        if not r["folder"] or not os.path.isdir(r["folder"]):
+            return None, None
+        return r["name"] or "shared project", r["folder"]
+    except Exception:
+        return None, None
+
+
+@app.get("/api/shared/{token}/tree")
+async def shared_link_tree(request: Request, token: str):
+    name, folder = _shared_link_folder(token)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Link invalid or expired"})
+    return {"name": name, "tree": _build_file_tree(folder)}
+
+
+@app.get("/api/shared/{token}/file")
+async def shared_link_file(request: Request, token: str, path: str = ""):
+    name, folder = _shared_link_folder(token)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Link invalid or expired"})
+    p = (path or "").strip().lstrip("/").replace("\\", "/")
+    if not p or ".." in p.split("/") or p.startswith("."):
+        return JSONResponse(status_code=400, content={"error": "Bad path"})
+    full = os.path.join(folder, p)
+    if not _is_within(folder, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        if os.path.getsize(full) > 200000:
+            return JSONResponse(status_code=400, content={"error": "File too large"})
+    except OSError:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    try:
+        with open(full, "r", encoding="utf-8", errors="strict") as f:
+            return {"path": p, "encoding": "text", "content": f.read()}
+    except (UnicodeDecodeError, ValueError):
+        try:
+            with open(full, "rb") as f:
+                return {"path": p, "encoding": "base64",
+                        "content": base64.b64encode(f.read()).decode()}
+        except OSError as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/shared/{token}/download")
+async def shared_link_download(request: Request, token: str):
+    name, folder = _shared_link_folder(token)
+    if not folder:
+        return JSONResponse(status_code=404, content={"error": "Link invalid or expired"})
+    files, _total, err_msg = await asyncio.to_thread(_collect_project_files, folder)
+    if err_msg:
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "Project folder is empty"})
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp.close()
+    try:
+        await asyncio.to_thread(_write_project_archive, "zip", files, tmp.name)
+    except Exception as e:
+        _remove_quiet(tmp.name)
+        return JSONResponse(status_code=500, content={"error": f"Archive failed: {e}"})
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "project"
+    return FileResponse(tmp.name, media_type="application/zip",
+                         filename=f"{base}.zip",
+                         background=BackgroundTask(_remove_quiet, tmp.name))
+
+
+_GITHUB_HOSTS = {"github.com", "www.github.com", "codeload.github.com", "objects.githubusercontent.com"}
+
+
+def _github_archive_urls(url: str):
+    """Candidate zip URLs for a GitHub repo (or a direct archive link)."""
+    try:
+        u = urllib.parse.urlparse((url or "").strip())
+    except Exception:
+        return []
+    if u.scheme != "https" or (u.hostname or "").lower() not in _GITHUB_HOSTS:
+        return []
+    host = (u.hostname or "").lower()
+    if host in ("codeload.github.com", "objects.githubusercontent.com"):
+        return [u.geturl()] if u.path else []
+    parts = [p for p in u.path.split("/") if p]
+    if len(parts) < 2:
+        return []
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+        return []
+    base = f"https://codeload.github.com/{owner}/{repo}/legacy.zip/refs/heads/"
+    return [base + "main", base + "master"]
+
+
+class ProjectGithubBody(BaseModel):
+    url: str = ""
+    name: str = ""
+
+
+@app.post("/api/projects/import-github")
+async def project_import_github(request: Request, req: ProjectGithubBody):
+    """Import a public GitHub repo as a project (host allowlist, zipped)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    urls = _github_archive_urls(req.url)
+    if not urls:
+        return JSONResponse(status_code=400, content={
+            "error": "Give a github.com repo link (or a direct codeload zip URL)"})
+    m = re.search(r"/([^/]+?)(?:\.git)?(?:/|$)", (req.url or "").strip())
+    name = (req.name or "").strip() or (m.group(1) if m else "imported")
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    projects_dir = _user_projects_dir(user_id)
+    dest = os.path.join(projects_dir, name)
+    if not _is_within(projects_dir, dest):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    if os.path.exists(dest):
+        return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    quota_err = _check_quota(user, user_id, _PROJECT_IMPORT_MAX_BYTES)
+    if quota_err:
+        return quota_err
+    data = None
+    for u in urls:
+        try:
+            rq = urllib.request.Request(u, headers={"User-Agent": "Omniilink/1.0", "Accept": "application/zip"})
+            with urllib.request.urlopen(rq, timeout=60) as resp:
+                if resp.status != 200:
+                    continue
+                chunks, total = [], 0
+                while True:
+                    buf = resp.read(1024 * 256)
+                    if not buf:
+                        break
+                    total += len(buf)
+                    if total > _PROJECT_IMPORT_MAX_BYTES:
+                        break
+                    chunks.append(buf)
+                if total > _PROJECT_IMPORT_MAX_BYTES:
+                    continue
+                data = b"".join(chunks)
+                break
+        except Exception:
+            continue
+    if not data:
+        return JSONResponse(status_code=400, content={"error": "Could not download that repo (private? typo?)"})
+    os.makedirs(dest, exist_ok=True)
+    err_msg = await asyncio.to_thread(_extract_zip_safe, data, dest)
+    if err_msg:
+        shutil.rmtree(dest, ignore_errors=True)
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    logger.info(f"[PROJECT] GitHub import: {name} user={user.get('username','-')}")
+    return {"status": "ok", "name": name, "path": dest}
+
+
+class ProjectZipBody(BaseModel):
+    name: str = ""
+    content: str = ""
+
+
+@app.post("/api/projects/import-zip")
+async def project_import_zip(request: Request, req: ProjectZipBody):
+    """Import a base64 zip upload as a project."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    user_id = _safe_username(user["username"])
+    name = (req.name or "").strip()
+    if not _valid_project_name(name):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    projects_dir = _user_projects_dir(user_id)
+    dest = os.path.join(projects_dir, name)
+    if not _is_within(projects_dir, dest):
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    if os.path.exists(dest):
+        return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    try:
+        data = base64.b64decode(req.content or "")
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Bad upload data"})
+    quota_err = _check_quota(user, user_id, len(data))
+    if quota_err:
+        return quota_err
+    os.makedirs(dest, exist_ok=True)
+    err_msg = await asyncio.to_thread(_extract_zip_safe, data, dest)
+    if err_msg:
+        shutil.rmtree(dest, ignore_errors=True)
+        return JSONResponse(status_code=400, content={"error": err_msg})
+    logger.info(f"[PROJECT] Zip import: {name} user={user.get('username','-')}")
+    return {"status": "ok", "name": name, "path": dest}
+
+
+@app.get("/s/{token}")
+async def serve_shared_page(token: str):
+    """Anonymous read-only viewer for an expiring project link."""
+    p = os.path.join(APP_DIR, "web", "share.html")
+    return FileResponse(p, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
 
 @app.post("/api/projects/open")
 async def open_project(request: Request, req: ProjectCreate):

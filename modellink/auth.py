@@ -509,6 +509,29 @@ def init_db():
             UNIQUE(owner_id, agent_id, shared_with_id)
         );
         CREATE INDEX IF NOT EXISTS idx_ollama_shares_target ON ollama_shares(shared_with_id);
+
+        CREATE TABLE IF NOT EXISTS project_meta (
+            user_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '[]',
+            note TEXT DEFAULT '',
+            pinned INTEGER DEFAULT 0,
+            archived INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            name TEXT DEFAULT '',
+            folder TEXT DEFAULT '',
+            token TEXT UNIQUE,
+            expires_at REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_links_token ON project_links(token);
     """)
     # Migration: retired features whose tables are no longer used.
     conn.execute("DROP TABLE IF EXISTS scheduled_jobs")

@@ -3259,13 +3259,13 @@ function updateAtIndicator(){
   // Never render a non-string: a stray object here stringifies to
   // "[object Object]" and the user sees that instead of a file name.
   codingAtFiles=(codingAtFiles||[]).filter(f=>typeof f==='string'&&f);
-  try{codingRefFiles=(codingRefFiles||[]).filter(f=>f&&typeof f.project==='string')}catch(e){}
-  if(codingAtFiles.length===0&&codingRefFiles.length===0){ind.innerHTML='';ind.style.display='none';return}
+  var refChips=[];try{refChips=(codingRefFiles||[]).filter(f=>f&&typeof f.project==='string')}catch(e){refChips=[]}
+  if(codingAtFiles.length===0&&refChips.length===0){ind.innerHTML='';ind.style.display='none';return}
   ind.style.display='flex';
   ind.innerHTML=codingAtFiles.map(f=>'<span class="at-file-tag">'+escapeHtml(f.split('/').pop())
     +'<span class="at-file-dir">'+escapeHtml((f.indexOf('/')>-1?f.slice(0,f.lastIndexOf('/')):''))+'</span>'
     +'<button onclick="removeAtFile(\''+escapeHtml(f)+'\')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('')
-    +codingRefFiles.map((f,i)=>'<span class="at-file-tag" title="Reference from another project (read-only)">'+escapeHtml(f.path?String(f.path).split('/').pop():(f.project||''))
+    +refChips.map((f,i)=>'<span class="at-file-tag" title="Reference from another project (read-only)">'+escapeHtml(f.path?String(f.path).split('/').pop():(f.project||''))
     +'<span class="at-file-dir">'+escapeHtml(f.path?(f.project||''):'reference')+'</span>'
     +'<button onclick="removeRefFile('+i+')" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:3px;font-size:11px">&times;</button></span>').join('');
 }
@@ -7182,6 +7182,175 @@ function updateProjectBadge(name,meta){currentProjectName=name;const badge=docum
 function switchProject(){openProjectsModal()}
 async function deleteCurrentProject(){if(!currentProjectName)return;if(currentProjectShared){appAlert('This is a shared project — only its owner can delete it.');return}if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
 
+var projSearch='',projTag='';
+function projectCard(p,m,maxSize){
+  m=m||{};
+  const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
+  if(m.archived)card.style.opacity='.65';
+  const pct=maxSize>0?Math.round(100*(p.size_bytes||0)/maxSize):0;
+  const tags=(m.tags||[]).map(t=>'<span class="prov">'+escapeHtml(t)+'</span>').join(' ');
+  card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 012-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+(m.pinned?'📌 ':'')+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+formatBandwidth(p.size_bytes||0)+(m.archived?' · archived':'')+'</div>'+(tags?'<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">'+tags+'</div>':'')+(m.note?'<div style="font-size:11px;color:var(--text-secondary);margin-top:3px">'+escapeHtml(String(m.note).slice(0,120))+'</div>':'')+'<div class="storage-track" style="margin-top:5px;height:3px" title="Size relative to your biggest project"><div class="storage-fill" style="width:'+pct+'%"></div></div></div>';
+  const btnRow=document.createElement('div');btnRow.style.cssText='display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:230px';
+  const mk=(t,fn,title)=>{const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.style.fontSize='10px';b.textContent=t;if(title)b.title=title;b.onclick=e=>{e.stopPropagation();fn()};btnRow.appendChild(b);return b};
+  mk('Duplicate',()=>duplicateProject(p.name),'Copy this project');
+  mk(m.archived?'Unarchive':'Archive',()=>archiveProject(p.name,!m.archived),m.archived?'Back to active':'Hide from pickers');
+  mk('Details',()=>openProjectMetaModal(p.name),'Tags, note, pin');
+  mk('Link',()=>openProjectLinksModal(p.name),'Expiring view-only link');
+  mk('Backups',()=>openProjectBackupsModal(p.name),'Snapshots, restore');
+  card.appendChild(btnRow);
+  const del=document.createElement('button');del.className='proj-del';del.title='Delete project';del.textContent='×';
+  del.onclick=async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)};
+  card.appendChild(del);
+  card.addEventListener('click',async e=>{if(e.target.closest('button'))return;await openProject(p.name)});
+  return card;
+}
+function projModalShell(title){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='480px';
+  m.innerHTML='<div class="modal-header"><h2>'+escapeHtml(title)+'</h2></div><div class="modal-body"></div><div class="modal-actions"><button class="btn btn-ghost" data-x>Close</button></div>';
+  ov.appendChild(m);document.body.appendChild(ov);
+  m.querySelector('[data-x]').onclick=()=>ov.remove();ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  return{ov,m,body:m.querySelector('.modal-body')};
+}
+async function openProjectMetaModal(name){
+  const s=projModalShell('Project details — '+name),body=s.body;
+  body.innerHTML='<div class="tool-status">Loading…</div>';
+  try{
+    const r=await authFetch(API+'/api/projects/meta');const d=r.ok?await r.json().catch(()=>({})):({});
+    const m=((d.meta||{})[name])||{};
+    body.innerHTML='<div class="modal-field"><label>Tags (comma separated)</label><input type="text" id="pm-tags" /></div>'
+      +'<div class="modal-field"><label>Note</label><textarea id="pm-note" style="width:100%;min-height:80px"></textarea></div>'
+      +'<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pm-pin" /> Pinned to top</label>'
+      +'<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);margin-bottom:6px"><input type="checkbox" id="pm-arch" /> Archived</label>'
+      +'<div class="modal-actions"><button class="btn btn-primary" id="pm-go">Save</button></div>';
+    body.querySelector('#pm-tags').value=(m.tags||[]).join(', ');
+    body.querySelector('#pm-note').value=m.note||'';
+    body.querySelector('#pm-pin').checked=!!m.pinned;
+    body.querySelector('#pm-arch').checked=!!m.archived;
+    body.querySelector('#pm-go').onclick=async()=>{
+      const tags=body.querySelector('#pm-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+      try{
+        const rr=await authFetch(API+'/api/projects/meta',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,tags,note:body.querySelector('#pm-note').value,pinned:body.querySelector('#pm-pin').checked,archived:body.querySelector('#pm-arch').checked})});
+        if(!rr.ok)throw new Error('save failed');
+        s.ov.remove();loadProjectsPage();
+      }catch(e){showToast(e.message,'error')}
+    };
+  }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load details</div>'}
+}
+async function duplicateProject(name){
+  const s=projModalShell('Duplicate '+name),body=s.body;
+  body.innerHTML='<div class="modal-field"><label>New project name</label><input type="text" id="dp-name" /></div><div class="modal-actions"><button class="btn btn-primary" id="dp-go">Duplicate</button></div>';
+  const inp=body.querySelector('#dp-name');inp.value=name+' copy';inp.focus();inp.select();
+  body.querySelector('#dp-go').onclick=async()=>{
+    const nn=inp.value.trim();if(!nn){appAlert('Enter a name');return}
+    try{
+      const rr=await authFetch(API+'/api/projects/duplicate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:name,name:nn})});
+      const dd=await rr.json().catch(()=>({}));
+      if(!rr.ok){showToast(dd.error||'Could not duplicate','error');return}
+      s.ov.remove();showToast('Duplicated','success');loadProjectsPage();
+    }catch(e){showToast(e.message,'error')}
+  };
+}
+async function archiveProject(name,flag){
+  try{
+    const rr=await authFetch(API+'/api/projects/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,archived:flag})});
+    if(!rr.ok)throw new Error('save failed');
+    showToast(flag?'Archived':'Unarchived','info');loadProjectsPage();
+  }catch(e){showToast(e.message,'error')}
+}
+async function openProjectLinksModal(name){
+  const s=projModalShell('Share link — '+name),body=s.body;
+  const draw=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/projects/links');if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const mine=(d.links||[]).filter(l=>l.name===name);
+      body.innerHTML='<p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Anyone with the link gets read-only access — no account needed. Links expire automatically.</p>';
+      const form=document.createElement('div');form.style.cssText='display:flex;gap:6px;margin-bottom:10px';
+      const hrs=document.createElement('select');hrs.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:7px 6px;color:var(--text-primary);font-size:12px';[[24,'1 day'],[72,'3 days'],[168,'7 days']].forEach(h=>{const o=document.createElement('option');o.value=String(h[0]);o.textContent=h[1];if(h[0]===72)o.selected=true;hrs.appendChild(o)});
+      const mk=document.createElement('button');mk.className='btn btn-primary btn-sm';mk.textContent='New link';
+      mk.onclick=async()=>{try{const rr=await authFetch(API+'/api/projects/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,hours:parseInt(hrs.value,10)})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not create','error');return}showToast('Link created','success');draw()}catch(e){showToast(e.message,'error')}};
+      form.appendChild(hrs);form.appendChild(mk);body.appendChild(form);
+      if(!mine.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No links yet.';body.appendChild(e)}
+      mine.forEach(l=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:11.5px';
+        const tx=document.createElement('span');tx.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);color:var(--text-secondary)';tx.textContent='/s/'+l.token+(l.expired?' (expired)':'');row.appendChild(tx);
+        const cp=document.createElement('button');cp.className='btn btn-ghost btn-sm';cp.textContent='Copy';
+        cp.onclick=async()=>{try{await navigator.clipboard.writeText(location.origin+'/s/'+l.token);showToast('Link copied','success')}catch(e){showToast('Copy failed','error')}};row.appendChild(cp);
+        const rv=document.createElement('button');rv.className='btn btn-ghost btn-sm';rv.textContent='Revoke';
+        rv.onclick=async()=>{await authFetch(API+'/api/projects/links/'+encodeURIComponent(l.token),{method:'DELETE'});draw()};row.appendChild(rv);
+        body.appendChild(row);
+      });
+    }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load links</div>'}
+  };
+  await draw();
+}
+async function openProjectBackupsModal(name){
+  const s=projModalShell('Backups — '+name),body=s.body;
+  const draw=async()=>{
+    body.innerHTML='<div class="tool-status">Loading…</div>';
+    try{
+      const r=await authFetch(API+'/api/projects/backups?name='+encodeURIComponent(name));if(!r.ok)throw new Error('load failed');
+      const d=await r.json();const items=((d.backups||{})[name])||[];
+      body.innerHTML='<div style="margin-bottom:10px"><button class="btn btn-primary btn-sm" id="bk-go">Back up now</button></div>';
+      body.querySelector('#bk-go').onclick=async()=>{
+        try{
+          const rr=await authFetch(API+'/api/projects/backup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+          const dd=await rr.json().catch(()=>({}));
+          if(!rr.ok){showToast(dd.error||'Backup failed','error');return}
+          showToast('Backed up','success');draw();
+        }catch(e){showToast(e.message,'error')}
+      };
+      if(!items.length){const e=document.createElement('div');e.className='tool-status';e.textContent='No backups yet (last 5 kept).';body.appendChild(e);return}
+      items.forEach(b=>{
+        const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px';
+        const nm=document.createElement('span');nm.style.cssText='flex:1;color:var(--text-primary);font-family:var(--mono)';nm.textContent=b.ts+' · '+formatBandwidth(b.size||0);row.appendChild(nm);
+        const dl=document.createElement('button');dl.className='btn btn-ghost btn-sm';dl.textContent='Download';
+        dl.onclick=()=>window.open(API+'/api/projects/backup/download?name='+encodeURIComponent(name)+'&ts='+encodeURIComponent(b.ts),'_blank');row.appendChild(dl);
+        const rs=document.createElement('button');rs.className='btn btn-ghost btn-sm';rs.textContent='Restore';
+        rs.onclick=async()=>{if(!await appConfirm('Restore this backup? Current files are snapshotted first.'))return;try{const rr=await authFetch(API+'/api/projects/backup/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,ts:b.ts})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Restore failed','error');return}showToast('Restored','success');try{await refreshCodingTree()}catch(e){}}catch(e){showToast(e.message,'error')}};row.appendChild(rs);
+        const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Delete';
+        del.onclick=async()=>{await authFetch(API+'/api/projects/backup/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,ts:b.ts})});draw()};row.appendChild(del);
+        body.appendChild(row);
+      });
+    }catch(e){body.innerHTML='<div style="color:var(--error);font-size:12px">Could not load backups</div>'}
+  };
+  await draw();
+}
+async function openGithubImportModal(){
+  const s=projModalShell('Import from GitHub'),body=s.body;
+  body.innerHTML='<div class="modal-field"><label>Repo URL</label><input type="text" id="gh-url" placeholder="https://github.com/owner/repo" /></div><div class="modal-field"><label>Project name (optional)</label><input type="text" id="gh-name" placeholder="defaults to the repo name" /></div><div class="modal-actions"><button class="btn btn-primary" id="gh-go">Import</button></div>';
+  body.querySelector('#gh-go').onclick=async()=>{
+    const url=body.querySelector('#gh-url').value.trim();if(!url){appAlert('Paste a repo URL');return}
+    body.querySelector('#gh-go').disabled=true;body.querySelector('#gh-go').textContent='Importing…';
+    try{
+      const rr=await authFetch(API+'/api/projects/import-github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,name:body.querySelector('#gh-name').value.trim()})});
+      const dd=await rr.json().catch(()=>({}));
+      if(!rr.ok){showToast(dd.error||'Import failed','error');body.querySelector('#gh-go').disabled=false;body.querySelector('#gh-go').textContent='Import';return}
+      s.ov.remove();showToast('Imported '+dd.name,'success');loadProjectsPage();
+    }catch(e){showToast(e.message,'error');body.querySelector('#gh-go').disabled=false;body.querySelector('#gh-go').textContent='Import'}
+  };
+}
+async function openZipImportModal(){
+  const s=projModalShell('Import zip'),body=s.body;
+  body.innerHTML='<div class="modal-field"><label>Project name</label><input type="text" id="zp-name" /></div><div class="modal-field"><label>Zip file</label><input type="file" id="zp-file" accept=".zip" /></div><div class="modal-actions"><button class="btn btn-primary" id="zp-go">Import</button></div>';
+  body.querySelector('#zp-go').onclick=async()=>{
+    const name=body.querySelector('#zp-name').value.trim();const f=body.querySelector('#zp-file').files[0];
+    if(!name){appAlert('Enter a project name');return}
+    if(!f){appAlert('Choose a zip file');return}
+    if(f.size>100000000){appAlert('Zip must be under ~100MB');return}
+    body.querySelector('#zp-go').disabled=true;body.querySelector('#zp-go').textContent='Importing…';
+    try{
+      const buf=await f.arrayBuffer();
+      const bytes=new Uint8Array(buf);let bin='';
+      for(let i=0;i<bytes.length;i+=8192)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));
+      const rr=await authFetch(API+'/api/projects/import-zip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,content:btoa(bin)})});
+      const dd=await rr.json().catch(()=>({}));
+      if(!rr.ok){showToast(dd.error||'Import failed','error');body.querySelector('#zp-go').disabled=false;body.querySelector('#zp-go').textContent='Import';return}
+      s.ov.remove();showToast('Imported '+dd.name,'success');loadProjectsPage();
+    }catch(e){showToast(e.message,'error');body.querySelector('#zp-go').disabled=false;body.querySelector('#zp-go').textContent='Import'}
+  };
+}
 async function loadProjectsPage(){
   const body=document.getElementById('projects-body');body.innerHTML='';body.style.maxWidth='920px';body.style.margin='0 auto';body.style.width='100%';
   try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
@@ -7189,14 +7358,39 @@ async function loadProjectsPage(){
     const used=data.storage_used_bytes||0,limit=data.storage_limit_bytes||1073741824;
     const pct=Math.min(100,limit>0?used/limit*100:0);
     const bar=document.createElement('div');bar.className='storage-bar';bar.innerHTML='<div class="storage-info"><span>Storage</span><span>'+formatBandwidth(used)+' / '+formatBandwidth(limit)+' ('+Math.round(pct)+'%)</span></div><div class="storage-track"><div class="storage-fill" style="width:'+pct+'%"></div></div>';body.appendChild(bar);
-    const actions=document.createElement('div');actions.style.cssText='display:flex;gap:8px;margin-bottom:16px';actions.innerHTML='<button class="btn btn-primary btn-sm" onclick="openProjectsModal();showProjectTab(\'create\',document.querySelector(\'.modal-tab:nth-child(2)\'))">+ New Project</button><button class="btn btn-ghost btn-sm" onclick="openProjectsModal();showProjectTab(\'import\',document.querySelector(\'.modal-tab:nth-child(3)\'))">Import Folder</button>';body.appendChild(actions);
+    const actions=document.createElement('div');actions.style.cssText='display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap';actions.innerHTML='<button class="btn btn-primary btn-sm" onclick="openProjectsModal();showProjectTab(\'create\',document.querySelector(\'.modal-tab:nth-child(2)\'))">+ New Project</button><button class="btn btn-ghost btn-sm" onclick="openProjectsModal();showProjectTab(\'import\',document.querySelector(\'.modal-tab:nth-child(3)\'))">Import Folder</button><button class="btn btn-ghost btn-sm" onclick="openGithubImportModal()">Import GitHub</button><button class="btn btn-ghost btn-sm" onclick="openZipImportModal()">Import zip</button>';body.appendChild(actions);
+    const meta=data.meta||{};
+    const searchRow=document.createElement('div');searchRow.style.cssText='display:flex;gap:8px;margin-bottom:10px';
+    const si=document.createElement('input');si.placeholder='Search projects, notes, tags…';si.value=(typeof projSearch!=='undefined'&&projSearch)||'';
+    si.style.cssText='flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;font-family:var(--font)';
+    let projT=null;
+    si.oninput=()=>{try{projSearch=si.value}catch(e){}clearTimeout(projT);projT=setTimeout(loadProjectsPage,300)};
+    searchRow.appendChild(si);body.appendChild(searchRow);
+    const allTags=[];(projects||[]).forEach(p=>{((meta[p.name]||{}).tags||[]).forEach(t=>{if(allTags.indexOf(t)<0)allTags.push(t)})});
+    if(allTags.length){
+      const chips=document.createElement('div');chips.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px';
+      const mkChip=(label,val)=>{const c=document.createElement('button');c.className='btn btn-ghost btn-sm';c.style.cssText=(((typeof projTag!=='undefined'&&projTag)||'')===val?';border-color:var(--accent);color:var(--accent-light)':'');c.textContent=label;c.onclick=()=>{try{projTag=val}catch(e){}loadProjectsPage()};chips.appendChild(c)};
+      mkChip('All','');allTags.sort().forEach(t=>mkChip(t,t));
+      body.appendChild(chips);
+    }
+    const q=((typeof projSearch!=='undefined'&&projSearch)||'').toLowerCase(),tg=(typeof projTag!=='undefined'&&projTag)||'';
+    const matchQ=p=>{const m=meta[p.name]||{};
+      if(tg&&!(m.tags||[]).some(t=>String(t).toLowerCase()===tg.toLowerCase()))return false;
+      if(q){const hay=(p.name+' '+(m.note||'')+' '+(m.tags||[]).join(' ')).toLowerCase();if(hay.indexOf(q)<0)return false}
+      return true};
+    const maxSize=projects.reduce((m,p)=>Math.max(m,p.size_bytes||0),0);
+    const active=projects.filter(p=>!(meta[p.name]||{}).archived&&matchQ(p));
+    const archived=projects.filter(p=>(meta[p.name]||{}).archived&&matchQ(p));
+    const pinRank2=p=>((meta[p.name]||{}).pinned?1:0);
+    active.sort((a,b)=>pinRank2(b)-pinRank2(a));
     const localTitle=document.createElement('div');localTitle.className='usage-section-title';localTitle.style.margin='4px 0 8px';localTitle.textContent='Omniilink cloud';body.appendChild(localTitle);
     if(projects.length===0){body.innerHTML+='<div style="text-align:center;padding:24px;color:var(--text-muted)"><p style="font-size:13px;margin-bottom:4px">No server projects yet</p><p style="font-size:12px">Create a new project or import an existing folder</p></div>'}
-    for(const p of projects){const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
-      card.innerHTML='<div class="proj-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></div><div class="proj-info"><div class="proj-name">'+escapeHtml(p.name)+'</div><div class="proj-meta">'+p.file_count+' files · '+formatBandwidth(p.size_bytes||0)+'</div></div><button class="proj-del" title="Delete project">&times;</button>';
-      card.querySelector('.proj-info').parentElement.addEventListener('click',async e=>{if(e.target.closest('.proj-del'))return;await openProject(p.name)});
-      card.querySelector('.proj-del').addEventListener('click',async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)});
-      body.appendChild(card)}
+    else if(!active.length&&!archived.length){const e=document.createElement('div');e.style.cssText='text-align:center;padding:24px;color:var(--text-muted);font-size:12px';e.textContent='Nothing matches — clear the search or tag.';body.appendChild(e)}
+    for(const p of active)body.appendChild(projectCard(p,meta[p.name]||{},maxSize));
+    if(archived.length){
+      const at=document.createElement('div');at.className='usage-section-title';at.style.margin='16px 0 8px';at.textContent='Archived ('+archived.length+')';body.appendChild(at);
+      for(const p of archived)body.appendChild(projectCard(p,meta[p.name]||{},maxSize));
+    }
     const shared=data.shared_projects||[];
     if(shared.length){const sharedTitle=document.createElement('div');sharedTitle.className='usage-section-title';sharedTitle.style.margin='16px 0 8px';sharedTitle.textContent='Shared with you';body.appendChild(sharedTitle);
       for(const p of shared){const card=document.createElement('div');card.className='project-card'+(codingFolder===p.path?' active':'');
@@ -7345,8 +7539,12 @@ async function confirmNewFile(){const name=document.getElementById('new-file-nam
 function showProjectTab(tab,btn){document.querySelectorAll('.modal-tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');document.getElementById('project-tab-list').style.display=tab==='list'?'block':'none';document.getElementById('project-tab-create').style.display=tab==='create'?'block':'none';document.getElementById('project-tab-import').style.display=tab==='import'?'block':'none';if(tab==='create'){try{loadCreateTargets()}catch(e){}}}
 async function loadProjectList(){const list=document.getElementById('project-list');list.innerHTML='<div style="padding:12px;color:var(--text-muted);font-size:12px">Loading...</div>';
   try{const r=await authFetch(API+'/api/projects');if(!r.ok)throw new Error('offline');const data=await r.json();
-    if(!data.projects||data.projects.length===0){list.innerHTML='<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">No projects yet.</div>'}
-    else{list.innerHTML='';const cloudT=document.createElement('div');cloudT.style.cssText='padding:6px 2px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';cloudT.textContent='Omniilink cloud';list.appendChild(cloudT);for(const p of data.projects){const item=document.createElement('div');item.className='project-item';if(codingFolder&&codingFolder===p.path)item.classList.add('active');
+    const pmeta=data.meta||{};
+    const visProjects=(data.projects||[]).filter(p=>!(pmeta[p.name]||{}).archived);
+    const pinRank=p=>((pmeta[p.name]||{}).pinned?1:0);
+    visProjects.sort((a,b)=>pinRank(b)-pinRank(a));
+    if(!visProjects.length){list.innerHTML='<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px">No projects yet.</div>'}
+    else{list.innerHTML='';const cloudT=document.createElement('div');cloudT.style.cssText='padding:6px 2px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);font-weight:600';cloudT.textContent='Omniilink cloud';list.appendChild(cloudT);for(const p of visProjects){const item=document.createElement('div');item.className='project-item';if(codingFolder&&codingFolder===p.path)item.classList.add('active');
       item.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent-light);flex-shrink:0"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg><span class="name">'+escapeHtml(p.name)+'</span><span class="meta">'+p.file_count+' files</span><button class="del" title="Delete project">&times;</button>';
       item.querySelector('.name').parentElement.addEventListener('click',async e=>{if(e.target.closest('.del'))return;await openProject(p.name)});
       item.querySelector('.del').addEventListener('click',async e=>{e.stopPropagation();if(await appConfirm('Delete project "'+p.name+'"?'))await deleteProject(p.name,p.path)});
