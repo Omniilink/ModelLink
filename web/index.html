@@ -2782,13 +2782,14 @@ function localAssistantIndicatorRender(){
   if(typeof localAssistantEnabled!=='function'||!localAssistantEnabled()){if(el)el.remove();return}
   if(!el){
     el=document.createElement('div');el.id='helper-indicator';el.title='Local assistant activity';
-    el.style.cssText='display:flex;gap:8px;align-items:center;margin-right:10px;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);max-width:360px;flex-shrink:0;overflow:hidden';
-    // Dock it into the top header bar, in the right-hand cluster.
+    el.style.cssText='display:flex;gap:8px;align-items:center;margin-left:12px;margin-right:12px;padding:4px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);max-width:min(64vw,820px);min-width:0;flex-shrink:1;overflow:hidden';
+    // Dock it into the top header bar on the LEFT (next to the view name) so it
+    // has room to show the full task, with the spacer keeping the buttons right.
     const header=document.querySelector('.header');
-    const spacer=header&&header.querySelector('.header-spacer');
-    if(header&&spacer&&spacer.nextSibling)header.insertBefore(el,spacer.nextSibling);
-    else if(header)header.appendChild(el);
-    else{document.body.appendChild(el);el.style.cssText+=';position:fixed;top:56px;right:14px;z-index:360'}
+    const anchor=header&&header.querySelector('.crumbs');
+    if(header&&anchor&&anchor.nextSibling)header.insertBefore(el,anchor.nextSibling);
+    else if(header)header.insertBefore(el,header.firstChild);
+    else{document.body.appendChild(el);el.style.cssText+=';position:fixed;top:56px;left:14px;z-index:360'}
   }
   const s=localAssistantStatus;
   const dot=s.state==='idle'?'#30a46c':(s.state==='error'?'#e5484d':'#f5a623');
