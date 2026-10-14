@@ -2527,6 +2527,26 @@ const WEBLLM_LIB_URL='https://esm.run/@mlc-ai/web-llm';
 const WEBLLM_ENABLED_KEY='omnilink_webllm_enabled';
 const WEBLLM_MODELS_KEY='omnilink_webllm_models';   // downloaded model ids
 const WEBLLM_MAX_VRAM_MB=8000;                       // smallest up to medium
+const WEBLLM_CTX_KEY='omnilink_webllm_ctx';          // context window (tokens)
+const WEBLLM_CTX_MIN=4096,WEBLLM_CTX_MAX=131072,WEBLLM_CTX_DEFAULT=8192;
+function webllmContextWindow(){try{const v=parseInt(localStorage.getItem(WEBLLM_CTX_KEY),10);if(v>=WEBLLM_CTX_MIN&&v<=WEBLLM_CTX_MAX)return v}catch(e){}return WEBLLM_CTX_DEFAULT}
+function webllmSetContextWindow(n){try{const v=Math.max(WEBLLM_CTX_MIN,Math.min(WEBLLM_CTX_MAX,parseInt(n,10)||WEBLLM_CTX_DEFAULT));localStorage.setItem(WEBLLM_CTX_KEY,String(v))}catch(e){}}
+function webllmAppConfigFor(modelId){
+  // Override the model's context window (KV cache size) with the user's slider
+  // value. Spreads the prebuilt config so everything else stays intact.
+  try{
+    const base=webllmLib&&webllmLib.prebuiltAppConfig;if(!base)return undefined;
+    const rec=(base.model_list||[]).find(m=>m.model_id===modelId);if(!rec)return base;
+    const clone=JSON.parse(JSON.stringify(rec));
+    clone.overrides=Object.assign({},clone.overrides,{context_window_size:webllmContextWindow()});
+    return Object.assign({},base,{model_list:[clone]});
+  }catch(e){return undefined}
+}
+async function webllmReloadEngines(){
+  // Free both engines so the next use rebuilds them with the new context size.
+  try{if(webllmEngine)await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId='';
+  try{if(webllmAssistantEngine)await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId='';
+}
 const WEBLLM_LABELS={
   'Llama-3.2-1B-Instruct-q4f32_1-MLC':'Llama 3.2 1B',
   'Llama-3.2-3B-Instruct-q4f32_1-MLC':'Llama 3.2 3B',
@@ -2573,7 +2593,7 @@ async function webllmGetEngine(modelId,onProgress){
   const lib=await webllmLoadLib();
   if(webllmEngine&&webllmEngineId===modelId)return webllmEngine;
   if(webllmEngine){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
-  const engine=await lib.CreateMLCEngine(modelId,{initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
+  const engine=await lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
   webllmEngine=engine;webllmEngineId=modelId;
   webllmMarkDownloaded(modelId);
   return engine;
@@ -2727,7 +2747,7 @@ async function localAssistantInit(onProgress){
     const model=localAssistantModel();
     if(webllmAssistantEngine&&webllmAssistantModelId!==model){try{await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId=''}
     const lib=await webllmLoadLib();
-    const engine=await lib.CreateMLCEngine(model,{initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
+    const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
     webllmAssistantEngine=engine;webllmAssistantModelId=model;webllmMarkDownloaded(model);
     return engine;
   })().catch(e=>{webllmAssistantPromise=null;throw e});
@@ -2841,6 +2861,16 @@ function renderSettings(){
   wrow.appendChild(wsw);wsec.appendChild(wrow);
   const wbtn=document.createElement('button');wbtn.className='btn btn-ghost btn-sm';wbtn.style.marginTop='10px';wbtn.textContent='Manage models…';wbtn.onclick=()=>openWebllmModal();wsec.appendChild(wbtn);
   const wsum=document.createElement('div');wsum.id='webllm-summary';wsum.className='tool-result-sub';wsum.style.marginTop='8px';wsec.appendChild(wsum);
+  // Context window slider (applies to every in-browser model, including the assistant).
+  const ctxrow=document.createElement('div');ctxrow.className='key-row';ctxrow.style.marginTop='12px';
+  const ctxl=document.createElement('label');ctxl.textContent='Context window';ctxl.style.minWidth='170px';
+  const ctx=document.createElement('input');ctx.type='range';ctx.id='webllm-ctx';ctx.min='4';ctx.max='128';ctx.step='4';ctx.value=String(Math.round(webllmContextWindow()/1024));ctx.style.flex='1';
+  const ctxv=document.createElement('span');ctxv.className='tool-result-sub';ctxv.style.minWidth='52px';ctxv.textContent=Math.round(webllmContextWindow()/1024)+'k';
+  ctx.oninput=()=>{ctxv.textContent=ctx.value+'k'};
+  ctx.onchange=()=>{webllmSetContextWindow(Number(ctx.value)*1024);showToast('Context window set to '+ctx.value+'k — models reload on next use','info');try{webllmReloadEngines()}catch(e){}};
+  ctxrow.appendChild(ctxl);ctxrow.appendChild(ctx);ctxrow.appendChild(ctxv);wsec.appendChild(ctxrow);
+  const ctxnote=document.createElement('div');ctxnote.className='tool-result-sub';ctxnote.style.marginTop='4px';ctxnote.textContent='How much text an in-browser model can hold at once (4k–128k tokens). Larger uses more GPU memory; smaller is faster. Applies to the local assistant too.';
+  wsec.appendChild(ctxnote);
   body.appendChild(wsec);
   webllmRenderSummary();
   // Local assistant — auto-installed, runs in the background
