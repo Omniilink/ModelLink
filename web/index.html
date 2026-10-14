@@ -2603,16 +2603,25 @@ async function webllmChatStream(modelId,messages,opts,signal){
   if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const chunks=await engine.chat.completions.create(params);
   return new ReadableStream({async start(controller){
-    const send=o=>controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'));
+    const send=o=>{try{controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'))}catch(e){}};
+    let aborted=false;
     try{
       for await(const chunk of chunks){
-        if(signal&&signal.aborted)break;
+        if(signal&&signal.aborted){aborted=true;break}
         const d=chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content;
         if(d)send({model:'browser:'+modelId,choices:[{delta:{content:d}}]});
       }
-      if(!(signal&&signal.aborted))controller.enqueue(enc.encode('data: [DONE]\n\n'));
-    }catch(e){send({error:'In-browser model failed: '+String((e&&e.message)||e)})}
-    finally{try{controller.close()}catch(e){}}
+    }catch(e){
+      // Mid-generation failure (usually the model's context limit): show it as
+      // visible text so the user/model sees the real reason instead of a bogus
+      // "connection interrupted".
+      send({model:'browser:'+modelId,choices:[{delta:{content:'\n[In-browser model error: '+String((e&&e.message)||e)+']'}}]});
+    }finally{
+      // ALWAYS terminate the stream (unless the user stopped it) so the client
+      // never reports an interrupted reply.
+      if(!aborted){try{controller.enqueue(enc.encode('data: [DONE]\n\n'))}catch(e){}}
+      try{controller.close()}catch(e){}
+    }
   }});
 }
 async function webllmComplete(modelId,messages,opts){
@@ -2640,8 +2649,25 @@ function webllmMaybeIntercept(url,opts){
     return p.catch(err=>new Response(JSON.stringify({error:'In-browser model failed: '+String((err&&err.message)||err)}),{status:500,headers:{'Content-Type':'application/json'}}));
   }catch(e){return null}
 }
+function webllmRenderSummary(){
+  const el=document.getElementById('webllm-summary');if(!el)return;
+  const n=webllmDownloaded().length;
+  el.textContent=(webllmSupported()?'':'No WebGPU in this browser. ')+n+' model'+(n===1?'':'s')+' downloaded'+(webllmEnabled()?'':' (toggle on to use them)');
+}
+function webllmFilterModels(){
+  const el=document.getElementById('webllm-search');const q=(el&&el.value||'').trim().toLowerCase();
+  document.querySelectorAll('#webllm-models .key-row').forEach(r=>{r.style.display=(!q||String(r.textContent).toLowerCase().indexOf(q)>-1)?'':'none'});
+}
+function openWebllmModal(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='720px';m.style.maxHeight='82vh';m.style.display='flex';m.style.flexDirection='column';
+  m.innerHTML='<div class="modal-header"><h2>In-browser models (WebGPU)</h2></div><div class="modal-body" style="overflow:auto"><div class="tool-row"><input id="webllm-search" placeholder="Filter models…" style="flex:1" oninput="webllmFilterModels()" /><button class="btn btn-ghost btn-sm" onclick="webllmRenderSettings()">Refresh</button></div><div id="webllm-models"></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  webllmRenderSettings();
+}
 async function webllmRenderSettings(){
   const box=document.getElementById('webllm-models');if(!box)return;
+  try{webllmRenderSummary()}catch(e){}
   if(!webllmEnabled()){box.innerHTML='<div class="tool-result-sub">Turn the toggle on to download and manage in-browser models.</div>';return}
   if(!webllmSupported()){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">This browser does not support WebGPU. Use a recent Chrome, Edge or Safari on a machine with a GPU.</div>';return}
   box.innerHTML='<div class="tool-result-sub">Loading the model list…</div>';
@@ -2677,20 +2703,32 @@ async function webllmRenderSettings(){
 // is on. It handles model routing, coding tool-call rounds, error/finding logs,
 // web research and merge-intent summaries. Its engine is a SEPARATE slot from
 // the chat browser engine so it stays resident.
-const LOCAL_ASSISTANT_MODEL='Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC';
+const LOCAL_ASSISTANT_MODELS=[
+  {id:'Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC',label:'Very small — Qwen2.5-Coder 0.5B (~0.4 GB)'},
+  {id:'Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC',label:'Small — Qwen2.5-Coder 1.5B (~1.1 GB)'},
+  {id:'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',label:'Medium — Qwen2.5-Coder 3B (~2.0 GB)'},
+  {id:'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',label:'Large — Qwen2.5-Coder 7B (~4.5 GB)'}
+];
+const LOCAL_ASSISTANT_MODEL='Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC';   // default
 const LOCAL_ASSISTANT_KEY='omnilink_local_assistant';
+const LOCAL_ASSISTANT_MODEL_KEY='omnilink_local_assistant_model';
 let webllmAssistantEngine=null,webllmAssistantModelId='',webllmAssistantPromise=null,webllmAssistantProgress={text:'',progress:0};
 function localAssistantEnabled(){try{return localStorage.getItem(LOCAL_ASSISTANT_KEY)==='1'}catch(e){return false}}
 function localAssistantSetEnabled(on){try{localStorage.setItem(LOCAL_ASSISTANT_KEY,on?'1':'0')}catch(e){}}
-function localAssistantId(){return 'browser:'+LOCAL_ASSISTANT_MODEL}
-function localAssistantReady(){return !!(webllmAssistantEngine&&webllmAssistantModelId===LOCAL_ASSISTANT_MODEL)}
+function localAssistantModel(){try{const v=localStorage.getItem(LOCAL_ASSISTANT_MODEL_KEY);if(v&&LOCAL_ASSISTANT_MODELS.some(m=>m.id===v))return v}catch(e){}return LOCAL_ASSISTANT_MODEL}
+function localAssistantSetModel(id){try{if(LOCAL_ASSISTANT_MODELS.some(m=>m.id===id))localStorage.setItem(LOCAL_ASSISTANT_MODEL_KEY,id)}catch(e){}}
+function localAssistantLabel(){const m=LOCAL_ASSISTANT_MODELS.find(x=>x.id===localAssistantModel());return m?m.label:localAssistantModel()}
+function localAssistantId(){return 'browser:'+localAssistantModel()}
+function localAssistantReady(){return !!(webllmAssistantEngine&&webllmAssistantModelId===localAssistantModel())}
 async function localAssistantInit(onProgress){
   if(localAssistantReady())return webllmAssistantEngine;
   if(webllmAssistantPromise)return webllmAssistantPromise;
   webllmAssistantPromise=(async()=>{
+    const model=localAssistantModel();
+    if(webllmAssistantEngine&&webllmAssistantModelId!==model){try{await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId=''}
     const lib=await webllmLoadLib();
-    const engine=await lib.CreateMLCEngine(LOCAL_ASSISTANT_MODEL,{initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
-    webllmAssistantEngine=engine;webllmAssistantModelId=LOCAL_ASSISTANT_MODEL;webllmMarkDownloaded(LOCAL_ASSISTANT_MODEL);
+    const engine=await lib.CreateMLCEngine(model,{initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
+    webllmAssistantEngine=engine;webllmAssistantModelId=model;webllmMarkDownloaded(model);
     return engine;
   })().catch(e=>{webllmAssistantPromise=null;throw e});
   try{return await webllmAssistantPromise}finally{webllmAssistantPromise=null}
@@ -2725,11 +2763,11 @@ async function localAssistantRoute(text){
 }
 async function webllmRenderAssistantSettings(){
   const box=document.getElementById('local-assistant-status');if(!box)return;
-  if(!localAssistantEnabled()){box.innerHTML='<div class="tool-result-sub">Turn the toggle on to install the 0.5B assistant (about 400 MB). It runs on your GPU and stays ready in the background.</div>';return}
+  if(!localAssistantEnabled()){box.innerHTML='<div class="tool-result-sub">Turn the toggle on to install the assistant (the model you pick above). It runs on your GPU and stays ready in the background.</div>';return}
   if(!webllmSupported()){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">This browser has no WebGPU support, so the local assistant cannot run.</div>';return}
-  if(localAssistantReady()){box.innerHTML='<div class="tool-result-sub" style="color:var(--success)">Ready — Qwen2.5-Coder-0.5B is loaded and handling routing, tool calls, error logs and research.</div>';return}
-  box.innerHTML='<div class="tool-result-sub" id="local-assistant-prog">Installing Qwen2.5-Coder-0.5B…</div>';
-  try{await localAssistantInit(p=>{const el=document.getElementById('local-assistant-prog');if(el)el.textContent='Installing… '+Math.round((p.progress||0)*100)+'% '+(p.text||'')});const el=document.getElementById('local-assistant-prog');if(el){el.textContent='Ready — Qwen2.5-Coder-0.5B is loaded.';el.style.color='var(--success)'}}
+  if(localAssistantReady()){box.innerHTML='<div class="tool-result-sub" style="color:var(--success)">Ready — '+escapeHtml(localAssistantLabel())+' is loaded and handling routing, tool calls, error logs and research.</div>';return}
+  box.innerHTML='<div class="tool-result-sub" id="local-assistant-prog">Installing '+escapeHtml(localAssistantLabel())+'…</div>';
+  try{await localAssistantInit(p=>{const el=document.getElementById('local-assistant-prog');if(el)el.textContent='Installing… '+Math.round((p.progress||0)*100)+'% '+(p.text||'')});const el=document.getElementById('local-assistant-prog');if(el){el.textContent='Ready — '+localAssistantLabel()+' is loaded.';el.style.color='var(--success)'}}
   catch(e){const el=document.getElementById('local-assistant-prog');if(el){el.textContent='Install failed: '+((e&&e.message)||e);el.style.color='var(--error)'}}
 }
 </script>
@@ -2799,15 +2837,22 @@ function renderSettings(){
   const wrow=document.createElement('div');wrow.className='toggle-row';wrow.style.alignItems='center';
   wrow.innerHTML='<div><div class="toggle-label">Run models in this browser</div><div class="toggle-desc">Small and medium LLMs run on your own GPU via WebGPU — no server, no API key, and they work offline once downloaded. Weights are stored in your browser cache. Requires Chrome/Edge 113+ or Safari 18+ on a machine with a GPU.</div></div>';
   const wsw=document.createElement('div');wsw.className='toggle-switch'+(webllmEnabled()?' on':'');
-  wsw.onclick=()=>{wsw.classList.toggle('on');webllmSetEnabled(wsw.classList.contains('on'));try{webllmRenderSettings()}catch(e){}try{loadModels()}catch(e){}showToast('In-browser models '+(wsw.classList.contains('on')?'ON':'OFF'),'info')};
+  wsw.onclick=()=>{wsw.classList.toggle('on');webllmSetEnabled(wsw.classList.contains('on'));try{webllmRenderSummary()}catch(e){}try{loadModels()}catch(e){}showToast('In-browser models '+(wsw.classList.contains('on')?'ON':'OFF'),'info')};
   wrow.appendChild(wsw);wsec.appendChild(wrow);
-  const wlist=document.createElement('div');wlist.id='webllm-models';wlist.style.marginTop='10px';wsec.appendChild(wlist);
+  const wbtn=document.createElement('button');wbtn.className='btn btn-ghost btn-sm';wbtn.style.marginTop='10px';wbtn.textContent='Manage models…';wbtn.onclick=()=>openWebllmModal();wsec.appendChild(wbtn);
+  const wsum=document.createElement('div');wsum.id='webllm-summary';wsum.className='tool-result-sub';wsum.style.marginTop='8px';wsec.appendChild(wsum);
   body.appendChild(wsec);
-  webllmRenderSettings();
-  // Local assistant (Qwen2.5-Coder-0.5B) — auto-installed, runs in the background
-  const asec=document.createElement('div');asec.className='settings-section';asec.innerHTML='<h3>Local assistant (Qwen2.5-Coder-0.5B)</h3>';
+  webllmRenderSummary();
+  // Local assistant — auto-installed, runs in the background
+  const asec=document.createElement('div');asec.className='settings-section';asec.innerHTML='<h3>Local assistant</h3>';
+  const amrow=document.createElement('div');amrow.className='key-row';
+  const aml=document.createElement('label');aml.textContent='Model size';aml.style.minWidth='170px';
+  const asel=document.createElement('select');asel.id='local-assistant-model';
+  LOCAL_ASSISTANT_MODELS.forEach(m=>{const o=document.createElement('option');o.value=m.id;o.textContent=m.label;if(m.id===localAssistantModel())o.selected=true;asel.appendChild(o)});
+  asel.onchange=()=>{localAssistantSetModel(asel.value);try{webllmRenderAssistantSettings()}catch(e){}showToast('Assistant model set to '+localAssistantLabel(),'info')};
+  amrow.appendChild(aml);amrow.appendChild(asel);asec.appendChild(amrow);
   const arow=document.createElement('div');arow.className='toggle-row';arow.style.alignItems='center';
-  arow.innerHTML='<div><div class="toggle-label">Install &amp; run the local assistant</div><div class="toggle-desc">Auto-downloads Qwen2.5-Coder-0.5B (~400 MB) and keeps it warm on your GPU. It picks the best model for your first message, runs coding tool calls, writes error/finding logs, and looks things up on the web when asked. Needs WebGPU. Turn it off to stop using it.</div></div>';
+  arow.innerHTML='<div><div class="toggle-label">Install &amp; run the local assistant</div><div class="toggle-desc">Auto-downloads the model you chose above and keeps it warm on your GPU. It picks the best model for your first message, runs coding tool calls, writes error/finding logs, and looks things up on the web when asked. Needs WebGPU. Turn it off to stop using it.</div></div>';
   const asw=document.createElement('div');asw.className='toggle-switch'+(localAssistantEnabled()?' on':'');
   asw.onclick=()=>{asw.classList.toggle('on');localAssistantSetEnabled(asw.classList.contains('on'));try{webllmRenderAssistantSettings()}catch(e){}showToast('Local assistant '+(asw.classList.contains('on')?'ON — installing in the background':'OFF'),'info')};
   arow.appendChild(asw);asec.appendChild(arow);
@@ -6511,6 +6556,20 @@ function offerCreateMissingFiles(missing){
   // Approval-gated stub creation for verify-missing files. Harvest- and
   // approval-loop-compatible: the loop waits on these buttons, and the
   // outcome feeds back like any other tool result.
+  // With Auto-Create on (and not in plan/review mode) just create them — the
+  // user asked not to be prompted.
+  try{
+    const plan=!!(typeof codingSettings!=='undefined'&&codingSettings&&codingSettings.plan_mode);
+    const review=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
+    if(codingSettings&&codingSettings.auto_create&&!plan&&!review){
+      (async()=>{let ok=0;const failed=[];for(const p of missing){try{const r=await codingWriteFile(p,'');if(r.ok)ok++;else failed.push(p)}catch(e){failed.push(p)}}
+        try{refreshCodingTree()}catch(e){}
+        addCodingSystemMsg('Auto-created '+ok+' of '+missing.length+' missing file'+(missing.length!==1?'s':'')+(failed.length?' (failed: '+failed.join(', ')+')':''));
+        if(ok>0&&typeof recordCodingVersion==='function')recordCodingVersion(missing.slice()).catch(()=>{});
+      })();
+      return;
+    }
+  }catch(e){}
   const chat=document.getElementById('coding-chat');
   const msg=document.createElement('div');msg.className='coding-msg assistant';
   const av=document.createElement('div');av.className='coding-msg-avatar';av.textContent='O';
