@@ -660,8 +660,17 @@ def _csp_policy():
     # GLB textures into blob: URLs and fetch()es them, which connect-src
 
     # blocks without it (that surfaced as "Could not load model: Failed to fetch").
-    connect = "connect-src 'self' cloudflareinsights.com" + (f" {extra}" if extra else "") + " blob:"
-    return ("default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com; "
+    # In-browser WebGPU models (WebLLM) load the library from esm.run (a
+    # jsDelivr alias) and stream weights from the HuggingFace CDN, compile
+    # WebAssembly, and run workers from blob: URLs — all of which the strict
+    # default CSP blocks. Only these hosts/paths are opened up.
+    webllm_hosts = ("https://esm.run https://cdn.jsdelivr.net https://huggingface.co"
+                    " https://*.huggingface.co https://*.hf.co")
+    connect = ("connect-src 'self' cloudflareinsights.com"
+               + (f" {extra}" if extra else "") + " blob: " + webllm_hosts)
+    return ("default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"
+            " static.cloudflareinsights.com https://esm.run https://cdn.jsdelivr.net; "
+            "worker-src 'self' blob:; "
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: *.ytimg.com blob:; "
             f"{connect}; font-src 'self'; object-src 'none'; "
             "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")

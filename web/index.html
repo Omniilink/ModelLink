@@ -1825,7 +1825,10 @@ function settleInputAfterSend(id){try{if(typeof matchMedia==='function'&&matchMe
 function onComposerFocus(){try{const a=document.getElementById('chat-area');if(a)a.scrollTop=a.scrollHeight;const c=document.getElementById('coding-chat');if(c)c.scrollTop=c.scrollHeight}catch(e){}}
 function escapeHtml(s){if(s==null||s===false)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
-async function authFetch(url,opts={}){opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
+async function authFetch(url,opts={}){
+  // Route in-browser (WebGPU) models straight to WebLLM — no server round-trip.
+  try{if(typeof webllmMaybeIntercept==='function'){const hit=webllmMaybeIntercept(url,opts);if(hit)return hit}}catch(e){}
+  opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
 
 function renderContent(text){
   let c=text.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<think>[\s\S]*?<\/thinking>/gi,'').replace(/<think>[\s\S]*$/gi,'').replace(/<thinking>[\s\S]*$/gi,'');
@@ -2079,7 +2082,7 @@ var webSearchEnabled=false;
 function toggleWebSearch(){webSearchEnabled=!webSearchEnabled;var b=document.getElementById('websearch-toggle');if(b){b.classList.toggle('on',webSearchEnabled);b.setAttribute('aria-pressed',webSearchEnabled?'true':'false')}}
 var codingWebSearch=false;
 function toggleCodingWebSearch(){codingWebSearch=!codingWebSearch;var b=document.getElementById('coding-websearch-toggle');if(b){b.classList.toggle('on',codingWebSearch);b.setAttribute('aria-pressed',codingWebSearch?'true':'false')}}
-    function shortModelId(id){id=String(id||'');const p=providerOf(id);if(p==='device'){const i=id.indexOf('/');const j=i<0?-1:id.indexOf('/',i+1);return j>-1?id.slice(j+1):id}const i=id.indexOf('/');return(p==='ollama'&&i>-1)?id.slice(i+1):id}
+    function shortModelId(id){id=String(id||'');if(id.indexOf('browser:')===0)return (typeof webllmShortId==='function')?webllmShortId(id):id.slice(8);const p=providerOf(id);if(p==='device'){const i=id.indexOf('/');const j=i<0?-1:id.indexOf('/',i+1);return j>-1?id.slice(j+1):id}const i=id.indexOf('/');return(p==='ollama'&&i>-1)?id.slice(i+1):id}
     function providerOf(id){id=String(id||'');const i=id.indexOf('/');return i<0?'':id.slice(0,i)}
     function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}try{syncLevelLock()}catch(e){}}
 
@@ -2124,8 +2127,8 @@ function syncLevelLock(){
 function requestLevels(){return{effort:getLevel('effort'),thinking:getLevel('thinking')}}
 
 async function loadModels(){
-    try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();allModels=data.models;renderModelMenu(data.models,data.backup_model);renderCodingModelMenu();providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth);
-    try{const saved=localStorage.getItem('omniilink_model');if(saved&&(saved==='omniilink'||(data.models||[]).some(m=>m.id===saved)))selectModel(saved)}catch(e){}
+    try{const r=await authFetch(API+'/api/discover');if(!r.ok)throw new Error('offline');const data=await r.json();const models=(data.models||[]).concat((typeof webllmMenuItems==='function')?webllmMenuItems():[]);allModels=models;renderModelMenu(models,data.backup_model);renderCodingModelMenu();providerHealth=data.health||{};renderProviders(data.by_provider,providerHealth);
+    try{const saved=localStorage.getItem('omniilink_model');if(saved&&(saved==='omniilink'||models.some(m=>m.id===saved)))selectModel(saved)}catch(e){}
   }
   catch(e){console.error('Failed to load models:',e)}
 }
@@ -2143,12 +2146,12 @@ function renderModelMenuInto(menu,models,backupModel){
   const opt=document.createElement('div');opt.className='model-option selected';opt.dataset.id='omniilink';
   opt.innerHTML='<span class="pick">✓</span><span class="mname">omniilink</span><span class="prov">auto-balance</span>';opt.onclick=()=>selectModel('omniilink');menu.appendChild(opt);
   const grouped={};models.filter(m=>m.id!=='omniilink').forEach(m=>{const key=m.group||m.provider||'other';if(!grouped[key])grouped[key]={provider:m.provider||key,label:m.group_label||m.provider||key,items:[]};grouped[key].items.push(m)});
-  const providerOrder=['ollama','device','opencode','opencode-go','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
+  const providerOrder=['browser','ollama','device','opencode','opencode-go','openrouter','groq','gemini','openai','anthropic','mistral','together','deepseek','cohere'];
   const sorted=Object.entries(grouped).sort((a,b)=>{const ai=providerOrder.indexOf(a[1].provider);const bi=providerOrder.indexOf(b[1].provider);return(ai===-1?99:ai)-(bi===-1?99:bi)});
   for(const[key,g]of sorted){
-    const label=document.createElement('div');label.className='model-group-label';label.textContent=g.provider==='ollama'?'Ollama (local)':g.provider==='device'?g.label:g.provider;menu.appendChild(label);
+    const label=document.createElement('div');label.className='model-group-label';label.textContent=g.provider==='ollama'?'Ollama (local)':g.provider==='browser'?'In-browser (WebGPU)':g.provider==='device'?g.label:g.provider;menu.appendChild(label);
     g.items.forEach(m=>{const item=document.createElement('div');item.className='model-option';item.dataset.id=m.id;item.title=m.id;const off=m.online===false;
-      const tag=g.provider==='ollama'?('local'+(m.vision?' · vision':'')):g.provider==='device'?(off?'offline':((m.vision?'vision · ':'')+'device')):g.provider;
+      const tag=g.provider==='ollama'?('local'+(m.vision?' · vision':'')):g.provider==='browser'?'browser':g.provider==='device'?(off?'offline':((m.vision?'vision · ':'')+'device')):g.provider;
       if(off)item.classList.add('model-offline');
       item.innerHTML='<span class="pick">'+(off?'-':'✓')+'</span><span class="mname">'+escapeHtml(shortModelId(m.id))+'</span><span class="prov">'+escapeHtml(tag)+'</span>';
       item.onclick=()=>{if(off){showToast(shortModelId(m.id)+' is offline — start Omniilink Server on that computer','error');return}selectModel(m.id)};
@@ -2505,6 +2508,163 @@ function updateMessage(el,content){
 </script>
 
 <script>
+// ===== In-browser LLMs (WebGPU / WebLLM) =====
+// Runs small→medium models entirely in the browser via WebGPU. Weights are
+// downloaded once into the browser Cache API and reused offline. Off by
+// default; enabled in Settings. Model ids are namespaced `browser:<id>` so the
+// chat request path can route them here instead of the server.
+const WEBLLM_LIB_URL='https://esm.run/@mlc-ai/web-llm';
+const WEBLLM_ENABLED_KEY='omnilink_webllm_enabled';
+const WEBLLM_MODELS_KEY='omnilink_webllm_models';   // downloaded model ids
+const WEBLLM_MAX_VRAM_MB=8000;                       // smallest up to medium
+const WEBLLM_LABELS={
+  'Llama-3.2-1B-Instruct-q4f32_1-MLC':'Llama 3.2 1B',
+  'Llama-3.2-3B-Instruct-q4f32_1-MLC':'Llama 3.2 3B',
+  'Llama-3.1-8B-Instruct-q4f32_1-MLC':'Llama 3.1 8B',
+  'Phi-3.5-mini-instruct-q4f16_1-MLC':'Phi 3.5 mini (3.8B)',
+  'Qwen2.5-1.5B-Instruct-q4f16_1-MLC':'Qwen2.5 1.5B',
+  'Qwen2.5-3B-Instruct-q4f16_1-MLC':'Qwen2.5 3B',
+  'Qwen2.5-7B-Instruct-q4f16_1-MLC':'Qwen2.5 7B',
+  'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC':'Qwen2.5 Coder 7B',
+  'gemma-2-2b-it-q4f16_1-MLC':'Gemma 2 2B',
+  'SmolLM2-1.7B-Instruct-q4f16_1-MLC':'SmolLM2 1.7B',
+  'TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC':'TinyLlama 1.1B',
+  'Hermes-3-Llama-3.2-3B-q4f16_1-MLC':'Hermes 3 Llama 3.2 3B',
+  'Qwen3-1.7B-q4f16_1-MLC':'Qwen3 1.7B',
+  'Qwen3-4B-q4f16_1-MLC':'Qwen3 4B',
+  'Qwen3-8B-q4f16_1-MLC':'Qwen3 8B'
+};
+let webllmLib=null,webllmEngine=null,webllmEngineId='',webllmProgress={};
+function webllmEnabled(){try{return localStorage.getItem(WEBLLM_ENABLED_KEY)==='1'}catch(e){return false}}
+function webllmSetEnabled(on){try{localStorage.setItem(WEBLLM_ENABLED_KEY,on?'1':'0')}catch(e){}}
+function webllmSupported(){try{return typeof navigator!=='undefined'&&!!navigator.gpu}catch(e){return false}}
+function webllmDownloaded(){try{return JSON.parse(localStorage.getItem(WEBLLM_MODELS_KEY)||'[]')}catch(e){return[]}}
+function webllmMarkDownloaded(id){try{const a=webllmDownloaded();if(a.indexOf(id)<0){a.push(id);localStorage.setItem(WEBLLM_MODELS_KEY,JSON.stringify(a))}}catch(e){}}
+function webllmUnmark(id){try{localStorage.setItem(WEBLLM_MODELS_KEY,JSON.stringify(webllmDownloaded().filter(x=>x!==id)))}catch(e){}}
+function webllmLabel(id){return WEBLLM_LABELS[id]||String(id||'').replace(/-(q4f16_1|q4f32_1|q4f32_0|q0f16|q0f32)-MLC$/,'')}
+function webllmShortId(id){const s=String(id||'');return s.indexOf('browser:')===0?webllmLabel(s.slice(8)):s}
+async function webllmLoadLib(){
+  if(webllmLib)return webllmLib;
+  webllmLib=await import(/* webpackIgnore: true */ WEBLLM_LIB_URL);
+  return webllmLib;
+}
+async function webllmCatalog(){
+  const lib=await webllmLoadLib();
+  const cfg=lib.prebuiltAppConfig||{};
+  const list=(cfg.model_list||[]).filter(m=>{
+    const vram=m.vram_required_MB||0;
+    const t=String(m.model_type||'');
+    return vram>0&&vram<=WEBLLM_MAX_VRAM_MB&&(t==='LLM'||t==='');
+  });
+  list.sort((a,b)=>(a.vram_required_MB||0)-(b.vram_required_MB||0));
+  return list.map(m=>({id:m.model_id,vram:m.vram_required_MB||0,type:m.model_type||'',label:webllmLabel(m.model_id)}));
+}
+async function webllmGetEngine(modelId,onProgress){
+  const lib=await webllmLoadLib();
+  if(webllmEngine&&webllmEngineId===modelId)return webllmEngine;
+  if(webllmEngine){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
+  const engine=await lib.CreateMLCEngine(modelId,{initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
+  webllmEngine=engine;webllmEngineId=modelId;
+  webllmMarkDownloaded(modelId);
+  return engine;
+}
+async function webllmDownload(modelId,onProgress){
+  // Creating the engine downloads the weights into the Cache API.
+  await webllmGetEngine(modelId,onProgress);
+  // Free VRAM but keep the weights cached for later.
+  try{await webllmEngine.unload()}catch(e){}
+  webllmEngine=null;webllmEngineId='';
+  webllmMarkDownloaded(modelId);
+}
+async function webllmRemove(modelId){
+  try{const lib=await webllmLoadLib();if(typeof lib.deleteModelAllInfoInCache==='function')await lib.deleteModelAllInfoInCache(modelId)}catch(e){}
+  webllmUnmark(modelId);
+  if(webllmEngineId===modelId){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
+}
+function webllmMenuItems(){
+  if(!webllmEnabled())return[];
+  return webllmDownloaded().map(id=>({id:'browser:'+id,provider:'browser',group:'browser',group_label:'In-browser (WebGPU)',mname:webllmLabel(id),online:true,vision:false}));
+}
+async function webllmChatStream(modelId,messages,opts,signal){
+  const enc=new TextEncoder();
+  const engine=await webllmGetEngine(modelId);
+  const params={messages:messages,stream:true};
+  if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
+  if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
+  const chunks=await engine.chat.completions.create(params);
+  return new ReadableStream({async start(controller){
+    const send=o=>controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'));
+    try{
+      for await(const chunk of chunks){
+        if(signal&&signal.aborted)break;
+        const d=chunk&&chunk.choices&&chunk.choices[0]&&chunk.choices[0].delta&&chunk.choices[0].delta.content;
+        if(d)send({model:'browser:'+modelId,choices:[{delta:{content:d}}]});
+      }
+      if(!(signal&&signal.aborted))controller.enqueue(enc.encode('data: [DONE]\n\n'));
+    }catch(e){send({error:'In-browser model failed: '+String((e&&e.message)||e)})}
+    finally{try{controller.close()}catch(e){}}
+  }});
+}
+async function webllmComplete(modelId,messages,opts){
+  // Non-streaming completion (used by title generation and the optimiser).
+  const engine=await webllmGetEngine(modelId);
+  const params={messages:messages,stream:false};
+  if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
+  if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
+  const res=await engine.chat.completions.create(params);
+  const content=(res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
+  return {model:'browser:'+modelId,choices:[{message:{role:'assistant',content:content}}]};
+}
+function webllmMaybeIntercept(url,opts){
+  try{
+    if(!webllmEnabled())return null;
+    if(!/\/v1\/chat\/completions(\?|$)/.test(String(url||'')))return null;
+    if(!opts||String(opts.method||'GET').toUpperCase()!=='POST'||!opts.body)return null;
+    const body=JSON.parse(opts.body);
+    const model=String(body.model||'');
+    if(model.indexOf('browser:')!==0)return null;
+    const modelId=model.slice(8);
+    const p=(body.stream===true)
+      ? webllmChatStream(modelId,body.messages||[],body,opts.signal).then(stream=>new Response(stream,{status:200,headers:{'Content-Type':'text/event-stream','Cache-Control':'no-store'}}))
+      : webllmComplete(modelId,body.messages||[],body).then(o=>new Response(JSON.stringify(o),{status:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}}));
+    return p.catch(err=>new Response(JSON.stringify({error:'In-browser model failed: '+String((err&&err.message)||err)}),{status:500,headers:{'Content-Type':'application/json'}}));
+  }catch(e){return null}
+}
+async function webllmRenderSettings(){
+  const box=document.getElementById('webllm-models');if(!box)return;
+  if(!webllmEnabled()){box.innerHTML='<div class="tool-result-sub">Turn the toggle on to download and manage in-browser models.</div>';return}
+  if(!webllmSupported()){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">This browser does not support WebGPU. Use a recent Chrome, Edge or Safari on a machine with a GPU.</div>';return}
+  box.innerHTML='<div class="tool-result-sub">Loading the model list…</div>';
+  let cat=[];try{cat=await webllmCatalog()}catch(e){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">Could not load the WebLLM library (are you online?): '+escapeHtml(String((e&&e.message)||e))+'</div>';return}
+  const dl=webllmDownloaded();
+  box.innerHTML='<div class="tool-result-sub" style="margin-bottom:6px">'+cat.length+' models, smallest first. Downloading pulls the weights into your browser cache (~0.5–5 GB each).</div>';
+  cat.forEach(m=>{
+    const ready=dl.indexOf(m.id)>-1;
+    const gb=(m.vram/1024).toFixed(1);
+    const row=document.createElement('div');row.className='key-row';row.style.cssText='gap:8px;flex-wrap:wrap;align-items:center';
+    const left=document.createElement('div');left.style.cssText='flex:1;min-width:220px';
+    left.innerHTML='<div class="toggle-label">'+escapeHtml(m.label)+'</div><div class="toggle-desc" style="font-family:var(--mono);font-size:11px">'+escapeHtml(m.id)+' · ~'+gb+' GB</div>';
+    const btn=document.createElement('button');btn.className='btn '+(ready?'btn-ghost':'btn-primary');btn.style.fontSize='11px';btn.textContent=ready?'Remove':'Download';
+    const prog=document.createElement('div');prog.style.cssText='flex-basis:100%;height:6px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;display:none';
+    const bar=document.createElement('div');bar.style.cssText='height:100%;width:0;background:var(--accent);transition:width .2s';prog.appendChild(bar);
+    const stat=document.createElement('div');stat.className='tool-result-sub';stat.style.cssText='flex-basis:100%;font-size:11px';
+    if(ready)stat.textContent='Downloaded — pick it in the model menu.';
+    btn.onclick=async()=>{
+      if(ready){btn.disabled=true;try{await webllmRemove(m.id);showToast('Removed '+m.label,'success')}catch(e){showToast('Remove failed: '+e.message,'error')}try{loadModels()}catch(e){}webllmRenderSettings();return}
+      btn.disabled=true;prog.style.display='';stat.textContent='Starting download…';
+      try{
+        await webllmDownload(m.id,p=>{bar.style.width=Math.round((p.progress||0)*100)+'%';stat.textContent=(p.text||'Downloading…')+' '+Math.round((p.progress||0)*100)+'%'});
+        stat.textContent='Downloaded — pick it in the model menu.';btn.textContent='Remove';btn.className='btn btn-ghost';btn.disabled=false;prog.style.display='none';
+        try{loadModels()}catch(e){}showToast(m.label+' is ready to use','success');
+      }catch(e){stat.textContent='Download failed: '+((e&&e.message)||e);bar.style.width='0';btn.disabled=false}
+    };
+    row.appendChild(left);row.appendChild(btn);row.appendChild(prog);row.appendChild(stat);
+    box.appendChild(row);
+  });
+}
+</script>
+
+<script>
 async function loadSettingsData(){
   try{const r=await authFetch(API+'/api/settings');if(!r.ok)throw new Error('offline');settingsData=await r.json();renderSettings()}
   catch(e){document.getElementById('settings-body').innerHTML='<div style="padding:20px;text-align:center;color:var(--error)"><p style="font-size:14px;font-weight:500;margin-bottom:6px">Server offline</p><p style="font-size:12px;color:var(--text-muted)">Could not connect to Omniilink backend</p></div>'}
@@ -2564,6 +2724,16 @@ function renderSettings(){
   const anote=document.createElement('p');anote.style.cssText='font-size:12px;color:var(--text-muted);margin-top:8px';
   anote.textContent='3–32 characters: letters, numbers, - and _ only. Your Google sign-in link stays connected and all your projects, models and settings are kept.';
   acct.appendChild(anote);body.appendChild(acct);
+  // In-browser models (WebGPU / WebLLM)
+  const wsec=document.createElement('div');wsec.className='settings-section';wsec.innerHTML='<h3>In-browser models (WebGPU)</h3>';
+  const wrow=document.createElement('div');wrow.className='toggle-row';wrow.style.alignItems='center';
+  wrow.innerHTML='<div><div class="toggle-label">Run models in this browser</div><div class="toggle-desc">Small and medium LLMs run on your own GPU via WebGPU — no server, no API key, and they work offline once downloaded. Weights are stored in your browser cache. Requires Chrome/Edge 113+ or Safari 18+ on a machine with a GPU.</div></div>';
+  const wsw=document.createElement('div');wsw.className='toggle-switch'+(webllmEnabled()?' on':'');
+  wsw.onclick=()=>{wsw.classList.toggle('on');webllmSetEnabled(wsw.classList.contains('on'));try{webllmRenderSettings()}catch(e){}try{loadModels()}catch(e){}showToast('In-browser models '+(wsw.classList.contains('on')?'ON':'OFF'),'info')};
+  wrow.appendChild(wsw);wsec.appendChild(wrow);
+  const wlist=document.createElement('div');wlist.id='webllm-models';wlist.style.marginTop='10px';wsec.appendChild(wlist);
+  body.appendChild(wsec);
+  webllmRenderSettings();
   // Coding Mode
   const cs=document.createElement('div');cs.className='settings-section';cs.innerHTML='<h3>Coding Mode</h3>';
   authFetch(API+'/api/coding/settings').then(r=>r.json()).then(cod=>{
