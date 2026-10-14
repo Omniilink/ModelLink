@@ -1825,6 +1825,42 @@ async function localChatTitle(text){
     return out;
   }catch(e){return ''}
 }
+async function compressHistory(messages){
+  // Standard-tier job: replace older turns with a short local recap before a
+  // long context is sent to the model, cutting tokens.
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('compress'))return messages;
+    if(!Array.isArray(messages)||messages.length<10)return messages;
+    const head=messages[0],rest=messages.slice(1);
+    if(rest.length<8)return messages;
+    const older=rest.slice(0,rest.length-6),recent=rest.slice(rest.length-6);
+    const blob=older.map(m=>m.role+': '+String(typeof m.content==='string'?m.content:'(non-text)').slice(0,400)).join('\n');
+    if(blob.length<4000)return messages;
+    const recap=String(await localAssistantRunJob('compress','Summarize this coding conversation history into a short recap of key facts, decisions and unfinished work. Under 150 words. Reply with only the recap.','History:\n'+blob.slice(0,8000),300)).trim();
+    if(!recap)return messages;
+    return [head,{role:'user',content:'[Earlier conversation summarised by the local assistant]\n'+recap},...recent];
+  }catch(e){return messages}
+}
+async function localToolChoiceHint(openTodos,lastResults){
+  // Standard-tier job: a cheap gate that suggests answering directly when the
+  // next step needs no tool call.
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('tool_choice'))return '';
+    const q='Open todos:\n'+((openTodos||[]).join('\n')||'(none)')+'\n\nLast tool results (excerpt):\n'+String(lastResults||'').slice(0,800)+'\n\nDoes the next step need a tool call (read/write/run) or can it be answered directly in text? Reply with exactly TOOL or ANSWER.';
+    const out=String(await localAssistantRunJob('tool_choice','You decide whether a coding assistant should call a tool next or answer directly. Reply with exactly TOOL or ANSWER.',q,4)).trim().toUpperCase();
+    if(out.indexOf('ANSWER')===0)return '\nLOCAL ROUTER: the next step looks answerable without tools — if the task is complete, reply with a short summary and no tool blocks.';
+    return '';
+  }catch(e){return ''}
+}
+async function localProjectSummary(files){
+  // Standard-tier job: a 1-2 sentence description of the project from its files.
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('summary'))return '';
+    if(!files||!files.length)return '';
+    const list=files.slice(0,40).join('\n');
+    return String(await localAssistantRunJob('summary','In 1-2 short sentences describe what this software project is and does, based on its file names. Reply with only the description.','Files:\n'+list,120)).trim();
+  }catch(e){return ''}
+}
 async function maybeTranslateReply(text,fromModel){
   // Basic-tier job. Cloud replies already get the language from the server
   // prompt, so this only translates replies from a browser model.
@@ -2423,7 +2459,8 @@ async function sendMessage(){
   // omniilink (auto), let the tiny model pick the best model for this request.
   try{
     const _firstUser=!chatHistory.some(m=>m.role==='user');
-    if(_firstUser&&!imgs.length&&selectedModel==='omniilink'&&typeof localAssistantRoute==='function'){
+    const _routeNow=_firstUser||(typeof assistantJobEnabled==='function'&&assistantJobEnabled('turn_router'));
+    if(_routeNow&&!imgs.length&&selectedModel==='omniilink'&&typeof localAssistantRoute==='function'){
       const pick=await localAssistantRoute(text);
       if(pick){model=pick;showToast('Local assistant picked '+shortModelId(pick),'info')}
     }
@@ -3835,6 +3872,8 @@ function insertRefProject(name){
 const SLASH_COMMANDS=[
   {cmd:'reference',desc:'Attach another project or file (read-only)',usage:'/reference "Proj" [file]'},
   {cmd:'read',desc:'Attach an open-project file',usage:'/read <path>'},
+  {cmd:'explain',desc:'Explain a file (local assistant)',usage:'/explain <path>'},
+  {cmd:'stub',desc:'Generate a test/boilerplate stub (local assistant)',usage:'/stub <path>'},
   {cmd:'tree',desc:'Attach a folder listing',usage:'/tree [dir]'},
   {cmd:'new',desc:'Create an empty file now',usage:'/new <path>'},
   {cmd:'delete',desc:'Delete a file (asks first)',usage:'/delete <path>'},
@@ -3894,6 +3933,18 @@ async function execSlashCommands(rawText){
         const p=args[0];
         if(!p){showToast('Usage: /read <path>','error');break}
         try{const c=await codingReadFile(p);if(!codingAtFiles.includes(p))codingAtFiles.push(p);attached=true;updateAtIndicator();showToast('Attached '+p,'success')}catch(e){addCodingSystemMsg('Could not attach '+p+': '+e.message)}
+      }
+      else if(a.cmd==='explain'){
+        const p=args[0];
+        if(!p){showToast('Usage: /explain <path>','error');break}
+        if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('explain')){addCodingSystemMsg('Explain needs the 1.5B local assistant or larger (Settings → Local assistant).');break}
+        try{const c=await codingReadFile(p);const out=String(await localAssistantRunJob('explain','Explain what this code does in a short clear paragraph and note anything risky. Reply with only the explanation.','File '+p+':\n'+String(c).slice(0,6000),500)).trim();addCodingSystemMsg('Local assistant — '+p+':\n'+(out||'(no explanation)'))}catch(e){addCodingSystemMsg('Could not explain '+p+': '+e.message)}
+      }
+      else if(a.cmd==='stub'){
+        const p=args[0];
+        if(!p){showToast('Usage: /stub <path>','error');break}
+        if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('stubs')){addCodingSystemMsg('Stub generation needs the 3B local assistant or larger (Settings → Local assistant).');break}
+        try{let src='';try{src=await codingReadFile(p)}catch(e){}const out=String(await localAssistantRunJob('stubs','Write a starter test file for the given source file. Output ONLY the file contents, no prose, no code fences.','File '+p+':\n'+String(src).slice(0,4000),900)).trim();if(!out){addCodingSystemMsg('No stub generated.');break}const stubPath=String(p).replace(/(\.[a-z0-9]+)$/i,'.test$1');addCodingSystemMsg('Local assistant stub for '+p+' (suggested '+stubPath+'):\n```\n'+out.slice(0,4000)+'\n```')}catch(e){addCodingSystemMsg('Could not generate a stub: '+e.message)}
       }
       else if(a.cmd==='tree'){
         const dir=String(args[0]||'').replace(/\/+$/,'');
@@ -4082,6 +4133,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
        projectSummary+='- '+fname+' ('+optLangOf(fname)+', '+(sz>1024?Math.round(sz/1024)+'KB':sz+'B')+')\n';
      }
      projectSummary+='Read a file before editing it (e.g. FILE_EDIT with its full content, or a command that prints it). Never patch a file you have not read.\n';
+     try{if(typeof localProjectSummary==='function'){const _desc=await localProjectSummary(ranked);if(_desc)projectSummary='\nPROJECT OVERVIEW (local assistant): '+_desc+'\n'+projectSummary}}catch(e){}
    }}
   let sysPrompt=basePrompt+'\n'+projectSummary;const osBlock=codingOsBlock(execOs);if(osBlock)sysPrompt+=osBlock+'\n';
   // The shell, first and impossible to miss: small models default to Windows
@@ -6649,6 +6701,7 @@ async function streamCodingTurn(messages){
   // Compact everything after the system message: callers assemble the window,
   // this is the single choke point where stale file bodies get elided.
   if(Array.isArray(messages)&&messages.length>1)messages=[messages[0],...compactCodingMessages(messages.slice(1))];
+  if(typeof compressHistory==='function')messages=await compressHistory(messages);
   const turnModel=codingTurnModel();
   const isHelper=(typeof localAssistantId==='function')&&turnModel===localAssistantId();
   if(isHelper)localAssistantSetStatus({state:'processing',task:'coding turn',t0:Date.now(),tokens:0,tps:0});
@@ -7122,7 +7175,8 @@ async function codingAutoContinue(){
         if((typeof rewriteFails!=='undefined')&&rewriteFails>=2)rewriteNote='\nSTOP REWRITING WHOLE FILES: '+rewriteFails+' of your recent writes replaced the entire file while changing under 35% of its lines. That wastes output, risks truncation mid-file, and stomps collaborator edits. Use FILE_PATCH with a 3-8 line OLD block copied verbatim from a fresh read — full rewrites are only for changes over 40% or files under 40 lines.';
         const lockHits=(results.text.match(/locked by another editor/gi)||[]).length;
         const lockNote=lockHits>0?'\nLOCKED FILES: '+lockHits+' of your blocks were rejected because a collaborator is editing those files — those changes did NOT land. Do not resend them. Continue with a todo that uses OTHER files; re-read a locked file before touching it again later. Work ONE todo at a time.':'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+rewriteNote+budgetNote+truncNote+codingErrorHint(results.text)+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        const tcHint=(typeof localToolChoiceHint==='function')?(await localToolChoiceHint(open,results.text)):'';
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+rewriteNote+budgetNote+truncNote+codingErrorHint(results.text)+tcHint+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
