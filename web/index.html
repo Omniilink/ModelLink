@@ -2799,7 +2799,7 @@ function webllmFit(messages,wantMaxTokens,modelId){
     break;
   }
   const out=(sysOut?[sysOut]:[]).concat(kept);
-  const maxTokens=Math.max(64,Math.min(wantMaxTokens||512,ctx-used-64));
+  const maxTokens=Math.max(64,Math.min(wantMaxTokens||512,ctx-used-64,4096));
   return {messages:out,promptTokens:used,maxTokens:maxTokens};
 }
 async function webllmChatStream(modelId,messages,opts,signal){
@@ -6872,7 +6872,7 @@ async function streamCodingTurn(messages){
 const contentEl=assistantEl.querySelector('.coding-msg-content');
   let modelWarmed=false;try{modelWarmed=!!(typeof window!=='undefined'&&window._warmedModels&&window._warmedModels[turnModel])}catch(e){}
   if(isOllamaModel(turnModel)&&!modelWarmed){try{contentEl.innerHTML=loadingModelHtml()}catch(e){}}
-  else{contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w)w.textContent=(typeof wsWaitingForLocks!=='undefined'&&wsWaitingForLocks?'Waiting for others to finish up… ':'Waiting for model… ')+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}catch(e){}},1000);}
+  else{contentEl.innerHTML='<div class="coding-wait"><span class="chat-spinner"></span><span class="coding-wait-text">Waiting for model…</span></div>';const wt0=Date.now();contentEl._waitTimer=setInterval(()=>{try{const w=contentEl.querySelector('.coding-wait-text');if(w){const pre=isHelper?'Local browser model (slower)… ':(typeof wsWaitingForLocks!=='undefined'&&wsWaitingForLocks?'Waiting for others to finish up… ':'Waiting for model… ');w.textContent=pre+Math.max(1,Math.round((Date.now()-wt0)/1000))+'s'}}catch(e){}},1000);}
   const stopTurnWait=()=>{try{if(contentEl._waitTimer){clearInterval(contentEl._waitTimer);contentEl._waitTimer=null}}catch(e){}};
   codingLiveReset();
   const liveT0=Date.now();
@@ -7563,6 +7563,16 @@ async function agentBuildTree(aid,base,depth){
   if(subs.length)await Promise.all(subs);
   return tree;
 }
+function wsOthersActive(){
+  // True only when another collaborator is currently online or was active very
+  // recently — merge-intent summaries are pointless when you are alone.
+  try{
+    const myId=(window.__user&&window.__user.id)||0;
+    if((wsLastOnline||[]).some(o=>o&&o.user_id&&o.user_id!==myId))return true;
+    const now=Date.now()/1000;
+    return (wsRecentEvents||[]).some(e=>e&&e.user_id&&e.user_id!==myId&&(now-parseFloat(e.at||0))<300);
+  }catch(e){return false}
+}
 async function localIntentFor(path,content){
   // In a collaborative workspace with the local assistant on, the 0.5B writes a
   // 1-2 sentence summary of the change (what it is for + the current todo) that
@@ -7571,6 +7581,7 @@ async function localIntentFor(path,content){
   // MERGE_INTENT.
   try{
     if(!(typeof wsActive!=='undefined'&&wsActive))return '';
+    if(typeof wsOthersActive==='function'&&!wsOthersActive())return '';
     if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('merge_intent'))return '';
     const todo=(typeof codingTodos!=='undefined'&&codingTodos)?codingTodos.filter(t=>!t.done).map(t=>t.text).slice(0,3).join('; '):'';
     const sys='You summarise a code change for a merge assistant. In 1-2 short sentences state WHAT the change is for and its purpose. Output only the summary, no preamble.';
