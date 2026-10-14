@@ -3651,23 +3651,15 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
     }
   }
   if(typeof codingRefFiles!=='undefined'&&codingRefFiles.length>0){
-    sysPrompt+='\nREFERENCED CONTENT FROM OTHER PROJECTS (read-only context — never write outside the open folder, use plain relative paths):\n';
-    for(const rf of codingRefFiles.slice(0,12)){
+    sysPrompt+='\nREFERENCED CONTENT FROM OTHER PROJECTS (READ-ONLY reference material. The file contents are already provided IN FULL below. The referenced project is NOT inside your working folder: do NOT run ls/dir/cat/type or any read/list command on it and do NOT cd into it — use the contents given here directly. Never write outside the open folder; use plain relative paths.):\n';
+    for(const rf of codingRefFiles.slice(0,80)){
       const key=rf.project+'\n'+(rf.path||'');
       try{
+        if(!rf.path){sysPrompt+='\n=== REFERENCED PROJECT: '+rf.project+' (full file contents follow) ===\n';continue}
         let content=(typeof codingRefCache!=='undefined')?codingRefCache[key]:undefined;
-        if(content===undefined){
-          if(rf.path){content=await refReadFile(rf.project,rf.path)}
-          else{
-            const tree=await refProjectTree(rf.project);const names=[];
-            (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.path)names.push(n.path)}})(tree);
-            content='Project '+rf.project+' contains '+names.length+' files:\n'+names.slice(0,100).join('\n');
-            if(names.length>100)content+='\n...and '+(names.length-100)+' more';
-          }
-          try{if(typeof codingRefCache!=='undefined')codingRefCache[key]=content}catch(e){}
-        }
-        if(content)sysPrompt+='\n--- REF: '+rf.project+(rf.path?'/'+rf.path:' (file list)')+' ---\n'+String(content).slice(0,30000)+'\n--- END REF ---\n';
-      }catch(e){const msg=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- REF: '+rf.project+(rf.path?'/'+rf.path:'')+' (could NOT be read: '+msg+') ---\n';try{codingAttachFailures.push('ref '+rf.project+(rf.path?'/'+rf.path:'')+': '+msg)}catch(e2){}}
+        if(content===undefined){content=await refReadFile(rf.project,rf.path);try{if(typeof codingRefCache!=='undefined')codingRefCache[key]=content}catch(e){}}
+        if(content)sysPrompt+='\n--- REF FILE: '+rf.project+'/'+rf.path+' ---\n'+String(content).slice(0,40000)+'\n--- END REF FILE ---\n';
+      }catch(e){const msg=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- REF FILE: '+rf.project+(rf.path?'/'+rf.path:'')+' (could NOT be read: '+msg+') ---\n';try{codingAttachFailures.push('ref '+rf.project+(rf.path?'/'+rf.path:'')+': '+msg)}catch(e2){}}
     }
   }
   if(codingIgnoredFolders.length>0){sysPrompt+='\nIgnored folders (names only — contents not attached):\n';codingIgnoredFolders.forEach(f=>{sysPrompt+='- '+f+' FOLDER (names only)\n'})}
@@ -4035,16 +4027,21 @@ async function sendCodingMessage(){
           try{
             const tree=await refProjectTree(hit.name);
             if(!codingRefFiles.some(x=>x.project===hit.name&&!x.path))codingRefFiles.push({project:hit.name,path:null});
-            const exts=/\.(html?|css|js|mjs|cjs|jsx?|tsx?|json|py|md|txt)$/i;
+            const exts=/\.(html?|css|js|mjs|cjs|jsx?|tsx?|json|py|md|txt|ya?ml|toml|ini|cfg|sh|bat|ps1|sql|xml|csv|env)$/i;
             const cands=[];
             (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path&&exts.test(n.name))cands.push(n)}})(tree);
             cands.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
-            let budget=5;
+            // Attach the real CONTENTS of the referenced project (not just a
+            // file list) so the model never tries to list or read a folder that
+            // is not inside its working directory.
+            let budget=40,bytes=0,added=0;const BYTE_CAP=400000;
             for(const f of cands){
               if(budget<=0)break;
-              if(typeof f.size==='number'&&f.size>50000)continue;
-              if(!codingRefFiles.some(x=>x.project===hit.name&&x.path===f.path)){codingRefFiles.push({project:hit.name,path:f.path,auto:true});budget--}
+              const sz=(typeof f.size==='number')?f.size:0;
+              if(sz>120000||bytes+sz>BYTE_CAP)continue;
+              if(!codingRefFiles.some(x=>x.project===hit.name&&x.path===f.path)){codingRefFiles.push({project:hit.name,path:f.path,auto:true});budget--;bytes+=sz;added++}
             }
+            addCodingSystemMsg('Referenced "'+hit.name+'" — attached '+added+' file'+(added===1?'':'s')+' as read-only context.');
           }catch(e){addCodingSystemMsg('Could not read project "'+hit.name+'": '+e.message)}
         }
       }
