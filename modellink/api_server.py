@@ -6644,9 +6644,17 @@ def _ws_clear_intents(folder, rel):
             bucket.pop(r, None)
 
 
+def _ws_merge_ctx() -> int:
+    try:
+        v = int(_merge_env("OMNIILINK_MERGE_CTX") or 32768)
+    except Exception:
+        v = 32768
+    return max(2048, min(131072, v))
+
+
 def _ws_merge_model_body(model, system, user_text):
     return {"model": model, "stream": False,
-            "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 4096},
+            "options": {"temperature": 0.1, "num_ctx": _ws_merge_ctx(), "num_predict": 4096},
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user_text}]}
 
@@ -6667,6 +6675,18 @@ def _merge_activity_end(t0):
         pass
 
 
+def _merge_record_stats(data):
+    # Ollama /api/chat reports eval_count (tokens) + eval_duration (ns).
+    try:
+        ec = int((data or {}).get("eval_count") or 0)
+        ed = int((data or {}).get("eval_duration") or 0)
+        if ec > 0 and ed > 0:
+            _MERGE_ACTIVITY["last_tokens"] = ec
+            _MERGE_ACTIVITY["last_tps"] = round(ec * 1e9 / ed, 1)
+    except Exception:
+        pass
+
+
 def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str = "") -> str:
     """One-shot, non-streaming Ollama /api/chat call. With agent_id the request
     is relayed through that paired computer's Ollama instead of the server's.
@@ -6678,7 +6698,9 @@ def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str 
         if agent_id:
             resp = relay.open_response(str(agent_id), "/api/chat", body,
                                        read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
-            return str((resp.json().get("message") or {}).get("content") or "")
+            _j = resp.json()
+            _merge_record_stats(_j)
+            return str((_j.get("message") or {}).get("content") or "")
         base = _merge_ollama_url()
         if not base:
             raise RuntimeError("No Ollama URL configured")
@@ -6686,6 +6708,7 @@ def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str 
                                      headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
+        _merge_record_stats(data)
         return str((data.get("message") or {}).get("content") or "")
     finally:
         _merge_activity_end(t0)
@@ -6811,6 +6834,40 @@ def _ws_merge_build_prompt(rel, current, participants):
     return "\n".join(parts)
 
 
+def _ws_merge_chunk(rel, base_text, plist, model, device_id):
+    """One small merge request (1-2 participants). Returns
+    (new_text, applied, unavailable, error, used_device). Never raises: a failed
+    chunk just contributes nothing so the other chunks still land."""
+    if not plist:
+        return base_text, 0, False, "", ""
+    prompt = _ws_merge_build_prompt(rel, base_text, plist)
+    used_device = ""
+    try:
+        if device_id:
+            used_device = str(device_id)
+            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt, agent_id=device_id)
+        else:
+            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
+    except Exception as e1:
+        if used_device:
+            try:
+                reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
+                used_device = ""
+            except Exception as e2:
+                return base_text, 0, True, str(e2), ""
+        else:
+            return base_text, 0, True, str(e1), ""
+    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
+                         reply or "", re.S)
+    out, applied = base_text, 0
+    for old_text, new_text in patches:
+        res = _apply_patch_server(out, old_text, new_text)
+        if res is None or res == out:
+            continue
+        out, applied = res, applied + 1
+    return out, applied, False, "", used_device
+
+
 def _ws_merge_run(user, folder, rel):
     """Blocking merge of one file from its live intents. Returns a dict."""
     full = os.path.join(folder, rel)
@@ -6827,37 +6884,26 @@ def _ws_merge_run(user, folder, rel):
     if len(participants) < 2:
         return {"ok": True, "skipped": True, "reason": "no concurrent edits"}
     model = _ws_merge_model()
-    prompt = _ws_merge_build_prompt(rel, current, participants)
     device_id, _dev_uid = _ws_merge_pick_device(folder, participants)
+    # 3+ editors in ONE request is what crashed the merge model. Fold pairwise
+    # instead: the first two together, then each next person in their own
+    # request, writing once at the end.
+    queue = list(participants)
+    chunks = [queue[:2]] + [[p] for p in queue[2:]]
+    out, total_applied, unavailable, _uerr = current, 0, False, ""
     used_device = ""
-    try:
-        if device_id:
-            used_device = str(device_id)
-            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt, agent_id=device_id)
-        else:
-            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
-    except Exception as e1:
-        if used_device:
-            try:
-                reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
-                used_device = ""
-            except Exception as e2:
-                return {"ok": False, "unavailable": True, "error": str(e2)[:200]}
-        else:
-            return {"ok": False, "unavailable": True, "error": str(e1)[:200]}
-    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
-                         reply or "", re.S)
-    if not patches:
-        return {"ok": True, "skipped": True, "reason": "merge model proposed no changes"}
-    out = current
-    applied = 0
-    for old_text, new_text in patches:
-        res = _apply_patch_server(out, old_text, new_text)
-        if res is None or res == out:
-            continue
-        out = res
-        applied += 1
-    if not applied or out == current:
+    for plist in chunks:
+        new_text, applied, unav, uerr, dev = _ws_merge_chunk(
+            rel, out, plist, model, device_id)
+        if dev:
+            used_device = dev
+        if unav:
+            unavailable, _uerr = True, uerr
+        if applied > 0:
+            out, total_applied = new_text, total_applied + applied
+    if unavailable and total_applied == 0:
+        return {"ok": False, "unavailable": True, "error": _uerr[:200]}
+    if total_applied == 0 or out == current:
         return {"ok": True, "skipped": True, "reason": "proposed patches did not apply"}
     with _WS_MERGE_LOCK:
         try:
@@ -6870,9 +6916,9 @@ def _ws_merge_run(user, folder, rel):
             return {"ok": False, "error": str(e)}
     _ws_clear_intents(folder, rel)
     _ws_log_change(folder, "merge", rel, user, user["id"],
-                   {"by": [p.get("username") for p in participants][:5], "patches": applied,
+                   {"by": [p.get("username") for p in participants][:5], "patches": total_applied,
                     "device": used_device})
-    out = {"ok": True, "merged": True, "patches": applied,
+    out = {"ok": True, "merged": True, "patches": total_applied,
            "members": [p.get("username") for p in participants][:5]}
     if used_device:
         try:
@@ -7856,6 +7902,7 @@ def _server_ollama_tags():
 class MergeConfigBody(BaseModel):
     model: str = ""
     enabled: Optional[bool] = None
+    ctx: Optional[int] = None
 
 
 @app.post("/api/merge/config")
@@ -7871,7 +7918,11 @@ async def merge_config_set(request: Request, req: MergeConfigBody):
         _set_env_var("OMNIILINK_MERGE_MODEL", model)
     if req.enabled is not None:
         _set_env_var("OMNIILINK_MERGE_ENABLED", "1" if req.enabled else "0")
-    return {"status": "ok", "model": _ws_merge_model(), "enabled": _ws_merge_enabled()}
+    if req.ctx is not None:
+        _set_env_var("OMNIILINK_MERGE_CTX",
+                     str(max(2048, min(131072, int(req.ctx)))))
+    return {"status": "ok", "model": _ws_merge_model(),
+            "enabled": _ws_merge_enabled(), "ctx": _ws_merge_ctx()}
 
 
 @app.get("/api/coding/merge-status")
@@ -7893,7 +7944,10 @@ async def merge_status(request: Request):
            "intent_ttl": _WS_INTENT_TTL,
            "running": bool(_MERGE_ACTIVITY["running"]),
            "started_at": _MERGE_ACTIVITY["started"],
-           "last_ms": _MERGE_ACTIVITY["last_ms"]}
+           "last_ms": _MERGE_ACTIVITY["last_ms"],
+           "last_tps": _MERGE_ACTIVITY.get("last_tps", 0),
+           "last_tokens": _MERGE_ACTIVITY.get("last_tokens", 0),
+           "merge_ctx": _ws_merge_ctx()}
     dev = _merge_device_row(user["id"])
     if dev and dev.get("agent_id"):
         with _AGENT_LOCK:

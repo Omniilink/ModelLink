@@ -1414,6 +1414,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 <div id="adm-ollama-models" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
                 <div class="tool-result-sub" style="margin-top:6px">Stored on the server, so it reaches Ollama running on the server machine — not your browser's localhost.</div>
               </div></div>
+              <div class="usage-section-title" style="margin-top:16px">Workspace merge AI</div>
+              <div class="usage-chart-wrap"><div class="usage-chart-body"><div id="adm-merge-box">Checking…</div></div></div>
               <div id="adm-jobs"></div>
             </div>
             <div data-apane="reports" style="display:none">
@@ -3130,7 +3132,8 @@ async function mergeIndicatorPoll(){
   try{const r=await authFetch(API+'/api/coding/merge-status');if(r.ok)mergeIndicatorState=await r.json().catch(()=>null)}catch(e){}
   try{localAssistantIndicatorRender()}catch(e){}
 }
-function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000)}catch(e){}}
+var mergeIndicatorTick=null;
+function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000);if(!mergeIndicatorTick)mergeIndicatorTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}},1000)}catch(e){}}
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
   const showAssistant=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
@@ -3164,7 +3167,9 @@ function localAssistantIndicatorRender(){
     const state=mm.running?'running':(mm.reachable?'idle':'offline');
     let eta='';
     if(mm.running){const exp=(mm.last_ms&&mm.last_ms>0)?(mm.last_ms/1000):12;const el2=(Date.now()/1000)-(mm.started_at||Date.now()/1000);eta=' · ~'+Math.max(0,Math.round(exp-el2))+'s left'}
-    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta,''));
+    let tpsTxt='';
+    if(mm.last_tps&&Number(mm.last_tps)>0)tpsTxt=' · '+Number(mm.last_tps).toFixed(1)+' tok/s';
+    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta+tpsTxt,''));
   }
   el.innerHTML=parts.join('');
   try{updateSuperPromptUI()}catch(e){}
@@ -3452,10 +3457,6 @@ function renderSettings(){
     const oiBtn=document.createElement('button');oiBtn.className='btn btn-primary';oiBtn.style.cssText='font-size:11px;margin-top:8px';oiBtn.textContent='Save Omniiignore';
     oiBtn.onclick=()=>{const patterns=oiTa.value.split('\n').map(s=>s.trim()).filter(Boolean);authFetch(API+'/api/coding/omniiignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns})}).then(()=>{omniiignorePatterns=patterns;showToast('Omniiignore saved','success')})};
     oi.appendChild(oiTa);oi.appendChild(oiBtn);cs.appendChild(oi);
-    const mg=document.createElement('div');mg.style.marginTop='16px';
-    mg.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">Workspace merge AI</div><div id="merge-status-box" style="font-size:12px;color:var(--text-secondary);background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px">Checking…</div>';
-    cs.appendChild(mg);
-    try{mergeStatusRender()}catch(e){}
   }).catch(()=>{});
   body.appendChild(cs);
   // Server keys (admin only — shared by everyone, saved to server .env, live immediately)
@@ -9002,8 +9003,9 @@ async function runDeny(cmdId){
   try{await authFetch(API+'/api/coding/run/command-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunId,cmd_id:cmdId,denied:true})})}catch(e){}
   runsPoll();
 }
-async function mergeStatusRender(){
-  const box=document.getElementById('merge-status-box');if(!box)return;
+async function mergeStatusRender(into){
+  const boxId=into||'merge-status-box';
+  const box=document.getElementById(boxId);if(!box)return;
   box.textContent='Checking…';
   try{
     const r=await authFetch(API+'/api/coding/merge-status');const d=await r.json().catch(()=>({}));
@@ -9025,11 +9027,21 @@ async function mergeStatusRender(){
       (d.tags||[]).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;if(t===cur){o.selected=true;found=true}sel.appendChild(o)});
       if(!found&&cur){const o=document.createElement('option');o.value=cur;o.textContent=cur+(d.model_installed?'':' (not installed)');o.selected=true;sel.appendChild(o)}
       const save=document.createElement('button');save.className='btn btn-ghost btn-sm';save.textContent='Use this model';
-      save.onclick=async()=>{const cfgBody={model:sel.value,enabled:true};const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfgBody)});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge model set to '+dd.model+' — remember to ollama pull it on the server','success');mergeStatusRender()};
+      save.onclick=async()=>{const cfgBody={model:sel.value,enabled:true};const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfgBody)});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge model set to '+dd.model+' — remember to ollama pull it on the server','success');mergeStatusRender(boxId)};
       row.appendChild(sel);row.appendChild(save);
       const tog=document.createElement('button');tog.className='btn btn-ghost btn-sm';tog.textContent=d.enabled?'Disable merge':'Enable merge';
-      tog.onclick=async()=>{await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!d.enabled})});mergeStatusRender()};
+      tog.onclick=async()=>{await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!d.enabled})});mergeStatusRender(boxId)};
       row.appendChild(tog);
+      // Merge context window slider (4k-128k). Saved server-side; applies to
+      // every merge request (larger fits more editors, uses more RAM).
+      const ctxRow=document.createElement('div');ctxRow.style.cssText='display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;width:100%';
+      const ctxLab=document.createElement('span');ctxLab.className='tool-result-sub';ctxLab.textContent='Context window';
+      const ctx=document.createElement('input');ctx.type='range';ctx.min='4';ctx.max='128';ctx.step='4';ctx.value=String(Math.round((d.merge_ctx||32768)/1024));ctx.style.flex='1';ctx.style.minWidth='140px';
+      const ctxV=document.createElement('span');ctxV.className='tool-result-sub';ctxV.style.minWidth='44px';ctxV.textContent=Math.round((d.merge_ctx||32768)/1024)+'k';
+      ctx.oninput=()=>{ctxV.textContent=ctx.value+'k'};
+      ctx.onchange=async()=>{const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ctx:Number(ctx.value)*1024})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge context set to '+ctx.value+'k','success')};
+      ctxRow.appendChild(ctxLab);ctxRow.appendChild(ctx);ctxRow.appendChild(ctxV);
+      box.appendChild(ctxRow);
     }
     box.appendChild(row);
   }catch(e){box.textContent='Could not check merge status';}
@@ -13007,6 +13019,7 @@ async function admLoadOverview(){try{const r=await authFetch(API+'/api/admin/ove
   kv(document.getElementById('adm-env'),[['App directory',caps.app_dir],['Platform',caps.platform],['Python',caps.python],['Execution mode',caps.shell_mode],['Shell reason',caps.shell_reason],['Host volume',caps.host_root||'—'],['Docker CLI',caps.docker_version||'not installed'],['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed'],['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—'],['git token',caps.git_token?'configured':'not set']]);
   kv(document.getElementById('adm-access'),[['Allowlist',(caps.admin_users||[]).join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']]);
   const jb=document.getElementById('adm-jobs');jb.innerHTML='';(d.jobs||[]).forEach(j=>{const p=document.createElement('div');p.className='usage-chart-wrap';p.innerHTML='<div class="usage-chart-header">Job '+escapeHtml(j.kind)+' — '+escapeHtml(j.status)+'</div><div class="usage-chart-body"><pre class="code-block">'+escapeHtml((j.lines||[]).join('\n'))+'</pre></div>';jb.appendChild(p)});
+  try{mergeStatusRender('adm-merge-box')}catch(e){}
 }catch(e){}}
 async function admLoadOllama(){
   const st=document.getElementById('adm-ollama-status');if(!st)return;
