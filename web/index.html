@@ -1873,7 +1873,7 @@ async function embedEnsure(onProgress){
   webllmEmbedPending=(async()=>{
     const lib=await webllmLoadLib();
     if(webllmEmbedEngine){try{await webllmEmbedEngine.unload()}catch(e){}webllmEmbedEngine=null;webllmEmbedModelId=''}
-    const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{if(onProgress)onProgress({text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)})}catch(e){}}});
+    const engine=await webllmCreateEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{if(onProgress)onProgress({text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)})}catch(e){}}});
     webllmEmbedEngine=engine;webllmEmbedModelId=model;webllmMarkDownloaded(model);
     return engine;
   })().catch(e=>{webllmEmbedPending=null;throw e});
@@ -2696,6 +2696,11 @@ async function webllmReloadEngines(){
   try{for(const k of Object.keys(webllmEngines)){try{await webllmEngines[k].unload()}catch(e){}}}catch(e){}
   webllmEngines={};
 }
+async function webllmResetGpu(btn){
+  if(btn)btn.disabled=true;
+  try{await webllmReloadEngines()}catch(e){}try{showToast('Resetting in-browser GPU — models reload on next use','info')}catch(e2){}
+  if(btn)btn.disabled=false;
+}
 const WEBLLM_LABELS={
   'Llama-3.2-1B-Instruct-q4f32_1-MLC':'Llama 3.2 1B',
   'Llama-3.2-3B-Instruct-q4f32_1-MLC':'Llama 3.2 3B',
@@ -2726,6 +2731,24 @@ async function webllmLoadLib(){
   if(webllmLib)return webllmLib;
   webllmLib=await import(/* webpackIgnore: true */ WEBLLM_LIB_URL);
   return webllmLib;
+}
+const WEBLLM_WORKER_SRC='import{WebWorkerMLCEngineHandler}from"https://esm.run/@mlc-ai/web-llm";const h=new WebWorkerMLCEngineHandler();self.onmessage=(e)=>{h.onmessage(e)};';
+async function webllmCreateEngine(modelId,engineConfig){
+  // Run the model in a Web Worker so heavy GPU inference does not freeze the
+  // tab; fall back to main-thread if workers are unavailable or fail.
+  const lib=await webllmLoadLib();
+  if(typeof Worker!=='undefined'){
+    let worker=null,url='';
+    try{
+      url=URL.createObjectURL(new Blob([WEBLLM_WORKER_SRC],{type:'application/javascript'}));
+      worker=new Worker(url,{type:'module'});
+      try{return await lib.CreateWebWorkerMLCEngine(worker,modelId,engineConfig)}
+      catch(e){try{worker.terminate()}catch(e2){}throw e}
+    }catch(e){
+      try{if(url)URL.revokeObjectURL(url)}catch(e2){}
+    }
+  }
+  return lib.CreateMLCEngine(modelId,engineConfig);
 }
 async function webllmCatalog(){
   const lib=await webllmLoadLib();
@@ -2769,22 +2792,16 @@ async function webllmGetEngine(modelId,onProgress,resident){
     // Free memory before loading: evict every non-resident engine.
     await webllmEvictEngines(false);
     const lib=await webllmLoadLib();
-    const make=()=>webllmCreateSerialized(()=>lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}}));
+    const make=()=>webllmCreateSerialized(()=>webllmCreateEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}}));
     let engine;
     try{engine=await make()}
     catch(e){
       const msg=String((e&&e.message)||e);
-      // Transient GPU-context problems: adapter unavailable, device lost, OOM,
-      // or the f16 capability probe failing ("rgba16float canvas not supported").
-      if(/compatible GPU|adapter|device.?lost|out of memory|OOM|buffer size|canvas|rgba16float|shader-f16|f16/i.test(msg)){
+      if(/compatible GPU|adapter|device.?lost|out of memory|OOM|buffer size/i.test(msg)){
         // Free EVERYTHING (even resident engines), let the GPU settle, retry once.
         await webllmEvictEngines(true);
-        await new Promise(r=>setTimeout(r,1500));
-        try{engine=await make()}
-        catch(e2){
-          const m2=String((e2&&e2.message)||e2);
-          throw new Error(m2+' — the browser WebGPU context looks stuck. Hard-reload the page (Ctrl+F5) to reset it; if it persists, close other tabs using the GPU.');
-        }
+        await new Promise(r=>setTimeout(r,500));
+        engine=await make();
       }else throw e;
     }
     webllmEngines[modelId]=engine;webllmMarkDownloaded(modelId);
@@ -3201,6 +3218,7 @@ function renderSettings(){
   wsw.onclick=()=>{wsw.classList.toggle('on');webllmSetEnabled(wsw.classList.contains('on'));try{webllmRenderSummary()}catch(e){}try{loadModels()}catch(e){}showToast('In-browser models '+(wsw.classList.contains('on')?'ON':'OFF'),'info')};
   wrow.appendChild(wsw);wsec.appendChild(wrow);
   const wbtn=document.createElement('button');wbtn.className='btn btn-ghost btn-sm';wbtn.style.marginTop='10px';wbtn.textContent='Manage models…';wbtn.onclick=()=>openWebllmModal();wsec.appendChild(wbtn);
+  const wrst=document.createElement('button');wrst.className='btn btn-ghost btn-sm';wrst.style.marginTop='10px';wrst.style.marginLeft='8px';wrst.textContent='Reset in-browser GPU';wrst.title='Unload every in-browser model (frees the GPU and unfreezes the tab). Models reload on next use.';wrst.onclick=function(){webllmResetGpu(this)};wsec.appendChild(wrst);
   const wsum=document.createElement('div');wsum.id='webllm-summary';wsum.className='tool-result-sub';wsum.style.marginTop='8px';wsec.appendChild(wsum);
   // Context window slider (applies to every in-browser model, including the assistant).
   const ctxrow=document.createElement('div');ctxrow.className='key-row';ctxrow.style.marginTop='12px';
@@ -3212,9 +3230,6 @@ function renderSettings(){
   ctxrow.appendChild(ctxl);ctxrow.appendChild(ctx);ctxrow.appendChild(ctxv);wsec.appendChild(ctxrow);
   const ctxnote=document.createElement('div');ctxnote.className='tool-result-sub';ctxnote.style.marginTop='4px';ctxnote.textContent='How much text an in-browser model can hold at once (4k–128k tokens). Larger uses more GPU memory; smaller is faster. Applies to the local assistant too.';
   wsec.appendChild(ctxnote);
-  const gpuBtn=document.createElement('button');gpuBtn.className='btn btn-ghost btn-sm';gpuBtn.style.marginTop='8px';gpuBtn.textContent='Reset in-browser GPU';gpuBtn.title='Unload every in-browser engine and reload the page — use this if a model fails with a GPU/adapter/canvas error';
-  gpuBtn.onclick=async()=>{try{await webllmReloadEngines()}catch(e){}try{showToast('Resetting in-browser GPU…','info')}catch(e){}setTimeout(()=>{try{location.reload()}catch(e){}},300)};
-  wsec.appendChild(gpuBtn);
   body.appendChild(wsec);
   webllmRenderSummary();
   // Local assistant — auto-installed, runs in the background
