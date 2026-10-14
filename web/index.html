@@ -2673,6 +2673,13 @@ const WEBLLM_CTX_KEY='omnilink_webllm_ctx';          // context window (tokens)
 const WEBLLM_CTX_MIN=4096,WEBLLM_CTX_MAX=131072,WEBLLM_CTX_DEFAULT=8192;
 function webllmContextWindow(){try{const v=parseInt(localStorage.getItem(WEBLLM_CTX_KEY),10);if(v>=WEBLLM_CTX_MIN&&v<=WEBLLM_CTX_MAX)return v}catch(e){}return WEBLLM_CTX_DEFAULT}
 function webllmSetContextWindow(n){try{const v=Math.max(WEBLLM_CTX_MIN,Math.min(WEBLLM_CTX_MAX,parseInt(n,10)||WEBLLM_CTX_DEFAULT));localStorage.setItem(WEBLLM_CTX_KEY,String(v))}catch(e){}}
+// The 0.5B boost model gets its own smaller context window (2k-8k).
+const WEBLLM_BOOST_CTX_KEY='omnilink_webllm_boost_ctx';
+const WEBLLM_BOOST_CTX_MIN=2048,WEBLLM_BOOST_CTX_MAX=8192,WEBLLM_BOOST_CTX_DEFAULT=4096;
+function webllmBoostContext(){try{const v=parseInt(localStorage.getItem(WEBLLM_BOOST_CTX_KEY),10);if(v>=WEBLLM_BOOST_CTX_MIN&&v<=WEBLLM_BOOST_CTX_MAX)return v}catch(e){}return WEBLLM_BOOST_CTX_DEFAULT}
+function webllmSetBoostContext(n){try{const v=Math.max(WEBLLM_BOOST_CTX_MIN,Math.min(WEBLLM_BOOST_CTX_MAX,parseInt(n,10)||WEBLLM_BOOST_CTX_DEFAULT));localStorage.setItem(WEBLLM_BOOST_CTX_KEY,String(v))}catch(e){}}
+function webllmIsBoostModel(model){try{return model===(typeof LOCAL_ASSISTANT_MODELS!=='undefined'&&LOCAL_ASSISTANT_MODELS[0]&&LOCAL_ASSISTANT_MODELS[0].id)}catch(e){return false}}
+function webllmContextWindowFor(model){return webllmIsBoostModel(model)?webllmBoostContext():webllmContextWindow()}
 function webllmAppConfigFor(modelId){
   // Override the model's context window (KV cache size) with the user's slider
   // value. Spreads the prebuilt config so everything else stays intact.
@@ -2680,7 +2687,7 @@ function webllmAppConfigFor(modelId){
     const base=webllmLib&&webllmLib.prebuiltAppConfig;if(!base)return undefined;
     const rec=(base.model_list||[]).find(m=>m.model_id===modelId);if(!rec)return base;
     const clone=JSON.parse(JSON.stringify(rec));
-    clone.overrides=Object.assign({},clone.overrides,{context_window_size:webllmContextWindow()});
+    clone.overrides=Object.assign({},clone.overrides,{context_window_size:webllmContextWindowFor(modelId)});
     return Object.assign({},base,{model_list:[clone]});
   }catch(e){return undefined}
 }
@@ -2764,12 +2771,12 @@ function webllmTruncate(text,maxChars,where){
   if(where==='tail')return '…[older text trimmed]…\n'+text.slice(text.length-maxChars);
   return text.slice(0,maxChars)+'\n…[later text trimmed]…';
 }
-function webllmFit(messages,wantMaxTokens){
+function webllmFit(messages,wantMaxTokens,modelId){
   // Fit a request inside the model's context window: keep the system message,
   // keep the most recent turns, drop/trim older ones, and cap the output so
   // prompt + completion cannot exceed the window (the "Prompt tokens exceed
   // context window size" error).
-  const ctx=Math.max(1024,webllmContextWindow());
+  const ctx=Math.max(1024,webllmContextWindowFor(modelId));
   const est=s=>Math.ceil(String(typeof s==='string'?s:JSON.stringify(s||'')).length/4);
   const reserve=Math.max(256,Math.floor(ctx*0.2));
   const budget=Math.max(200,ctx-reserve);
@@ -2797,7 +2804,7 @@ function webllmFit(messages,wantMaxTokens){
 }
 async function webllmChatStream(modelId,messages,opts,signal){
   const enc=new TextEncoder();
-  const fit=webllmFit(messages,opts&&opts.max_tokens);
+  const fit=webllmFit(messages,opts&&opts.max_tokens,modelId);
   const engine=await webllmGetEngine(modelId);
   const params={messages:fit.messages,stream:true,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
@@ -2826,7 +2833,7 @@ async function webllmChatStream(modelId,messages,opts,signal){
 }
 async function webllmComplete(modelId,messages,opts){
   // Non-streaming completion (used by title generation and the optimiser).
-  const fit=webllmFit(messages,opts&&opts.max_tokens);
+  const fit=webllmFit(messages,opts&&opts.max_tokens,modelId);
   const engine=await webllmGetEngine(modelId);
   const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
@@ -2954,7 +2961,7 @@ async function localAssistantEnsure(model,onProgress){
 function localAssistantInit(onProgress){return localAssistantEnsure(localAssistantModel(),onProgress)}
 async function localAssistantCompleteFor(model,messages,opts){
   const engine=await localAssistantEnsure(model);
-  const fit=webllmFit(messages,opts&&opts.max_tokens);
+  const fit=webllmFit(messages,opts&&opts.max_tokens,model);
   const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   const res=await engine.chat.completions.create(params);
@@ -3036,6 +3043,15 @@ async function webllmRenderAssistantSettings(){
     const sw=document.createElement('div');sw.className='toggle-switch'+(assistantBoostOn()?' on':'');
     sw.onclick=()=>{sw.classList.toggle('on');assistantSetBoost(sw.classList.contains('on'));if(sw.classList.contains('on')&&localAssistantEnabled())localAssistantEnsure(LOCAL_ASSISTANT_MODELS[0].id).catch(()=>{});webllmRenderAssistantSettings()};
     row.appendChild(sw);box.appendChild(row);
+  }
+  if(tier>=3&&assistantBoostOn()){
+    const brow=document.createElement('div');brow.className='key-row';
+    const bl=document.createElement('label');bl.textContent='0.5B context window';bl.style.minWidth='170px';
+    const bctx=document.createElement('input');bctx.type='range';bctx.id='webllm-boost-ctx';bctx.min='2';bctx.max='8';bctx.step='1';bctx.value=String(Math.round(webllmBoostContext()/1024));bctx.style.flex='1';
+    const bv=document.createElement('span');bv.className='tool-result-sub';bv.style.minWidth='52px';bv.textContent=Math.round(webllmBoostContext()/1024)+'k';
+    bctx.oninput=()=>{bv.textContent=bctx.value+'k'};
+    bctx.onchange=()=>{webllmSetBoostContext(Number(bctx.value)*1024);showToast('0.5B context set to '+bctx.value+'k — reloads on next use','info');try{const id=LOCAL_ASSISTANT_MODELS[0].id;if(webllmAssistantEngines[id]){webllmAssistantEngines[id].unload().catch(()=>{});delete webllmAssistantEngines[id]}}catch(e){}};
+    brow.appendChild(bl);brow.appendChild(bctx);brow.appendChild(bv);box.appendChild(brow);
   }
   // Semantic search (embeddings) toggle + model selector.
   const embrow=document.createElement('div');embrow.className='toggle-row';embrow.style.alignItems='center';
@@ -4687,7 +4703,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingModelOverride='';codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -5594,7 +5610,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null;
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null;
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -6823,6 +6839,9 @@ function dedupeSeamOverlap(tail,added){
   return added;
 }
 function codingTurnModel(){
+  // A per-run fallback override wins for THIS run only — it never changes the
+  // user's model selection.
+  try{if(codingModelOverride)return codingModelOverride}catch(e){}
   // Coding tool-call offload is an Advanced (3B+) job. When enabled, the loop
   // runs on the browser model; otherwise on the selected model.
   try{if(typeof assistantJobEnabled==='function'&&assistantJobEnabled('coding'))return localAssistantId()}catch(e){}
@@ -7315,7 +7334,7 @@ async function codingAutoContinue(){
         persistCodingChat();
         if(turn.error){
           const fb=((typeof codingFallbackUsed==='undefined'||!codingFallbackUsed)&&!codingStopRequested&&(typeof codingModelError==='function')&&codingModelError(turn.error)&&(typeof codingFallbackModel==='function'))?codingFallbackModel():null;
-          if(fb){codingFallbackUsed=true;try{selectModel(fb)}catch(e){}addCodingSystemMsg('The model failed ('+String(turn.error).slice(0,160)+') — continuing with '+fb+'.');codingHistory.push({role:'user',content:'The previous model failed with: '+String(turn.error).slice(0,300)+'\nYou are now running on '+fb+'. Pick up the unfinished work from the open todos.'});persistCodingChat();continue}
+          if(fb){codingFallbackUsed=true;codingModelOverride=fb;addCodingSystemMsg('The model failed ('+String(turn.error).slice(0,160)+') — continuing this run with '+fb+' (your model selection is unchanged).');codingHistory.push({role:'user',content:'The previous model failed with: '+String(turn.error).slice(0,300)+'\nYou are now running on '+fb+'. Pick up the unfinished work from the open todos.'});persistCodingChat();continue}
           break;
         }
         continue;
