@@ -1124,6 +1124,13 @@ pre{max-width:100%}
            <button class="ws-toggle" id="websearch-toggle" onclick="toggleWebSearch()" title="Let the model search the web for current information" aria-pressed="false">
              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Web</span>
            </button>
+           <button class="ws-toggle" id="superprompt-toggle" onclick="toggleSuperPrompt()" title="Expand your message with the local assistant into a detailed prompt before sending" aria-pressed="false" style="display:none">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 2l2.4 6.2L21 9l-5 4.2L17.5 20 12 16.6 6.5 20 8 13.2 3 9l6.6-.8z"/></svg><span>Super</span>
+           </button>
+           <span id="superprompt-extra" style="display:none;gap:6px;align-items:center">
+             <button class="ws-toggle" id="superresearch-toggle" onclick="toggleSuperResearch()" title="Let the assistant research the web before writing the prompt" aria-pressed="false"><span>Research</span></button>
+             <button class="ws-toggle" id="superfeatures-toggle" onclick="toggleSuperFeatures()" title="Allow the assistant to add closely-related features (off = exactly what you asked)" aria-pressed="false"><span>+Features</span></button>
+           </span>
          </div>
         <div class="img-strip" id="img-strip" style="display:none"></div>
         <div class="input-box">
@@ -2043,6 +2050,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
+  try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
@@ -2548,7 +2556,16 @@ async function sendMessage(){
   }catch(e){}
   // Local chat title on the first message (basic-tier job).
   try{const _f=!chatHistory.some(m=>m.role==='user');if(_f&&typeof localChatTitle==='function'){localChatTitle(text).then(t=>{if(t){chatTitleOverrides[currentChatId]=t;saveChatTitleOverrides();try{saveCurrentChat()}catch(e){}}}).catch(()=>{})}}catch(e){}
-  appendMessage('user',histContent||content);chatHistory.push({role:'user',content:histContent||content});
+  // Auto super-prompt: the local assistant expands the message before the AI sees it.
+  let _modelContent=content;
+  try{
+    if(!imgs.length&&typeof superPromptOn==='function'&&superPromptOn()&&typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&typeof localAssistantReady==='function'&&localAssistantReady()){
+      showToast('Expanding your prompt with the local assistant…','info');
+      const _sp=await buildSuperPrompt(text);
+      if(_sp&&String(_sp).trim()&&String(_sp).trim()!==text)_modelContent=_sp;
+    }
+  }catch(e){}
+  appendMessage('user',histContent||content);chatHistory.push({role:'user',content:histContent||_modelContent});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   if(isOllamaModel(model))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
@@ -2865,6 +2882,7 @@ function webllmFit(messages,wantMaxTokens,modelId){
 async function webllmChatStream(modelId,messages,opts,signal){
   const enc=new TextEncoder();
   const fit=webllmFit(messages,opts&&opts.max_tokens,modelId);
+  try{localAssistantSetStatus({maxTokens:fit.maxTokens},modelId)}catch(e){}
   const engine=await webllmGetEngine(modelId,undefined,webllmIsResident(modelId));
   const params={messages:fit.messages,stream:true,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
@@ -2988,7 +3006,7 @@ const LOCAL_ASSISTANT_KEY='omnilink_local_assistant';
 const LOCAL_ASSISTANT_MODEL_KEY='omnilink_local_assistant_model';
 // ---- capability tiers: a bigger model is trusted with more jobs ----
 // min tier: 1=0.5B, 2=1.5B, 3=3B, 4=7B
-const ASSISTANT_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1, compress:2,summary:2,explain:2,research:2,tool_choice:2,turn_router:2,finding:2, coding:3,merge_intent:3,sanity:3,stubs:3, merge_propose:4};
+const ASSISTANT_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1,super_prompt:1,super_research:1, compress:2,summary:2,explain:2,research:2,tool_choice:2,turn_router:2,finding:2, coding:3,merge_intent:3,sanity:3,stubs:3, merge_propose:4};
 const ASSISTANT_BASIC_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1};
 const ASSISTANT_TIER_NAMES={1:'Basic (0.5B)',2:'Standard (1.5B)',3:'Advanced (3B)',4:'Maximum (7B)'};
 const EMBED_MODELS={small:'snowflake-arctic-embed-s-q0f32-MLC-b4',medium:'snowflake-arctic-embed-m-q0f32-MLC-b4'};
@@ -3027,6 +3045,7 @@ function localAssistantInit(onProgress){return localAssistantEnsure(localAssista
 async function localAssistantCompleteFor(model,messages,opts){
   const engine=await localAssistantEnsure(model);
   const fit=webllmFit(messages,opts&&opts.max_tokens,model);
+  try{localAssistantSetStatus({maxTokens:fit.maxTokens},model)}catch(e){}
   const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   const res=await engine.chat.completions.create(params);
@@ -3059,32 +3078,110 @@ function localAssistantIndicatorModels(){
   try{if(assistantTierIndex()>=3&&assistantBoostOn()){const b=LOCAL_ASSISTANT_MODELS[0].id;if(models.indexOf(b)<0)models.push(b)}}catch(e){}
   return models;
 }
+function assistantPillHtml(dot,pulse,name,stateText,task){
+  return '<div style="display:flex;gap:7px;align-items:center;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);white-space:nowrap;overflow:hidden">'
+    +'<span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;'+pulse+'"></span>'
+    +'<span style="font-weight:600;color:var(--text-primary)">'+escapeHtml(name)+'</span>'
+    +'<span>'+escapeHtml(stateText)+'</span>'
+    +(task?'<span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">'+escapeHtml(task)+'</span>':'')
+    +'</div>';
+}
+var mergeIndicatorState=null,mergeIndicatorTimer=null;
+async function mergeIndicatorPoll(){
+  try{const r=await authFetch(API+'/api/coding/merge-status');if(r.ok)mergeIndicatorState=await r.json().catch(()=>null)}catch(e){}
+  try{localAssistantIndicatorRender()}catch(e){}
+}
+function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000)}catch(e){}}
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
-  if(typeof localAssistantEnabled!=='function'||!localAssistantEnabled()){if(el)el.remove();return}
+  const showAssistant=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
+  const showMerge=!!(mergeIndicatorState&&mergeIndicatorState.enabled);
+  if(!showAssistant&&!showMerge){if(el)el.remove();return}
   if(!el){
-    el=document.createElement('div');el.id='helper-indicator';el.title='Local assistant activity';
-    el.style.cssText='display:flex;gap:6px;align-items:center;margin-left:12px;margin-right:12px;max-width:min(70vw,980px);min-width:0;flex-shrink:1;overflow:hidden';
+    el=document.createElement('div');el.id='helper-indicator';el.title='In-browser + merge model activity';
+    el.style.cssText='display:flex;gap:6px;align-items:center;margin-left:12px;margin-right:12px;max-width:min(80vw,1100px);min-width:0;flex-shrink:1;overflow:hidden';
     const header=document.querySelector('.header');
     const anchor=header&&header.querySelector('.crumbs');
     if(header&&anchor&&anchor.nextSibling)header.insertBefore(el,anchor.nextSibling);
     else if(header)header.insertBefore(el,header.firstChild);
     else{document.body.appendChild(el);el.style.cssText+=';position:fixed;top:56px;left:14px;z-index:360'}
   }
-  el.innerHTML=localAssistantIndicatorModels().map(m=>{
-    const s=localAssistantStatuses[m]||{state:'idle',task:'',tps:0};
-    const dot=s.state==='idle'?'#30a46c':(s.state==='error'?'#e5484d':'#f5a623');
-    const pulse=(s.state==='processing'||s.state==='loading')?'animation:pulse 1s infinite':'';
-    const tps=(s.tps&&s.state!=='idle')?(' · '+s.tps.toFixed(1)+' tok/s'):'';
-    return '<div style="display:flex;gap:7px;align-items:center;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);white-space:nowrap;overflow:hidden">'
-      +'<span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;'+pulse+'"></span>'
-      +'<span style="font-weight:600;color:var(--text-primary)">'+escapeHtml(localAssistantShort(m))+'</span>'
-      +'<span>'+escapeHtml(s.state)+tps+'</span>'
-      +(s.task?'<span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">'+escapeHtml(s.task)+'</span>':'')
-      +'</div>';
-  }).join('');
+  const parts=[];
+  if(showAssistant){
+    for(const m of localAssistantIndicatorModels()){
+      const s=localAssistantStatuses[m]||{state:'idle',task:'',tps:0};
+      const dot=s.state==='idle'?'#30a46c':(s.state==='error'?'#e5484d':'#f5a623');
+      const pulse=(s.state==='processing'||s.state==='loading')?'animation:pulse 1s infinite':'';
+      const tps=(s.tps&&s.state!=='idle')?(' · '+s.tps.toFixed(1)+' tok/s'):'';
+      let eta='';
+      if(s.state==='processing'&&s.tps>0&&s.maxTokens>0&&s.tokens>0){eta=' · ~'+Math.max(0,Math.round((s.maxTokens-s.tokens)/s.tps))+'s left'}
+      parts.push(assistantPillHtml(dot,pulse,localAssistantShort(m),s.state+tps+eta,s.task));
+    }
+  }
+  if(showMerge){
+    const mm=mergeIndicatorState;
+    const dot=mm.running?'#f5a623':(mm.reachable?'#30a46c':'#e5484d');
+    const pulse=mm.running?'animation:pulse 1s infinite':'';
+    const state=mm.running?'running':(mm.reachable?'idle':'offline');
+    let eta='';
+    if(mm.running){const exp=(mm.last_ms&&mm.last_ms>0)?(mm.last_ms/1000):12;const el2=(Date.now()/1000)-(mm.started_at||Date.now()/1000);eta=' · ~'+Math.max(0,Math.round(exp-el2))+'s left'}
+    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta,''));
+  }
+  el.innerHTML=parts.join('');
+  try{updateSuperPromptUI()}catch(e){}
 }
 function localAssistantMaybeAutoStart(){try{localAssistantIndicatorRender();if(localAssistantEnabled()&&webllmSupported()&&!localAssistantReady())localAssistantInit().catch(()=>{})}catch(e){}}
+// ---- Auto super-prompt (chat) ----
+const SUPER_PROMPT_KEY='omnilink_super_prompt',SUPER_RESEARCH_KEY='omnilink_super_research',SUPER_FEATURES_KEY='omnilink_super_features';
+function superPromptOn(){try{return localStorage.getItem(SUPER_PROMPT_KEY)==='1'}catch(e){return false}}
+function superResearchOn(){try{return localStorage.getItem(SUPER_RESEARCH_KEY)==='1'}catch(e){return false}}
+function superFeaturesOn(){try{return localStorage.getItem(SUPER_FEATURES_KEY)==='1'}catch(e){return false}}
+function superSet(key,on){try{localStorage.setItem(key,on?'1':'0')}catch(e){}}
+function updateSuperPromptUI(){
+  try{
+    const wrap=document.getElementById('superprompt-toggle'),extra=document.getElementById('superprompt-extra');
+    const avail=(typeof localAssistantEnabled==='function')&&localAssistantEnabled()&&(typeof localAssistantReady==='function')&&localAssistantReady();
+    if(wrap){wrap.style.display=avail?'':'none';wrap.classList.toggle('on',superPromptOn());wrap.setAttribute('aria-pressed',superPromptOn()?'true':'false')}
+    if(extra)extra.style.display=(avail&&superPromptOn())?'inline-flex':'none';
+    const r=document.getElementById('superresearch-toggle');if(r){r.classList.toggle('on',superResearchOn())}
+    const f=document.getElementById('superfeatures-toggle');if(f){f.classList.toggle('on',superFeaturesOn())}
+  }catch(e){}
+}
+function toggleSuperPrompt(){superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();showToast('Super prompt '+(superPromptOn()?'ON':'OFF'),'info')}
+function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
+function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
+async function superPromptResearch(text){
+  // Research phase (only when the Research toggle is on): search + read a few
+  // pages, then let the assistant extract the relevant facts.
+  try{
+    const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(text)+'&limit=6');
+    const d=await r.json().catch(()=>({}));
+    const hits=(d.results||[]).slice(0,6);
+    let corpus=hits.map((h,i)=>(i+1)+'. '+(h.title||'')+' — '+(h.url||'')+'\n'+String(h.snippet||h.body||'').slice(0,500)).join('\n\n');
+    for(const h of hits.slice(0,2)){
+      try{if(h.url&&/^https?:\/\//i.test(h.url)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(h.url));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- '+h.url+' ---\n'+String(fd.text).slice(0,4000)}}catch(e){}
+    }
+    if(!corpus.trim())return '';
+    const out=String(await localAssistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+'\n\nWeb results:\n'+corpus,300)).trim();
+    return out||corpus.slice(0,1500);
+  }catch(e){return ''}
+}
+async function buildSuperPrompt(text){
+  // Rewrite the user's message into a detailed prompt with the local assistant.
+  try{
+    if(!(typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&localAssistantReady()))return text;
+    const research=superResearchOn(),features=superFeaturesOn();
+    let researchCtx='';
+    if(research)researchCtx=await superPromptResearch(text);
+    const sys='You rewrite a user request into a detailed, precise prompt for an AI assistant. '
+      +'Keep EXACTLY the user\'s intent and scope: do not change what they are asking for. '
+      +(features?'You MAY add a few closely-related, genuinely useful details or features that clearly fit the request.':'Do NOT add any features, extras or scope beyond what the user asked — expand only the clarity and specificity of their request. ')
+      +'Make it specific and unambiguous (inputs, outputs, constraints, edge cases, format) but never invent unrelated requirements. Output ONLY the improved prompt, no preamble or commentary.';
+    const usr='User request:\n'+String(text||'').slice(0,2000)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
+    const out=String(await localAssistantRunJob('super_prompt',sys,usr,900)).trim();
+    return out||text;
+  }catch(e){return text}
+}
 async function localAssistantRoute(text){
   // Ask the 0.5B which available model best fits the request. Returns a model
   // id or '' (no decision). Never blocks if the assistant is not ready.

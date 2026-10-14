@@ -6651,23 +6651,44 @@ def _ws_merge_model_body(model, system, user_text):
                          {"role": "user", "content": user_text}]}
 
 
+_MERGE_ACTIVITY = {"running": False, "started": 0.0, "last_ms": 0}
+
+
+def _merge_activity_begin():
+    _MERGE_ACTIVITY["running"] = True
+    _MERGE_ACTIVITY["started"] = time.time()
+
+
+def _merge_activity_end(t0):
+    _MERGE_ACTIVITY["running"] = False
+    try:
+        _MERGE_ACTIVITY["last_ms"] = int((time.time() - t0) * 1000)
+    except Exception:
+        pass
+
+
 def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str = "") -> str:
     """One-shot, non-streaming Ollama /api/chat call. With agent_id the request
     is relayed through that paired computer's Ollama instead of the server's.
     Raises on any failure. Monkeypatched in tests."""
-    body = _ws_merge_model_body(model, system, user_text)
-    if agent_id:
-        resp = relay.open_response(str(agent_id), "/api/chat", body,
-                                   read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
-        return str((resp.json().get("message") or {}).get("content") or "")
-    base = _merge_ollama_url()
-    if not base:
-        raise RuntimeError("No Ollama URL configured")
-    req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8", "replace"))
-    return str((data.get("message") or {}).get("content") or "")
+    t0 = time.time()
+    _merge_activity_begin()
+    try:
+        body = _ws_merge_model_body(model, system, user_text)
+        if agent_id:
+            resp = relay.open_response(str(agent_id), "/api/chat", body,
+                                       read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
+            return str((resp.json().get("message") or {}).get("content") or "")
+        base = _merge_ollama_url()
+        if not base:
+            raise RuntimeError("No Ollama URL configured")
+        req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        return str((data.get("message") or {}).get("content") or "")
+    finally:
+        _merge_activity_end(t0)
 
 
 def _merge_device_row(user_id) -> dict:
@@ -7822,7 +7843,10 @@ async def merge_status(request: Request):
            "ollama_url": _merge_ollama_url(), "reachable": reachable,
            "model_installed": (model in tags) if reachable else False,
            "tags": tags[:60], "error": oerr, "max_bytes": _WS_MERGE_MAX_BYTES,
-           "intent_ttl": _WS_INTENT_TTL}
+           "intent_ttl": _WS_INTENT_TTL,
+           "running": bool(_MERGE_ACTIVITY["running"]),
+           "started_at": _MERGE_ACTIVITY["started"],
+           "last_ms": _MERGE_ACTIVITY["last_ms"]}
     dev = _merge_device_row(user["id"])
     if dev and dev.get("agent_id"):
         with _AGENT_LOCK:
