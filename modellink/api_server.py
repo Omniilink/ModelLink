@@ -665,7 +665,8 @@ def _csp_policy():
     # WebAssembly, and run workers from blob: URLs — all of which the strict
     # default CSP blocks. Only these hosts/paths are opened up.
     webllm_hosts = ("https://esm.run https://cdn.jsdelivr.net https://huggingface.co"
-                    " https://*.huggingface.co https://*.hf.co")
+                    " https://*.huggingface.co https://*.hf.co"
+                    " https://raw.githubusercontent.com")
     connect = ("connect-src 'self' cloudflareinsights.com"
                + (f" {extra}" if extra else "") + " blob: " + webllm_hosts)
     return ("default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"
