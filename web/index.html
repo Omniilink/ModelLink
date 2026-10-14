@@ -2543,9 +2543,10 @@ function webllmAppConfigFor(modelId){
   }catch(e){return undefined}
 }
 async function webllmReloadEngines(){
-  // Free both engines so the next use rebuilds them with the new context size.
+  // Free all engines so the next use rebuilds them with the new context size.
   try{if(webllmEngine)await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId='';
-  try{if(webllmAssistantEngine)await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId='';
+  try{for(const k of Object.keys(webllmAssistantEngines)){try{await webllmAssistantEngines[k].unload()}catch(e){}}}catch(e){}
+  webllmAssistantEngines={};
 }
 const WEBLLM_LABELS={
   'Llama-3.2-1B-Instruct-q4f32_1-MLC':'Llama 3.2 1B',
@@ -2610,6 +2611,7 @@ async function webllmRemove(modelId){
   try{const lib=await webllmLoadLib();if(typeof lib.deleteModelAllInfoInCache==='function')await lib.deleteModelAllInfoInCache(modelId)}catch(e){}
   webllmUnmark(modelId);
   if(webllmEngineId===modelId){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
+  if(webllmAssistantEngines[modelId]){try{await webllmAssistantEngines[modelId].unload()}catch(e){}delete webllmAssistantEngines[modelId]}
 }
 function webllmMenuItems(){
   if(!webllmEnabled())return[];
@@ -2732,47 +2734,70 @@ const LOCAL_ASSISTANT_MODELS=[
 const LOCAL_ASSISTANT_MODEL='Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC';   // default
 const LOCAL_ASSISTANT_KEY='omnilink_local_assistant';
 const LOCAL_ASSISTANT_MODEL_KEY='omnilink_local_assistant_model';
-let webllmAssistantEngine=null,webllmAssistantModelId='',webllmAssistantPromise=null,webllmAssistantProgress={text:'',progress:0};
+// ---- capability tiers: a bigger model is trusted with more jobs ----
+// min tier: 1=0.5B, 2=1.5B, 3=3B, 4=7B
+const ASSISTANT_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1, compress:2,summary:2,explain:2,research:2,tool_choice:2,turn_router:2,finding:2, coding:3,merge_intent:3,sanity:3,stubs:3, merge_propose:4};
+const ASSISTANT_BASIC_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1};
+const ASSISTANT_TIER_NAMES={1:'Basic (0.5B)',2:'Standard (1.5B)',3:'Advanced (3B)',4:'Maximum (7B)'};
+const EMBED_MODELS={small:'snowflake-arctic-embed-s-q0f32-MLC-b4',medium:'snowflake-arctic-embed-m-q0f32-MLC-b4'};
+const EMBED_MODEL_KEY='omnilink_embed_model';
+const ASSISTANT_BOOST_KEY='omnilink_assistant_basic_boost';
+let webllmAssistantEngines={},webllmAssistantPending={},webllmAssistantProgress={text:'',progress:0};
 function localAssistantEnabled(){try{return localStorage.getItem(LOCAL_ASSISTANT_KEY)==='1'}catch(e){return false}}
 function localAssistantSetEnabled(on){try{localStorage.setItem(LOCAL_ASSISTANT_KEY,on?'1':'0')}catch(e){}}
 function localAssistantModel(){try{const v=localStorage.getItem(LOCAL_ASSISTANT_MODEL_KEY);if(v&&LOCAL_ASSISTANT_MODELS.some(m=>m.id===v))return v}catch(e){}return LOCAL_ASSISTANT_MODEL}
 function localAssistantSetModel(id){try{if(LOCAL_ASSISTANT_MODELS.some(m=>m.id===id))localStorage.setItem(LOCAL_ASSISTANT_MODEL_KEY,id)}catch(e){}}
 function localAssistantLabel(){const m=LOCAL_ASSISTANT_MODELS.find(x=>x.id===localAssistantModel());return m?m.label:localAssistantModel()}
 function localAssistantId(){return 'browser:'+localAssistantModel()}
-function localAssistantReady(){return !!(webllmAssistantEngine&&webllmAssistantModelId===localAssistantModel())}
-async function localAssistantInit(onProgress){
-  if(localAssistantReady())return webllmAssistantEngine;
-  if(webllmAssistantPromise)return webllmAssistantPromise;
-  localAssistantSetStatus({state:'loading',task:'loading model'});
-  webllmAssistantPromise=(async()=>{
-    const model=localAssistantModel();
-    if(webllmAssistantEngine&&webllmAssistantModelId!==model){try{await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId=''}
+function assistantTierIndex(){const id=localAssistantModel();if(/7B/.test(id))return 4;if(/3B/.test(id))return 3;if(/1\.5B/.test(id))return 2;return 1}
+function assistantTierName(){return ASSISTANT_TIER_NAMES[assistantTierIndex()]||'Basic'}
+function assistantJobEnabled(job){try{if(!localAssistantEnabled())return false;return assistantTierIndex()>=(ASSISTANT_JOBS[job]||1)}catch(e){return false}}
+function assistantBoostOn(){try{return localStorage.getItem(ASSISTANT_BOOST_KEY)==='1'}catch(e){return false}}
+function assistantSetBoost(on){try{localStorage.setItem(ASSISTANT_BOOST_KEY,on?'1':'0')}catch(e){}}
+function assistantModelForJob(job){try{if(assistantTierIndex()>=3&&assistantBoostOn()&&ASSISTANT_BASIC_JOBS[job])return LOCAL_ASSISTANT_MODELS[0].id}catch(e){}return localAssistantModel()}
+function embedModel(){try{let v=localStorage.getItem(EMBED_MODEL_KEY);if(assistantTierIndex()<=1)v='small';return v==='medium'?EMBED_MODELS.medium:EMBED_MODELS.small}catch(e){return EMBED_MODELS.small}}
+function embedModelName(){return embedModel()===EMBED_MODELS.medium?'medium':'small'}
+function embedSetModel(v){try{localStorage.setItem(EMBED_MODEL_KEY,v==='medium'?'medium':'small')}catch(e){}}
+function localAssistantReady(){return !!webllmAssistantEngines[localAssistantModel()]}
+async function localAssistantEnsure(model,onProgress){
+  model=model||localAssistantModel();
+  if(webllmAssistantEngines[model])return webllmAssistantEngines[model];
+  if(webllmAssistantPending[model])return webllmAssistantPending[model];
+  localAssistantSetStatus({state:'loading',task:'loading '+webllmLabel(model)});
+  webllmAssistantPending[model]=(async()=>{
     const lib=await webllmLoadLib();
     const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
-    webllmAssistantEngine=engine;webllmAssistantModelId=model;webllmMarkDownloaded(model);
+    webllmAssistantEngines[model]=engine;webllmMarkDownloaded(model);
     localAssistantSetStatus({state:'idle',task:''});
     return engine;
-  })().catch(e=>{webllmAssistantPromise=null;localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});throw e});
-  try{return await webllmAssistantPromise}finally{webllmAssistantPromise=null}
+  })().catch(e=>{delete webllmAssistantPending[model];localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});throw e});
+  try{return await webllmAssistantPending[model]}finally{delete webllmAssistantPending[model]}
 }
-async function localAssistantComplete(messages,opts){
-  const engine=await localAssistantInit();
+function localAssistantInit(onProgress){return localAssistantEnsure(localAssistantModel(),onProgress)}
+async function localAssistantCompleteFor(model,messages,opts){
+  const engine=await localAssistantEnsure(model);
   const params={messages:messages,stream:false};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const res=await engine.chat.completions.create(params);
   const content=(res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
-  try{const u=res&&res.usage;const n=(u&&u.completion_tokens)||0;localAssistantCount(n||Math.ceil(String(content).length/4))}catch(e){}
+  try{const u=res&&res.usage;localAssistantCount((u&&u.completion_tokens)||Math.ceil(String(content).length/4))}catch(e){}
   return content;
 }
-async function localAssistantAsk(system,user,maxTokens,task){
-  localAssistantSetStatus({state:'processing',task:task||'thinking',t0:Date.now(),tokens:0,tps:0});
+async function localAssistantComplete(messages,opts){return localAssistantCompleteFor(localAssistantModel(),messages,opts)}
+async function localAssistantRunJob(job,system,user,maxTokens){
+  // Runs a tier-gated helper job. Returns '' when the job is not enabled at the
+  // current tier (or the assistant is off) so callers can skip/fall back.
   try{
-    const out=await localAssistantComplete([{role:'system',content:system},{role:'user',content:user}],{temperature:0.2,max_tokens:maxTokens||256});
+    if(!assistantJobEnabled(job))return '';
+    const model=assistantModelForJob(job);
+    localAssistantSetStatus({state:'processing',task:job,t0:Date.now(),tokens:0,tps:0});
+    const out=await localAssistantCompleteFor(model,[{role:'system',content:system},{role:'user',content:user}],{temperature:0.2,max_tokens:maxTokens||256});
     localAssistantSetStatus({state:'idle',task:''});
     return out;
-  }catch(e){localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});setTimeout(()=>localAssistantSetStatus({state:'idle',task:''}),4000);throw e}
+  }catch(e){localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});setTimeout(()=>localAssistantSetStatus({state:'idle',task:''}),4000);return ''}
 }
+async function localAssistantAsk(system,user,maxTokens,task){return localAssistantRunJob(task||'titles',system,user,maxTokens)}
 // ---- helper status indicator (shows the model, idle/processing, tok/s, task) ----
 let localAssistantStatus={state:'idle',task:'',tps:0,t0:0,tokens:0};
 function localAssistantSetStatus(patch){try{Object.assign(localAssistantStatus,patch||{});localAssistantIndicatorRender()}catch(e){}}
@@ -2805,13 +2830,13 @@ async function localAssistantRoute(text){
   // Ask the 0.5B which available model best fits the request. Returns a model
   // id or '' (no decision). Never blocks if the assistant is not ready.
   try{
-    if(!localAssistantEnabled()||!localAssistantReady())return '';
+    if(!assistantJobEnabled('routing'))return '';
     const ids=(allModels||[]).map(m=>m.id).filter(id=>id&&id!=='omniilink');
     if(!ids.length)return '';
     const list=ids.slice(0,60).join('\n');
     const sys='You are a model router. Given a user request and a list of available model ids, choose the single best model. Reply with ONLY the exact model id from the list, nothing else. Prefer fast/cheap models for simple chat and stronger models for code, maths or long reasoning.';
     const usr='User request:\n'+String(text||'').slice(0,1200)+'\n\nAvailable models (choose exactly one id):\n'+list;
-    const out=String(await localAssistantAsk(sys,usr,32,'routing')).trim();
+    const out=String(await localAssistantRunJob('routing',sys,usr,32)).trim();
     let pick=ids.find(id=>out===id);
     if(!pick)pick=ids.find(id=>out.indexOf(id)>-1);
     return pick||'';
@@ -2819,12 +2844,36 @@ async function localAssistantRoute(text){
 }
 async function webllmRenderAssistantSettings(){
   const box=document.getElementById('local-assistant-status');if(!box)return;
-  if(!localAssistantEnabled()){box.innerHTML='<div class="tool-result-sub">Turn the toggle on to install the assistant (the model you pick above). It runs on your GPU and stays ready in the background.</div>';return}
-  if(!webllmSupported()){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">This browser has no WebGPU support, so the local assistant cannot run.</div>';return}
-  if(localAssistantReady()){box.innerHTML='<div class="tool-result-sub" style="color:var(--success)">Ready — '+escapeHtml(localAssistantLabel())+' is loaded and handling routing, tool calls, error logs and research.</div>';return}
-  box.innerHTML='<div class="tool-result-sub" id="local-assistant-prog">Installing '+escapeHtml(localAssistantLabel())+'…</div>';
-  try{await localAssistantInit(p=>{const el=document.getElementById('local-assistant-prog');if(el)el.textContent='Installing… '+Math.round((p.progress||0)*100)+'% '+(p.text||'')});const el=document.getElementById('local-assistant-prog');if(el){el.textContent='Ready — '+localAssistantLabel()+' is loaded.';el.style.color='var(--success)'}}
-  catch(e){const el=document.getElementById('local-assistant-prog');if(el){el.textContent='Install failed: '+((e&&e.message)||e);el.style.color='var(--error)'}}
+  box.innerHTML='';
+  const tier=assistantTierIndex();
+  // Which jobs the current tier is trusted with.
+  const jobs=Object.keys(ASSISTANT_JOBS).filter(j=>tier>=(ASSISTANT_JOBS[j]||1));
+  const info=document.createElement('div');info.className='tool-result-sub';info.style.margin='4px 0 8px';
+  info.textContent='Capability: '+assistantTierName()+' — '+(localAssistantEnabled()?'handles':'would handle')+' '+jobs.length+' jobs: '+jobs.join(', ')+'.';
+  box.appendChild(info);
+  // 0.5B boost (only meaningful at Advanced/Maximum tiers).
+  if(tier>=3){
+    const row=document.createElement('div');row.className='toggle-row';row.style.alignItems='center';
+    row.innerHTML='<div><div class="toggle-label">Use the 0.5B for basic jobs</div><div class="toggle-desc">Loads a second tiny model so basic jobs (titles, commits, redaction, translation, routing) run on it, keeping the big model free.</div></div>';
+    const sw=document.createElement('div');sw.className='toggle-switch'+(assistantBoostOn()?' on':'');
+    sw.onclick=()=>{sw.classList.toggle('on');assistantSetBoost(sw.classList.contains('on'));if(sw.classList.contains('on')&&localAssistantEnabled())localAssistantEnsure(LOCAL_ASSISTANT_MODELS[0].id).catch(()=>{});webllmRenderAssistantSettings()};
+    row.appendChild(sw);box.appendChild(row);
+  }
+  // Embedding model selector (semantic search). Locked to Small at Basic tier.
+  const erow=document.createElement('div');erow.className='key-row';
+  const el=document.createElement('label');el.textContent='Embedding model';el.style.minWidth='170px';
+  const esel=document.createElement('select');esel.id='embed-model';
+  [['small','Small — arctic-embed-s (~0.1 GB)'],['medium','Medium — arctic-embed-m (~0.4 GB)']].forEach(([v,label])=>{const o=document.createElement('option');o.value=v;o.textContent=label;if(tier<=1&&v==='medium')o.disabled=true;if(embedModelName()===v)o.selected=true;esel.appendChild(o)});
+  esel.onchange=()=>{embedSetModel(esel.value);showToast('Embedding model set to '+embedModelName(),'info')};
+  erow.appendChild(el);erow.appendChild(esel);box.appendChild(erow);
+  if(tier<=1){const n=document.createElement('div');n.className='tool-result-sub';n.textContent='Embeddings are locked to Small at the Basic (0.5B) tier.';box.appendChild(n)}
+  // Install / status.
+  if(!localAssistantEnabled()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub">Turn the toggle on to install the assistant. It runs on your GPU and stays ready in the background.</div>');return}
+  if(!webllmSupported()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" style="color:var(--error)">This browser has no WebGPU support, so the local assistant cannot run.</div>');return}
+  if(localAssistantReady()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" style="color:var(--success)">Ready — '+escapeHtml(localAssistantLabel())+' is loaded.</div>');return}
+  box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" id="local-assistant-prog">Installing '+escapeHtml(localAssistantLabel())+'…</div>');
+  try{await localAssistantInit(p=>{const el2=document.getElementById('local-assistant-prog');if(el2)el2.textContent='Installing… '+Math.round((p.progress||0)*100)+'% '+(p.text||'')});const el2=document.getElementById('local-assistant-prog');if(el2){el2.textContent='Ready — '+localAssistantLabel()+' is loaded.';el2.style.color='var(--success)'}}
+  catch(e){const el2=document.getElementById('local-assistant-prog');if(el2){el2.textContent='Install failed: '+((e&&e.message)||e);el2.style.color='var(--error)'}}
 }
 </script>
 
@@ -5559,8 +5608,8 @@ async function researchAnswer(question){
       if(top&&/^https?:\/\//i.test(top)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(top));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- PAGE: '+top+' ---\n'+String(fd.text).slice(0,6000)}
     }catch(e){}
     if(!corpus.trim())return 'No web results found for: '+question;
-    if(typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&typeof localAssistantReady==='function'&&localAssistantReady()){
-      try{const ans=String(await localAssistantAsk('You answer a question using ONLY the web results provided. Be concise and factual, cite the source numbers, and say plainly if the results do not answer it.','Question: '+question+'\n\nWeb results:\n'+corpus,400,'research')).trim();if(ans)return ans+'\n\nSources:\n'+hits.map((h,i)=>(i+1)+'. '+(h.url||'')).join('\n')}catch(e){}
+    if(typeof assistantJobEnabled==='function'&&assistantJobEnabled('research')){
+      try{const ans=String(await localAssistantRunJob('research','You answer a question using ONLY the web results provided. Be concise and factual, cite the source numbers, and say plainly if the results do not answer it.','Question: '+question+'\n\nWeb results:\n'+corpus,400)).trim();if(ans)return ans+'\n\nSources:\n'+hits.map((h,i)=>(i+1)+'. '+(h.url||'')).join('\n')}catch(e){}
     }
     return 'Search results for "'+question+'":\n'+corpus.slice(0,4000);
   }catch(e){return 'Research failed: '+((e&&e.message)||e)}
@@ -6540,9 +6589,9 @@ function dedupeSeamOverlap(tail,added){
   return added;
 }
 function codingTurnModel(){
-  // With the local assistant on, coding tool-call rounds run on the tiny
-  // browser model (its own GPU slot) instead of the selected model.
-  try{if(typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&typeof localAssistantReady==='function'&&localAssistantReady())return localAssistantId()}catch(e){}
+  // Coding tool-call offload is an Advanced (3B+) job. When enabled, the loop
+  // runs on the browser model; otherwise on the selected model.
+  try{if(typeof assistantJobEnabled==='function'&&assistantJobEnabled('coding'))return localAssistantId()}catch(e){}
   return selectedModel;
 }
 async function streamCodingTurn(messages){
@@ -6786,12 +6835,12 @@ async function requestFindingLog(){
   // selected model does.
   const model=(typeof selectedModel!=='undefined'&&selectedModel)||'';
   const ask='Log what you learned this run so future runs stop hitting the same wall. Reply with EXACTLY one block and nothing else:\nFINDING:\nKIND: error\nTITLE: <max 12 words>\nPROBLEM: <what kept failing>\nSOLUTION: <what finally worked>\nWHY: <why it failed before>\nLANGUAGE: <file extension you worked in, e.g. js>\nCODE:\n<optional reusable snippet you SAW WORKING, else leave blank — never log untested code; logged snippets are treated as completely trustworthy>\nEND_FINDING\nIf nothing was actually learned, reply with exactly: NO_FINDING';
-  const useLocal=(typeof localAssistantEnabled==='function')&&localAssistantEnabled()&&(typeof localAssistantReady==='function')&&localAssistantReady();
+  const useLocal=(typeof assistantJobEnabled==='function')&&assistantJobEnabled('finding');
   let fullText='';
   if(useLocal){
     try{
       const ctx=codingHistory.slice(-8).map(m=>m.role+': '+String(typeof m.content==='string'?m.content:'').slice(0,700)).join('\n');
-      fullText=String(await localAssistantAsk('You write concise engineering lessons from a coding session. Output exactly one FINDING block, or exactly NO_FINDING.', 'Session excerpt:\n'+ctx+'\n\n'+ask, 512,'finding log'));
+      fullText=String(await localAssistantRunJob('finding','You write concise engineering lessons from a coding session. Output exactly one FINDING block, or exactly NO_FINDING.', 'Session excerpt:\n'+ctx+'\n\n'+ask, 512));
     }catch(e){fullText=''}
   }else{
     codingHistory.push({role:'user',content:ask});
@@ -7258,12 +7307,11 @@ async function localIntentFor(path,content){
   // MERGE_INTENT.
   try{
     if(!(typeof wsActive!=='undefined'&&wsActive))return '';
-    if(typeof localAssistantEnabled!=='function'||!localAssistantEnabled())return '';
-    if(typeof localAssistantReady!=='function'||!localAssistantReady())return '';
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('merge_intent'))return '';
     const todo=(typeof codingTodos!=='undefined'&&codingTodos)?codingTodos.filter(t=>!t.done).map(t=>t.text).slice(0,3).join('; '):'';
     const sys='You summarise a code change for a merge assistant. In 1-2 short sentences state WHAT the change is for and its purpose. Output only the summary, no preamble.';
     const usr='File: '+path+'\nCurrent todo: '+(todo||'(none)')+'\nChange (excerpt):\n'+String(content||'').slice(0,1200);
-    const s=String(await localAssistantAsk(sys,usr,120,'merge intent')).trim().replace(/\s+/g,' ').slice(0,400);
+    const s=String(await localAssistantRunJob('merge_intent',sys,usr,120)).trim().replace(/\s+/g,' ').slice(0,400);
     if(s){try{codingMergeIntents[path]=s;codingMergeIntent=s}catch(e){}return s}
   }catch(e){}
   return '';
