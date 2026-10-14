@@ -1815,7 +1815,28 @@ async function syncChatsFromServer(){
     saveChats(merged);renderChatList();
   }catch(e){}
 }
-function getChatTitle(h){const f=h.find(m=>m.role==='user');const t=msgTextContent(f?f.content:'');return t?t.slice(0,40)+(t.length>40?'...':''):'New Chat'}
+var chatTitleOverrides={};try{chatTitleOverrides=JSON.parse(localStorage.getItem('omnilink_chat_titles')||'{}')}catch(e){chatTitleOverrides={}}
+function saveChatTitleOverrides(){try{localStorage.setItem('omnilink_chat_titles',JSON.stringify(chatTitleOverrides))}catch(e){}}
+function getChatTitle(h){try{if(currentChatId&&chatTitleOverrides[currentChatId])return chatTitleOverrides[currentChatId]}catch(e){}const f=h.find(m=>m.role==='user');const t=msgTextContent(f?f.content:'');return t?t.slice(0,40)+(t.length>40?'...':''):'New Chat'}
+async function localChatTitle(text){
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('titles'))return '';
+    const out=String(await localAssistantRunJob('titles','Summarize the user message as a very short chat title: 6 words or fewer, plain words, no quotes, no trailing period. Reply with only the title.',String(text||'').slice(0,600),24)).trim().replace(/^["'(\[]+|["'),.;:\s]+$/g,'').slice(0,64);
+    return out;
+  }catch(e){return ''}
+}
+async function maybeTranslateReply(text,fromModel){
+  // Basic-tier job. Cloud replies already get the language from the server
+  // prompt, so this only translates replies from a browser model.
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('translation'))return text;
+    const lang=(typeof settingsData!=='undefined'&&settingsData&&settingsData.language)||'';
+    if(!lang||lang==='English')return text;
+    if(!(fromModel&&String(fromModel).indexOf('browser:')===0))return text;
+    const out=String(await localAssistantRunJob('translation','Translate the text into '+lang+'. Keep code blocks, inline code and URLs unchanged. Reply with only the translation.','Text:\n'+String(text||'').slice(0,4000),1024)).trim();
+    return out||text;
+  }catch(e){return text}
+}
 function getPrompts(){try{return JSON.parse(localStorage.getItem('omnilink_prompts')||'[]')}catch(e){return[]}}
 function savePrompts(p){localStorage.setItem('omnilink_prompts',JSON.stringify(p))}
 function getTheme(){return localStorage.getItem('omnilink_theme')||'dark'}
@@ -2407,6 +2428,8 @@ async function sendMessage(){
       if(pick){model=pick;showToast('Local assistant picked '+shortModelId(pick),'info')}
     }
   }catch(e){}
+  // Local chat title on the first message (basic-tier job).
+  try{const _f=!chatHistory.some(m=>m.role==='user');if(_f&&typeof localChatTitle==='function'){localChatTitle(text).then(t=>{if(t){chatTitleOverrides[currentChatId]=t;saveChatTitleOverrides();try{saveCurrentChat()}catch(e){}}}).catch(()=>{})}}catch(e){}
   appendMessage('user',histContent||content);chatHistory.push({role:'user',content:histContent||content});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
@@ -2419,6 +2442,7 @@ async function sendMessage(){
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
       for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
     if(!seenDone){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateMessage(assistantEl,fullText)}
+    try{const _tr=await maybeTranslateReply(fullText,actualModel);if(_tr&&_tr!==fullText){fullText=_tr;updateMessage(assistantEl,fullText)}}catch(e){}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
     addMsgStats(assistantEl.closest('.message'),startTime,fullText,'assistant');
     chatHistory.push({role:'assistant',content:fullText.trim()});saveCurrentChat();maybeAttachReport(assistantEl.closest('.message'),fullText,actualModel,'chat',true);
@@ -4024,7 +4048,21 @@ function parseMergeIntents(text){
   }
   return out;
 }
-async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';codingAttachFailures=[];try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
+// ---- secret / PII scan (warn + one-click redact before cloud sends) ----
+var codingSecretsFound=[],redactSecretsActive=false;
+const SECRET_PATTERNS=[
+  {label:'AWS key',re:/\bAKIA[0-9A-Z]{16}\b/g},
+  {label:'Google API key',re:/\bAIza[0-9A-Za-z_\-]{35}\b/g},
+  {label:'API key',re:/\bsk-[A-Za-z0-9_\-]{20,}\b/g},
+  {label:'GitHub token',re:/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g},
+  {label:'Slack token',re:/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g},
+  {label:'private key',re:/-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g},
+  {label:'password/secret',re:/\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*["'][^"'\n]{6,}["']/gi},
+  {label:'connection string',re:/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s"'@/]+:[^\s"'@/]+@/gi}
+];
+function scanSecrets(text){const found=[];const t=String(text||'');for(const p of SECRET_PATTERNS){p.re.lastIndex=0;let m;while((m=p.re.exec(t))){if(found.indexOf(p.label)<0)found.push(p.label);if(found.length>20)return found}}return found}
+function redactSecretsIn(text){let t=String(text||'');for(const p of SECRET_PATTERNS){t=t.replace(p.re,'[REDACTED:'+p.label+']')}return t}
+async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt='',execOs='',csMode='';codingAttachFailures=[];try{const r=await authFetch(API+'/api/coding/settings');const cs=await r.json();basePrompt=cs.system_prompt||'';execOs=codingExecOs(cs);csMode=String((cs&&cs.sandbox_mode)||'');if(cs.auto_attach_all)await attachAllFiles()}catch(e){execOs=''}
   if(!basePrompt)basePrompt='You are an Omniilink Coding Assistant.';
   if(typeof isRemote==='function'&&isRemote()&&typeof remoteOsKind==='function'){const rk=remoteOsKind();if(rk==='windows')execOs='windows';else if(rk==='linux'||rk==='macos')execOs='linux';else execOs='';}
   // Small local models (3B-7B) blow their context on long file bodies: they
@@ -4058,7 +4096,7 @@ async function buildCodingSystemPrompt(){let basePrompt='',execOs='',csMode='';c
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
-  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content)sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n';else sysPrompt+='\n--- FILE: '+fname+' (empty file) ---\n'}catch(e){const em=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- FILE: '+fname+' (could NOT be read: '+em+') ---\nAsk the user for this file instead of guessing its contents.\n';if(codingAttachFailures.indexOf(fname)<0)codingAttachFailures.push(fname+': '+em)}}}
+  if(codingAtFiles.length>0){sysPrompt+='\nThe user has attached these files:\n';for(const fname of codingAtFiles){try{let content;content=await codingReadFile(fname);if(content){try{const _s=scanSecrets(content);if(_s.length){for(const _L of _s)if(codingSecretsFound.indexOf(_L)<0)codingSecretsFound.push(_L);if(redactSecretsActive)content=redactSecretsIn(content)}}catch(e){}sysPrompt+='\n--- FILE: '+fname+' ---\n'+content+'\n--- END FILE: '+fname+' ---\n'}else sysPrompt+='\n--- FILE: '+fname+' (empty file) ---\n'}catch(e){const em=String((e&&e.message)||'read failed').slice(0,160);sysPrompt+='\n--- FILE: '+fname+' (could NOT be read: '+em+') ---\nAsk the user for this file instead of guessing its contents.\n';if(codingAttachFailures.indexOf(fname)<0)codingAttachFailures.push(fname+': '+em)}}}
   else if(lastOpenedFile&&lastFileContent)sysPrompt+='\nThe user last viewed this file:\n--- FILE: '+lastOpenedFile+' ---\n'+lastFileContent+'\n--- END FILE: '+lastOpenedFile+' ---\n';
   if(typeof codingTreeSnips!=='undefined'&&codingTreeSnips.length>0){
     sysPrompt+='\nWORKSPACE LISTINGS via /tree (read-only — file names for orientation):\n';
@@ -4356,6 +4394,10 @@ function codingProjectLabel(){
 }
 async function codingNotifyTitle(userText){
   try{
+    if(typeof assistantJobEnabled==='function'&&assistantJobEnabled('titles')){
+      const t=String(await localAssistantRunJob('titles','Summarize the coding request as a very short title: 8 words or fewer, plain words, no quotes, no trailing period. Reply with only the title.',String(userText||'').slice(0,600),28)).trim().replace(/\s+/g,' ').replace(/^["'(\[]+|["'),.;:\s]+$/g,'').slice(0,64);
+      if(t)return t;
+    }
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,temperature:0.3,max_tokens:32,messages:[{role:'system',content:'Summarize the coding request as a very short title: 8 words or fewer, plain words, no quotes, no trailing period.'},{role:'user',content:String(userText||'').slice(0,600)}]})});
     if(!r.ok)return '';
     const d=await r.json();
@@ -4495,6 +4537,15 @@ async function sendCodingMessage(){
   if(typeof wsActive!=='undefined'&&wsActive&&typeof wsSecureTargets==='function'){try{await wsSecureTargets(rawText+'\n'+((codingAtFiles||[]).join('\n')),assistantEl)}catch(e){try{wsWaitingForLocks=false}catch(e2){}}}
   let liveT0=Date.now();  try{if(!codingAtFiles.length&&!lastOpenedFile&&codingFolder&&window.lastCodingTree&&window.lastCodingTree.length)autoAttachProjectFiles()}catch(e){}
   let sysPrompt;try{sysPrompt=await buildCodingSystemPrompt()}catch(e){sysPrompt='You are a coding assistant.'}
+  // Warn about secrets in the attached context; offer a one-click redact.
+  try{
+    if(codingSecretsFound.length&&!redactSecretsActive){
+      if(await appConfirm('Possible secret'+(codingSecretsFound.length!==1?'s':'')+' detected in the files being sent: '+codingSecretsFound.join(', ')+'.\n\nRedact them before sending to the model?')){
+        redactSecretsActive=true;try{sysPrompt=await buildCodingSystemPrompt()}finally{redactSecretsActive=false}
+        addCodingSystemMsg('Redacted '+codingSecretsFound.length+' kind(s) of secret from the context.');
+      }
+    }
+  }catch(e){}
   try{if(codingAttachFailures.length)addCodingSystemMsg('Could not read '+codingAttachFailures.length+' attached file'+(codingAttachFailures.length!==1?'s':'')+': '+codingAttachFailures.slice(0,4).join('; ')+(codingAttachFailures.length>4?'…':''))}catch(e){}
   try{if(typeof wsSkippedLocked!=='undefined'&&wsSkippedLocked.length){codingHistory.push({role:'user',content:'LOCK STATUS: the following files are still locked by collaborators and could NOT be secured — do NOT emit FILE_* blocks for them this turn, work on your one current todo using other files instead: '+wsSkippedLocked.map(s=>s.path+' (held by '+s.by+')').join(', ')+'.'})}}catch(e){}
   if(await isPlanMode())sysPrompt+=codingPlanModeNotice();
@@ -12184,8 +12235,19 @@ async function loadGitDiff(){
   try{
     const r=await authFetch(API+'/api/coding/git/diff');
     const d=await r.json();
-    pre.textContent=r.ok?(d.diff||'(no changes)'):(d.error||'diff failed');
+    const diff=r.ok?(d.diff||''):'';
+    pre.textContent=r.ok?(diff||'(no changes)'):(d.error||'diff failed');
+    try{await localCommitMessage(diff)}catch(e){}
   }catch(e){pre.textContent=e.message}
+}
+async function localCommitMessage(diff){
+  // Basic-tier job: auto-fill the commit box with a suggested message.
+  try{
+    if(!diff||typeof assistantJobEnabled!=='function'||!assistantJobEnabled('commit'))return;
+    const box=document.getElementById('git-commit-msg');if(!box||box.value.trim())return;
+    const msg=String(await localAssistantRunJob('commit','Write a single-line git commit message for the diff. Conventional-commit style, 72 characters max, imperative mood, no quotes, no trailing period. Reply with only the message.','Diff (truncated):\n'+String(diff).slice(0,4000),32)).trim().replace(/^["'`]+|["'`]+$/g,'').split('\n')[0].slice(0,100);
+    if(msg){const b=document.getElementById('git-commit-msg');if(b&&!b.value.trim())b.value=msg}
+  }catch(e){}
 }
 async function commitGit(){
   const inp=document.getElementById('git-commit-msg');const msg=inp.value.trim();
