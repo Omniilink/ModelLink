@@ -3299,9 +3299,22 @@ async function webllmRenderAssistantSettings(){
   if(!localAssistantEnabled()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub">Turn the toggle on to install the assistant. It runs on your GPU and stays ready in the background.</div>');return}
   if(!webllmSupported()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" style="color:var(--error)">This browser has no WebGPU support, so the local assistant cannot run.</div>');return}
   if(localAssistantReady()){box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" style="color:var(--success)">Ready — '+escapeHtml(localAssistantLabel())+' is loaded.</div>');return}
-  box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" id="local-assistant-prog">Installing '+escapeHtml(localAssistantLabel())+'…</div>');
-  try{await localAssistantInit(p=>{const el2=document.getElementById('local-assistant-prog');if(el2)el2.textContent='Installing… '+Math.round((p.progress||0)*100)+'% '+(p.text||'')});const el2=document.getElementById('local-assistant-prog');if(el2){el2.textContent='Ready — '+localAssistantLabel()+' is loaded.';el2.style.color='var(--success)'}}
-  catch(e){const el2=document.getElementById('local-assistant-prog');if(el2){el2.textContent='Install failed: '+((e&&e.message)||e);el2.style.color='var(--error)'}}
+  // Live install status: a progress bar, a percentage, and stall detection.
+  const progWrap=document.createElement('div');progWrap.style.cssText='margin-top:8px';
+  const barOuter=document.createElement('div');barOuter.style.cssText='height:8px;background:var(--bg-tertiary);border-radius:5px;overflow:hidden;border:1px solid var(--border)';
+  const bar=document.createElement('div');bar.style.cssText='height:100%;width:0;background:var(--accent);transition:width .2s';barOuter.appendChild(bar);
+  const ptxt=document.createElement('div');ptxt.className='tool-result-sub';ptxt.style.marginTop='5px';
+  ptxt.textContent='Installing '+localAssistantLabel()+' — starting…';
+  progWrap.appendChild(barOuter);progWrap.appendChild(ptxt);box.appendChild(progWrap);
+  let _lastProg=Date.now();
+  const _stall=setInterval(()=>{try{if(Date.now()-_lastProg>12000)ptxt.textContent='No progress for '+Math.round((Date.now()-_lastProg)/1000)+'s — the in-browser worker looks stuck; it will fall back automatically. Check the browser console (WebLLM…) if this repeats.'}catch(e){}},2000);
+  try{
+    await localAssistantInit(p=>{_lastProg=Date.now();const pct=Math.round((p.progress||0)*100);bar.style.width=pct+'%';ptxt.textContent=((p&&p.text)||'Downloading')+' — '+pct+'%'});
+    clearInterval(_stall);bar.style.width='100%';ptxt.textContent='Ready — '+localAssistantLabel()+' is loaded.';ptxt.style.color='var(--success)';
+  }catch(e){
+    clearInterval(_stall);bar.style.width='100%';bar.style.background='var(--error)';
+    ptxt.textContent='Install failed: '+((e&&e.message)||e)+' — see the browser console (WebLLM…).';ptxt.style.color='var(--error)';
+  }
 }
 </script>
 
