@@ -4103,22 +4103,24 @@ async function previewFileScanned(path){
     const csp=r.headers.get('Content-Security-Policy')||'';
     if(csp.indexOf('sandbox')>=0){appAlert('Preview server is out of date: it still sandboxes real tabs, so games cannot capture input.\n\nRun update.bat on the server, wait for it to restart, then Preview again.');try{if(tab)tab.close()}catch(e){}return}
   }catch(e){appAlert('Preview failed: '+e.message);try{if(tab)tab.close()}catch(e2){}return}
-  // Clean, shareable URL: /api/preview/<owner>/<project>/<file>. The owner is the
-  // folder's owner (for workspaces/shared projects) so the link is stable and
-  // readable; the in-app sandboxed frame still uses the token URL.
-  let url='';
+  // Clean, shareable URL for a REAL TAB: /api/preview/<owner>/<project>/<file>
+  // (the tab sends the session cookie, so its assets authenticate normally).
+  // The in-app SANDBOXED frame must use the token URL: its subrequests are
+  // cross-site, so the session cookie is withheld and the clean URL's CSS/JS
+  // would 401 — which is why the HTML loaded but its stylesheet did not.
+  let cleanUrl='';
   try{
     const uname=currentProjectOwner||(window.__user&&window.__user.username)||'';
     const proj=String(codingFolder||'').split(/[\\/]/).filter(Boolean).pop()||'';
     if(uname&&proj&&!fsHandle&&!isRemote()&&(currentProjectOwner||!currentProjectShared)){
-      url=API+'/api/preview/'+encodeURIComponent(uname)+'/'+encodeURIComponent(proj)+'/'+String(path).split('/').map(encodeURIComponent).join('/');
+      cleanUrl=API+'/api/preview/'+encodeURIComponent(uname)+'/'+encodeURIComponent(proj)+'/'+String(path).split('/').map(encodeURIComponent).join('/');
     }
   }catch(e){}
-  if(!url)url=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
-  if(tab){tab.location.href=url;showToast('Preview opened in a new browser tab','success');return}
+  const tokenUrl=API+'/api/coding/preview?path='+encodeURIComponent(path)+(token?'&t='+encodeURIComponent(token):'')+'&tab=1';
+  if(tab){tab.location.href=cleanUrl||tokenUrl;showToast('Preview opened in a new browser tab','success');return}
   showToast('Popup blocked — allow popups for full preview; using in-app frame','error');
   frame.removeAttribute('srcdoc');
-  frame.src=url;
+  frame.src=tokenUrl;
   document.getElementById('file-preview-modal').classList.add('open');
   try{frame.focus();if(frame.contentWindow)frame.contentWindow.focus()}catch(e){}
 }

@@ -671,7 +671,7 @@ def _csp_policy():
                + (f" {extra}" if extra else "") + " blob: " + webllm_hosts)
     return ("default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"
             " static.cloudflareinsights.com https://esm.run https://cdn.jsdelivr.net; "
-            "worker-src 'self' blob:; "
+            "worker-src 'self' blob: https://esm.run https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline'; img-src 'self' data: *.ytimg.com blob:; "
             f"{connect}; font-src 'self'; object-src 'none'; "
             "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
