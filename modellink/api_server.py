@@ -3119,6 +3119,89 @@ async def admin_findings_delete(request: Request, finding_id: int):
         conn.close()
 
 
+_PROBLEM_CAP = 5000
+
+
+@app.post("/api/coding/problem")
+async def coding_problem_create(request: Request):
+    """Record one recurring coding-loop problem as it happens (a wrong command,
+    a wasted full rewrite, a patch miss, ...). Any signed-in user may report;
+    the admin "Common problems" tab aggregates these into patterns."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    data, bad = await _safe_json(request)
+    if bad:
+        return bad
+    data = data or {}
+    kind = str(data.get("kind", "")).strip().lower()[:40]
+    signature = str(data.get("signature", "")).strip().lower()[:120]
+    if not kind or not signature:
+        return JSONResponse(status_code=400, content={"error": "kind and signature required"})
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO problem_events (user_id, username, kind, signature, sample, model, language)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], user.get("username", ""), kind, signature,
+             str(data.get("sample", "")).strip()[:500],
+             str(data.get("model", ""))[:128], str(data.get("language", ""))[:32]))
+        conn.execute("DELETE FROM problem_events WHERE id NOT IN"
+                     " (SELECT id FROM problem_events ORDER BY id DESC LIMIT ?)",
+                     (_PROBLEM_CAP,))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/common-problems")
+async def admin_common_problems(request: Request):
+    """Aggregate recurring problems into patterns for the admin panel: how often
+    each kind/signature happened, when, on which models, and by how many users."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT kind, signature, COUNT(*) AS count,"
+            " MIN(created_at) AS first_seen, MAX(created_at) AS last_seen,"
+            " COUNT(DISTINCT COALESCE(NULLIF(model,''),'(none)')) AS model_count,"
+            " COUNT(DISTINCT COALESCE(NULLIF(username,''),'?')) AS user_count,"
+            " GROUP_CONCAT(DISTINCT NULLIF(model,'')) AS model_list,"
+            " (SELECT e2.sample FROM problem_events e2"
+            "   WHERE e2.kind = e.kind AND e2.signature = e.signature"
+            "   ORDER BY e2.id DESC LIMIT 1) AS sample"
+            " FROM problem_events e GROUP BY kind, signature"
+            " ORDER BY count DESC, last_seen DESC LIMIT 100").fetchall()
+        problems = [dict(r) for r in rows]
+        frows = conn.execute(
+            "SELECT kind, title, COUNT(*) AS count, MAX(created_at) AS last_seen,"
+            " GROUP_CONCAT(DISTINCT NULLIF(model,'')) AS model_list"
+            " FROM findings GROUP BY kind, title ORDER BY count DESC, last_seen DESC LIMIT 100"
+        ).fetchall()
+        findings = [dict(r) for r in frows]
+        total = conn.execute("SELECT COUNT(*) AS c FROM problem_events").fetchone()["c"]
+        return {"problems": problems, "findings": findings, "total": total}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/common-problems")
+async def admin_common_problems_clear(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM problem_events")
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+
 # ==========================================
 # Trade Me valuation & flipping pipeline (admin only)
 # One-shot category scrape (plain HTTP first, Playwright hook reserved),

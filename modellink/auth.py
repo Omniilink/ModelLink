@@ -260,6 +260,23 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_findings_kind ON findings(kind, created_at);
         CREATE INDEX IF NOT EXISTS idx_findings_model ON findings(model, provider, language);
 
+        -- Recurring coding-loop problems (wrong commands, wasted rewrites,
+        -- patch misses, ...) reported by the client as they happen. Aggregated
+        -- into the admin "Common problems" tab as patterns.
+        CREATE TABLE IF NOT EXISTS problem_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT DEFAULT '',
+            kind TEXT DEFAULT '',
+            signature TEXT DEFAULT '',
+            sample TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            language TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_problem_events_sig ON problem_events(kind, signature);
+
         CREATE TABLE IF NOT EXISTS trademe_listings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tm_url TEXT DEFAULT '',

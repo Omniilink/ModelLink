@@ -1391,6 +1391,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="audit" onclick="admShow('audit',this)">Audit</button>
               <button class="modal-tab" data-atab="review" onclick="admShow('review',this)">Review <span id="adm-rev-count"></span></button>
 <button class="modal-tab" data-atab="findings" onclick="admShow('findings',this)">Findings</button>
+              <button class="modal-tab" data-atab="problems" onclick="admShow('problems',this)">Common problems</button>
             </div>
             <div data-apane="overview">
               <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -1454,6 +1455,10 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="tool-row"><label class="tool-result-sub">Kind <select id="adm-find-kind" onchange="admLoadFindings()"><option value="" selected>All</option><option value="error">Errors</option><option value="code">Code</option></select></label><label class="tool-result-sub">Model <input type="text" id="adm-find-model" placeholder="qwen, gemini…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Provider <input type="text" id="adm-find-provider" placeholder="groq, ollama…" style="width:110px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Lang <input type="text" id="adm-find-language" placeholder="js, py…" style="width:70px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><label class="tool-result-sub">Search <input type="text" id="adm-find-q" placeholder="keywords…" style="width:130px" onkeydown="if(event.key==='Enter')admLoadFindings()" /></label><button class="btn btn-ghost btn-sm" onclick="admLoadFindings()">Refresh</button><span class="tool-result-sub" id="adm-find-meta"></span></div>
               <div class="tool-result-sub" style="margin-bottom:10px">Lessons the AI logged after overcoming repeated failures, plus reusable snippets. The coding loop reads these (filtered to its own setup) before retrying a stuck task.</div>
               <div id="adm-findings"></div>
+            </div>
+            <div data-apane="problems" style="display:none">
+              <div class="tool-row"><span class="tool-result-sub">Recurring problems detected in the coding loop — wrong commands, wasted rewrites, patch misses, plus the lessons the AI logged. Grouped into patterns by how often they happen.</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admLoadCommonProblems()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admClearCommonProblems()">Clear</button><span class="tool-result-sub" id="adm-prob-meta"></span></div>
+              <div id="adm-problems"></div>
             </div>
           </div>
         </div>
@@ -5468,6 +5473,7 @@ function trackPatchMiss(path,failed){
     if(!path)return;
     if(!failed){delete patchMissByFile[path];return}
     patchMissByFile[path]=(patchMissByFile[path]||0)+1;
+    if(typeof reportCodingProblem==='function')reportCodingProblem('patch','patch-old-not-found',path+' ('+patchMissByFile[path]+'x this run)');
   }catch(e){}
 }
 // STEP BUDGET: the model counts what its own plan needs and declares it with
@@ -6047,6 +6053,44 @@ if(/(^|\W)(dir|ls|cat|type|del|mkdir|rm)\s*:\s*(cannot access|No such file|not f
   if(!hints.length)return '';
   return '\nHINTS (do not repeat the failing action blindly):\n- '+hints.join('\n- ');
 }
+var codingProblemSeenAt={};
+function classifyCommandProblem(cmd,result){
+  // Name the recurring failure so it can be counted as a pattern. Keys mirror
+  // codingErrorHint's regexes (same evidence, same names).
+  const t=String((result&&result.stderr)||'')+'\n'+String((result&&result.stdout)||'');
+  const c=String(cmd||'');
+  if(/is not recognized as an internal or external command/i.test(t))return{kind:'wrong_command',signature:'windows-unknown-command',sample:c};
+  if(/command not found/i.test(t))return{kind:'wrong_command',signature:'posix-unknown-command',sample:c};
+  if(/(dir|ls|cat|type|del|mkdir|rm)\s*:\s*(cannot access|No such file|not found|is a directory)/i.test(t))return{kind:'wrong_shell',signature:'shell-mixed-up',sample:c};
+  if(/document is not defined|window is not defined|getElementById/i.test(t))return{kind:'runtime',signature:'browser-code-under-node',sample:c};
+  if(/(Unexpected token\s*<|Cannot use import statement outside a module)/i.test(t))return{kind:'runtime',signature:'jsx-or-esm-under-node',sample:c};
+  if(/Old text not found/i.test(t))return{kind:'patch',signature:'patch-old-not-found',sample:c};
+  if(/EADDRINUSE|address already in use/i.test(t))return{kind:'runtime',signature:'port-in-use',sample:c};
+  if(/ModuleNotFoundError|ImportError/i.test(t))return{kind:'runtime',signature:'missing-module',sample:c};
+  if(/SyntaxError|JSONDecodeError/i.test(t))return{kind:'runtime',signature:'syntax-error',sample:c};
+  if(/timed out|Command timed out|never exits|Blocked:/i.test(t))return{kind:'blocked',signature:'long-running-command',sample:c};
+  return null;
+}
+function reportCodingProblem(kind,signature,sample){
+  // Best-effort, throttled (same pattern at most once per 15s) so the loop
+  // cannot spam the server. Feeds the admin "Common problems" tab.
+  try{
+    if(!kind||!signature)return;
+    const now=Date.now(),key=kind+':'+signature;
+    if(codingProblemSeenAt[key]&&now-codingProblemSeenAt[key]<15000)return;
+    codingProblemSeenAt[key]=now;
+    authFetch(API+'/api/coding/problem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,signature:signature,sample:String(sample||'').slice(0,500),model:(typeof selectedModel!=='undefined'&&selectedModel)||'',language:(typeof findingLanguage==='function'?findingLanguage():'')})}).catch(()=>{});
+  }catch(e){}
+}
+function reportCommandProblem(cmd,result){
+  try{if(!result||Number(result.exit_code)===0)return;const p=classifyCommandProblem(cmd,result);if(p)reportCodingProblem(p.kind,p.signature,p.sample+'\n'+String(result.stderr||result.stdout||'').slice(0,300))}catch(e){}
+}
+function resultsTroubled(text){
+  // A round's tool output shows a wrong command / wasted action. Arms the
+  // end-of-run learning log so the model reports what it learned.
+  const t=String(text||'');
+  return /is not recognized as an internal or external command|command not found|(dir|ls|cat|type|del|mkdir|rm)\s*:\s*(cannot access|No such file|not found|is a directory)|document is not defined|window is not defined|Unexpected token\s*<|Cannot use import statement outside a module|Old text not found|EADDRINUSE|address already in use|ModuleNotFoundError|ImportError|SyntaxError|JSONDecodeError|locked by another editor/i.test(t);
+}
 function extractTodoFiles(text){
   // Filenames a todo claims as deliverables: `backticked` or name.ext tokens
   const files=new Set();
@@ -6364,6 +6408,9 @@ async function codingAutoContinue(){
       if(results.hasExecuted){
         codingRounds++;
         if(results.wrote)troubledProgress=true;
+        // A wrong command (or other recognizable failure) this round means the
+        // run learned something worth logging — arm the learning log.
+        if(typeof resultsTroubled==='function'&&resultsTroubled(results.text))troubledRun=true;
         planJustExtended=false;
         // Every file block this round matched disk byte for byte: nothing was
         // written. Re-running the same edit will not help, so say so loudly
@@ -6976,13 +7023,15 @@ async function codingWriteFileSmart(path,content){
   if(conv.ok){
     const r=await codingWriteFile(path,conv.patched);
     if(r&&r.ok&&!r.noop){r.converted=true;r.hunks=conv.hunks;
-      r.note='Applied as '+conv.hunks+' targeted edit'+(conv.hunks!==1?'s':'')+' instead of a full rewrite — use FILE_PATCH next time.'}
+      r.note='Applied as '+conv.hunks+' targeted edit'+(conv.hunks!==1?'s':'')+' instead of a full rewrite — use FILE_PATCH next time.';
+      if(typeof reportCodingProblem==='function')reportCodingProblem('edit_policy','full-rewrite-converted',path+' ('+conv.hunks+' hunk'+(conv.hunks!==1?'s':'')+')');}
     return r;
   }
   const r=await codingWriteFile(path,content);
   if(r&&r.ok&&!r.noop&&conv.ratio<0.35){
     rewriteFails++;
     r.note='Full rewrite changed only '+Math.round(conv.ratio*100)+'% of '+path+' — use FILE_PATCH next time.';
+    if(typeof reportCodingProblem==='function')reportCodingProblem('edit_policy','low-ratio-full-rewrite',path+' ('+Math.round(conv.ratio*100)+'%)');
   }
   r.ratio=conv.ratio;r.mode='full';
   return r;
@@ -7057,9 +7106,9 @@ if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenP
 }
 async function codingRunCmd(command){
   const blocked=blockingCommandReason(command);
-  if(blocked)return{stdout:'',stderr:blocked,exit_code:1};
-  if(isRemote()){try{return await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'')}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}}
-  try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error)return{stdout:'',stderr:data.error,exit_code:1};return{stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code}}catch(e){return{stdout:'',stderr:e.message,exit_code:1}}
+  if(blocked){const r={stdout:'',stderr:blocked,exit_code:1};reportCommandProblem(command,r);return r}
+  if(isRemote()){try{const r=await agentExecSync(remoteCtx.id,command,120000,remoteCtx.path||'');reportCommandProblem(command,r);return r}catch(e){const r={stdout:'',stderr:e.message,exit_code:1};reportCommandProblem(command,r);return r}}
+  try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){const rr={stdout:'',stderr:data.error,exit_code:1};reportCommandProblem(command,rr);return rr}const res={stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code};reportCommandProblem(command,res);return res}catch(e){const rr={stdout:'',stderr:e.message,exit_code:1};reportCommandProblem(command,rr);return rr}
 }
 const CODING_SETTINGS_KEY='omnilink_coding_settings';
 async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved)return saved}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}}
@@ -11874,7 +11923,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings()}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings();else if(name==='problems')admLoadCommonProblems()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -11969,6 +12018,38 @@ async function admLoadFindings(){
     });
   }catch(e){box.innerHTML='<div class="tool-status">Could not load findings.</div>'}
 }
+async function admLoadCommonProblems(){
+  const box=document.getElementById('adm-problems');if(!box)return;
+  try{
+    const r=await authFetch(API+'/api/admin/common-problems');
+    if(!r.ok){box.innerHTML='<div class="tool-status">Could not load common problems.</div>';return}
+    const d=await r.json();
+    const probs=d.problems||[],finds=d.findings||[];
+    const meta=document.getElementById('adm-prob-meta');if(meta)meta.textContent=(d.total||0)+' events · '+probs.length+' patterns';
+    box.innerHTML='';
+    if(!probs.length&&!finds.length){box.innerHTML='<div class="tool-status">No problems recorded yet — they appear here as the coding AI hits (and reports) recurring issues.</div>';return}
+    if(probs.length){
+      box.insertAdjacentHTML('beforeend','<div class="usage-section-title">Detected patterns</div>');
+      probs.forEach(p=>{
+        const card=document.createElement('div');card.className='prompt-card';
+        card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(p.signature||'(unnamed)')+'</span><span class="act-status act-status-error" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(p.kind||'')+'</span></div>'
+          +'<div class="tool-result-sub" style="margin:2px 0 6px">'+Number(p.count||0)+'× · '+(p.user_count||0)+' user(s) · '+escapeHtml(p.model_list||'—')+' · last '+escapeHtml(p.last_seen||'')+'</div>'
+          +(p.sample?'<div class="prompt-content">'+escapeHtml(p.sample)+'</div>':'');
+        box.appendChild(card);
+      });
+    }
+    if(finds.length){
+      box.insertAdjacentHTML('beforeend','<div class="usage-section-title" style="margin-top:14px">Logged findings (by topic)</div>');
+      finds.forEach(f=>{
+        const card=document.createElement('div');card.className='prompt-card';
+        card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(f.title||'(untitled)')+'</span><span class="act-status act-status-success" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(f.kind||'')+'</span></div>'
+          +'<div class="tool-result-sub">'+Number(f.count||0)+'× · '+escapeHtml(f.model_list||'—')+' · last '+escapeHtml(f.last_seen||'')+'</div>';
+        box.appendChild(card);
+      });
+    }
+  }catch(e){box.innerHTML='<div class="tool-status">Could not load common problems.</div>'}
+}
+async function admClearCommonProblems(){if(!(await appConfirm('Clear all recorded common-problem events?')))return;try{const r=await authFetch(API+'/api/admin/common-problems',{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admLoadCommonProblems()}catch(e){showToast('Could not clear: '+e.message,'error')}}
 function admTmMoney(n){if(n==null||isNaN(Number(n)))return '—';return '$'+Number(n).toLocaleString(undefined,{maximumFractionDigits:2})}
 function admTmMoneySigned(v){const n=Number(v);const c=n>=0?'var(--success)':'var(--error)';return '<span style="color:'+c+'">'+(n>=0?'+':'-')+'$'+Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>'}
 function admTmRange(up,lo){
