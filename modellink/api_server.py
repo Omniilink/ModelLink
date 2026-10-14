@@ -7194,6 +7194,38 @@ async def coding_shares(request: Request):
     return {"owned": [dict(r) for r in owned], "shared_with_me": [dict(r) for r in shared]}
 
 
+def _ensure_workspace_for_share(folder: str, owner_id: int, member_id: int, role: str):
+    """Sharing a project automatically makes it a collaborative workspace: create
+    the workspace row (with its .omniilink marker) if missing, and add the
+    grantee as a member so both sides edit with merge + presence."""
+    conn = get_db()
+    try:
+        ws = conn.execute("SELECT * FROM workspaces WHERE folder = ?", (folder,)).fetchone()
+        if not ws:
+            name = os.path.basename(folder.rstrip("\\/")) or "shared"
+            cur = conn.execute("INSERT INTO workspaces (folder, owner_id, name) VALUES (?, ?, ?)",
+                               (folder, owner_id, name))
+            wid = cur.lastrowid
+            try:
+                os.makedirs(os.path.join(folder, ".omniilink"), exist_ok=True)
+                with open(os.path.join(folder, ".omniilink", "workspace.json"),
+                          "w", encoding="utf-8") as f:
+                    f.write('{"workspace_id": %d}' % wid)
+            except Exception:
+                pass
+            conn.commit()
+            ws = conn.execute("SELECT * FROM workspaces WHERE id = ?", (wid,)).fetchone()
+        if ws:
+            conn.execute("INSERT INTO workspace_members (workspace_id, user_id, role)"
+                         " VALUES (?, ?, ?) ON CONFLICT(workspace_id, user_id)"
+                         " DO UPDATE SET role = excluded.role",
+                         (ws["id"], member_id, role))
+            conn.commit()
+        return ws
+    finally:
+        conn.close()
+
+
 @app.post("/api/coding/shares")
 async def coding_share_create(request: Request):
     user, err = _require_auth(request)
@@ -7233,7 +7265,8 @@ async def coding_share_create(request: Request):
                            (user["id"], folder, target["id"])).fetchone()
     finally:
         conn.close()
-    return {"status": "ok", "share": dict(row)}
+    ws = _ensure_workspace_for_share(folder, user["id"], target["id"], role)
+    return {"status": "ok", "share": dict(row), "workspace_id": (ws["id"] if ws else None)}
 
 
 @app.delete("/api/coding/shares/{share_id}")
@@ -7243,6 +7276,8 @@ async def coding_share_delete(request: Request, share_id: int):
         return err
     conn = get_db()
     try:
+        row = conn.execute("SELECT folder, shared_with_id FROM project_shares"
+                           " WHERE id = ? AND owner_id = ?", (share_id, user["id"])).fetchone()
         cur = conn.execute("DELETE FROM project_shares WHERE id = ? AND owner_id = ?",
                            (share_id, user["id"]))
         conn.commit()
@@ -7251,6 +7286,18 @@ async def coding_share_delete(request: Request, share_id: int):
         conn.close()
     if not n:
         return JSONResponse(status_code=404, content={"error": "Share not found"})
+    if row:
+        # Also drop them from the auto-created workspace.
+        conn = get_db()
+        try:
+            ws = conn.execute("SELECT id FROM workspaces WHERE folder = ?",
+                              (row["folder"],)).fetchone()
+            if ws:
+                conn.execute("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+                             (ws["id"], row["shared_with_id"]))
+                conn.commit()
+        finally:
+            conn.close()
     return {"status": "ok"}
 
 
