@@ -2780,7 +2780,16 @@ function localAssistantCount(n){try{localAssistantStatus.tokens=(localAssistantS
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
   if(typeof localAssistantEnabled!=='function'||!localAssistantEnabled()){if(el)el.remove();return}
-  if(!el){el=document.createElement('div');el.id='helper-indicator';el.title='Local assistant activity';el.style.cssText='position:fixed;right:14px;bottom:14px;z-index:360;background:var(--bg-secondary,#17191d);border:1px solid var(--border);border-radius:10px;padding:6px 10px;font-size:11px;font-family:var(--mono);color:var(--text-secondary);box-shadow:0 6px 18px rgba(0,0,0,.3);display:flex;gap:8px;align-items:center;max-width:360px';document.body.appendChild(el)}
+  if(!el){
+    el=document.createElement('div');el.id='helper-indicator';el.title='Local assistant activity';
+    el.style.cssText='display:flex;gap:8px;align-items:center;margin-right:10px;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);max-width:360px;flex-shrink:0;overflow:hidden';
+    // Dock it into the top header bar, in the right-hand cluster.
+    const header=document.querySelector('.header');
+    const spacer=header&&header.querySelector('.header-spacer');
+    if(header&&spacer&&spacer.nextSibling)header.insertBefore(el,spacer.nextSibling);
+    else if(header)header.appendChild(el);
+    else{document.body.appendChild(el);el.style.cssText+=';position:fixed;top:56px;right:14px;z-index:360'}
+  }
   const s=localAssistantStatus;
   const dot=s.state==='idle'?'#30a46c':(s.state==='error'?'#e5484d':'#f5a623');
   const pulse=(s.state==='processing'||s.state==='loading')?'animation:pulse 1s infinite':'';
