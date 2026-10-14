@@ -2749,47 +2749,53 @@ async function webllmLoadLib(){
   webllmLib=await import(/* webpackIgnore: true */ WEBLLM_LIB_URL);
   return webllmLib;
 }
+const WEBLLM_WORKER_URL='/static/webllm-worker.js';
 const WEBLLM_WORKER_SRC='import{WebWorkerMLCEngineHandler}from"https://esm.run/@mlc-ai/web-llm";const h=new WebWorkerMLCEngineHandler();self.onmessage=(e)=>{h.onmessage(e)};';
+async function webllmWorkerStart(lib,worker,modelId,cfg){
+  // Start the engine in a worker. A worker that never starts reports no progress
+  // and never settles (which used to wedge every later load), so a no-progress
+  // watchdog rejects instead of hanging.
+  let lastProgress=0,settled=false;
+  const userCb=cfg.initProgressCallback;
+  const cfg2=Object.assign({},cfg,{initProgressCallback:(r)=>{lastProgress=Date.now();try{if(userCb)userCb(r)}catch(e){}}});
+  const engineP=lib.CreateWebWorkerMLCEngine(worker,modelId,cfg2);
+  engineP.then(()=>{settled=true},()=>{settled=true});
+  const watchdog=new Promise((_,rej)=>{
+    const t0=Date.now();
+    const iv=setInterval(()=>{
+      if(settled){clearInterval(iv);return}
+      if(Date.now()-t0>20000&&lastProgress===0){clearInterval(iv);rej(new Error('worker engine did not start'))}
+    },1000);
+    engineP.then(()=>clearInterval(iv),()=>clearInterval(iv));
+  });
+  try{const engine=await Promise.race([engineP,watchdog]);settled=true;return engine}
+  catch(e){settled=true;throw e}
+}
 async function webllmCreateEngine(modelId,engineConfig){
-  // Run the model in a Web Worker so heavy GPU inference does not freeze the
-  // tab. If the worker never starts (it reports no progress and never
-  // resolves, which used to wedge every later engine load), terminate it and
-  // fall back to main-thread instead of hanging forever.
+  // Run the model off the main thread so heavy GPU inference never freezes the
+  // tab. Prefer the same-origin served worker (reliable), then a blob worker,
+  // then main-thread as a last resort.
   const lib=await webllmLoadLib();
   const cfg=Object.assign({},engineConfig);
   if(typeof Worker!=='undefined'){
-    let worker=null,url='',lastProgress=0;
-    const userCb=cfg.initProgressCallback;
-    cfg.initProgressCallback=(r)=>{lastProgress=Date.now();try{if(userCb)userCb(r)}catch(e){}};
-    try{
-      url=URL.createObjectURL(new Blob([WEBLLM_WORKER_SRC],{type:'application/javascript'}));
-      worker=new Worker(url,{type:'module'});
-      let settled=false;
-      const engineP=lib.CreateWebWorkerMLCEngine(worker,modelId,cfg);
-      engineP.then(()=>{settled=true},()=>{settled=true});
-      const watchdog=new Promise((_,rej)=>{
-        const t0=Date.now();
-        const iv=setInterval(()=>{
-          if(settled){clearInterval(iv);return}
-          if(Date.now()-t0>15000&&lastProgress===0){clearInterval(iv);rej(new Error('worker engine did not start'))}
-        },1000);
-        engineP.then(()=>clearInterval(iv),()=>clearInterval(iv));
-      });
+    const attempts=[];
+    if(location&&location.origin)attempts.push({kind:'url',url:WEBLLM_WORKER_URL});
+    attempts.push({kind:'blob',src:WEBLLM_WORKER_SRC});
+    for(const a of attempts){
+      let worker=null,url='';
       try{
-        const engine=await Promise.race([engineP,watchdog]);
-        settled=true;return engine;
+        if(a.kind==='url'){worker=new Worker(a.url,{type:'module'})}
+        else{url=URL.createObjectURL(new Blob([a.src],{type:'application/javascript'}));worker=new Worker(url,{type:'module'})}
+        return await webllmWorkerStart(lib,worker,modelId,cfg);
       }catch(e){
-        settled=true;
-        try{worker.terminate()}catch(e2){}
-        try{console.warn('WebLLM worker failed ('+((e&&e.message)||e)+'), using main thread')}catch(e2){}
-        return lib.CreateMLCEngine(modelId,cfg);
+        try{if(worker)worker.terminate()}catch(e2){}
+        try{console.warn('WebLLM '+a.kind+' worker failed: '+((e&&e.message)||e))}catch(e2){}
+      }finally{
+        try{if(url)URL.revokeObjectURL(url)}catch(e2){}
       }
-    }catch(e){
-      try{if(worker)worker.terminate()}catch(e2){}
-    }finally{
-      try{if(url)URL.revokeObjectURL(url)}catch(e2){}
     }
   }
+  try{console.warn('WebLLM: falling back to main-thread inference')}catch(e){}
   return lib.CreateMLCEngine(modelId,cfg);
 }
 async function webllmCatalog(){
@@ -3251,6 +3257,13 @@ async function webllmRenderAssistantSettings(){
     const sw=document.createElement('div');sw.className='toggle-switch'+(assistantBoostOn()?' on':'');
     sw.onclick=()=>{sw.classList.toggle('on');assistantSetBoost(sw.classList.contains('on'));if(sw.classList.contains('on')&&localAssistantEnabled())localAssistantEnsure(LOCAL_ASSISTANT_MODELS[0].id).catch(()=>{});webllmRenderAssistantSettings()};
     row.appendChild(sw);box.appendChild(row);
+    // Coding offload is opt-in: a small in-browser model is slower and makes
+    // more mistakes than the cloud model, so keep it OFF by default.
+    const crow=document.createElement('div');crow.className='toggle-row';crow.style.alignItems='center';
+    crow.innerHTML='<div><div class="toggle-label">Run coding turns on the browser model</div><div class="toggle-desc">OFF by default — your selected (cloud) model does the coding. A small in-browser model is slower and makes more mistakes (wrong files, wrong extensions). Turn this on only if you want coding to run fully locally.</div></div>';
+    const csw=document.createElement('div');csw.className='toggle-switch'+(codingOffloadOn()?' on':'');
+    csw.onclick=()=>{csw.classList.toggle('on');codingOffloadSet(csw.classList.contains('on'));showToast('Browser coding offload '+(csw.classList.contains('on')?'ON (slower, less accurate)':'OFF'),csw.classList.contains('on')?'info':'success')};
+    crow.appendChild(csw);box.appendChild(crow);
   }
   if(tier>=3&&assistantBoostOn()){
     const brow=document.createElement('div');brow.className='key-row';
@@ -7074,13 +7087,16 @@ function codingTaskNeedsCode(text){
   const t=String(text||'').toLowerCase();
   return /\b(add|build|create|make|implement|write|edit|fix|change|update|refactor|remove|delete|rename|integrate|generate|convert|move|replace|style|design|attach|wire|hook|support)\b/.test(t);
 }
+function codingOffloadOn(){try{return localStorage.getItem('omnilink_coding_offload')==='1'}catch(e){return false}}
+function codingOffloadSet(on){try{localStorage.setItem('omnilink_coding_offload',on?'1':'0')}catch(e){}}
 function codingTurnModel(){
   // A per-run fallback override wins for THIS run only — it never changes the
   // user's model selection.
   try{if(codingModelOverride)return codingModelOverride}catch(e){}
-  // Coding tool-call offload is an Advanced (3B+) job. When enabled, the loop
-  // runs on the browser model; otherwise on the selected model.
-  try{if(typeof assistantJobEnabled==='function'&&assistantJobEnabled('coding'))return localAssistantId()}catch(e){}
+  // Coding tool-call offload is an Advanced (3B+) job AND must be explicitly
+  // enabled — a small in-browser model makes more mistakes, so by default the
+  // coding loop runs on the user's selected (usually cloud) model.
+  try{if(codingOffloadOn()&&typeof assistantJobEnabled==='function'&&assistantJobEnabled('coding'))return localAssistantId()}catch(e){}
   return selectedModel;
 }
 async function streamCodingTurn(messages){
