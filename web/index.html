@@ -2752,20 +2752,45 @@ async function webllmLoadLib(){
 const WEBLLM_WORKER_SRC='import{WebWorkerMLCEngineHandler}from"https://esm.run/@mlc-ai/web-llm";const h=new WebWorkerMLCEngineHandler();self.onmessage=(e)=>{h.onmessage(e)};';
 async function webllmCreateEngine(modelId,engineConfig){
   // Run the model in a Web Worker so heavy GPU inference does not freeze the
-  // tab; fall back to main-thread if workers are unavailable or fail.
+  // tab. If the worker never starts (it reports no progress and never
+  // resolves, which used to wedge every later engine load), terminate it and
+  // fall back to main-thread instead of hanging forever.
   const lib=await webllmLoadLib();
+  const cfg=Object.assign({},engineConfig);
   if(typeof Worker!=='undefined'){
-    let worker=null,url='';
+    let worker=null,url='',lastProgress=0;
+    const userCb=cfg.initProgressCallback;
+    cfg.initProgressCallback=(r)=>{lastProgress=Date.now();try{if(userCb)userCb(r)}catch(e){}};
     try{
       url=URL.createObjectURL(new Blob([WEBLLM_WORKER_SRC],{type:'application/javascript'}));
       worker=new Worker(url,{type:'module'});
-      try{return await lib.CreateWebWorkerMLCEngine(worker,modelId,engineConfig)}
-      catch(e){try{worker.terminate()}catch(e2){}throw e}
+      let settled=false;
+      const engineP=lib.CreateWebWorkerMLCEngine(worker,modelId,cfg);
+      engineP.then(()=>{settled=true},()=>{settled=true});
+      const watchdog=new Promise((_,rej)=>{
+        const t0=Date.now();
+        const iv=setInterval(()=>{
+          if(settled){clearInterval(iv);return}
+          if(Date.now()-t0>15000&&lastProgress===0){clearInterval(iv);rej(new Error('worker engine did not start'))}
+        },1000);
+        engineP.then(()=>clearInterval(iv),()=>clearInterval(iv));
+      });
+      try{
+        const engine=await Promise.race([engineP,watchdog]);
+        settled=true;return engine;
+      }catch(e){
+        settled=true;
+        try{worker.terminate()}catch(e2){}
+        try{console.warn('WebLLM worker failed ('+((e&&e.message)||e)+'), using main thread')}catch(e2){}
+        return lib.CreateMLCEngine(modelId,cfg);
+      }
     }catch(e){
+      try{if(worker)worker.terminate()}catch(e2){}
+    }finally{
       try{if(url)URL.revokeObjectURL(url)}catch(e2){}
     }
   }
-  return lib.CreateMLCEngine(modelId,engineConfig);
+  return lib.CreateMLCEngine(modelId,cfg);
 }
 async function webllmCatalog(){
   const lib=await webllmLoadLib();
