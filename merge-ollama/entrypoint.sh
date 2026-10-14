@@ -7,6 +7,20 @@
 set -e
 MODEL="${OMNIILINK_MERGE_MODEL:-gemma-merge:2b}"
 
+# The CPU-only image may ship the binary as /ollama (not on PATH); put it on
+# PATH so the rest of this script can just call `ollama`.
+if ! command -v ollama >/dev/null 2>&1; then
+  for cand in /ollama /usr/bin/ollama /usr/local/bin/ollama; do
+    if [ -x "$cand" ]; then
+      mkdir -p /usr/local/bin
+      ln -sf "$cand" /usr/local/bin/ollama
+      PATH="/usr/local/bin:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+
 echo "[merge-ollama] starting ollama (merge model: $MODEL)"
 ollama serve &
 SERVE_PID=$!

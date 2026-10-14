@@ -101,8 +101,13 @@ services:
   # The GGUF is mounted read-only from ./models (gitignored — drop your
   # .gguf there on the ProDesk) and imported on first start by entrypoint.sh;
   # the import persists in the merge-ollama-data volume. CPU-only limits.
+  #
+  # CPU-only image (~30 MB) instead of the official ollama/ollama (~9 GB):
+  # the official image bundles NVIDIA CUDA + AMD ROCm runtimes for GPU hosts,
+  # which are pure dead weight on this CPU-only box. alpine/ollama ships just
+  # the CPU runners. Pin the version; bump it deliberately.
   merge-ollama:
-    image: ollama/ollama:latest
+    image: alpine/ollama:0.40.3
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/merge/entrypoint.sh"]
     volumes:
@@ -111,6 +116,8 @@ services:
       - merge-ollama-data:/root/.ollama
     environment:
       - OMNIILINK_MERGE_MODEL=${OMNIILINK_MERGE_MODEL:-gemma-merge:2b}
+      # Listen on all interfaces so the api container can reach it.
+      - OLLAMA_HOST=0.0.0.0
       # Keep the model resident and run one request at a time (CPU box).
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
       - OLLAMA_NUM_PARALLEL=1
