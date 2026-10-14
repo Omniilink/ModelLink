@@ -1661,6 +1661,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           <button onclick="refreshCodingTree()" title="Refresh file tree">Refresh</button>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
+          <button onclick="openSemanticSearch()" title="Search files by meaning (enable semantic search in Settings)">Semantic</button>
           <button onclick="genTestsFor()" title="Generate tests for a source file (review before saving)">Tests</button>
           <button onclick="openActivityModal()" title="Recent file changes — undo any of them">Activity</button>
           <button onclick="openShareModal()" title="Share this project with another user">Share</button>
@@ -1859,6 +1860,86 @@ async function localProjectSummary(files){
     if(!files||!files.length)return '';
     const list=files.slice(0,40).join('\n');
     return String(await localAssistantRunJob('summary','In 1-2 short sentences describe what this software project is and does, based on its file names. Reply with only the description.','Files:\n'+list,120)).trim();
+  }catch(e){return ''}
+}
+const EMBED_ENABLED_KEY='omnilink_embed_enabled';
+function embedEnabled(){try{return localStorage.getItem(EMBED_ENABLED_KEY)==='1'}catch(e){return false}}
+function embedSetEnabled(on){try{localStorage.setItem(EMBED_ENABLED_KEY,on?'1':'0')}catch(e){}}
+let webllmEmbedEngine=null,webllmEmbedModelId='',webllmEmbedPending=null;
+async function embedEnsure(onProgress){
+  const model=embedModel();
+  if(webllmEmbedEngine&&webllmEmbedModelId===model)return webllmEmbedEngine;
+  if(webllmEmbedPending)return webllmEmbedPending;
+  webllmEmbedPending=(async()=>{
+    const lib=await webllmLoadLib();
+    if(webllmEmbedEngine){try{await webllmEmbedEngine.unload()}catch(e){}webllmEmbedEngine=null;webllmEmbedModelId=''}
+    const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{if(onProgress)onProgress({text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)})}catch(e){}}});
+    webllmEmbedEngine=engine;webllmEmbedModelId=model;webllmMarkDownloaded(model);
+    return engine;
+  })().catch(e=>{webllmEmbedPending=null;throw e});
+  try{return await webllmEmbedPending}finally{webllmEmbedPending=null}
+}
+async function embedTexts(texts){
+  const engine=await embedEnsure();
+  const res=await engine.embeddings.create({input:texts,model:webllmEmbedModelId});
+  return ((res&&res.data)||[]).map(d=>d.embedding||[]);
+}
+function cosineSim(a,b){let d=0,na=0,nb=0;for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i]}return d/((Math.sqrt(na)*Math.sqrt(nb))||1)}
+var semanticIndex={folder:'',at:0,files:[]};
+async function semanticIndexBuild(onProgress){
+  if(!codingFolder)return;
+  if(semanticIndex.folder===codingFolder&&semanticIndex.files.length&&Date.now()-semanticIndex.at<600000)return;
+  const r=await authFetch(API+'/api/coding/files');const d=await r.json();if(!r.ok||!d.tree)throw new Error('could not list files');
+  const exts=/\.(html?|css|js|mjs|cjs|jsx?|tsx?|json|py|md|txt|ya?ml|toml|ini|sh|sql)$/i;
+  const list=[];(function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.path&&exts.test(n.name||n.path)&&(n.size||0)<80000)list.push(n.path)}})(d.tree);
+  const files=[];
+  for(let i=0;i<list.length;i++){
+    const p=list[i];let c='';try{c=await codingReadFile(p)}catch(e){continue}
+    if(!c)continue;
+    const text=String(c),chunks=[];
+    for(let j=0;j<text.length&&chunks.length<8;j+=1200)chunks.push(p+'\n'+text.slice(j,j+1200));
+    try{const vecs=await embedTexts(chunks);vecs.forEach((v,k)=>{if(v&&v.length)files.push({path:p,vec:v,snip:chunks[k].slice(0,180)})})}catch(e){}
+    if(onProgress)onProgress({done:i+1,total:list.length});
+  }
+  semanticIndex={folder:codingFolder,at:Date.now(),files:files};
+}
+async function semanticSearch(query,k){
+  await semanticIndexBuild();
+  const qv=(await embedTexts([String(query||'')]))[0];
+  if(!qv)return [];
+  const scored=semanticIndex.files.map(f=>({path:f.path,score:cosineSim(qv,f.vec),snip:f.snip})).sort((a,b)=>b.score-a.score);
+  const seen={},out=[];for(const s of scored){if(seen[s.path])continue;seen[s.path]=1;out.push(s);if(out.length>=(k||10))break}
+  return out;
+}
+function openSemanticSearch(){
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=400;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='680px';
+  m.innerHTML='<div class="modal-header"><h2>Semantic search</h2></div><div class="modal-body"><div class="tool-row"><input id="sem-q" placeholder="Search files by meaning…" style="flex:1" onkeydown="if(event.key===\'Enter\')runSemanticSearch()"/><button class="btn btn-primary btn-sm" onclick="runSemanticSearch()">Search</button></div><div class="tool-result-sub" id="sem-status"></div><div id="sem-results"></div></div>';
+  ov.appendChild(m);document.body.appendChild(ov);ov.onclick=e=>{if(e.target===ov)ov.remove()};
+  const i=m.querySelector('#sem-q');if(i)i.focus();
+}
+async function runSemanticSearch(){
+  const box=document.getElementById('sem-results'),st=document.getElementById('sem-status');
+  const q=(document.getElementById('sem-q')||{}).value||'';
+  if(!q.trim())return;
+  if(typeof embedEnabled==='function'&&!embedEnabled()){if(st)st.textContent='Enable semantic search in Settings → Local assistant (embedding model).';return}
+  if(st)st.textContent='Embedding project files (first run downloads the model)…';
+  try{
+    await semanticIndexBuild(p=>{if(st)st.textContent='Indexing '+p.done+'/'+p.total+'…'});
+    const hits=await semanticSearch(q,10);
+    if(box)box.innerHTML=hits.length?hits.map(h=>'<div class="at-dropdown-item" style="cursor:pointer" onclick="try{openFilePreview(\''+String(h.path).replace(/'/g,"\\'")+'\')}catch(e){addCodingSystemMsg(\''+String(h.path).replace(/'/g,"\\'")+'\')}"><span style="font-family:var(--mono);font-size:11px">'+escapeHtml(h.path)+'</span><span style="float:right;color:var(--text-muted)">'+h.score.toFixed(2)+'</span><div class="tool-result-sub">'+escapeHtml(String(h.snip||'').replace(/\n/g,' '))+'</div></div>').join(''):'<div class="tool-result-sub">No matches.</div>';
+    if(st)st.textContent=hits.length+' match(es).';
+  }catch(e){if(st)st.textContent='Search failed: '+e.message}
+}
+async function localSanityCheck(path,content){
+  // Advanced-tier job: review a proposed file write against the current todo.
+  // Returns '' (ok) or a one-line concern; a concern gates the write.
+  try{
+    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('sanity'))return '';
+    const todo=(typeof codingTodos!=='undefined'&&codingTodos)?codingTodos.filter(t=>!t.done).map(t=>t.text).slice(0,2).join('; '):'';
+    const out=String(await localAssistantRunJob('sanity','You review a proposed file change before it is written. Given the file path, the current todo, and the new content, reply with exactly OK if it looks correct and complete, or CONCERN: <one line> if it looks wrong, truncated, or unrelated to the todo.','File: '+path+'\nTodo: '+(todo||'(none)')+'\nNew content (excerpt):\n'+String(content||'').slice(0,2000),80)).trim();
+    if(/^CONCERN/i.test(out))return out.replace(/^CONCERN:?/i,'').trim().slice(0,160);
+    return '';
   }catch(e){return ''}
 }
 async function maybeTranslateReply(text,fromModel){
@@ -2920,7 +3001,12 @@ async function webllmRenderAssistantSettings(){
     sw.onclick=()=>{sw.classList.toggle('on');assistantSetBoost(sw.classList.contains('on'));if(sw.classList.contains('on')&&localAssistantEnabled())localAssistantEnsure(LOCAL_ASSISTANT_MODELS[0].id).catch(()=>{});webllmRenderAssistantSettings()};
     row.appendChild(sw);box.appendChild(row);
   }
-  // Embedding model selector (semantic search). Locked to Small at Basic tier.
+  // Semantic search (embeddings) toggle + model selector.
+  const embrow=document.createElement('div');embrow.className='toggle-row';embrow.style.alignItems='center';
+  embrow.innerHTML='<div><div class="toggle-label">Semantic search (embeddings)</div><div class="toggle-desc">Index your project locally so you can search files by meaning. Downloads a small embedding model (separate from the assistant).</div></div>';
+  const embsw=document.createElement('div');embsw.className='toggle-switch'+(embedEnabled()?' on':'');
+  embsw.onclick=()=>{embsw.classList.toggle('on');embedSetEnabled(embsw.classList.contains('on'));if(embsw.classList.contains('on'))embedEnsure().catch(()=>{});showToast('Semantic search '+(embsw.classList.contains('on')?'ON':'OFF'),'info')};
+  embrow.appendChild(embsw);box.appendChild(embrow);
   const erow=document.createElement('div');erow.className='key-row';
   const el=document.createElement('label');el.textContent='Embedding model';el.style.minWidth='170px';
   const esel=document.createElement('select');esel.id='embed-model';
@@ -3874,6 +3960,7 @@ const SLASH_COMMANDS=[
   {cmd:'read',desc:'Attach an open-project file',usage:'/read <path>'},
   {cmd:'explain',desc:'Explain a file (local assistant)',usage:'/explain <path>'},
   {cmd:'stub',desc:'Generate a test/boilerplate stub (local assistant)',usage:'/stub <path>'},
+  {cmd:'semantic',desc:'Search files by meaning (embeddings)',usage:'/semantic <query>'},
   {cmd:'tree',desc:'Attach a folder listing',usage:'/tree [dir]'},
   {cmd:'new',desc:'Create an empty file now',usage:'/new <path>'},
   {cmd:'delete',desc:'Delete a file (asks first)',usage:'/delete <path>'},
@@ -3945,6 +4032,12 @@ async function execSlashCommands(rawText){
         if(!p){showToast('Usage: /stub <path>','error');break}
         if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('stubs')){addCodingSystemMsg('Stub generation needs the 3B local assistant or larger (Settings → Local assistant).');break}
         try{let src='';try{src=await codingReadFile(p)}catch(e){}const out=String(await localAssistantRunJob('stubs','Write a starter test file for the given source file. Output ONLY the file contents, no prose, no code fences.','File '+p+':\n'+String(src).slice(0,4000),900)).trim();if(!out){addCodingSystemMsg('No stub generated.');break}const stubPath=String(p).replace(/(\.[a-z0-9]+)$/i,'.test$1');addCodingSystemMsg('Local assistant stub for '+p+' (suggested '+stubPath+'):\n```\n'+out.slice(0,4000)+'\n```')}catch(e){addCodingSystemMsg('Could not generate a stub: '+e.message)}
+      }
+      else if(a.cmd==='semantic'){
+        const q=args.join(' ').trim();
+        if(!q){openSemanticSearch();break}
+        if(typeof embedEnabled!=='function'||!embedEnabled()){addCodingSystemMsg('Enable semantic search in Settings → Local assistant (embedding model).');break}
+        try{const hits=await semanticSearch(q,8);addCodingSystemMsg('Semantic search "'+q+'":\n'+(hits.length?hits.map(h=>'- '+h.path+' ('+h.score.toFixed(2)+')').join('\n'):'(no matches)'))}catch(e){addCodingSystemMsg('Semantic search failed: '+e.message)}
       }
       else if(a.cmd==='tree'){
         const dir=String(args[0]||'').replace(/\/+$/,'');
@@ -5767,13 +5860,15 @@ async function processCodingActions(text,msgEl){
   for(const match of fileCreates){const path=match[1].trim();const content=match[2];if(seenBlocks.has('C|'+path+'|'+content))continue;seenBlocks.add('C|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-create';await fillFileDiff(toolDiv,path,content,'Create');
     const destructive=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructive){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_create&&!planMode&&!reviewMode&&!destructive){const result=await codingWriteFileSmart(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
+    const _scCreate=(typeof localSanityCheck==='function')?(await localSanityCheck(path,content)):'';if(_scCreate){try{addCodingSystemMsg('Local sanity check flagged '+path+': '+_scCreate+' — review before applying.')}catch(e){}}
+    if(codingSettings.auto_create&&!planMode&&!reviewMode&&!destructive&&!_scCreate){const result=await codingWriteFileSmart(path,content);const cmsg=result.noop?'No change — the file already contained that text':(result.ok?'File created'+(result.path?' · '+result.path:''):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(cmsg)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop)refreshCodingTree();if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
     else{const bar=document.createElement('div');bar.className='approve-bar';const label=document.createElement('span');label.style.cssText='font-size:11px;color:var(--text-muted);margin-right:8px;flex-shrink:0';label.textContent=path;const ab=document.createElement('button');ab.className='approve';ab.textContent='Create';ab.onclick=async()=>{const result=await codingWriteFile(path,content);if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(path);bar.innerHTML='<span style="color:'+(result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(result.ok?'Created!':result.error)+'</span>';if(result.ok)refreshCodingTree();if(result.ok&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Create',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(label);bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of fileEdits){const path=match[1].trim();const content=match[2];if(seenBlocks.has('E|'+path+'|'+content))continue;seenBlocks.add('E|'+path+'|'+content);const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';await fillFileDiff(toolDiv,path,content,'Edit');
     const destructiveE=(typeof isDestructiveWrite==='function')&&isDestructiveWrite(path,content);
     if(destructiveE){const w=document.createElement('div');w.style.cssText='color:var(--warning);font-size:11px;margin-top:6px';w.textContent='Heads up: this would delete most of '+path+' — approve only if that is what you asked for.';toolDiv.appendChild(w)}
-    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE){const result=await codingWriteFileSmart(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
+    const _scEdit=(typeof localSanityCheck==='function')?(await localSanityCheck(path,content)):'';if(_scEdit){try{addCodingSystemMsg('Local sanity check flagged '+path+': '+_scEdit+' — review before applying.')}catch(e){}}
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE&&!_scEdit){const result=await codingWriteFileSmart(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
   for(const match of filePatches){
