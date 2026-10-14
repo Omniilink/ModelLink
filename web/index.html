@@ -4365,6 +4365,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   else if(execOs==='linux'&&csMode==='project')sysPrompt+='NOTE: commands share one persistent container for this project — pip/npm installs survive between commands.\n';
   if(typeof codingWebSearch!=='undefined'&&codingWebSearch)sysPrompt+='WEB SEARCH is enabled for this turn: call the web_search tool whenever current docs or facts would help, then answer from the results.\n';
   sysPrompt+='\nWEB TOOLS (use these when you need outside information — each returns its result into your next turn):\n- WEB_SEARCH: <query>  — search the web and get result snippets.\n- RESEARCH: <question>  — search the web, read the top page, and get a written answer. Use this for "how do I…", library/API questions, errors you do not recognise, or current facts.\n- WEB_FETCH: <url>  — fetch one page (then END_WEB_FETCH).\n';
+  sysPrompt+='\nSTAY ON TASK (critical — read every turn):\n- Do EXACTLY what the user asked in the current request and nothing else. Do not switch to unrelated files, do not "verify" code you were not asked about, and do not invent extra features or refactors.\n- If the request asks for a change, you MUST emit the FILE_CREATE / FILE_EDIT / FILE_PATCH / RUN_COMMAND blocks that make it. Prose that describes the change is NOT the change — a reply with no tool blocks writes nothing.\n- NEVER say you implemented, integrated, added, fixed or completed something unless you emitted the blocks that did it in THIS reply. If you did not write code this turn, say plainly what you still need to do.\n- Keep the user\'s wording as your spec: if they said "chat bar on the right", build exactly that — do not silently build something else or stop early.\n';
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
   else sysPrompt+='PERMISSION: ADMIN user. Full shell access.\n';
@@ -4778,7 +4779,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingModelOverride='';codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -4839,7 +4840,18 @@ async function sendCodingMessage(){
     const modelLabel=document.createElement('div');modelLabel.className='coding-msg-model';modelLabel.textContent=actualModel;contentEl.parentElement.appendChild(modelLabel);liveMsg={role:'assistant',content:fullText.trim()};assistantEl._histRef=liveMsg;codingHistory.push(liveMsg);maybeAttachReport(assistantEl,fullText,actualModel,'coding',true);scanPlanSteps(fullText);next=await processCodingActions(fullText,assistantEl);
   }catch(e){stopWait();if(e&&e.name==='AbortError'){aborted=true;contentEl.innerHTML=renderContent('Stopped.')}else{contentEl.innerHTML=renderContent('Error: '+e.message);try{codingHistory.push({role:'user',content:'The previous reply failed with an error and its work did not complete: '+String((e&&e.message)||e).slice(0,300)+'\nIf the error looks transient, retry the unfinished work next turn; if it looks permanent (auth, missing model, quota), say so plainly and stop.'})}catch(e2){}maybeAttachReport(assistantEl,'Error: '+e.message,selectedModel,'coding')}}codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;settleInputAfterSend('coding-input');
   persistCodingChat();
-  if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
+  // The model described the work in prose but emitted NO tool blocks, so nothing
+  // was created or changed. If the task asked for code, do not accept a
+  // prose-only "done" — push it once to actually emit the blocks and run.
+  const _noWork=(codingWrittenPaths||[]).length===0&&!next.blocks;
+  if(!next.actionable&&_noWork&&codingTaskNeedsCode(rawText)&&!codingNoWorkPushed&&!await isPlanMode()){
+    codingNoWorkPushed=true;
+    addCodingSystemMsg('The model described the work but produced no file blocks, so nothing changed — asking it to actually write the code.');
+    codingHistory.push({role:'user',content:'You replied with prose but emitted NO tool blocks, so NOTHING was created or changed. Your summary is not the change. Do the work NOW for exactly this task: '+String(rawText||'').slice(0,400)+'\nStart with a TODO_LIST, then emit the FILE_CREATE / FILE_EDIT / FILE_PATCH / RUN_COMMAND blocks that implement it. Do not just describe it again.'});
+    persistCodingChat();
+    codingAutoContinue().catch(reportCodingLoopCrash);
+  }
+  else if(next.actionable){if(await isPlanMode()){showToast('Plan staged — review it, then run the staged actions (or switch Plan mode off)','info')}else codingAutoContinue().catch(reportCodingLoopCrash)}
   else await maybeOfferPendingFiles().catch(()=>{});
   if(!next.blocks){
     // A turn with no tool blocks keeps the streamed bubble — render the final
@@ -6644,7 +6656,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed '];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -6923,6 +6935,10 @@ function dedupeSeamOverlap(tail,added){
     if(tail.slice(tail.length-k)===added.slice(0,k))return added.slice(k);
   }
   return added;
+}
+function codingTaskNeedsCode(text){
+  const t=String(text||'').toLowerCase();
+  return /\b(add|build|create|make|implement|write|edit|fix|change|update|refactor|remove|delete|rename|integrate|generate|convert|move|replace|style|design|attach|wire|hook|support)\b/.test(t);
 }
 function codingTurnModel(){
   // A per-run fallback override wins for THIS run only — it never changes the
