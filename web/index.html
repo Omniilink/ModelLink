@@ -3138,16 +3138,28 @@ function superResearchOn(){try{return localStorage.getItem(SUPER_RESEARCH_KEY)==
 function superFeaturesOn(){try{return localStorage.getItem(SUPER_FEATURES_KEY)==='1'}catch(e){return false}}
 function superSet(key,on){try{localStorage.setItem(key,on?'1':'0')}catch(e){}}
 function updateSuperPromptUI(){
+  // Visible whenever the assistant toggle is ON (even while the model is still
+  // loading), so it is discoverable; it only activates once the model is ready.
   try{
     const wrap=document.getElementById('superprompt-toggle'),extra=document.getElementById('superprompt-extra');
-    const avail=(typeof localAssistantEnabled==='function')&&localAssistantEnabled()&&(typeof localAssistantReady==='function')&&localAssistantReady();
-    if(wrap){wrap.style.display=avail?'':'none';wrap.classList.toggle('on',superPromptOn());wrap.setAttribute('aria-pressed',superPromptOn()?'true':'false')}
-    if(extra)extra.style.display=(avail&&superPromptOn())?'inline-flex':'none';
+    const on=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
+    const ready=on&&(typeof localAssistantReady==='function')&&localAssistantReady();
+    if(wrap){
+      wrap.style.display=on?'':'none';
+      wrap.classList.toggle('on',superPromptOn()&&ready);
+      wrap.disabled=!ready;
+      wrap.title=ready?'Expand your message with the local assistant into a detailed prompt before sending':'Waiting for the local assistant model to load…';
+      wrap.setAttribute('aria-pressed',superPromptOn()?'true':'false');
+    }
+    if(extra)extra.style.display=(on&&superPromptOn())?'inline-flex':'none';
     const r=document.getElementById('superresearch-toggle');if(r){r.classList.toggle('on',superResearchOn())}
     const f=document.getElementById('superfeatures-toggle');if(f){f.classList.toggle('on',superFeaturesOn())}
   }catch(e){}
 }
-function toggleSuperPrompt(){superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();showToast('Super prompt '+(superPromptOn()?'ON':'OFF'),'info')}
+function toggleSuperPrompt(){
+  if(!((typeof localAssistantReady==='function')&&localAssistantReady())){showToast('Waiting for the local assistant model to load…','info');return}
+  superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();showToast('Super prompt '+(superPromptOn()?'ON':'OFF'),'info');
+}
 function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
 function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
 async function superPromptResearch(text){
