@@ -2759,12 +2759,48 @@ function webllmMenuItems(){
   if(!webllmEnabled())return[];
   return webllmDownloaded().map(id=>({id:'browser:'+id,provider:'browser',group:'browser',group_label:'In-browser (WebGPU)',mname:webllmLabel(id),online:true,vision:false}));
 }
+function webllmTruncate(text,maxChars,where){
+  text=String(text||'');if(!(maxChars>0))return '';if(text.length<=maxChars)return text;
+  if(where==='tail')return '…[older text trimmed]…\n'+text.slice(text.length-maxChars);
+  return text.slice(0,maxChars)+'\n…[later text trimmed]…';
+}
+function webllmFit(messages,wantMaxTokens){
+  // Fit a request inside the model's context window: keep the system message,
+  // keep the most recent turns, drop/trim older ones, and cap the output so
+  // prompt + completion cannot exceed the window (the "Prompt tokens exceed
+  // context window size" error).
+  const ctx=Math.max(1024,webllmContextWindow());
+  const est=s=>Math.ceil(String(typeof s==='string'?s:JSON.stringify(s||'')).length/4);
+  const reserve=Math.max(256,Math.floor(ctx*0.2));
+  const budget=Math.max(200,ctx-reserve);
+  const arr=Array.isArray(messages)?messages:[];
+  const sys=(arr[0]&&arr[0].role==='system')?arr[0]:null;
+  const rest=sys?arr.slice(1):arr.slice();
+  let sysOut=sys;
+  if(sys){
+    const txt=typeof sys.content==='string'?sys.content:JSON.stringify(sys.content);
+    if(est(txt)>budget*0.55)sysOut={role:'system',content:webllmTruncate(txt,Math.floor(budget*0.55)*4,'head')};
+  }
+  let used=sysOut?est(typeof sysOut.content==='string'?sysOut.content:JSON.stringify(sysOut.content)):0;
+  const kept=[];
+  for(let i=rest.length-1;i>=0;i--){
+    const m=rest[i];
+    const txt=typeof m.content==='string'?m.content:JSON.stringify(m.content);
+    const t=est(txt);
+    if(used+t<=budget){kept.unshift(m);used+=t;continue}
+    if(kept.length===0){const room=Math.max(0,budget-used)*4;kept.unshift({role:m.role,content:webllmTruncate(txt,room,'tail')});used+=est(kept[0].content)}
+    break;
+  }
+  const out=(sysOut?[sysOut]:[]).concat(kept);
+  const maxTokens=Math.max(64,Math.min(wantMaxTokens||512,ctx-used-64));
+  return {messages:out,promptTokens:used,maxTokens:maxTokens};
+}
 async function webllmChatStream(modelId,messages,opts,signal){
   const enc=new TextEncoder();
+  const fit=webllmFit(messages,opts&&opts.max_tokens);
   const engine=await webllmGetEngine(modelId);
-  const params={messages:messages,stream:true};
+  const params={messages:fit.messages,stream:true,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
-  if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const chunks=await engine.chat.completions.create(params);
   return new ReadableStream({async start(controller){
     const send=o=>{try{controller.enqueue(enc.encode('data: '+JSON.stringify(o)+'\n\n'))}catch(e){}};
@@ -2790,10 +2826,10 @@ async function webllmChatStream(modelId,messages,opts,signal){
 }
 async function webllmComplete(modelId,messages,opts){
   // Non-streaming completion (used by title generation and the optimiser).
+  const fit=webllmFit(messages,opts&&opts.max_tokens);
   const engine=await webllmGetEngine(modelId);
-  const params={messages:messages,stream:false};
+  const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
-  if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const res=await engine.chat.completions.create(params);
   const content=(res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
   return {model:'browser:'+modelId,choices:[{message:{role:'assistant',content:content}}]};
@@ -2918,9 +2954,9 @@ async function localAssistantEnsure(model,onProgress){
 function localAssistantInit(onProgress){return localAssistantEnsure(localAssistantModel(),onProgress)}
 async function localAssistantCompleteFor(model,messages,opts){
   const engine=await localAssistantEnsure(model);
-  const params={messages:messages,stream:false};
+  const fit=webllmFit(messages,opts&&opts.max_tokens);
+  const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
-  if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const res=await engine.chat.completions.create(params);
   const content=(res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
   try{const u=res&&res.usage;localAssistantCount((u&&u.completion_tokens)||Math.ceil(String(content).length/4))}catch(e){}
