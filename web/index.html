@@ -2849,6 +2849,13 @@ function webllmMaybeIntercept(url,opts){
     const body=JSON.parse(opts.body);
     const model=String(body.model||'');
     if(model.indexOf('browser:')!==0)return null;
+    // Text-only browser models cannot see images — send those to a vision model.
+    const hasImg=(body.messages||[]).some(m=>m&&Array.isArray(m.content)&&m.content.some(x=>x&&x.type==='image_url'));
+    if(hasImg){
+      const vm=(typeof resolveVisionModel==='function'&&resolveVisionModel())||selectedModel;
+      if(vm&&vm!==model){try{opts.body=JSON.stringify(Object.assign({},body,{model:vm}))}catch(e){}}
+      return null;
+    }
     const modelId=model.slice(8);
     const p=(body.stream===true)
       ? webllmChatStream(modelId,body.messages||[],body,opts.signal).then(stream=>new Response(stream,{status:200,headers:{'Content-Type':'text/event-stream','Cache-Control':'no-store'}}))
@@ -6861,8 +6868,11 @@ async function streamCodingTurn(messages){
   // this is the single choke point where stale file bodies get elided.
   if(Array.isArray(messages)&&messages.length>1)messages=[messages[0],...compactCodingMessages(messages.slice(1))];
   if(typeof compressHistory==='function')messages=await compressHistory(messages);
-  const turnModel=codingTurnModel();
-  const isHelper=(typeof localAssistantId==='function')&&turnModel===localAssistantId();
+  // Images must go to a vision-capable cloud model — the in-browser models are
+  // text-only (LLM, not VLM) and reject image content.
+  const hasImages=Array.isArray(messages)&&messages.some(m=>m&&Array.isArray(m.content)&&m.content.some(p=>p&&p.type==='image_url'));
+  const turnModel=hasImages?((typeof resolveVisionModel==='function'&&resolveVisionModel())||selectedModel):codingTurnModel();
+  const isHelper=!hasImages&&(typeof localAssistantId==='function')&&turnModel===localAssistantId();
   if(isHelper)localAssistantSetStatus({state:'processing',task:'coding turn',t0:Date.now(),tokens:0,tps:0},localAssistantModel());
   const chat=document.getElementById('coding-chat');
   const assistantEl=document.createElement('div');
