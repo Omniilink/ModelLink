@@ -2774,11 +2774,17 @@ async function webllmGetEngine(modelId,onProgress,resident){
     try{engine=await make()}
     catch(e){
       const msg=String((e&&e.message)||e);
-      if(/compatible GPU|adapter|device.?lost|out of memory|OOM|buffer size/i.test(msg)){
+      // Transient GPU-context problems: adapter unavailable, device lost, OOM,
+      // or the f16 capability probe failing ("rgba16float canvas not supported").
+      if(/compatible GPU|adapter|device.?lost|out of memory|OOM|buffer size|canvas|rgba16float|shader-f16|f16/i.test(msg)){
         // Free EVERYTHING (even resident engines), let the GPU settle, retry once.
         await webllmEvictEngines(true);
-        await new Promise(r=>setTimeout(r,500));
-        engine=await make();
+        await new Promise(r=>setTimeout(r,1500));
+        try{engine=await make()}
+        catch(e2){
+          const m2=String((e2&&e2.message)||e2);
+          throw new Error(m2+' — the browser WebGPU context looks stuck. Hard-reload the page (Ctrl+F5) to reset it; if it persists, close other tabs using the GPU.');
+        }
       }else throw e;
     }
     webllmEngines[modelId]=engine;webllmMarkDownloaded(modelId);
@@ -3206,6 +3212,9 @@ function renderSettings(){
   ctxrow.appendChild(ctxl);ctxrow.appendChild(ctx);ctxrow.appendChild(ctxv);wsec.appendChild(ctxrow);
   const ctxnote=document.createElement('div');ctxnote.className='tool-result-sub';ctxnote.style.marginTop='4px';ctxnote.textContent='How much text an in-browser model can hold at once (4k–128k tokens). Larger uses more GPU memory; smaller is faster. Applies to the local assistant too.';
   wsec.appendChild(ctxnote);
+  const gpuBtn=document.createElement('button');gpuBtn.className='btn btn-ghost btn-sm';gpuBtn.style.marginTop='8px';gpuBtn.textContent='Reset in-browser GPU';gpuBtn.title='Unload every in-browser engine and reload the page — use this if a model fails with a GPU/adapter/canvas error';
+  gpuBtn.onclick=async()=>{try{await webllmReloadEngines()}catch(e){}try{showToast('Resetting in-browser GPU…','info')}catch(e){}setTimeout(()=>{try{location.reload()}catch(e){}},300)};
+  wsec.appendChild(gpuBtn);
   body.appendChild(wsec);
   webllmRenderSummary();
   // Local assistant — auto-installed, runs in the background
