@@ -2743,21 +2743,44 @@ function webllmIsResident(id){
   // other browser models are evicted when a different one is loaded.
   try{return id===localAssistantModel()||(assistantTierIndex()>=3&&assistantBoostOn()&&id===LOCAL_ASSISTANT_MODELS[0].id)}catch(e){return false}
 }
+let webllmCreateChain=Promise.resolve();
+function webllmCreateSerialized(fn){
+  // WebGPU device creation must be serialised: creating two engines at once
+  // makes the second requestAdapter() return null ("Unable to find a compatible
+  // GPU"). This chains every CreateMLCEngine call.
+  const run=webllmCreateChain.then(fn,fn);
+  webllmCreateChain=run.then(()=>{},()=>{});
+  return run;
+}
+async function webllmEvictEngines(includeResident){
+  for(const id of Object.keys(webllmEngines)){
+    if(!includeResident&&webllmIsResident(id))continue;
+    try{await webllmEngines[id].unload()}catch(e){}
+    delete webllmEngines[id];
+  }
+}
 async function webllmGetEngine(modelId,onProgress,resident){
   // ONE engine per model, shared by the chat path and the assistant jobs, with
   // in-flight de-duplication — two concurrent requests must never create two
   // engines for the same model (that disposed the WebGPU context).
   if(webllmEngines[modelId])return webllmEngines[modelId];
   if(webllmEnginePending[modelId])return webllmEnginePending[modelId];
-  if(!resident){
-    for(const id of Object.keys(webllmEngines)){
-      if(webllmIsResident(id))continue;
-      try{await webllmEngines[id].unload()}catch(e){}delete webllmEngines[id];
-    }
-  }
   webllmEnginePending[modelId]=(async()=>{
+    // Free memory before loading: evict every non-resident engine.
+    await webllmEvictEngines(false);
     const lib=await webllmLoadLib();
-    const engine=await lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
+    const make=()=>webllmCreateSerialized(()=>lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}}));
+    let engine;
+    try{engine=await make()}
+    catch(e){
+      const msg=String((e&&e.message)||e);
+      if(/compatible GPU|adapter|device.?lost|out of memory|OOM|buffer size/i.test(msg)){
+        // Free EVERYTHING (even resident engines), let the GPU settle, retry once.
+        await webllmEvictEngines(true);
+        await new Promise(r=>setTimeout(r,500));
+        engine=await make();
+      }else throw e;
+    }
     webllmEngines[modelId]=engine;webllmMarkDownloaded(modelId);
     return engine;
   })().catch(e=>{delete webllmEnginePending[modelId];throw e});
