@@ -2743,14 +2743,16 @@ function localAssistantReady(){return !!(webllmAssistantEngine&&webllmAssistantM
 async function localAssistantInit(onProgress){
   if(localAssistantReady())return webllmAssistantEngine;
   if(webllmAssistantPromise)return webllmAssistantPromise;
+  localAssistantSetStatus({state:'loading',task:'loading model'});
   webllmAssistantPromise=(async()=>{
     const model=localAssistantModel();
     if(webllmAssistantEngine&&webllmAssistantModelId!==model){try{await webllmAssistantEngine.unload()}catch(e){}webllmAssistantEngine=null;webllmAssistantModelId=''}
     const lib=await webllmLoadLib();
     const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
     webllmAssistantEngine=engine;webllmAssistantModelId=model;webllmMarkDownloaded(model);
+    localAssistantSetStatus({state:'idle',task:''});
     return engine;
-  })().catch(e=>{webllmAssistantPromise=null;throw e});
+  })().catch(e=>{webllmAssistantPromise=null;localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});throw e});
   try{return await webllmAssistantPromise}finally{webllmAssistantPromise=null}
 }
 async function localAssistantComplete(messages,opts){
@@ -2759,12 +2761,36 @@ async function localAssistantComplete(messages,opts){
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   if(opts&&typeof opts.max_tokens==='number')params.max_tokens=opts.max_tokens;
   const res=await engine.chat.completions.create(params);
-  return (res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
+  const content=(res&&res.choices&&res.choices[0]&&res.choices[0].message&&res.choices[0].message.content)||'';
+  try{const u=res&&res.usage;const n=(u&&u.completion_tokens)||0;localAssistantCount(n||Math.ceil(String(content).length/4))}catch(e){}
+  return content;
 }
-async function localAssistantAsk(system,user,maxTokens){
-  return localAssistantComplete([{role:'system',content:system},{role:'user',content:user}],{temperature:0.2,max_tokens:maxTokens||256});
+async function localAssistantAsk(system,user,maxTokens,task){
+  localAssistantSetStatus({state:'processing',task:task||'thinking',t0:Date.now(),tokens:0,tps:0});
+  try{
+    const out=await localAssistantComplete([{role:'system',content:system},{role:'user',content:user}],{temperature:0.2,max_tokens:maxTokens||256});
+    localAssistantSetStatus({state:'idle',task:''});
+    return out;
+  }catch(e){localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)});setTimeout(()=>localAssistantSetStatus({state:'idle',task:''}),4000);throw e}
 }
-function localAssistantMaybeAutoStart(){try{if(localAssistantEnabled()&&webllmSupported()&&!localAssistantReady())localAssistantInit().catch(()=>{})}catch(e){}}
+// ---- helper status indicator (shows the model, idle/processing, tok/s, task) ----
+let localAssistantStatus={state:'idle',task:'',tps:0,t0:0,tokens:0};
+function localAssistantSetStatus(patch){try{Object.assign(localAssistantStatus,patch||{});localAssistantIndicatorRender()}catch(e){}}
+function localAssistantCount(n){try{localAssistantStatus.tokens=(localAssistantStatus.tokens||0)+Math.max(0,n||0);const dt=(Date.now()-localAssistantStatus.t0)/1000;if(dt>0&&localAssistantStatus.tokens)localAssistantStatus.tps=localAssistantStatus.tokens/dt}catch(e){}}
+function localAssistantIndicatorRender(){
+  let el=document.getElementById('helper-indicator');
+  if(typeof localAssistantEnabled!=='function'||!localAssistantEnabled()){if(el)el.remove();return}
+  if(!el){el=document.createElement('div');el.id='helper-indicator';el.title='Local assistant activity';el.style.cssText='position:fixed;right:14px;bottom:14px;z-index:360;background:var(--bg-secondary,#17191d);border:1px solid var(--border);border-radius:10px;padding:6px 10px;font-size:11px;font-family:var(--mono);color:var(--text-secondary);box-shadow:0 6px 18px rgba(0,0,0,.3);display:flex;gap:8px;align-items:center;max-width:360px';document.body.appendChild(el)}
+  const s=localAssistantStatus;
+  const dot=s.state==='idle'?'#30a46c':(s.state==='error'?'#e5484d':'#f5a623');
+  const pulse=(s.state==='processing'||s.state==='loading')?'animation:pulse 1s infinite':'';
+  const tps=(s.tps&&s.state!=='idle')?(' · '+s.tps.toFixed(1)+' tok/s'):'';
+  el.innerHTML='<span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;'+pulse+'"></span>'
+    +'<span style="font-weight:600;color:var(--text-primary);white-space:nowrap">'+escapeHtml(localAssistantLabel())+'</span>'
+    +'<span style="white-space:nowrap">'+escapeHtml(s.state)+tps+'</span>'
+    +(s.task?'<span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(s.task)+'</span>':'');
+}
+function localAssistantMaybeAutoStart(){try{localAssistantIndicatorRender();if(localAssistantEnabled()&&webllmSupported()&&!localAssistantReady())localAssistantInit().catch(()=>{})}catch(e){}}
 async function localAssistantRoute(text){
   // Ask the 0.5B which available model best fits the request. Returns a model
   // id or '' (no decision). Never blocks if the assistant is not ready.
@@ -2775,7 +2801,7 @@ async function localAssistantRoute(text){
     const list=ids.slice(0,60).join('\n');
     const sys='You are a model router. Given a user request and a list of available model ids, choose the single best model. Reply with ONLY the exact model id from the list, nothing else. Prefer fast/cheap models for simple chat and stronger models for code, maths or long reasoning.';
     const usr='User request:\n'+String(text||'').slice(0,1200)+'\n\nAvailable models (choose exactly one id):\n'+list;
-    const out=String(await localAssistantAsk(sys,usr,32)).trim();
+    const out=String(await localAssistantAsk(sys,usr,32,'routing')).trim();
     let pick=ids.find(id=>out===id);
     if(!pick)pick=ids.find(id=>out.indexOf(id)>-1);
     return pick||'';
@@ -2879,12 +2905,12 @@ function renderSettings(){
   const aml=document.createElement('label');aml.textContent='Model size';aml.style.minWidth='170px';
   const asel=document.createElement('select');asel.id='local-assistant-model';
   LOCAL_ASSISTANT_MODELS.forEach(m=>{const o=document.createElement('option');o.value=m.id;o.textContent=m.label;if(m.id===localAssistantModel())o.selected=true;asel.appendChild(o)});
-  asel.onchange=()=>{localAssistantSetModel(asel.value);try{webllmRenderAssistantSettings()}catch(e){}showToast('Assistant model set to '+localAssistantLabel(),'info')};
+  asel.onchange=()=>{localAssistantSetModel(asel.value);try{localAssistantIndicatorRender()}catch(e){}try{webllmRenderAssistantSettings()}catch(e){}showToast('Assistant model set to '+localAssistantLabel(),'info')};
   amrow.appendChild(aml);amrow.appendChild(asel);asec.appendChild(amrow);
   const arow=document.createElement('div');arow.className='toggle-row';arow.style.alignItems='center';
   arow.innerHTML='<div><div class="toggle-label">Install &amp; run the local assistant</div><div class="toggle-desc">Auto-downloads the model you chose above and keeps it warm on your GPU. It picks the best model for your first message, runs coding tool calls, writes error/finding logs, and looks things up on the web when asked. Needs WebGPU. Turn it off to stop using it.</div></div>';
   const asw=document.createElement('div');asw.className='toggle-switch'+(localAssistantEnabled()?' on':'');
-  asw.onclick=()=>{asw.classList.toggle('on');localAssistantSetEnabled(asw.classList.contains('on'));try{webllmRenderAssistantSettings()}catch(e){}showToast('Local assistant '+(asw.classList.contains('on')?'ON — installing in the background':'OFF'),'info')};
+  asw.onclick=()=>{asw.classList.toggle('on');localAssistantSetEnabled(asw.classList.contains('on'));try{localAssistantIndicatorRender()}catch(e){}try{webllmRenderAssistantSettings()}catch(e){}showToast('Local assistant '+(asw.classList.contains('on')?'ON — installing in the background':'OFF'),'info')};
   arow.appendChild(asw);asec.appendChild(arow);
   const astat=document.createElement('div');astat.id='local-assistant-status';astat.style.marginTop='8px';asec.appendChild(astat);
   body.appendChild(asec);
@@ -5524,7 +5550,7 @@ async function researchAnswer(question){
     }catch(e){}
     if(!corpus.trim())return 'No web results found for: '+question;
     if(typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&typeof localAssistantReady==='function'&&localAssistantReady()){
-      try{const ans=String(await localAssistantAsk('You answer a question using ONLY the web results provided. Be concise and factual, cite the source numbers, and say plainly if the results do not answer it.','Question: '+question+'\n\nWeb results:\n'+corpus,400)).trim();if(ans)return ans+'\n\nSources:\n'+hits.map((h,i)=>(i+1)+'. '+(h.url||'')).join('\n')}catch(e){}
+      try{const ans=String(await localAssistantAsk('You answer a question using ONLY the web results provided. Be concise and factual, cite the source numbers, and say plainly if the results do not answer it.','Question: '+question+'\n\nWeb results:\n'+corpus,400,'research')).trim();if(ans)return ans+'\n\nSources:\n'+hits.map((h,i)=>(i+1)+'. '+(h.url||'')).join('\n')}catch(e){}
     }
     return 'Search results for "'+question+'":\n'+corpus.slice(0,4000);
   }catch(e){return 'Research failed: '+((e&&e.message)||e)}
@@ -6514,6 +6540,8 @@ async function streamCodingTurn(messages){
   // this is the single choke point where stale file bodies get elided.
   if(Array.isArray(messages)&&messages.length>1)messages=[messages[0],...compactCodingMessages(messages.slice(1))];
   const turnModel=codingTurnModel();
+  const isHelper=(typeof localAssistantId==='function')&&turnModel===localAssistantId();
+  if(isHelper)localAssistantSetStatus({state:'processing',task:'coding turn',t0:Date.now(),tokens:0,tps:0});
   const chat=document.getElementById('coding-chat');
   const assistantEl=document.createElement('div');
   assistantEl.className='coding-msg assistant';
@@ -6535,13 +6563,13 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}return errMsg}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){stopTurnWait();try{if(typeof window!=='undefined'){window._warmedModels=window._warmedModels||{};window._warmedModels[turnModel]=true}}catch(e){}fullText+=delta;updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){stopTurnWait();try{if(typeof window!=='undefined'){window._warmedModels=window._warmedModels||{};window._warmedModels[turnModel]=true}}catch(e){}fullText+=delta;if(isHelper)localAssistantCount(Math.max(1,Math.ceil(delta.length/4)));updateStreamingContent(chat,contentEl,fullText)}}catch(e){}}}}
     if(!seenDone){const note='[Connection interrupted — the reply may be incomplete. Please retry.]';updateStreamingContent(chat,contentEl,(fullText?fullText+'\n\n':'')+note);return note}
     return null;
   };
   const firstErr=await pump(messages);
   stopTurnWait();
-  if(firstErr){contentEl.textContent=firstErr;try{if(!codingStopRequested){codingHistory.push({role:'user',content:'The previous reply failed with an error and its work did not complete: '+String(firstErr).slice(0,300)+'\nIf the error looks transient, retry the unfinished work; if it looks permanent (auth, missing model, quota), say so plainly and stop.'});persistCodingChat()}}catch(e){}return{error:firstErr}}
+  if(firstErr){contentEl.textContent=firstErr;try{if(!codingStopRequested){codingHistory.push({role:'user',content:'The previous reply failed with an error and its work did not complete: '+String(firstErr).slice(0,300)+'\nIf the error looks transient, retry the unfinished work; if it looks permanent (auth, missing model, quota), say so plainly and stop.'});persistCodingChat()}}catch(e){}if(isHelper)localAssistantSetStatus({state:'idle',task:''});return{error:firstErr}}
   // Output limit cut the reply mid-file? Continue EXACTLY where it stopped and
   // stitch the pieces, instead of discarding the partial block and asking for
   // the whole oversized file again (which just truncates the same way).
@@ -6580,6 +6608,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
   }
   settleSpinners(assistantEl);
   finishCodingLiveStats(assistantEl,Date.now()-liveT0,liveMsg);
+  if(isHelper)localAssistantSetStatus({state:'idle',task:''});
   return{fullText,actualModel,actions};
 }
 function offerCreateMissingFiles(missing){
@@ -6752,7 +6781,7 @@ async function requestFindingLog(){
   if(useLocal){
     try{
       const ctx=codingHistory.slice(-8).map(m=>m.role+': '+String(typeof m.content==='string'?m.content:'').slice(0,700)).join('\n');
-      fullText=String(await localAssistantAsk('You write concise engineering lessons from a coding session. Output exactly one FINDING block, or exactly NO_FINDING.', 'Session excerpt:\n'+ctx+'\n\n'+ask, 512));
+      fullText=String(await localAssistantAsk('You write concise engineering lessons from a coding session. Output exactly one FINDING block, or exactly NO_FINDING.', 'Session excerpt:\n'+ctx+'\n\n'+ask, 512,'finding log'));
     }catch(e){fullText=''}
   }else{
     codingHistory.push({role:'user',content:ask});
@@ -7224,7 +7253,7 @@ async function localIntentFor(path,content){
     const todo=(typeof codingTodos!=='undefined'&&codingTodos)?codingTodos.filter(t=>!t.done).map(t=>t.text).slice(0,3).join('; '):'';
     const sys='You summarise a code change for a merge assistant. In 1-2 short sentences state WHAT the change is for and its purpose. Output only the summary, no preamble.';
     const usr='File: '+path+'\nCurrent todo: '+(todo||'(none)')+'\nChange (excerpt):\n'+String(content||'').slice(0,1200);
-    const s=String(await localAssistantAsk(sys,usr,120)).trim().replace(/\s+/g,' ').slice(0,400);
+    const s=String(await localAssistantAsk(sys,usr,120,'merge intent')).trim().replace(/\s+/g,' ').slice(0,400);
     if(s){try{codingMergeIntents[path]=s;codingMergeIntent=s}catch(e){}return s}
   }catch(e){}
   return '';
