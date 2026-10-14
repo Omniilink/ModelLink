@@ -2693,9 +2693,8 @@ function webllmAppConfigFor(modelId){
 }
 async function webllmReloadEngines(){
   // Free all engines so the next use rebuilds them with the new context size.
-  try{if(webllmEngine)await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId='';
-  try{for(const k of Object.keys(webllmAssistantEngines)){try{await webllmAssistantEngines[k].unload()}catch(e){}}}catch(e){}
-  webllmAssistantEngines={};
+  try{for(const k of Object.keys(webllmEngines)){try{await webllmEngines[k].unload()}catch(e){}}}catch(e){}
+  webllmEngines={};
 }
 const WEBLLM_LABELS={
   'Llama-3.2-1B-Instruct-q4f32_1-MLC':'Llama 3.2 1B',
@@ -2714,7 +2713,7 @@ const WEBLLM_LABELS={
   'Qwen3-4B-q4f16_1-MLC':'Qwen3 4B',
   'Qwen3-8B-q4f16_1-MLC':'Qwen3 8B'
 };
-let webllmLib=null,webllmEngine=null,webllmEngineId='',webllmProgress={};
+let webllmLib=null,webllmEngines={},webllmEnginePending={},webllmProgress={};
 function webllmEnabled(){try{return localStorage.getItem(WEBLLM_ENABLED_KEY)==='1'}catch(e){return false}}
 function webllmSetEnabled(on){try{localStorage.setItem(WEBLLM_ENABLED_KEY,on?'1':'0')}catch(e){}}
 function webllmSupported(){try{return typeof navigator!=='undefined'&&!!navigator.gpu}catch(e){return false}}
@@ -2739,28 +2738,43 @@ async function webllmCatalog(){
   list.sort((a,b)=>(a.vram_required_MB||0)-(b.vram_required_MB||0));
   return list.map(m=>({id:m.model_id,vram:m.vram_required_MB||0,type:m.model_type||'',label:webllmLabel(m.model_id)}));
 }
-async function webllmGetEngine(modelId,onProgress){
-  const lib=await webllmLoadLib();
-  if(webllmEngine&&webllmEngineId===modelId)return webllmEngine;
-  if(webllmEngine){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
-  const engine=await lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
-  webllmEngine=engine;webllmEngineId=modelId;
-  webllmMarkDownloaded(modelId);
-  return engine;
+function webllmIsResident(id){
+  // Resident models are kept loaded (the assistant + its optional 0.5B boost);
+  // other browser models are evicted when a different one is loaded.
+  try{return id===localAssistantModel()||(assistantTierIndex()>=3&&assistantBoostOn()&&id===LOCAL_ASSISTANT_MODELS[0].id)}catch(e){return false}
+}
+async function webllmGetEngine(modelId,onProgress,resident){
+  // ONE engine per model, shared by the chat path and the assistant jobs, with
+  // in-flight de-duplication — two concurrent requests must never create two
+  // engines for the same model (that disposed the WebGPU context).
+  if(webllmEngines[modelId])return webllmEngines[modelId];
+  if(webllmEnginePending[modelId])return webllmEnginePending[modelId];
+  if(!resident){
+    for(const id of Object.keys(webllmEngines)){
+      if(webllmIsResident(id))continue;
+      try{await webllmEngines[id].unload()}catch(e){}delete webllmEngines[id];
+    }
+  }
+  webllmEnginePending[modelId]=(async()=>{
+    const lib=await webllmLoadLib();
+    const engine=await lib.CreateMLCEngine(modelId,{appConfig:webllmAppConfigFor(modelId),initProgressCallback:(r)=>{try{webllmProgress[modelId]={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmProgress[modelId])}catch(e){}}});
+    webllmEngines[modelId]=engine;webllmMarkDownloaded(modelId);
+    return engine;
+  })().catch(e=>{delete webllmEnginePending[modelId];throw e});
+  try{return await webllmEnginePending[modelId]}finally{delete webllmEnginePending[modelId]}
 }
 async function webllmDownload(modelId,onProgress){
   // Creating the engine downloads the weights into the Cache API.
-  await webllmGetEngine(modelId,onProgress);
+  await webllmGetEngine(modelId,onProgress,false);
   // Free VRAM but keep the weights cached for later.
-  try{await webllmEngine.unload()}catch(e){}
-  webllmEngine=null;webllmEngineId='';
+  try{await webllmEngines[modelId].unload()}catch(e){}
+  delete webllmEngines[modelId];
   webllmMarkDownloaded(modelId);
 }
 async function webllmRemove(modelId){
   try{const lib=await webllmLoadLib();if(typeof lib.deleteModelAllInfoInCache==='function')await lib.deleteModelAllInfoInCache(modelId)}catch(e){}
   webllmUnmark(modelId);
-  if(webllmEngineId===modelId){try{await webllmEngine.unload()}catch(e){}webllmEngine=null;webllmEngineId=''}
-  if(webllmAssistantEngines[modelId]){try{await webllmAssistantEngines[modelId].unload()}catch(e){}delete webllmAssistantEngines[modelId]}
+  if(webllmEngines[modelId]){try{await webllmEngines[modelId].unload()}catch(e){}delete webllmEngines[modelId]}
 }
 function webllmMenuItems(){
   if(!webllmEnabled())return[];
@@ -2805,7 +2819,7 @@ function webllmFit(messages,wantMaxTokens,modelId){
 async function webllmChatStream(modelId,messages,opts,signal){
   const enc=new TextEncoder();
   const fit=webllmFit(messages,opts&&opts.max_tokens,modelId);
-  const engine=await webllmGetEngine(modelId);
+  const engine=await webllmGetEngine(modelId,undefined,webllmIsResident(modelId));
   const params={messages:fit.messages,stream:true,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   const chunks=await engine.chat.completions.create(params);
@@ -2834,7 +2848,7 @@ async function webllmChatStream(modelId,messages,opts,signal){
 async function webllmComplete(modelId,messages,opts){
   // Non-streaming completion (used by title generation and the optimiser).
   const fit=webllmFit(messages,opts&&opts.max_tokens,modelId);
-  const engine=await webllmGetEngine(modelId);
+  const engine=await webllmGetEngine(modelId,undefined,webllmIsResident(modelId));
   const params={messages:fit.messages,stream:false,max_tokens:fit.maxTokens};
   if(opts&&typeof opts.temperature==='number')params.temperature=opts.temperature;
   const res=await engine.chat.completions.create(params);
@@ -2934,7 +2948,7 @@ const ASSISTANT_TIER_NAMES={1:'Basic (0.5B)',2:'Standard (1.5B)',3:'Advanced (3B
 const EMBED_MODELS={small:'snowflake-arctic-embed-s-q0f32-MLC-b4',medium:'snowflake-arctic-embed-m-q0f32-MLC-b4'};
 const EMBED_MODEL_KEY='omnilink_embed_model';
 const ASSISTANT_BOOST_KEY='omnilink_assistant_basic_boost';
-let webllmAssistantEngines={},webllmAssistantPending={},webllmAssistantProgress={text:'',progress:0};
+let webllmAssistantProgress={text:'',progress:0};
 function localAssistantEnabled(){try{return localStorage.getItem(LOCAL_ASSISTANT_KEY)==='1'}catch(e){return false}}
 function localAssistantSetEnabled(on){try{localStorage.setItem(LOCAL_ASSISTANT_KEY,on?'1':'0')}catch(e){}}
 function localAssistantModel(){try{const v=localStorage.getItem(LOCAL_ASSISTANT_MODEL_KEY);if(v&&LOCAL_ASSISTANT_MODELS.some(m=>m.id===v))return v}catch(e){}return LOCAL_ASSISTANT_MODEL}
@@ -2950,20 +2964,18 @@ function assistantModelForJob(job){try{if(assistantTierIndex()>=3&&assistantBoos
 function embedModel(){try{let v=localStorage.getItem(EMBED_MODEL_KEY);if(assistantTierIndex()<=1)v='small';return v==='medium'?EMBED_MODELS.medium:EMBED_MODELS.small}catch(e){return EMBED_MODELS.small}}
 function embedModelName(){return embedModel()===EMBED_MODELS.medium?'medium':'small'}
 function embedSetModel(v){try{localStorage.setItem(EMBED_MODEL_KEY,v==='medium'?'medium':'small')}catch(e){}}
-function localAssistantReady(){return !!webllmAssistantEngines[localAssistantModel()]}
+function localAssistantReady(){return !!webllmEngines[localAssistantModel()]}
 async function localAssistantEnsure(model,onProgress){
   model=model||localAssistantModel();
-  if(webllmAssistantEngines[model])return webllmAssistantEngines[model];
-  if(webllmAssistantPending[model])return webllmAssistantPending[model];
+  if(webllmEngines[model])return webllmEngines[model];
   localAssistantSetStatus({state:'loading',task:'loading '+webllmLabel(model)},model);
-  webllmAssistantPending[model]=(async()=>{
-    const lib=await webllmLoadLib();
-    const engine=await lib.CreateMLCEngine(model,{appConfig:webllmAppConfigFor(model),initProgressCallback:(r)=>{try{webllmAssistantProgress={text:(r&&r.text)||'',progress:Number((r&&r.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}}});
-    webllmAssistantEngines[model]=engine;webllmMarkDownloaded(model);
+  try{
+    // Resident: keep the assistant (+ boost) engines loaded, share the same
+    // cache as the chat path so a model is never loaded twice.
+    const engine=await webllmGetEngine(model,p=>{try{webllmAssistantProgress={text:(p&&p.text)||'',progress:Number((p&&p.progress)||0)};if(onProgress)onProgress(webllmAssistantProgress)}catch(e){}},true);
     localAssistantSetStatus({state:'idle',task:''},model);
     return engine;
-  })().catch(e=>{delete webllmAssistantPending[model];localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)},model);throw e});
-  try{return await webllmAssistantPending[model]}finally{delete webllmAssistantPending[model]}
+  }catch(e){localAssistantSetStatus({state:'error',task:String((e&&e.message)||e).slice(0,60)},model);throw e}
 }
 function localAssistantInit(onProgress){return localAssistantEnsure(localAssistantModel(),onProgress)}
 async function localAssistantCompleteFor(model,messages,opts){
@@ -3066,7 +3078,7 @@ async function webllmRenderAssistantSettings(){
     const bctx=document.createElement('input');bctx.type='range';bctx.id='webllm-boost-ctx';bctx.min='2';bctx.max='8';bctx.step='1';bctx.value=String(Math.round(webllmBoostContext()/1024));bctx.style.flex='1';
     const bv=document.createElement('span');bv.className='tool-result-sub';bv.style.minWidth='52px';bv.textContent=Math.round(webllmBoostContext()/1024)+'k';
     bctx.oninput=()=>{bv.textContent=bctx.value+'k'};
-    bctx.onchange=()=>{webllmSetBoostContext(Number(bctx.value)*1024);showToast('0.5B context set to '+bctx.value+'k — reloads on next use','info');try{const id=LOCAL_ASSISTANT_MODELS[0].id;if(webllmAssistantEngines[id]){webllmAssistantEngines[id].unload().catch(()=>{});delete webllmAssistantEngines[id]}}catch(e){}};
+    bctx.onchange=()=>{webllmSetBoostContext(Number(bctx.value)*1024);showToast('0.5B context set to '+bctx.value+'k — reloads on next use','info');try{const id=LOCAL_ASSISTANT_MODELS[0].id;if(webllmEngines[id]){webllmEngines[id].unload().catch(()=>{});delete webllmEngines[id]}}catch(e){}};
     brow.appendChild(bl);brow.appendChild(bctx);brow.appendChild(bv);box.appendChild(brow);
   }
   // Semantic search (embeddings) toggle + model selector.
@@ -4996,6 +5008,13 @@ function cmdToolRec(cmd,result){
   const out=String(result.stdout||'')+(result.stderr?'\n'+String(result.stderr):'');
   return{t:'cmd',cmd:String(cmd||''),exit:(result.exit_code==null?0:result.exit_code),cls:(typeof cmdResultClass==='function'?cmdResultClass(result):''),out:out.slice(0,800)};
 }
+function fileResultHtml(summary,ok){
+  // Render a file-tool result line with green +added / red -removed counts.
+  const s=String(summary||(ok===false?'failed':'done'));
+  const m=s.match(/^(.*?)\s\+(\d+)\s-(\d+)\s*$/);
+  if(m)return escapeHtml(m[1])+' <span style="color:var(--success)">+'+m[2]+'</span> <span style="color:var(--error)">-'+m[3]+'</span>';
+  return escapeHtml(s);
+}
 function fileToolRec(kind,path,result){
   const parts=[];
   if(result&&typeof result.added==='number'&&(result.added||result.removed))parts.push('+'+result.added+' -'+result.removed);
@@ -5939,48 +5958,52 @@ async function processCodingActions(text,msgEl){
     if(codingSettings.auto_edit&&!planMode&&!reviewMode&&!destructiveE&&!_scEdit){const result=await codingWriteFileSmart(path,content);const emsg=result.noop?'No change — the file already contained that text':(result.ok?'Written successfully':'');toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(emsg||result.error)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
     else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFile(path,content);if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}const mmsg=result.noop?'No change':(result.ok?'Written!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(mmsg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Edit',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
     msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+  // Multiple FILE_PATCH blocks for the SAME file are combined into ONE big
+  // patch: apply them in order to the current content and write once.
+  const patchGroups={},patchOrder=[];
   for(const match of filePatches){
     const path=match[1].trim();
     const oldText=(match[2]||'').replace(/\n$/,''),newText=(match[3]||'').replace(/\n$/,'');
     if(seenBlocks.has('P|'+path+'|'+oldText+'|'+newText))continue;seenBlocks.add('P|'+path+'|'+oldText+'|'+newText);
+    if(!patchGroups[path]){patchGroups[path]=[];patchOrder.push(path)}
+    patchGroups[path].push({oldText,newText});
+  }
+  for(const path of patchOrder){
+    const patches=patchGroups[path];
     const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-edit';
-    if(!oldText){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">Malformed patch block (need OLD: then NEW: sections)</div>';
-      msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    // Preview by simulating the replacement against current content
-    let previewErr='',patchedPreview=null;
+    // Read the current content through the SAME resolver the real apply uses.
+    let current=null,readFailed='';
     try{
-      // Read through the SAME resolver the real apply uses. Remote projects
-      // live on the paired computer, so asking the server made every patch
-      // look like "File not found" even though the file existed there.
-      let current=null,readFailed='';
-      try{
-        if(isRemote()){
-          const ro=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});
-          if(!ro||!ro.ok)readFailed=(ro&&ro.error)||'read failed on the paired computer';
-          else current=ro.content||'';
-        }else if(fsHandle){
-          current=await fsReadFile(path);
-        }else{
-          const rr=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));
-          if(!rr.ok){const dd=await rr.json().catch(()=>({}));readFailed=(dd&&dd.error)||('HTTP '+rr.status)}
-          else{const dd=await rr.json();current=dd.content}
-        }
-      }catch(e){readFailed=e.message||String(e)}
-      if(readFailed)previewErr='Could not read '+path+' — '+readFailed;
-      else if(current==null)previewErr='File not found — create it first';
-      else{
-        // Same matcher the real apply uses, so the preview can never show a
-        // diff that the write then refuses (or hide one that would land).
-        const res=applyPatchText(current,oldText,newText);
-        if(!res.ok)previewErr=res.error;
-        else await fillFileDiff(toolDiv,path,res.patched,'Patch');
+      if(isRemote()){
+        const ro=await agentFileOp(remoteCtx.id,{op:'read',path:remoteRel(path)});
+        if(!ro||!ro.ok)readFailed=(ro&&ro.error)||'read failed on the paired computer';
+        else current=ro.content||'';
+      }else if(fsHandle){
+        current=await fsReadFile(path);
+      }else{
+        const rr=await authFetch(API+'/api/coding/file-content?path='+encodeURIComponent(path));
+        if(!rr.ok){const dd=await rr.json().catch(()=>({}));readFailed=(dd&&dd.error)||('HTTP '+rr.status)}
+        else{const dd=await rr.json();current=dd.content}
       }
-    }catch(e){previewErr=e.message}
-    if(previewErr){if(typeof trackPatchMiss==='function')trackPatchMiss(path,previewErr!=='File not found — create it first');toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(previewErr)+'</div>';
-      msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
-    if(codingSettings.auto_edit&&!planMode&&!reviewMode){const result=await codingPatchFile(path,oldText,newText);if(typeof trackPatchMiss==='function')trackPatchMiss(path,!result.ok&&/old text not found|not in the file|no match|does not match/i.test(result.error||''));const msg=result.noop?'No change — the file already contained that text':(result.ok?'Patched successfully':result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+escapeHtml(msg)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
-    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingPatchFile(path,oldText,newText);if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}const msg=result.noop?'No change':(result.ok?'Patched!':result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+escapeHtml(msg)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
-    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv)}
+    }catch(e){readFailed=e.message||String(e)}
+    if(readFailed){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml('Could not read '+path+' — '+readFailed)+'</div>';msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
+    if(current==null){toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">File not found — create it first</div>';msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
+    // Apply every patch for this file in order to build the final content.
+    let content=current,applied=0,missed=0,lastErr='';
+    for(const p of patches){
+      if(!p.oldText){missed++;lastErr='Malformed patch block (need OLD: then NEW: sections)';continue}
+      const res=applyPatchText(content,p.oldText,p.newText);
+      if(!res.ok){missed++;lastErr=res.error;continue}
+      if(res.noop)continue;
+      content=res.patched;applied++;
+    }
+    if(applied===0&&missed>0){if(typeof trackPatchMiss==='function')trackPatchMiss(path,true);toolDiv.innerHTML='<div class="tool-label">Patch File: '+escapeHtml(path)+'</div><div style="color:var(--error);font-size:11px">'+escapeHtml(lastErr||'no patch matched')+'</div>';msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);continue}
+    if(typeof trackPatchMiss==='function')trackPatchMiss(path,false);
+    await fillFileDiff(toolDiv,path,content,'Patch');
+    if(codingSettings.auto_edit&&!planMode&&!reviewMode){const result=await codingWriteFileSmart(path,content);const _sum=result.noop?'No change — the file already contained that text':(result.ok?('Patched successfully +'+(result.added||0)+' -'+(result.removed||0)):result.error);toolDiv.innerHTML+='<div style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';margin-top:4px;font-size:11px">'+fileResultHtml(_sum,result.ok)+'</div>';if(result.note)toolDiv.innerHTML+='<div style="color:var(--warning);font-size:11px;margin-top:4px">'+escapeHtml(result.note)+'</div>';if(result.ok&&!result.noop){refreshCodingTree();if(typeof wsNoteConflict==='function')wsNoteConflict(path)}if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result));if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}}
+    else{const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.textContent='Apply';ab.onclick=async()=>{const result=await codingWriteFileSmart(path,content);if(typeof wsReleaseUnlessReserved==='function'){wsReleaseUnlessReserved(path)}const _s2=result.noop?'No change':(result.ok?('Patched +'+(result.added||0)+' -'+(result.removed||0)):result.error);bar.innerHTML='<span style="color:'+(result.noop?'var(--text-muted)':result.ok?'var(--success)':'var(--error)')+';font-size:11px">'+fileResultHtml(_s2,result.ok)+'</span>';if(result.ok&&!result.noop)refreshCodingTree();if(result.ok&&!result.noop&&typeof recordCodingVersion==='function')recordCodingVersion([path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Patch',path,result))};const db=document.createElement('button');db.className='deny';db.textContent='Cancel';db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Cancelled</span>';bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar)}
+    msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+  }
   for(const match of fileDeletes){const path=match[1].trim();const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-delete';toolDiv.innerHTML='<div class="tool-label" style="color:var(--error)">Delete File: '+escapeHtml(path)+'</div>';
     const bar=document.createElement('div');bar.className='approve-bar';const ab=document.createElement('button');ab.className='approve';ab.style.background='var(--error)';ab.textContent='Delete';const recordDel=()=>{if(typeof recordCodingVersion==='function')recordCodingVersion(['(deleted) '+path]).catch(()=>{});if(typeof recordToolOutcome==='function'&&typeof fileToolRec==='function')recordToolOutcome(msgEl,fileToolRec('Delete',path,{ok:true}))};
     ab.onclick=async()=>{try{if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(path)});bar.innerHTML='<span style="color:'+(dr&&dr.ok?'var(--success)':'var(--error)')+';font-size:11px">'+((dr&&dr.ok)?'Deleted':((dr&&dr.error)||'Delete failed'))+'</span>';if(dr&&dr.ok){refreshCodingTree();recordDel()}return}if(fsHandle){await fsDeleteFile(path);addCodingFeed('Delete',path);bar.innerHTML='<span style="color:var(--success);font-size:11px">Deleted</span>';refreshCodingTree();recordDel()}else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(path),{method:'DELETE'});const data=await r.json();if(r.ok)addCodingFeed('Delete',path);bar.innerHTML='<span style="color:'+(r.ok?'var(--success)':'var(--error)')+';font-size:11px">'+(r.ok?'Deleted':data.error)+'</span>';if(r.ok){refreshCodingTree();recordDel();if(typeof wsReleaseUnlessReserved==='function')wsReleaseUnlessReserved(path)}}}catch(e){bar.innerHTML='<span style="color:var(--error);font-size:11px">'+e.message+'</span>'}};
@@ -6566,7 +6589,7 @@ function renderSavedTools(msgEl,tools){
       }else{
         d.className='coding-msg-tool tool-edit';
         d.innerHTML='<div class="tool-label">'+escapeHtml((t.kind||'File')+' '+(t.path||''))+'</div>'
-          +'<div style="font-size:11px;color:'+((t.ok===false)?'var(--error)':'var(--text-muted)')+';margin-top:4px">'+escapeHtml(t.summary||((t.ok===false)?'failed':'done'))+'</div>';
+          +'<div style="font-size:11px;color:'+((t.ok===false)?'var(--error)':'var(--text-muted)')+';margin-top:4px">'+fileResultHtml(t.summary,t.ok)+'</div>';
       }
       host.appendChild(d);
     }
