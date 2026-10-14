@@ -822,6 +822,13 @@ def provider_health(scope):
     return out
 
 
+def _is_local_model(model: str) -> bool:
+    """Self-hosted model labels: `ollama/<tag>` (server) or
+    `device/<id>/<tag>` (paired device). These are never rate limited."""
+    m = (model or "").strip().lower()
+    return m.startswith("ollama/") or m.startswith("device/")
+
+
 class RateLimiter:
     def __init__(self):
         self._request_times: dict = {}
@@ -830,15 +837,18 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def can_request(self, model: str, local: bool = False) -> bool:
-        """True when a request may proceed. `local=True` is for self-hosted
-        models (Ollama): they honour the failure cooldown but are NOT subject
-        to cloud provider RPM quotas — it's the user's own hardware."""
+        """True when a request may proceed.
+
+        Self-hosted models (Ollama on the server, or a paired device's Ollama)
+        are UNLIMITED: it is the user's own hardware, so there is no per-minute
+        cap and no cooldown gate. Cloud providers keep their real RPM quotas
+        and failure cooldowns."""
         with self._lock:
+            if local or _is_local_model(model):
+                return True
             now = time.time()
             if model in self._cooldowns and now < self._cooldowns[model]:
                 return False
-            if local:
-                return True
             limits = MODEL_RATE_LIMITS.get(model, {"rpm": 10, "tpm": 100000})
             times = self._request_times.get(model, [])
             recent = [t for t in times if now - t < 60]
