@@ -1972,10 +1972,41 @@ function settleInputAfterSend(id){try{if(typeof matchMedia==='function'&&matchMe
 function onComposerFocus(){try{const a=document.getElementById('chat-area');if(a)a.scrollTop=a.scrollHeight;const c=document.getElementById('coding-chat');if(c)c.scrollTop=c.scrollHeight}catch(e){}}
 function escapeHtml(s){if(s==null||s===false)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
+// Client GET cache: preloaded views render instantly and re-validate in the
+// background. Only whitelisted read endpoints are cached; any mutation clears
+// the cache. TTL keeps data fresh enough while making navigation feel instant.
+var _getCache={};
+var _GET_CACHE_TTL=30000;
+var _CACHEABLE_READ=['/api/projects','/api/workspaces','/api/provider-keys','/api/custom-providers','/api/prompts','/api/agents','/api/settings','/api/coding/settings','/api/discover','/api/usage','/api/findings','/api/collections','/api/omniiignore'];
+function _cacheableUrl(url){
+  try{
+    const u=String(url).replace(API,'');
+    const p=u.split('?')[0];
+    if(p==='/api/coding/files'||p==='/api/auth/me')return false;
+    return _CACHEABLE_READ.some(x=>p===x||p.startsWith(x+'/')||p.startsWith(x+'?'));
+  }catch(e){return false}
+}
+function invalidateGetCache(){_getCache={}}
 async function authFetch(url,opts={}){
   // Route in-browser (WebGPU) models straight to WebLLM — no server round-trip.
   try{if(typeof webllmMaybeIntercept==='function'){const hit=webllmMaybeIntercept(url,opts);if(hit)return hit}}catch(e){}
-  opts.credentials='same-origin';const r=await fetch(url,opts);if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}return r}
+  opts.credentials='same-origin';
+  const method=String(opts.method||'GET').toUpperCase();
+  const cacheable=method==='GET'&&_cacheableUrl(url);
+  if(cacheable){
+    const c=_getCache[String(url)];
+    if(c&&Date.now()-c.t<_GET_CACHE_TTL){
+      return new Response(c.body,{status:c.status,headers:{'Content-Type':'application/json','X-Omni-Cache':'hit'}});
+    }
+  }
+  const r=await fetch(url,opts);
+  if(r.status===401&&url.includes('/api/')){showAuthModal();throw new Error('auth_required')}
+  if(method!=='GET'&&url.includes('/api/')){invalidateGetCache()}
+  if(cacheable&&r.ok){
+    try{const body=await r.clone().text();_getCache[String(url)]={t:Date.now(),body:body,status:r.status}}catch(e){}
+  }
+  return r;
+}
 
 function renderContent(text){
   let c=text.replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<think>[\s\S]*?<\/thinking>/gi,'').replace(/<think>[\s\S]*$/gi,'').replace(/<thinking>[\s\S]*$/gi,'');
@@ -2213,17 +2244,18 @@ function applyInitialRoute(){
 }
 if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('popstate',()=>{try{const r=routeFromPath(location.pathname);applyRoute(r.view,r.tool,r)}catch(e){}});
 function preloadAppViews(){
-  // Warm every safe view's data so switching between modes is instant.
-  // Public, admin and the large/sensitive views (assets, forums, media) are
-  // deliberately skipped.
+  // Warm EVERY view's data into the GET cache right after sign-in, staggered
+  // so it never blocks the page, so switching between modes renders instantly.
   const loaders=[
     ['settings',()=>loadSettingsData()],['api',()=>loadApiPage()],
     ['providers',()=>renderProvidersPage()],['projects',()=>loadProjectsPage()],['workspaces',()=>loadWorkspacesPage()],
     ['prompts',()=>renderPromptsPage()],['usage',()=>loadUsage('24h')],
     ['agents',()=>admLoadAgents()],['tutorial',()=>setupOllamaLoad()],
+    ['assets',()=>loadAssetsView()],['public',()=>loadPublicView()],['forums',()=>loadForumsView()],
   ];
-  const run=()=>{loaders.forEach(pair=>{try{const p=pair[1]();if(p&&p.catch)p.catch(()=>{})}catch(e){}})};
-  try{if(typeof requestIdleCallback==='function')requestIdleCallback(run,{timeout:5000});else setTimeout(run,1500)}catch(e){setTimeout(run,1500)}
+  loaders.forEach((pair,i)=>{
+    setTimeout(()=>{try{const p=pair[1]();if(p&&p.catch)p.catch(()=>{})}catch(e){}},400+i*180);
+  });
 }
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
