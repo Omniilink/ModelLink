@@ -1977,7 +1977,7 @@ function escapeHtml(s){if(s==null||s===false)return '';return String(s).replace(
 // the cache. TTL keeps data fresh enough while making navigation feel instant.
 var _getCache={};
 var _GET_CACHE_TTL=30000;
-var _CACHEABLE_READ=['/api/projects','/api/workspaces','/api/provider-keys','/api/custom-providers','/api/prompts','/api/agents','/api/settings','/api/coding/settings','/api/discover','/api/usage','/api/findings','/api/collections','/api/omniiignore'];
+var _CACHEABLE_READ=['/api/projects','/api/workspaces','/api/provider-keys','/api/custom-providers','/api/prompts','/api/agents','/api/settings','/api/coding/settings','/api/discover','/api/usage','/api/findings','/api/collections','/api/omniiignore','/api/ollama/config','/api/admin/overview','/api/admin/findings','/api/admin/common-problems','/api/admin/reports','/api/admin/users'];
 function _cacheableUrl(url){
   try{
     const u=String(url).replace(API,'');
@@ -2254,6 +2254,7 @@ function preloadAppViews(){
     ['agents',()=>admLoadAgents()],['tutorial',()=>setupOllamaLoad()],
     ['assets',()=>loadAssetsView()],['public',()=>loadPublicView()],['forums',()=>loadForumsView()],
   ];
+  try{if(window.__user&&window.__user.is_admin)loaders.push(['admin',()=>enterAdminView()])}catch(e){}
   loaders.forEach((pair,i)=>{
     setTimeout(()=>{try{const p=pair[1]();if(p&&p.catch)p.catch(()=>{})}catch(e){}},400+i*180);
   });
