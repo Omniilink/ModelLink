@@ -755,7 +755,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 # /api/logs streams the log; /api/logs/clear manages it - neither should
 
 # log itself, or clearing would instantly re-add the clear request's line.
-_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/logs/clear", "/api/bandwidth", "/favicon.svg", "/favicon.ico"}
+_SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/logs/clear", "/api/bandwidth",
+                   "/api/sysstats", "/api/coding/merge-status", "/api/provider-health",
+                   "/favicon.svg", "/favicon.ico"}
 
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
@@ -8049,13 +8051,33 @@ def _sysstats_sample():
     return out
 
 
+_SYSSTATS_CACHE = {"ts": 0.0, "data": None}
+_SYSSTATS_LOCK = threading.Lock()
+
+
+def _sysstats_cached():
+    now = time.time()
+    c = _SYSSTATS_CACHE
+    if c["data"] is not None and now - c["ts"] < 1.0:
+        return c["data"]
+    with _SYSSTATS_LOCK:
+        now = time.time()
+        if c["data"] is not None and now - c["ts"] < 1.0:
+            return c["data"]
+        d = _sysstats_sample()
+        _SYSSTATS_CACHE.update(ts=now, data=d)
+        return d
+
+
 @app.get("/api/sysstats")
 async def sysstats(request: Request):
-    """Real-time server load (polled by the top bar). Any signed-in user."""
+    """Real-time server load (polled by the top bar). Any signed-in user.
+    Sampled in a worker thread + cached ~1s so a busy event loop never delays
+    it and many tabs share one sample."""
     user, err = _require_auth(request)
     if err:
         return err
-    return _sysstats_sample()
+    return await asyncio.to_thread(_sysstats_cached)
 
 
 @app.post("/api/merge/config")
