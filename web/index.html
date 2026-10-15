@@ -3161,7 +3161,7 @@ function sysstatsRender(){
     +'<span>↓'+fmtSysRate(d.net_down_kbps||0)+' ↑'+fmtSysRate(d.net_up_kbps||0)+'</span>'
     +'<span>DISK-'+Math.round(d.disk_percent||0)+'%</span>';
 }
-function sysstatsStart(){try{if(sysstatsTimer)return;sysstatsPoll();sysstatsTimer=setInterval(sysstatsPoll,500)}catch(e){}}
+function sysstatsStart(){try{if(sysstatsTimer)return;sysstatsPoll();sysstatsTimer=setInterval(sysstatsPoll,1000)}catch(e){}}
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
   const showAssistant=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
