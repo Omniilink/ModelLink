@@ -2054,7 +2054,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
   try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
-  updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
+  updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');

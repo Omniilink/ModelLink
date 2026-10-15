@@ -911,6 +911,10 @@ def load_all_keys():
     return provider_keys
 
 
+_ollama_tags_cache = {"ts": 0.0, "base": "", "tags": []}
+OLLAMA_TAGS_TTL = 15
+
+
 def scan_ollama_models(base_url=None, agent_id=None, force=False):
     """List Ollama models. base_url overrides OLLAMA_BASE_URL; agent_id scans
     a paired device through the relay instead of the server's own Ollama.
@@ -921,14 +925,20 @@ def scan_ollama_models(base_url=None, agent_id=None, force=False):
     if agent_id is not None:
         return _relay_scan_models(agent_id, force=force)
     url = (base_url or "").strip().rstrip("/") or OLLAMA_BASE_URL
+    now = time.time()
+    if (not force and _ollama_tags_cache["base"] == url
+            and now - _ollama_tags_cache["ts"] < OLLAMA_TAGS_TTL):
+        return list(_ollama_tags_cache["tags"])
     try:
         resp = requests.get(f"{url}/api/tags", timeout=3)
         if resp.status_code == 200:
             data = resp.json()
-            return [m["name"] for m in data.get("models", [])]
+            tags = [m["name"] for m in data.get("models", [])]
+            _ollama_tags_cache.update(ts=now, base=url, tags=tags)
+            return list(tags)
     except Exception:
         pass
-    return []
+    return list(_ollama_tags_cache["tags"]) if _ollama_tags_cache["base"] == url else []
 
 
 def get_backup_model():
@@ -940,6 +950,7 @@ def get_backup_model():
 # input on models that can actually see. Short TTL so freshly pulled models
 # show up without a restart.
 _ollama_caps = {"ts": 0.0, "base": "", "caps": {}}
+_caps_lock = threading.Lock()
 OLLAMA_CAPS_TTL = 300
 
 
@@ -991,27 +1002,41 @@ def ollama_model_capabilities(force=False, agent_id=None):
     if (not force and _ollama_caps["base"] == base
             and now - _ollama_caps["ts"] < OLLAMA_CAPS_TTL):
         return _ollama_caps["caps"]
-    # Incremental: /api/show LOADS each model into Ollama (evicting the last
-    # one), so only probe tags we have never seen. Known tags keep their flags.
+    # /api/show LOADS each model into Ollama (evicting the last), so never do
+    # it on the request path: return known flags immediately (new tags default
+    # to no vision) and probe the unknown ones in the background.
     caps = dict(_ollama_caps.get("caps") or {}) if _ollama_caps["base"] == base else {}
     tags = scan_ollama_models()
     for tag in tags:
-        if tag in caps and not force:
-            continue
-        caps[tag] = {"vision": False}
+        caps.setdefault(tag, {"vision": False})
+    for stale in [t for t in caps if t not in tags]:
+        del caps[stale]
+    _ollama_caps.update(ts=now, base=base, caps=caps)
+    new = [t for t in tags if not caps.get(t, {}).get("_probed")]
+    if new:
+        if force:
+            _probe_caps(base, new)
+        else:
+            threading.Thread(target=_probe_caps, args=(base, new), daemon=True).start()
+    return _ollama_caps["caps"]
+
+
+def _probe_caps(base, tags):
+    """Background: probe /api/show for the given tags and update the cache."""
+    for tag in tags:
+        entry = {"vision": False, "_probed": True}
         try:
             r = requests.post(f"{base}/api/show", json={"name": tag}, timeout=5)
             if r.status_code == 200:
                 info = r.json()
                 have = info.get("capabilities") or []
-                caps[tag]["vision"] = any(str(x).lower() == "vision" for x in have)
-                caps[tag]["thinking"] = any(str(x).lower() == "thinking" for x in have)
+                entry["vision"] = any(str(x).lower() == "vision" for x in have)
+                entry["thinking"] = any(str(x).lower() == "thinking" for x in have)
         except Exception:
             pass
-    for stale in [t for t in caps if t not in tags]:
-        del caps[stale]
-    _ollama_caps.update(ts=now, base=base, caps=caps)
-    return caps
+        with _caps_lock:
+            if _ollama_caps["base"] == base:
+                _ollama_caps["caps"][tag] = entry
 
 
 def _relay_capabilities(agent_id, force=False):

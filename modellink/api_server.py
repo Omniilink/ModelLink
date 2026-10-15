@@ -103,6 +103,7 @@ from modellink.splitter import (
     _execute_tool_call, _response_to_openai_message, run_tool_loop
 )
 from modellink import relay
+from modellink import splitter
 from modellink.auth import (
     init_db, get_current_user, require_auth, create_user, authenticate_user,
     create_session, destroy_session, set_session_cookie, get_user_by_id,
@@ -2410,6 +2411,9 @@ async def get_status(request: Request):
     except Exception as e:
         return {"providers": {}, "rate_limits": {}, "model_name": MODEL_NAME, "error": str(e)}
 
+_device_entries_cache = {}
+
+
 def _device_model_entries(user):
     """Model entries for Ollama on paired devices the caller may use.
 
@@ -2424,6 +2428,10 @@ def _device_model_entries(user):
         uid = int(user.get("id") or 0)
     except (TypeError, ValueError):
         return out
+    now = time.time()
+    cached = _device_entries_cache.get(uid)
+    if cached and now - cached[0] < 20:
+        return cached[1]
     with _AGENT_LOCK:
         st = _agents_load()
         agents = [dict(a) for a in st["agents"].values()]
@@ -2437,16 +2445,23 @@ def _device_model_entries(user):
             continue
         name = str(a.get("name") or a.get("hostname") or aid)
         online = _agent_online(a)
-        try:
-            tags = scan_ollama_models(agent_id=aid)
-        except Exception:
-            tags = []
+        if online:
+            try:
+                tags = scan_ollama_models(agent_id=aid)
+            except Exception:
+                tags = []
+        else:
+            # Offline: never wait on the relay — use the last-known tags only.
+            tags = list((splitter._relay_scan.get(aid) or {}).get("tags") or [])
         if not tags:
             continue
-        try:
-            vision = ollama_model_capabilities(agent_id=aid)
-        except Exception:
-            vision = {}
+        if online:
+            try:
+                vision = ollama_model_capabilities(agent_id=aid)
+            except Exception:
+                vision = {}
+        else:
+            vision = dict((splitter._relay_scan.get(aid) or {}).get("vision") or {})
         for tag in tags:
             out.append({"id": f"device/{aid}/{tag}", "provider": "device",
                         "group": f"device/{aid}", "group_label": f"Ollama · {name}",
