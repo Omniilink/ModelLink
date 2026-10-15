@@ -991,8 +991,13 @@ def ollama_model_capabilities(force=False, agent_id=None):
     if (not force and _ollama_caps["base"] == base
             and now - _ollama_caps["ts"] < OLLAMA_CAPS_TTL):
         return _ollama_caps["caps"]
-    caps = {}
-    for tag in scan_ollama_models():
+    # Incremental: /api/show LOADS each model into Ollama (evicting the last
+    # one), so only probe tags we have never seen. Known tags keep their flags.
+    caps = dict(_ollama_caps.get("caps") or {}) if _ollama_caps["base"] == base else {}
+    tags = scan_ollama_models()
+    for tag in tags:
+        if tag in caps and not force:
+            continue
         caps[tag] = {"vision": False}
         try:
             r = requests.post(f"{base}/api/show", json={"name": tag}, timeout=5)
@@ -1003,6 +1008,8 @@ def ollama_model_capabilities(force=False, agent_id=None):
                 caps[tag]["thinking"] = any(str(x).lower() == "thinking" for x in have)
         except Exception:
             pass
+    for stale in [t for t in caps if t not in tags]:
+        del caps[stale]
     _ollama_caps.update(ts=now, base=base, caps=caps)
     return caps
 

@@ -2472,11 +2472,14 @@ async def discover_models(request: Request):
                 discovered[prov_name].append(m)
                 if not any(x["id"] == m for x in all_models):
                     all_models.append(entry)
-    ollama_models = scan_ollama_models()
+    try:
+        ollama_models = await asyncio.to_thread(scan_ollama_models)
+    except Exception:
+        ollama_models = []
     if ollama_models:
         discovered["ollama"] = ollama_models
         try:
-            _ollama_caps = ollama_model_capabilities()
+            _ollama_caps = await asyncio.to_thread(ollama_model_capabilities)
         except Exception:
             _ollama_caps = {}
         for m in ollama_models:
@@ -2516,9 +2519,12 @@ async def ollama_models(request: Request):
     _user, err = _require_auth(request)
     if err:
         return err
-    models = scan_ollama_models()
     try:
-        caps = ollama_model_capabilities()
+        models = await asyncio.to_thread(scan_ollama_models)
+    except Exception:
+        models = []
+    try:
+        caps = await asyncio.to_thread(ollama_model_capabilities)
     except Exception:
         caps = {}
     return {"models": ["ollama/" + m for m in models],
@@ -2896,9 +2902,12 @@ async def ollama_config_get(request: Request):
     _user, err = _require_auth(request)
     if err:
         return err
-    models = scan_ollama_models()
     try:
-        caps = ollama_model_capabilities()
+        models = await asyncio.to_thread(scan_ollama_models)
+    except Exception:
+        models = []
+    try:
+        caps = await asyncio.to_thread(ollama_model_capabilities)
     except Exception:
         caps = {}
     return {"base_url": _ollama_current_url(), "available": len(models) > 0,
@@ -7944,6 +7953,19 @@ def _server_ollama_tags():
         return False, [], str(e)[:200]
 
 
+_MERGE_TAGS_CACHE = {"ts": 0.0, "result": (False, [], "not probed")}
+_MERGE_TAGS_TTL = 30
+
+
+def _server_ollama_tags_cached():
+    now = time.time()
+    if now - _MERGE_TAGS_CACHE["ts"] < _MERGE_TAGS_TTL:
+        return _MERGE_TAGS_CACHE["result"]
+    res = _server_ollama_tags()
+    _MERGE_TAGS_CACHE.update(ts=now, result=res)
+    return res
+
+
 class MergeConfigBody(BaseModel):
     model: str = ""
     enabled: Optional[bool] = None
@@ -8047,7 +8069,7 @@ async def merge_status(request: Request):
     user, err = _require_auth(request)
     if err:
         return err
-    reachable, tags, oerr = _server_ollama_tags()
+    reachable, tags, oerr = await asyncio.to_thread(_server_ollama_tags_cached)
     model = _ws_merge_model()
     _row = _merge_device_row(user["id"])
     _host = ("device" if (_row.get("enabled") and _row.get("agent_id"))
