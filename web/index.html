@@ -2085,6 +2085,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
   try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
+  try{if(typeof checkBuildVersion==='function')checkBuildVersion()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
@@ -2256,6 +2257,24 @@ function preloadAppViews(){
   loaders.forEach((pair,i)=>{
     setTimeout(()=>{try{const p=pair[1]();if(p&&p.catch)p.catch(()=>{})}catch(e){}},400+i*180);
   });
+}
+async function checkBuildVersion(){
+  // Clear client caches whenever the server build changes (a new deploy), so a
+  // tab left open across an update never serves stale cached data. The GET
+  // cache is in-memory (already empty on every page load); this also clears
+  // the localStorage view caches.
+  try{
+    const r=await fetch(API+'/api/health');if(!r.ok)return;
+    const d=await r.json();const b=String(d&&d.build||'');
+    if(!b)return;
+    let old='';try{old=localStorage.getItem('omnilink_build')||''}catch(e){}
+    if(old&&old!==b){
+      try{_getCache={}}catch(e){}
+      ['omnilink_coding_settings','omnilink_chat_titles','omnilink_runbranch'].forEach(k=>{try{localStorage.removeItem(k)}catch(e){}});
+      try{showToast('App updated — caches refreshed','info')}catch(e){}
+    }
+    try{localStorage.setItem('omnilink_build',b)}catch(e){}
+  }catch(e){}
 }
 function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
