@@ -7984,7 +7984,7 @@ def _server_ollama_tags():
         return False, [], "No Ollama URL configured"
     try:
         req = urllib.request.Request(url + "/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         return True, [str(m.get("name") or "") for m in (data.get("models") or [])], ""
     except Exception as e:
@@ -17364,12 +17364,9 @@ def _build_updater_command(checkout: str, img: str, check: bool = False):
     return command, cli_env
 
 
-def _probe_capabilities() -> dict:
-    """Cached environment probe (git / docker / compose / shell mode)."""
+def _probe_capabilities_compute() -> dict:
+    """Do the (slow) environment probe and cache it."""
     now = time.time()
-    with _ADMIN_CAPS_LOCK:
-        if _ADMIN_CAPS["data"] and now - _ADMIN_CAPS["ts"] < 300:
-            return dict(_ADMIN_CAPS["data"])
     in_container = _api_in_container()
     docker_cli = bool(shutil.which("docker"))
     daemon = _docker_daemon_up() if docker_cli else False
@@ -17416,6 +17413,32 @@ def _probe_capabilities() -> dict:
     return dict(caps)
 
 
+def _probe_capabilities() -> dict:
+    """Cached environment probe (git / docker / compose / shell mode).
+
+    Stale-while-revalidate: a stale cache is returned instantly and refreshed
+    in the background, so the Admin page never waits on cold docker/git CLI
+    spawns."""
+    now = time.time()
+    with _ADMIN_CAPS_LOCK:
+        data = _ADMIN_CAPS.get("data")
+        if data and now - _ADMIN_CAPS["ts"] < 300:
+            return dict(data)
+        refreshing = _ADMIN_CAPS.get("refreshing")
+        if data and not refreshing:
+            _ADMIN_CAPS["refreshing"] = True
+        elif data and refreshing:
+            return dict(data)
+    if data:
+        def _bg():
+            try:
+                _probe_capabilities_compute()
+            finally:
+                with _ADMIN_CAPS_LOCK:
+                    _ADMIN_CAPS["refreshing"] = False
+        threading.Thread(target=_bg, daemon=True).start()
+        return dict(data)
+    return _probe_capabilities_compute()
 
 
 def _docker_shell_exec(command: str, cwd: Optional[str], timeout: int = 30):
@@ -19096,6 +19119,25 @@ async def serve_spa(path: str):
         return JSONResponse(status_code=404, content={"error": "Not found"})
     index_path = os.path.join(APP_DIR, "web", "index.html")
     return FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
+
+def _prewarm_caches():
+    """Warm the slow admin/merge probes in the background at boot so the first
+    Admin open and merge pill are instant instead of waiting on cold docker/git
+    CLI spawns and a slow Ollama."""
+    try:
+        _probe_capabilities()
+    except Exception:
+        pass
+    try:
+        _server_ollama_tags()
+    except Exception:
+        pass
+
+
+try:
+    threading.Thread(target=_prewarm_caches, daemon=True).start()
+except Exception:
+    pass
 
 if __name__ == "__main__":
     import uvicorn
