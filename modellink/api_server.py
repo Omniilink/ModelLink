@@ -1758,9 +1758,11 @@ class LogBroadcaster:
         self._history: List[str] = []
         self._history_max = 500
         self._file_lock = threading.Lock()
+        self._file_q = queue.Queue(maxsize=20000)
         self._log_file = os.path.join(APP_DIR, "modellink", "server.log")
         self._log_file_max_bytes = 2 * 1024 * 1024
         self._trim_log_file()
+        threading.Thread(target=self._file_writer, daemon=True).start()
 
     def _trim_log_file(self):
         """Best-effort: keep the persisted log file bounded (last ~1500 lines)."""
@@ -1777,12 +1779,34 @@ class LogBroadcaster:
             pass
 
     def _append_to_file(self, message: str):
+        # Queue; a background thread batches writes so a log line never does
+        # synchronous disk I/O on the event loop (was one open/write/close per
+        # request — a real bottleneck under polling).
         try:
-            with self._file_lock:
-                with open(self._log_file, "a", encoding="utf-8") as f:
-                    f.write(message + "\n")
+            self._file_q.put_nowait(message)
         except Exception:
             pass
+
+    def _file_writer(self):
+        while True:
+            batch = []
+            try:
+                batch.append(self._file_q.get(timeout=1.0))
+            except queue.Empty:
+                pass
+            while len(batch) < 500:
+                try:
+                    batch.append(self._file_q.get_nowait())
+                except queue.Empty:
+                    break
+            if not batch:
+                continue
+            try:
+                with self._file_lock:
+                    with open(self._log_file, "a", encoding="utf-8") as f:
+                        f.write("\n".join(batch) + "\n")
+            except Exception:
+                pass
 
     def _load_file_tail(self, n: int = 200) -> List[str]:
         try:
@@ -1803,8 +1827,8 @@ class LogBroadcaster:
         if not self._history:
             self._history = self._load_file_tail(500)[-self._history_max:]
 
-        # Replay recent history so the terminal isn't empty on connect
-        for msg in self._history:
+        # Replay only a small recent tail so connecting is cheap.
+        for msg in self._history[-150:]:
             if not _log_visible_to(msg, username):
                 continue
             try:

@@ -2129,10 +2129,15 @@ function appendLog(msg){
   line.style.display=visible?'':'none';
   line.dataset.visible=visible?'1':'0';
   el.appendChild(line);
-  updateLogCount();
+  // Cap the terminal DOM so it never grows unbounded (which made the page
+  // progressively slower and slow to load after a long session).
+  try{if(el.children.length>400){for(let i=0;i<el.children.length-400;i++)el.removeChild(el.children[0])}}catch(e){}
+  scheduleLogCount();
   const autoScroll=document.getElementById('terminal-autoscroll');
   if(autoScroll&&autoScroll.classList.contains('on'))el.scrollTop=el.scrollHeight;
 }
+var _logCountT=0;
+function scheduleLogCount(){if(_logCountT)return;_logCountT=setTimeout(()=>{_logCountT=0;try{updateLogCount()}catch(e){}},300)}
 async function clearTerminal(){
   try{
     const r=await authFetch(API+'/api/logs/clear',{method:'POST'});
