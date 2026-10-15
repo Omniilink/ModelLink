@@ -6060,7 +6060,7 @@ COMMAND REFERENCE (use exactly these forms):
   uses window/document/canvas or a CDN global such as THREE, validate it with
   `node --check filename.js` only. Never execute it with node; verify it by
   previewing the HTML page.
-- Packages: pip install name  /  npm install
+- Packages: pip install name  /  npm install  (Python libraries always install project-locally into ./.pip and stay importable — never use --user, --target, --prefix or a venv; node_modules stays in the project as usual)
 - Git: git status / git add -A / git commit -m "msg"
 - Fetch a web page: WEB_FETCH:https://example.com (below)
 """
@@ -6659,12 +6659,16 @@ def _ws_merge_model_body(model, system, user_text):
                          {"role": "user", "content": user_text}]}
 
 
-_MERGE_ACTIVITY = {"running": False, "started": 0.0, "last_ms": 0}
+_MERGE_ACTIVITY = {"running": False, "started": 0.0, "last_ms": 0,
+                   "last_tps": 0, "last_tokens": 0,
+                   "live_tokens": 0, "live_tps": 0}
 
 
 def _merge_activity_begin():
     _MERGE_ACTIVITY["running"] = True
     _MERGE_ACTIVITY["started"] = time.time()
+    _MERGE_ACTIVITY["live_tokens"] = 0
+    _MERGE_ACTIVITY["live_tps"] = 0
 
 
 def _merge_activity_end(t0):
@@ -6704,6 +6708,47 @@ def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str 
         base = _merge_ollama_url()
         if not base:
             raise RuntimeError("No Ollama URL configured")
+        # Stream so the top indicator can show live tokens/sec while a merge
+        # runs. Falls back to a normal call if streaming yields nothing.
+        sbody = dict(body)
+        sbody["stream"] = True
+        t_start = time.time()
+        try:
+            req = urllib.request.Request(base + "/api/chat",
+                                         data=json.dumps(sbody).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            parts = []
+            with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
+                for raw in resp:
+                    try:
+                        line = raw.decode("utf-8", "replace").strip()
+                    except Exception:
+                        continue
+                    if line.startswith("data: "):
+                        line = line[6:]
+                    elif not line.startswith("{"):
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except Exception:
+                        continue
+                    delta = ((chunk.get("message") or {}).get("content")) or ""
+                    if delta:
+                        parts.append(delta)
+                        est = max(1, len("".join(parts)) // 4)
+                        dt = max(0.1, time.time() - t_start)
+                        _MERGE_ACTIVITY["live_tokens"] = est
+                        _MERGE_ACTIVITY["live_tps"] = round(est / dt, 1)
+                    if chunk.get("done"):
+                        _merge_record_stats(chunk)
+                        break
+            if parts:
+                _MERGE_ACTIVITY["live_tokens"] = 0
+                _MERGE_ACTIVITY["live_tps"] = 0
+                return "".join(parts)
+        except Exception:
+            pass
         req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
@@ -7905,6 +7950,77 @@ class MergeConfigBody(BaseModel):
     ctx: Optional[int] = None
 
 
+_SYSSTATS_PREV = {"t": 0.0, "cpu_idle": None, "cpu_total": None,
+                  "rx": None, "tx": None}
+
+
+def _sysstats_sample():
+    """Live server load with NO hardware details (no CPU/disk model names —
+    just usage numbers). Rates are computed against the previous sample."""
+    import shutil as _sh
+    now = time.time()
+    out = {"cpu_percent": 0, "ram_used_mb": 0, "ram_free_mb": 0, "ram_percent": 0,
+           "disk_used_gb": 0, "disk_free_gb": 0, "disk_percent": 0,
+           "net_up_kbps": 0, "net_down_kbps": 0}
+    try:
+        with open("/proc/stat") as f:
+            vals = list(map(int, f.readline().split()[1:8]))
+        idle, total = vals[3] + vals[4], sum(vals)
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                mem[k.strip()] = int(v.strip().split()[0])
+        mt = mem.get("MemTotal", 0)
+        ma = mem.get("MemAvailable", mem.get("MemFree", 0))
+        rx = tx = 0
+        with open("/proc/net/dev") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                iface, data = line.split(":", 1)
+                iface = iface.strip()
+                if not iface or iface == "lo":
+                    continue
+                fields = data.split()
+                rx += int(fields[0])
+                tx += int(fields[8])
+        du = _sh.disk_usage(APP_DIR)
+        prev = _SYSSTATS_PREV
+        dt = now - (prev["t"] or now)
+        if prev["cpu_total"] is not None and dt > 0:
+            d_idle, d_total = idle - prev["cpu_idle"], total - prev["cpu_total"]
+            if d_total > 0:
+                out["cpu_percent"] = round(
+                    max(0, min(100, (1 - d_idle / d_total) * 100)), 1)
+        if prev["rx"] is not None and dt > 0:
+            out["net_down_kbps"] = round(max(0, (rx - prev["rx"]) / 1024 / dt), 1)
+            out["net_up_kbps"] = round(max(0, (tx - prev["tx"]) / 1024 / dt), 1)
+        _SYSSTATS_PREV.update({"t": now, "cpu_idle": idle, "cpu_total": total,
+                               "rx": rx, "tx": tx})
+        if mt > 0:
+            used = mt - ma
+            out["ram_used_mb"] = round(used / 1024, 1)
+            out["ram_free_mb"] = round(ma / 1024, 1)
+            out["ram_percent"] = round(used / mt * 100, 1)
+        out["disk_used_gb"] = round(du.used / (1024 ** 3), 1)
+        out["disk_free_gb"] = round(du.free / (1024 ** 3), 1)
+        if du.total > 0:
+            out["disk_percent"] = round(du.used / du.total * 100, 1)
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/api/sysstats")
+async def sysstats(request: Request):
+    """Real-time server load (polled by the top bar). Any signed-in user."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return _sysstats_sample()
+
+
 @app.post("/api/merge/config")
 async def merge_config_set(request: Request, req: MergeConfigBody):
     """Admin-only: choose the merge model / toggle the merge, persisted to .env."""
@@ -7947,6 +8063,8 @@ async def merge_status(request: Request):
            "last_ms": _MERGE_ACTIVITY["last_ms"],
            "last_tps": _MERGE_ACTIVITY.get("last_tps", 0),
            "last_tokens": _MERGE_ACTIVITY.get("last_tokens", 0),
+           "live_tps": _MERGE_ACTIVITY.get("live_tps", 0),
+           "live_tokens": _MERGE_ACTIVITY.get("live_tokens", 0),
            "merge_ctx": _ws_merge_ctx()}
     dev = _merge_device_row(user["id"])
     if dev and dev.get("agent_id"):
@@ -14685,7 +14803,8 @@ def _ensure_project_container(name: str, folder: str, cfg: dict) -> tuple:
 
 def _exec_project_container(name: str, command: str, timeout: int):
     _proj_touch(name)
-    return subprocess.run(["docker", "exec", "-w", "/work", name,
+    return subprocess.run(["docker", "exec", "-e", "PYTHONPATH=/work/.pip",
+                           "-w", "/work", name,
                            "sh", "-c", command],
                           capture_output=True, text=True, timeout=timeout)
 
@@ -14782,6 +14901,7 @@ def _build_docker_cmd(command: str, workdir_host: str, cfg: dict) -> list:
         f"--cpus={cfg['cpus']}",
         "--pids-limit=128",
         "--network", cfg["network"],
+        "-e", "PYTHONPATH=/work/.pip",
         "-v", f"{_sandbox_host_path(workdir_host)}:/work",
         "-w", "/work",
         cfg["image"],
@@ -14841,6 +14961,25 @@ def _rewrite_inline_python(command: str, cwd: str):
     return prog + ' "' + os.path.basename(tmp) + '"', tmp
 
 
+_PIP_INSTALL_RE = re.compile(
+    r"(?<![\w.-])(pip3?|python3?\s+-m\s+pip)\s+install\b([^\n;&|]*)",
+    re.IGNORECASE)
+
+
+def _project_pip_target(command: str) -> str:
+    """Rewrite bare `pip install ...` to install project-locally (./.pip), so
+    libraries land in a folder inside the project instead of system-wide.
+    Skips installs that already target somewhere (--target/--user/--prefix) or
+    are editable (-e)."""
+    def _fix(m):
+        tool, args = m.group(1), (m.group(2) or "")
+        if re.search(r"(^|\s)(--target|--user|--prefix|-e|--editable)\b", args,
+                     re.IGNORECASE):
+            return m.group(0)
+        return "%s install --target ./.pip%s" % (tool, args)
+    return _PIP_INSTALL_RE.sub(_fix, command)
+
+
 @app.post("/api/coding/run-command")
 async def coding_run_command(request: Request, req: CodingRunCommand):
     user, err = _require_auth(request)
@@ -14883,6 +15022,10 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         if _RESTRICTED_CMD_RE.search(command):
             return JSONResponse(status_code=403, content={"error": "Absolute paths, .., %VAR% expansion and script hosts (powershell, wscript, mshta, ...) are not allowed — use paths inside your project folder"})
     command, inline_tmp = _rewrite_inline_python(command, cwd)
+    command = _project_pip_target(command)
+    pipdir = os.path.join(cwd, ".pip")
+    host_env = dict(os.environ)
+    host_env["PYTHONPATH"] = pipdir + os.pathsep + host_env.get("PYTHONPATH", "")
     try:
         sb = _sandbox_config()
         backend = "host"
@@ -14931,7 +15074,7 @@ async def coding_run_command(request: Request, req: CodingRunCommand):
         else:
             proc = subprocess.run(
                 command, shell=True, cwd=cwd,
-                capture_output=True, text=True, timeout=60
+                capture_output=True, text=True, timeout=60, env=host_env
             )
         stdout = proc.stdout
         stderr = proc.stderr

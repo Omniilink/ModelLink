@@ -2053,6 +2053,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
   try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
+  try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,500);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
@@ -3134,6 +3135,33 @@ async function mergeIndicatorPoll(){
 }
 var mergeIndicatorTick=null;
 function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000);if(!mergeIndicatorTick)mergeIndicatorTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}},1000)}catch(e){}}
+var sysstatsData=null,sysstatsTimer=null;
+function fmtSysMB(v){v=Number(v)||0;return v>=1024?(v/1024).toFixed(1)+'GB':Math.round(v)+'MB'}
+function fmtSysRate(v){v=Number(v)||0;if(v>=1024)return (v/1024).toFixed(1)+'MB/s';return Math.round(v)+'KB/s'}
+async function sysstatsPoll(){
+  try{const r=await authFetch(API+'/api/sysstats');if(r.ok)sysstatsData=await r.json().catch(()=>null)}catch(e){}
+  try{sysstatsRender()}catch(e){}
+}
+function sysstatsRender(){
+  let el=document.getElementById('sysstats-pill');
+  if(!sysstatsData){if(el)el.remove();return}
+  if(!el){
+    el=document.createElement('div');el.id='sysstats-pill';el.title='Server load (live)';
+    el.style.cssText='display:flex;gap:10px;align-items:center;margin-left:12px;margin-right:12px;padding:4px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);white-space:nowrap;flex-shrink:0';
+    const header=document.querySelector('.header');
+    const ind=document.getElementById('helper-indicator');
+    if(header&&ind&&ind.nextSibling)header.insertBefore(el,ind.nextSibling);
+    else if(header){const sp=header.querySelector('.header-spacer');if(sp&&sp.nextSibling)header.insertBefore(el,sp.nextSibling);else header.appendChild(el)}
+    else{document.body.appendChild(el);el.style.cssText+=';position:fixed;top:56px;right:14px;z-index:360'}
+  }
+  const d=sysstatsData;
+  const ramT=(d.ram_used_mb||0)+(d.ram_free_mb||0);
+  el.innerHTML='<span>CPU-'+Math.round(d.cpu_percent||0)+'%</span>'
+    +'<span>RAM-'+fmtSysMB(d.ram_used_mb||0)+'/'+fmtSysMB(ramT)+'</span>'
+    +'<span>↓'+fmtSysRate(d.net_down_kbps||0)+' ↑'+fmtSysRate(d.net_up_kbps||0)+'</span>'
+    +'<span>DISK-'+Math.round(d.disk_percent||0)+'%</span>';
+}
+function sysstatsStart(){try{if(sysstatsTimer)return;sysstatsPoll();sysstatsTimer=setInterval(sysstatsPoll,500)}catch(e){}}
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
   const showAssistant=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
@@ -3165,10 +3193,16 @@ function localAssistantIndicatorRender(){
     const dot=mm.running?'#f5a623':(mm.reachable?'#30a46c':'#e5484d');
     const pulse=mm.running?'animation:pulse 1s infinite':'';
     const state=mm.running?'running':(mm.reachable?'idle':'offline');
+    const el2=Math.max(0,(Date.now()/1000)-(mm.started_at||Date.now()/1000));
     let eta='';
-    if(mm.running){const exp=(mm.last_ms&&mm.last_ms>0)?(mm.last_ms/1000):12;const el2=(Date.now()/1000)-(mm.started_at||Date.now()/1000);eta=' · ~'+Math.max(0,Math.round(exp-el2))+'s left'}
+    if(mm.running){
+      const exp=(mm.last_ms&&mm.last_ms>0)?(mm.last_ms/1000):15;
+      const rem=Math.round(exp-el2);
+      eta=' · '+Math.round(el2)+'s'+(rem>0?(' · ~'+rem+'s left'):'');
+    }
     let tpsTxt='';
-    if(mm.last_tps&&Number(mm.last_tps)>0)tpsTxt=' · '+Number(mm.last_tps).toFixed(1)+' tok/s';
+    const _tps=(mm.running&&mm.live_tps&&Number(mm.live_tps)>0)?Number(mm.live_tps):((mm.last_tps&&Number(mm.last_tps)>0)?Number(mm.last_tps):0);
+    if(_tps>0)tpsTxt=' · '+_tps.toFixed(1)+' tok/s';
     parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta+tpsTxt,''));
   }
   el.innerHTML=parts.join('');
@@ -4475,8 +4509,8 @@ function codingOsBlock(kind){
   // shell and wins over any conflicting OS details later in the prompt
   // (for example a saved custom prompt written for the other platform).
   const head='EXECUTION ENVIRONMENT (authoritative — this is where your shell commands actually run. If any instructions below name a different OS or shell, those OS details do not apply; block syntax and workflow rules below still apply):';
-  if(kind==='linux')return head+'\n- OS: Linux container. Shell: sh (already a shell — NEVER prefix commands with sh -c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed. Forward slashes in paths.\n- COMMAND REFERENCE (use exactly these forms): list files `ls`; list with sizes `ls -la`; show a file `cat path/to/file`; make a folder `mkdir -p name`; delete a file `rm name`; run Python `python3 file.py` (check `python3 --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install`; git as usual.\n- Browser JavaScript cannot run in this container (no DOM): validate it with `node --check file.js` (syntax only, never execute it) and verify runtime behavior by opening the HTML page in a browser.\n- The container is minimal: do NOT assume tools beyond sh, python3, node and git — check first (`which <tool>`) before relying on them.';
-  if(kind==='windows')return head+'\n- OS: Windows. Shell: cmd.exe (already a shell — NEVER prefix commands with cmd /c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed.\n- COMMAND REFERENCE (use exactly these forms): list files `dir /b`; list with sizes `dir`; show a file `type path\\to\\file`; make a folder `mkdir name`; delete a file `del name`; run Python `python file.py` (check `python --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install`; git as usual.\n- Validate browser JavaScript with `node --check file.js` (syntax only — do NOT execute browser scripts with node: document and window do not exist there).';
+  if(kind==='linux')return head+'\n- OS: Linux container. Shell: sh (already a shell — NEVER prefix commands with sh -c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed. Forward slashes in paths.\n- COMMAND REFERENCE (use exactly these forms): list files `ls`; list with sizes `ls -la`; show a file `cat path/to/file`; make a folder `mkdir -p name`; delete a file `rm name`; run Python `python3 file.py` (check `python3 --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install` (Python libraries install project-locally into `./.pip` and stay importable — never use --user/--target/--prefix or a venv); git as usual.\n- Browser JavaScript cannot run in this container (no DOM): validate it with `node --check file.js` (syntax only, never execute it) and verify runtime behavior by opening the HTML page in a browser.\n- The container is minimal: do NOT assume tools beyond sh, python3, node and git — check first (`which <tool>`) before relying on them.';
+  if(kind==='windows')return head+'\n- OS: Windows. Shell: cmd.exe (already a shell — NEVER prefix commands with cmd /c, NEVER wrap a command in quotes).\n- Working directory is the open project folder; all paths relative to it. One command per RUN_COMMAND block, single line; chain with && if needed.\n- COMMAND REFERENCE (use exactly these forms): list files `dir /b`; list with sizes `dir`; show a file `type path\\to\\file`; make a folder `mkdir name`; delete a file `del name`; run Python `python file.py` (check `python --version` first); run JavaScript `node file.js` (check `node --version` first); packages `pip install name` / `npm install` (Python libraries install project-locally into `./.pip` and stay importable — never use --user/--target/--prefix or a venv); git as usual.\n- Validate browser JavaScript with `node --check file.js` (syntax only — do NOT execute browser scripts with node: document and window do not exist there).';
   return '';
 }
 var codingAttachFailures=[];
