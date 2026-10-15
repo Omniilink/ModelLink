@@ -917,6 +917,27 @@ class NetworkUsageMiddleware:
 app.add_middleware(NetworkUsageMiddleware)
 
 
+class SelectiveGZipMiddleware:
+    """GZip responses (the SPA alone is ~1.2 MB) so page loads are fast, but
+    never touch long-lived SSE streams (logs) or previews."""
+
+    def __init__(self, app, minimum_size: int = 1024):
+        from starlette.middleware.gzip import GZipMiddleware
+        self._gz = GZipMiddleware(app, minimum_size=minimum_size)
+        self._plain = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            p = scope.get("path", "")
+            if p.startswith("/api/logs") or p.startswith("/api/coding/preview"):
+                return await self._plain(scope, receive, send)
+        return await self._gz(scope, receive, send)
+
+
+# Outermost: compresses the final body of every (non-SSE) response.
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
+
+
 # ==========================================
 
 # Per-User Data Isolation
