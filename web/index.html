@@ -2086,6 +2086,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
   try{if(typeof checkBuildVersion==='function')checkBuildVersion()}catch(e){}
+  try{if(typeof updateSuperPromptUI==='function')updateSuperPromptUI()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
@@ -3191,7 +3192,7 @@ async function mergeIndicatorPoll(){
   try{localAssistantIndicatorRender()}catch(e){}
 }
 var mergeIndicatorTick=null;
-function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000);if(!mergeIndicatorTick)mergeIndicatorTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}},1000)}catch(e){}}
+function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000);if(!mergeIndicatorTick)mergeIndicatorTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}try{updateSuperPromptUI()}catch(e){}},1000)}catch(e){}}
 var sysstatsData=null,sysstatsTimer=null;
 function fmtSysMB(v){v=Number(v)||0;return v>=1024?(v/1024).toFixed(1)+'GB':Math.round(v)+'MB'}
 function fmtSysRate(v){v=Number(v)||0;if(v>=1024)return (v/1024).toFixed(1)+'MB/s';return Math.round(v)+'KB/s'}
@@ -3284,9 +3285,9 @@ function updateSuperPromptUI(){
     const ready=on&&(typeof localAssistantReady==='function')&&localAssistantReady();
     if(wrap){
       wrap.style.display=on?'':'none';
-      wrap.classList.toggle('on',superPromptOn()&&ready);
-      wrap.disabled=!ready;
-      wrap.title=ready?'Expand your message with the local assistant into a detailed prompt before sending':'Waiting for the local assistant model to load…';
+      wrap.classList.toggle('on',superPromptOn());
+      wrap.disabled=false;
+      wrap.title=ready?'Expand your message with the local assistant into a detailed prompt before sending':'Super prompt (waiting for the local assistant model to load…)';
       wrap.setAttribute('aria-pressed',superPromptOn()?'true':'false');
     }
     if(extra)extra.style.display=(on&&superPromptOn())?'inline-flex':'none';
@@ -3295,8 +3296,9 @@ function updateSuperPromptUI(){
   }catch(e){}
 }
 function toggleSuperPrompt(){
-  if(!((typeof localAssistantReady==='function')&&localAssistantReady())){showToast('Waiting for the local assistant model to load…','info');return}
-  superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();showToast('Super prompt '+(superPromptOn()?'ON':'OFF'),'info');
+  superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();
+  const ready=(typeof localAssistantReady==='function')&&localAssistantReady();
+  showToast('Super prompt '+(superPromptOn()?'ON'+(ready?'':' — the model loads on first use'):'OFF'),'info');
 }
 function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
 function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
@@ -3319,7 +3321,7 @@ async function superPromptResearch(text){
 async function buildSuperPrompt(text){
   // Rewrite the user's message into a detailed prompt with the local assistant.
   try{
-    if(!(typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&localAssistantReady()))return text;
+    if(!(typeof localAssistantEnabled==='function'&&localAssistantEnabled()))return text;
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
     if(research)researchCtx=await superPromptResearch(text);
