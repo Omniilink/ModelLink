@@ -6290,6 +6290,13 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
 - ENTRY POINT: the main file (index.html) must run standalone when
   opened or previewed. If there are multiple pages, index.html links
   them all and every link target exists (verify with dir /b).
+- WEBSITE / HTML TRIO (mandatory): whenever the user asks for a website,
+  web app, landing page, or anything in HTML, ALWAYS create all three
+  files — `index.html`, `styles.css`, and `app.js` (or `script.js`) —
+  and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus
+  `<script src="app.js"></script>` in `<body>` (unless the user
+  explicitly asked for a single self-contained file). Never ship an
+  HTML page without a real CSS stylesheet and JS script.
 - VERIFY INTERACTIVITY: after writing, re-read the file and trace every
   user-facing control end to end (button -> handler -> visible effect).
   If a control cannot work (missing API, dead URL), say so plainly and
@@ -8376,6 +8383,29 @@ async def _coding_run_iterate(user, run):
             _coding_run_log(run, "system", "Waiting for you to approve %d command(s)." % len(run["pending"]))
             return
         if not (creates or edits or patches or deletes):
+            if not run.get("web_trio_checked") and run["rounds"] < _CODING_RUN_MAX_ROUNDS:
+                run["web_trio_checked"] = True
+                try:
+                    existing = []
+                    for root, _dirs, fns in os.walk(folder):
+                        for fn in fns:
+                            existing.append(fn.lower())
+                    has_html = any(f.endswith((".html", ".htm")) for f in existing)
+                    has_css = any(f.endswith(".css") for f in existing)
+                    has_js = any(f.endswith((".js", ".mjs", ".cjs")) for f in existing)
+                    miss_trio = []
+                    if has_html and not has_css:
+                        miss_trio.append("styles.css")
+                    if has_html and not has_js:
+                        miss_trio.append("app.js")
+                except Exception:
+                    miss_trio = []
+                if miss_trio:
+                    run["history"].append({"role": "user", "content":
+                        "This HTML project is missing required web files: %s. A website / HTML project must have an HTML, CSS, and JS file. Create %s now with FILE_CREATE blocks containing real content, and link them in your HTML file with FILE_PATCH."
+                        % (", ".join(miss_trio), ", ".join(miss_trio))})
+                    _coding_run_log(run, "system", "Web trio check: requesting missing " + ", ".join(miss_trio))
+                    continue
             run["status"] = "done"
             break
         run["history"].append({"role": "user", "content":

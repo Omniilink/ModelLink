@@ -4653,6 +4653,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('SPLIT AND MERGE')<0)sysPrompt+='\nSPLIT AND MERGE (move code between files without retyping it — never re-emit file bodies to split or combine files):\n- Split one file into several with FILE_SPLIT:<source path>, then repeating PART:<new file> / LINES:a-b (1-based, inclusive) / optional REPLACE-WITH: lines left behind. Ranges must not overlap. The harness moves the exact lines — you never re-emit them. Omit REPLACE-WITH to just remove those lines (they still land in the new file).\n- Example (pull CSS and JS out of index.html):\nFILE_SPLIT:index.html\nPART:styles.css\nLINES:12-48\nREPLACE-WITH:\n<link rel="stylesheet" href="styles.css">\nPART:app.js\nLINES:60-120\nREPLACE-WITH:\n<script src="app.js"><\/script>\nEND_FILE_SPLIT\n- Combine files with FILE_MERGE:<dest>, FROM:<path> lines and one SEPARATOR:<text> line on a single line ({file} becomes each following file name):\nFILE_MERGE:bundle.js\nFROM:a.js\nFROM:b.js\nSEPARATOR:// ---- {file} ----\nEND_FILE_MERGE\n';
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
+  if(sysPrompt.indexOf('WEBSITE / HTML TRIO')<0)sysPrompt+='\nWEBSITE / HTML TRIO (mandatory): whenever the user asks for a website, web app, landing page, or anything in HTML, ALWAYS create all three files — `index.html`, `styles.css`, and `app.js` (or `script.js`) — and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus `<script src="app.js"><'+'/script>` in `<body>` (unless the user explicitly asked for a single self-contained file). List all three in your TODO_LIST as separate items and never ship an HTML page without a real CSS stylesheet and JS script.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -6923,7 +6924,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Your HTML project is missing ','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -7404,6 +7405,26 @@ async function detectMissingAssets(writtenPaths){
   }catch(e){}
   return missing;
 }
+async function detectMissingWebTrio(writtenPaths){
+  // When a task builds or updates an HTML page, a website requires HTML + CSS + JS
+  // files unless the user explicitly asked for a single self-contained file.
+  // Returns missing standard filenames (e.g. ['styles.css', 'app.js']).
+  const missing=[];
+  try{
+    const userMsgs=((typeof codingHistory!=='undefined'&&Array.isArray(codingHistory))?codingHistory:[]).filter(m=>m&&m.role==='user'&&typeof m.content==='string'&&!(typeof isHarnessMsg==='function'&&isHarnessMsg(m))).map(m=>m.content).join('\n');
+    if(/\b(single[- ]file|one[- ]file|self[- ]contained|inline only|all[- ]in[- ]one html|no external (css|js|files)|without (css|js)|no (css|js)|only html)\b/i.test(userMsgs))return missing;
+    if(typeof loadAllCodingFiles==='function')await loadAllCodingFiles(true);
+    const have=(typeof allCodingFiles!=='undefined'&&Array.isArray(allCodingFiles))?allCodingFiles:[];
+    if(!have.length)return missing;          // unknown project -> say nothing
+    const touchedHtml=(writtenPaths||[]).some(p=>/\.(html?|htm)$/i.test(p))||have.some(p=>/\.(html?|htm)$/i.test(p));
+    if(!touchedHtml)return missing;
+    const hasCss=have.some(p=>/\.(css|scss|sass|less)$/i.test(p));
+    const hasJs=have.some(p=>/\.(js|mjs|cjs|ts|tsx|jsx)$/i.test(p));
+    if(!hasCss)missing.push('styles.css');
+    if(!hasJs)missing.push('app.js');
+  }catch(e){}
+  return missing;
+}
 // ---- Findings: the loop's shared memory ---------------------------------
 // When a run repeats itself, it looks up past lessons (filtered to its own
 // model/provider/language/problem) instead of stopping; when it overcomes
@@ -7494,7 +7515,8 @@ async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
   codingRounds=0;codingReplans=0;
   let codingTruncRetries=0;
-  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false;
+  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false;
+  const runTouchedPaths=new Set();
   // Stop tracking: the ONLY early stop is the EXACT same command set with
   // no writes, 5 rounds running. Near-misses and read-only stretches keep
   // going (with reflects) — the plan budget is the outer backstop.
@@ -7567,6 +7589,7 @@ async function codingAutoContinue(){
         // Syntax gate: only loop back for REAL breakage in written files.
         // Clean files with no open todos finish here — no redundant rounds.
         const validation=await validateWrittenFiles();
+        (validation.files||[]).forEach(p=>runTouchedPaths.add(p));
         if(!validation.ok){
           setbacks++;
           lastReason='syntax/content problems in written files: '+validation.errors.join('; ');
@@ -7601,6 +7624,21 @@ async function codingAutoContinue(){
         // one, "no open todos" is vacuously true and the loop would stop
         // after the FIRST file, leaving the rest of the site unwritten.
         if(validation.files.length>0&&open0.length===0&&todosAtStart>0){
+          if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
+            const missTrio=await detectMissingWebTrio([...runTouchedPaths]);
+            if(missTrio.length){
+              webTrioAuditDone=true;
+              addCodingSystemMsg('Web project is missing '+missTrio.join(', ')+' — asking AI to create and link '+missTrio.join(' and ')+'…');
+              codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'});
+              persistCodingChat();
+              codingStream=true;
+              const tturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+              codingStream=false;
+              persistCodingChat();
+              if(tturn.error)break;
+              continue;
+            }
+          }
           completeAllTodos();
           postCodingAssistant('Done — verified: '+validation.files.join(', ')+' ('+validation.files.length+' file'+(validation.files.length!==1?'s':'')+', syntax OK).');
           break;
@@ -7737,6 +7775,22 @@ async function codingAutoContinue(){
       const open=openTodoTexts();
       if(open.length===0){
         const vfin=await validateWrittenFiles();
+        (vfin.files||[]).forEach(p=>runTouchedPaths.add(p));
+        if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
+          const missTrio=await detectMissingWebTrio([...runTouchedPaths]);
+          if(missTrio.length){
+            webTrioAuditDone=true;
+            addCodingSystemMsg('Web project is missing '+missTrio.join(', ')+' — asking AI to create and link '+missTrio.join(' and ')+'…');
+            codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'});
+            persistCodingChat();
+            codingStream=true;
+            const tturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+            codingStream=false;
+            persistCodingChat();
+            if(tturn.error)break;
+            continue;
+          }
+        }
         // Completion audit: finishing a task that NEVER produced a TODO_LIST
         // is exactly how a "website" ends up as a lone index.html. Make the
         // model enumerate what the task required and create what is missing.
