@@ -6593,15 +6593,22 @@ def _ws_live_locks(folder):
 
 def _ws_enforce_lock(user, folder, relpath):
     """Workspace write gate: one editor per file at a time (file locks), plus
-    owner-set quiet hours. Returns an error JSONResponse or None."""
+    owner-set quiet hours. Check-only: it never creates a lock itself (explicit
+    locks from workspace_lock / wsSecureTargets are the hold), so a write can
+    never leave a stale "editing" lock behind. Returns an error JSONResponse
+    or None."""
     if not _workspace_row(folder):
         return None
     qb = _ws_quiet_block(user, folder)
     if qb:
         return JSONResponse(status_code=qb.get("code", 423), content=qb)
-    err = _ws_take_lock(user, folder, relpath, quiet=True)
-    if err:
-        return JSONResponse(status_code=409, content=err)
+    key = _ws_lock_key(folder, relpath)
+    now = time.time()
+    cur = _ws_locks.get(key)
+    if cur and now - cur["at"] < _WS_LOCK_TTL and cur["user_id"] != user["id"]:
+        return JSONResponse(status_code=409, content={
+            "error": "File is locked by another editor",
+            "locked_by": cur["username"], "locked_by_id": cur["user_id"]})
     return None
 
 

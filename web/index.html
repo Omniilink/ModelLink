@@ -9470,8 +9470,6 @@ async function wsSecureTargets(text,beforeEl){
   wsWaitingForLocks=false;
 }
 async function wsReleaseMine(){
-  // No locks are taken any more; nothing to release.
-  wsLockedPaths=[];return;
   const paths=wsLockedPaths.slice();wsLockedPaths=[];
   for(const f of paths){
     try{await authFetch(API+'/api/coding/workspace/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})})}catch(e){}
