@@ -88,6 +88,9 @@ services:
       - OMNIILINK_WS_BATCH_SECS=${OMNIILINK_WS_BATCH_SECS:-15}
       # The batch summariser runs against the dedicated always-on Ollama below.
       - OMNIILINK_WS_BATCH_OLLAMA_URL=http://batch-ollama:11434
+      # Godot engine version for in-browser game exports (headless editor +
+      # web templates lazy-download once into user_data/.godot on first use).
+      - OMNIILINK_GODOT_VERSION=${OMNIILINK_GODOT_VERSION:-4.7.2}
     # Lets the container reach Ollama running on the Docker host via
     # http://host.docker.internal:11434 (the default when no URL is set).
     # Works out of the box on Docker Desktop; this line adds it on Linux too.

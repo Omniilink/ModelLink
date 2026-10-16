@@ -1669,6 +1669,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
           <div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>
           <button onclick="refreshCodingTree()" title="Refresh file tree">Refresh</button>
+          <button onclick="playGodotGame()" id="coding-godot-play-btn" title="Export this Godot project and play it in a new tab" style="display:none">▶ Play</button>
           <button onclick="openUploadPicker()" title="Upload files into this project (max 50MB, admins unlimited)">Upload</button>
           <button onclick="openSearchModal()" title="Search project contents (Ctrl+K)">Search</button>
           <button onclick="openSemanticSearch()" title="Search files by meaning (enable semantic search in Settings)">Semantic</button>
@@ -3913,6 +3914,7 @@ async function refreshCodingTree(){
       }
     }catch(e2){}
   }
+  try{updateGodotPlayUI()}catch(e){}
 }
 </script>
 
@@ -4066,6 +4068,7 @@ function openFileActionModal(path,execCmd){
   const runners={py:'python',js:'node',ts:'npx ts-node',sh:'bash',rb:'ruby',php:'php',go:'go run',ps1:'powershell -File'};
   if(execCmd||runners[ext])mk('Run','btn btn-primary',()=>{closeFileActionModal();runFileScanned(path,execCmd||runners[ext])});
   if(ext==='html'||ext==='htm')mk('Preview','btn btn-primary',()=>{closeFileActionModal();previewFileScanned(path)});
+  if(typeof isGodotProject==='function'&&isGodotProject())mk('▶ Play','btn btn-primary',()=>{closeFileActionModal();playGodotGame()});
   document.getElementById('file-action-modal').classList.add('open');
 }
 function closeFileActionModal(){document.getElementById('file-action-modal').classList.remove('open')}
@@ -4298,6 +4301,99 @@ async function previewFileScanned(path){
   try{frame.focus();if(frame.contentWindow)frame.contentWindow.focus()}catch(e){}
 }
 function closeFilePreview(){const f=document.getElementById('file-preview-frame');try{f.removeAttribute('src');f.removeAttribute('srcdoc');f.src='about:blank'}catch(e){}document.getElementById('file-preview-modal').classList.remove('open')}
+// ---- Godot engine: build + play games in the browser ----
+function isGodotProject(){
+  // A Godot project ships project.godot at its root (never the HTML trio).
+  try{
+    const h=(typeof allCodingFiles!=='undefined'&&Array.isArray(allCodingFiles))?allCodingFiles:[];
+    return h.some(p=>String(p||'').toLowerCase().split('/').pop()==='project.godot');
+  }catch(e){return false}
+}
+function updateGodotPlayUI(){
+  // The toolbar Play button only exists for Godot projects.
+  try{
+    const b=document.getElementById('coding-godot-play-btn');
+    if(b)b.style.display=(isGodotProject()&&codingFolder&&!isRemote())?'':'none';
+  }catch(e){}
+}
+async function godotStatusPost(folderKey){
+  const qs=(folderKey&&folderKey!=='__install__')?('?folder='+encodeURIComponent(folderKey)):'';
+  const r=await authFetch(API+'/api/coding/godot/status'+qs);
+  const d=await r.json().catch(()=>null);
+  if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+  return d;
+}
+async function pollGodotJob(jobKey,label){
+  // Poll until the install/export job finishes. Reports each new phase to
+  // the run log; returns the finished job record, or null (tab closed +
+  // message shown) on failure/timeout.
+  let tab=null;
+  try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
+  try{if(typeof previewLoadingDoc==='function')previewLoadingDoc(tab,'Godot '+label+'…')}catch(e){}
+  let lastPhase='';
+  const isInstall=jobKey==='__install__';
+  const maxMs=(isInstall?3600:1800)*1000,t0=Date.now();
+  const closeTab=()=>{try{if(tab)tab.close()}catch(e){}};
+  while(Date.now()-t0<maxMs){
+    await new Promise(r=>setTimeout(r,3000));
+    let st=null;
+    try{st=await godotStatusPost(isInstall?'':jobKey)}catch(e){continue}
+    const j=st&&st.jobs?st.jobs[jobKey]:null;
+    if(!j)continue;
+    if(j.phase&&j.phase!==lastPhase){
+      lastPhase=j.phase;
+      try{addCodingSystemMsg('Godot '+label+': '+j.phase+(typeof j.progress==='number'&&j.progress>0&&j.progress<1?' ('+Math.round(j.progress*100)+'%)':''))}catch(e){}
+    }
+    if(j.done){
+      if(j.status==='ok')return{job:j,tab:tab};
+      closeTab();
+      const tail=(j.log||[]).slice(-8).join('\n');
+      appAlert('Godot '+label+' failed: '+(j.error||'unknown error')+(tail?'\n\n'+tail:''));
+      return null;
+    }
+  }
+  closeTab();
+  appAlert('Timed out waiting for the Godot '+label+' — it may still be running. Press Play again to check on it.');
+  return null;
+}
+async function playGodotGame(){
+  if(isRemote()){showToast('Godot play is not available for remote folders yet','error');return}
+  if(fsHandle){showToast('Godot export runs on the server: open this project as a server project first (Projects → New), then press Play','error');return}
+  if(!codingFolder){showToast('Open a project folder first','info');return}
+  if(!isGodotProject()){showToast('This project has no project.godot — ask the AI to build a Godot 4 game first','error');return}
+  const folderKey=String(codingFolder||'');
+  let st=null;
+  try{st=await godotStatusPost(folderKey)}catch(e){appAlert('Godot status failed: '+e.message);return}
+  if(!st.platform_ok){appAlert('Godot export runs on the Linux/Docker server. This host cannot build web games.');return}
+  if(!st.installed){
+    const missing=st.missing_libs||[];
+    const ok=await appConfirm('Godot '+st.version+' is not installed on the server yet. Download it now? One-time ~1.4GB (editor + web export templates).'+(missing.length?'\n\nAlso missing OS libraries: '+missing.slice(0,6).join(', '):''));
+    if(!ok)return;
+    try{
+      const ir=await authFetch(API+'/api/coding/godot/install',{method:'POST'});
+      const idata=await ir.json().catch(()=>({}));
+      if(!ir.ok)throw new Error(idata.error||('HTTP '+ir.status));
+    }catch(e){appAlert('Godot install failed to start: '+e.message+' (installing needs an admin account)');return}
+    addCodingSystemMsg('Downloading Godot '+st.version+' (one time, ~1.4GB)…');
+    const done=await pollGodotJob('__install__','install');
+    if(!done)return;
+    showToast('Godot '+st.version+' installed','success');
+  }
+  try{
+    const er=await authFetch(API+'/api/coding/godot/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:folderKey})});
+    const edata=await er.json().catch(()=>({}));
+    if(!er.ok)throw new Error(edata.error||edata.detail||('HTTP '+er.status));
+    if(edata.running){showToast('Export already running — watching it…','info')}
+    else addCodingSystemMsg('Exporting the Godot project for the browser…');
+  }catch(e){appAlert('Export failed to start: '+e.message);return}
+  const fin=await pollGodotJob(folderKey,'export');
+  if(!fin)return;
+  const playUrl=fin.job&&fin.job.result&&fin.job.result.play_url;
+  if(fin.job.result&&fin.job.result.cached)showToast('Nothing changed — opening the last build','info');
+  if(!playUrl){try{if(fin.tab)fin.tab.close()}catch(e){}appAlert('Export finished but no play URL came back.');return}
+  if(fin.tab){fin.tab.location.href=API+playUrl;showToast('Game opened in a new tab — click the game to capture keyboard/mouse','success')}
+  else{showToast('Popup blocked — allow popups for full play; the build is ready, press Play again','error')}
+}
 
 function addAtFile(name){if(!codingAtFiles.includes(name)){codingAtFiles.push(name);showToast('Added '+name+' to context','success');updateAtIndicator()}}
 function removeAtFile(name){codingAtFiles=codingAtFiles.filter(f=>f!==name);updateAtIndicator()}
@@ -4762,7 +4858,8 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('SPLIT AND MERGE')<0)sysPrompt+='\nSPLIT AND MERGE (move code between files without retyping it — never re-emit file bodies to split or combine files):\n- Split one file into several with FILE_SPLIT:<source path>, then repeating PART:<new file> / LINES:a-b (1-based, inclusive) / optional REPLACE-WITH: lines left behind. Ranges must not overlap. The harness moves the exact lines — you never re-emit them. Omit REPLACE-WITH to just remove those lines (they still land in the new file).\n- Example (pull CSS and JS out of index.html):\nFILE_SPLIT:index.html\nPART:styles.css\nLINES:12-48\nREPLACE-WITH:\n<link rel="stylesheet" href="styles.css">\nPART:app.js\nLINES:60-120\nREPLACE-WITH:\n<script src="app.js"><\/script>\nEND_FILE_SPLIT\n- Combine files with FILE_MERGE:<dest>, FROM:<path> lines and one SEPARATOR:<text> line on a single line ({file} becomes each following file name):\nFILE_MERGE:bundle.js\nFROM:a.js\nFROM:b.js\nSEPARATOR:// ---- {file} ----\nEND_FILE_MERGE\n';
   if(sysPrompt.indexOf('COMMAND DISCIPLINE')<0)sysPrompt+='\nCOMMAND DISCIPLINE:\n- Every command runs in the project folder in ONE shell (see EXECUTION ENVIRONMENT). Use that shell\'s syntax exactly — never mix: `dir` / `type` are Windows-only, `ls` / `cat` are Linux/macOS-only. Check with `pwd` or an `ls`-style listing if unsure.\n- NEVER start a long-running or blocking server in the foreground (`python -m http.server`, `node serve.js`, `npm start`, `npx serve` and similar). They never exit, so the run is killed at the command timeout and you learn nothing. To smoke-test, start it in the background and immediately stop it, or skip it and verify the code instead.\n- If a command fails, READ the error before retrying. Fix the cause or change approach — never re-run the identical command hoping for a different result.\n- Do not use a shell fence to type a command you do not intend to run.\n';
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
-  if(sysPrompt.indexOf('WEBSITE / HTML TRIO')<0)sysPrompt+='\nWEBSITE / HTML TRIO (mandatory): whenever the user asks for a website, web app, landing page, or anything in HTML, ALWAYS create all three files — `index.html`, `styles.css`, and `app.js` (or `script.js`) — and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus `<script src="app.js"><'+'/script>` in `<body>` (unless the user explicitly asked for a single self-contained file). List all three in your TODO_LIST as separate items and never ship an HTML page without a real CSS stylesheet and JS script.\n';
+  if(sysPrompt.indexOf('WEBSITE / HTML TRIO')<0)sysPrompt+='\nWEBSITE / HTML TRIO (mandatory): whenever the user asks for a website, web app, landing page, or anything in HTML, ALWAYS create all three files — `index.html`, `styles.css`, and `app.js` (or `script.js`) — and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus `<script src="app.js"><'+'/script>` in `<body>` (unless the user explicitly asked for a single self-contained file). List all three in your TODO_LIST as separate items and never ship an HTML page without a real CSS stylesheet and JS script. This rule does NOT apply to Godot engine projects — those ship project.godot, scenes and scripts instead, never index.html/styles.css/app.js.\n';
+  if(sysPrompt.indexOf('GODOT-FIRST')<0)sysPrompt+='\nGODOT-FIRST (mandatory): whenever the user asks for a GAME, build it as a GODOT 4 project, never as hand-rolled HTML5/JS: `project.godot` (config_version=5, name set, run/main_scene pointing at a scene that exists), text `.tscn` scenes, `.gd` GDScript, Compatibility renderer (`rendering_method` and `.web` = "gl_compatibility" — Forward+/Mobile cannot run in a browser). NO C#, NO GDExtension, NO binary scenes. Never write export_presets.cfg custom shells or exported index.html/.wasm/.pck yourself — the server exports and the user plays via the Play button.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -7588,12 +7685,15 @@ async function detectMissingWebTrio(writtenPaths){
   // When a task builds or updates an HTML page, a website requires HTML + CSS + JS
   // files unless the user explicitly asked for a single self-contained file.
   // Returns missing standard filenames (e.g. ['styles.css', 'app.js']).
+  // Godot engine projects are exempt: they ship project.godot + scenes +
+  // scripts, never the HTML trio.
   const missing=[];
   try{
-    const userMsgs=((typeof codingHistory!=='undefined'&&Array.isArray(codingHistory))?codingHistory:[]).filter(m=>m&&m.role==='user'&&typeof m.content==='string'&&!(typeof isHarnessMsg==='function'&&isHarnessMsg(m))).map(m=>m.content).join('\n');
-    if(/\b(single[- ]file|one[- ]file|self[- ]contained|inline only|all[- ]in[- ]one html|no external (css|js|files)|without (css|js)|no (css|js)|only html)\b/i.test(userMsgs))return missing;
     if(typeof loadAllCodingFiles==='function')await loadAllCodingFiles(true);
     const have=(typeof allCodingFiles!=='undefined'&&Array.isArray(allCodingFiles))?allCodingFiles:[];
+    if(have.some(p=>String(p||'').toLowerCase().split('/').pop()==='project.godot'))return missing;
+    const userMsgs=((typeof codingHistory!=='undefined'&&Array.isArray(codingHistory))?codingHistory:[]).filter(m=>m&&m.role==='user'&&typeof m.content==='string'&&!(typeof isHarnessMsg==='function'&&isHarnessMsg(m))).map(m=>m.content).join('\n');
+    if(/\b(single[- ]file|one[- ]file|self[- ]contained|inline only|all[- ]in[- ]one html|no external (css|js|files)|without (css|js)|no (css|js)|only html)\b/i.test(userMsgs))return missing;
     if(!have.length)return missing;          // unknown project -> say nothing
     const touchedHtml=(writtenPaths||[]).some(p=>/\.(html?|htm)$/i.test(p))||have.some(p=>/\.(html?|htm)$/i.test(p));
     if(!touchedHtml)return missing;
@@ -8814,7 +8914,7 @@ function renderConfigSnippet(info){const el=document.getElementById('opencode-co
 async function generateApiKey(){const btn=document.querySelector('[onclick="generateApiKey()"]');if(btn){btn.disabled=true;btn.textContent='Generating...'}try{const r=await authFetch(API+'/api/keys/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const data=await r.json();if(r.ok&&data.key){showToast('API Key generated!','success');loadApiPage();appAlert('API Key Generated\n\n'+data.key+'\n\nCopy this key now. It won\'t be shown again.')}else{appAlert('Failed to generate key: '+(data.error||'Unknown error (status '+r.status+')'))}}catch(e){appAlert('Failed to generate key: '+e.message)}finally{if(btn){btn.disabled=false;btn.textContent='+ New Key'}}}
 async function revokeApiKey(key){if(await appConfirm('Revoke this API key?')){try{await authFetch(API+'/api/keys/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key})});loadApiPage();showToast('Key revoked','success')}catch(e){appAlert('Failed to revoke key')}}}
 
-function updateProjectBadge(name,meta){currentProjectName=name;const badge=document.getElementById('coding-project-badge');const nameEl=document.getElementById('coding-project-name');if(name){badge.style.display='flex';nameEl.textContent=name+(meta?' · '+meta:'')}else{badge.style.display='none';nameEl.textContent=''}}
+function updateProjectBadge(name,meta){currentProjectName=name;const badge=document.getElementById('coding-project-badge');const nameEl=document.getElementById('coding-project-name');if(name){badge.style.display='flex';nameEl.textContent=name+(meta?' · '+meta:'')}else{badge.style.display='none';nameEl.textContent=''}try{updateGodotPlayUI()}catch(e){}}
 function switchProject(){openProjectsModal()}
 async function deleteCurrentProject(){if(!currentProjectName)return;if(currentProjectShared){appAlert('This is a shared project — only its owner can delete it.');return}if(isRemote()){if(!(await appConfirm('Delete remote folder "'+remoteCtx.path+'" on '+remoteCtx.name+'? Everything inside will be removed too.')))return;try{await agentFileOp(remoteCtx.id,{op:'delete',path:remoteCtx.path});closeCodingFolder();updateProjectBadge('')}catch(e){appAlert('Delete failed: '+e.message)}return}try{const r=await authFetch(API+'/api/projects');const data=await r.json();const proj=data.projects&&data.projects.find(p=>p.name===currentProjectName);if(!proj){appAlert('This folder is not a saved project.');return}if(await appConfirm('Delete project "'+currentProjectName+'"?')){await deleteProject(currentProjectName,proj.path);closeCodingFolder();updateProjectBadge('')}}catch(e){appAlert('Failed: '+e.message)}}
 

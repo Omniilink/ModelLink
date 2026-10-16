@@ -6273,24 +6273,48 @@ END_QUESTION
 - You are an expert in Python, JavaScript, TypeScript, HTML, CSS, Java, C, C++, Go, Rust, Ruby, PHP, and all other programming languages.
 
 INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
+- GODOT-FIRST (mandatory): whenever the user asks for a GAME (2D or 3D —
+  platformer, shooter, puzzle, sports, horror, educational, sim, anything
+  playable), build it as a GODOT 4 project, never as hand-rolled HTML5/JS.
+  Plain canvas/three.js games are ONLY for when the user explicitly asks
+  for "HTML/JS, no engine".
+- GODOT PROJECT RULES: `project.godot` (config_version=5,
+  `application/config/name` set, `run/main_scene` pointing at a scene file
+  that really exists, e.g. "res://main.tscn"); one text `.tscn` scene per
+  level/screen; game logic in `.gd` GDScript files; art as `.svg`,
+  procedural drawing, or plain `.png`. Rendering MUST be Compatibility
+  (`rendering/renderer/rendering_method` and `.web` = "gl_compatibility")
+  — Forward+/Mobile cannot run in a browser. NO C#, NO GDExtension, NO
+  binary `.scn`/`.res` files, NO external URLs the exporter cannot read.
+  Input via the built-in `ui_*` actions plus WASD/arrows/space, pointer and
+  touch; the game must reach playable gameplay from launch with a working
+  start/play flow. Keep scenes and scripts small, readable, and consistent
+  with each other (node names and signal connections must match the code).
+- GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
+  `export_presets.cfg` alone unless it is missing; never write a custom
+  HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
+  yourself. The user plays via the Play button, which exports
+  `.omniilink/godot-web/` and opens it in a real tab. Your job ends at a
+  complete, consistent Godot project that imports cleanly.
 - Every control the user asked for MUST exist and be wired on first
   delivery: keyboard (WASD/arrows/space via keydown/keyup state maps),
   mouse look (pointer lock requested on canvas click), touch buttons on
   mobile, and a working START/PLAY button that actually begins the
   experience. A start button that does nothing is a failed delivery —
   wire every button to a real handler with a visible effect.
-- Prefer battle-tested patterns over invention: browser games get a
-  <canvas> render loop with requestAnimationFrame, pointer-lock mouse
-  look, key state maps, and resize handling. 3D via three.js from CDN
-  with a pinned version (confirm the version exists with WEB_FETCH if
-  unsure); 2D via plain canvas. No build step, no modules the preview
-  cannot load.
+- Prefer battle-tested patterns over invention (non-game interactive
+  pages): browser pages get a <canvas> render loop with
+  requestAnimationFrame, pointer-lock mouse look, key state maps, and resize
+  handling. 3D via three.js from CDN with a pinned version (confirm the
+  version exists with WEB_FETCH if unsure); 2D via plain canvas. No build
+  step, no modules the preview cannot load.
 - Textures/models: procedural canvas textures and low-poly geometry
   beat hotlinked assets (which often 404). If you reference an external
   asset, WEB_FETCH the URL first to confirm it exists; otherwise
   generate it in code.
-- ENTRY POINT: the main file (index.html) must run standalone when
-  opened or previewed. If there are multiple pages, index.html links
+- ENTRY POINT (HTML projects only — Godot projects boot from
+  run/main_scene instead): the main file (index.html) must run standalone
+  when opened or previewed. If there are multiple pages, index.html links
   them all and every link target exists (verify with dir /b).
 - WEBSITE / HTML TRIO (mandatory): whenever the user asks for a website,
   web app, landing page, or anything in HTML, ALWAYS create all three
@@ -6298,7 +6322,9 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus
   `<script src="app.js"></script>` in `<body>` (unless the user
   explicitly asked for a single self-contained file). Never ship an
-  HTML page without a real CSS stylesheet and JS script.
+  HTML page without a real CSS stylesheet and JS script. This rule does
+  NOT apply to Godot engine projects — those ship project.godot, scenes
+  and scripts instead, never index.html/styles.css/app.js.
 - VERIFY INTERACTIVITY: after writing, re-read the file and trace every
   user-facing control end to end (button -> handler -> visible effect).
   If a control cannot work (missing API, dead URL), say so plainly and
@@ -9854,6 +9880,644 @@ async def coding_preview_asset(request: Request, path: str):
                 "Cache-Control": "no-store",
             },
         )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ==========================================
+
+# Godot engine: build + play games in the browser
+
+# ==========================================
+# The AI builds Godot 4 projects (project.godot, scenes, GDScript) and the
+# server turns them into playable HTML5 on demand: a headless Godot editor
+# (lazy-downloaded once into user_data, so the Docker image stays lean)
+# imports the project and exports the "Web" preset single-threaded — no
+# COOP/COEP headers needed — then the game is served from the export dir and
+# opened in a real tab with full keyboard/fullscreen, exactly like the file
+# opened from disk.
+GODOT_DEFAULT_VERSION = "4.7.2"
+
+
+def _godot_version() -> str:
+    return (os.environ.get("OMNIILINK_GODOT_VERSION") or "").strip() or GODOT_DEFAULT_VERSION
+
+
+def _godot_root() -> str:
+    """Version-scoped home for the editor binary + templates (on a volume, so
+    it survives rebuilds and the image never carries ~1.4GB)."""
+    d = os.path.join(APP_DIR, "user_data", ".godot", _godot_version())
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _godot_home() -> str:
+    """HOME for the headless editor subprocess: templates resolve under here
+    ($HOME/.local/share/godot/export_templates/<ver>.stable)."""
+    d = os.path.join(_godot_root(), "home")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _godot_editor_path() -> str:
+    v = _godot_version()
+    return os.path.join(_godot_root(), f"Godot_v{v}-stable_linux.x86_64")
+
+
+def _godot_templates_dir() -> str:
+    return os.path.join(_godot_home(), ".local", "share", "godot",
+                        "export_templates", f"{_godot_version()}.stable")
+
+
+def _godot_missing_libs(editor: str):
+    """Shared libraries the editor binary needs but the OS lacks (Linux
+    only). python:slim has almost none of the X11/GL/audio stack, so the
+    Dockerfile pre-installs the known set and this reports the rest."""
+    if not (editor and os.path.isfile(editor)):
+        return []
+    if not sys.platform.startswith("linux"):
+        return []
+    try:
+        r = subprocess.run(["ldd", editor], capture_output=True, text=True, timeout=30)
+        out = (r.stdout or "") + "\n" + (r.stderr or "")
+    except Exception:
+        return []
+    missing = []
+    for line in out.splitlines():
+        if "not found" in line:
+            lib = line.strip().split()[0]
+            if lib not in missing:
+                missing.append(lib)
+    return missing
+
+
+def _godot_editor_ok() -> bool:
+    p = _godot_editor_path()
+    return bool(p and os.path.isfile(p) and os.access(p, os.X_OK))
+
+
+def _godot_templates_ok() -> bool:
+    d = _godot_templates_dir()
+    try:
+        names = os.listdir(d)
+    except Exception:
+        return False
+    has_web = any(n.startswith("web_") and n.endswith(".zip") for n in names)
+    vf = os.path.join(d, "version.txt")
+    try:
+        ver_ok = open(vf, "r", encoding="utf-8", errors="replace").read().strip() == \
+            f"{_godot_version()}.stable"
+    except Exception:
+        ver_ok = False
+    return bool(has_web and ver_ok)
+
+
+# One background job per key ("install" or a folder path). The client polls
+# /api/coding/godot/status; export Play buttons show phase + log tail.
+_godot_jobs = {}
+_godot_jobs_lock = threading.Lock()
+
+
+def _godot_job(key: str) -> dict:
+    with _godot_jobs_lock:
+        j = _godot_jobs.get(key)
+        if j is None:
+            j = {"status": "idle", "phase": "", "progress": 0.0,
+                 "log": [], "done": False, "error": "", "result": {}}
+            _godot_jobs[key] = j
+        return j
+
+
+def _godot_job_log(key: str, line: str, cap: int = 40):
+    try:
+        j = _godot_job(key)
+        j["log"].append(str(line or "")[:500])
+        del j["log"][:-cap]
+    except Exception:
+        pass
+
+
+def _godot_status_dict() -> dict:
+    with _godot_jobs_lock:
+        jobs = {k: {"status": v.get("status"), "phase": v.get("phase"),
+                    "progress": v.get("progress"), "done": v.get("done"),
+                    "error": v.get("error"), "result": v.get("result")}
+                for k, v in _godot_jobs.items()}
+    editor = _godot_editor_path()
+    return {"version": _godot_version(),
+            "platform_ok": sys.platform.startswith("linux"),
+            "editor_ok": _godot_editor_ok(),
+            "templates_ok": _godot_templates_ok(),
+            "missing_libs": _godot_missing_libs(editor) if _godot_editor_ok() else [],
+            "installed": _godot_editor_ok() and _godot_templates_ok(),
+            "jobs": jobs}
+
+
+GODOT_WEB_PRESET = """[preset.0]
+
+name="Web"
+platform="Web"
+runnable=true
+advanced_options=false
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter=""
+exclude_filter=".omniilink/*"
+export_path=".omniilink/godot-web/index.html"
+encryption_include_filters=""
+encryption_exclude_filters=""
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=2
+
+[preset.0.options]
+
+custom_template/debug=""
+custom_template/release=""
+variant/extensions_support=false
+variant/thread_support=false
+vram_texture_compression/for_desktop=true
+vram_texture_compression/for_mobile=false
+html/export_icon=true
+html/custom_html_shell=""
+html/head_include=""
+html/canvas_resize_policy=2
+html/focus_canvas_on_start=true
+html/experimental_virtual_keyboard=false
+progressive_web_app/enabled=false
+progressive_web_app/ensure_cross_origin_isolation_headers=true
+progressive_web_app/offline_page=""
+progressive_web_app/display=1
+progressive_web_app/orientation=0
+progressive_web_app/icon_144x144=""
+progressive_web_app/icon_180x180=""
+progressive_web_app/icon_512x512=""
+progressive_web_app/background_color=Color(0, 0, 0, 1)
+ssh_remote_deploy/enabled=false
+"""
+
+
+def _godot_ensure_preset(folder: str):
+    """Make sure export_presets.cfg has a runnable single-threaded "Web"
+    preset. Writes the server-managed default when missing, appends one when
+    the file exists without it. Returns (threads_on: bool). Never touches any
+    other preset."""
+    cfg = os.path.join(folder, "export_presets.cfg")
+    try:
+        text = open(cfg, "r", encoding="utf-8", errors="replace").read() if os.path.isfile(cfg) else ""
+    except Exception:
+        text = ""
+    if 'name="Web"' not in text:
+        if not text.strip():
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(GODOT_WEB_PRESET)
+        else:
+            idx = 0
+            for m in re.finditer(r"^\[preset\.(\d+)\]", text, re.M):
+                try:
+                    idx = max(idx, int(m.group(1)) + 1)
+                except Exception:
+                    pass
+            block = GODOT_WEB_PRESET.replace("[preset.0]", f"[preset.{idx}]").replace(
+                "[preset.0.options]", f"[preset.{idx}.options]")
+            with open(cfg, "a", encoding="utf-8") as f:
+                if not text.endswith("\n"):
+                    f.write("\n")
+                f.write("\n" + block)
+        return False
+    # A Web preset exists: honor it, but the game only plays header-free
+    # when it is single-threaded. The play endpoint adds COOP/COEP when on.
+    # Scope = the Web preset header plus its own options block (up to the
+    # next preset header; ".options" blocks belong to the preset above them).
+    w = text.find('name="Web"')
+    nxt = re.search(r"^\[preset\.\d+\]", text[w + 1:], re.M)
+    scope = text[w:(w + 1 + nxt.start()) if nxt else len(text)]
+    return bool(re.search(r"variant/thread_support\s*=\s*true", scope, re.I))
+
+
+def _godot_project_problems(folder: str):
+    """Blocking problems for a web export (plain strings). Also ensures the
+    additive `rendering_method.web=gl_compatibility` override the web build
+    requires — Forward+/Mobile cannot target the browser."""
+    problems = []
+    proj = os.path.join(folder, "project.godot")
+    if not os.path.isfile(proj):
+        return ["Not a Godot project: project.godot is missing."]
+    try:
+        text = open(proj, "r", encoding="utf-8", errors="replace").read()
+    except Exception as e:
+        return [f"Cannot read project.godot: {e}"]
+    m = re.search(r'^run/main_scene\s*=\s*"([^"]+)"', text, re.M)
+    if not m:
+        problems.append("project.godot has no run/main_scene — set the main scene first.")
+    else:
+        scene = m.group(1).strip()
+        rel = scene[6:] if scene.startswith("res://") else scene
+        if not os.path.isfile(os.path.join(folder, rel.replace("/", os.sep))):
+            problems.append(f"Main scene is missing on disk: {scene}")
+    if "renderer/rendering_method.web" not in text:
+        # Additive only: never changes the desktop renderer, just pins the
+        # web build to Compatibility (the only GL the browser supports).
+        try:
+            if "[rendering]" not in text:
+                if text and not text.endswith("\n"):
+                    text += "\n"
+                text += '\n[rendering]\n\nrenderer/rendering_method.web="gl_compatibility"\n'
+            else:
+                text = text.replace("[rendering]",
+                                    '[rendering]\nrenderer/rendering_method.web="gl_compatibility"',
+                                    1)
+            with open(proj, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as e:
+            problems.append(f"Could not pin the web renderer to Compatibility: {e}")
+    return problems
+
+
+def _godot_manifest(folder: str, cap: int = 5000):
+    """{relpath: (size, mtime_ns)} for everything the export reads, so Play
+    can skip the rebuild when nothing changed. Skips caches + last output."""
+    out = {}
+    skip_dirs = {".godot", ".git", ".omniilink", "__pycache__", ".svn", ".hg"}
+    try:
+        n = 0
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for fn in files:
+                if n >= cap:
+                    return out
+                full = os.path.join(root, fn)
+                try:
+                    st = os.stat(full)
+                except Exception:
+                    continue
+                rel = os.path.relpath(full, folder).replace("\\", "/")
+                out[rel] = (st.st_size, st.st_mtime_ns)
+                n += 1
+    except Exception:
+        pass
+    return out
+
+
+def _godot_manifest_path(folder: str) -> str:
+    return os.path.join(folder, ".omniilink", "godot-export.json")
+
+
+def _godot_run(editor: str, args, cwd: str, timeout: int, job_key: str, label: str):
+    """Run the headless editor (argv list, never a shell) and stream the
+    tail into the job log. Returns (returncode, tail)."""
+    env = dict(os.environ)
+    env["HOME"] = _godot_home()
+    env.pop("DISPLAY", None)
+    try:
+        p = subprocess.run([editor] + list(args), cwd=cwd, env=env,
+                           capture_output=True, text=True, timeout=timeout,
+                           errors="replace")
+        tail = ((p.stdout or "") + "\n" + (p.stderr or "")).strip().splitlines()
+        tail = "\n".join(tail[-25:])
+        if tail:
+            _godot_job_log(job_key, label + ":\n" + tail[-2000:])
+        return p.returncode, tail
+    except subprocess.TimeoutExpired:
+        _godot_job_log(job_key, label + ": TIMED OUT after %ss" % timeout)
+        return 124, "timeout"
+    except Exception as e:
+        _godot_job_log(job_key, label + ": failed to start: %s" % e)
+        return 127, str(e)
+
+
+def _godot_download(url: str, dest: str, job_key: str):
+    """Stream-download with progress into the job record. Atomic: writes to
+    dest+'.part' then renames."""
+    import urllib.request as _url
+    part = dest + ".part"
+    try:
+        if os.path.isfile(dest):
+            return True
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        req = _url.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; OmniilinkGodot/1.0)"})
+        with _url.urlopen(req, timeout=60) as resp, open(part, "wb") as f:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if total > 0:
+                    try:
+                        _godot_job(job_key)["progress"] = round(got / total, 3)
+                    except Exception:
+                        pass
+        os.replace(part, dest)
+        return True
+    except Exception as e:
+        _godot_job_log(job_key, "download failed: %s" % e)
+        try:
+            if os.path.isfile(part):
+                os.remove(part)
+        except Exception:
+            pass
+        return False
+
+
+def _godot_apt_fix():
+    """Best-effort runtime install of the editor's OS libraries (the
+    Dockerfile pre-installs the known set; this covers drift without a
+    rebuild). Returns True when ldd is clean afterwards."""
+    try:
+        subprocess.run(["apt-get", "update", "-qq"], capture_output=True, timeout=300)
+        subprocess.run(["apt-get", "install", "-y", "-qq", "--no-install-recommends",
+                        "libx11-6", "libxcursor1", "libxinerama1", "libxrandr2",
+                        "libxi6", "libgl1", "libasound2", "libpulse0", "libudev1",
+                        "libwayland-client0", "libxkbcommon0", "libdbus-1-3",
+                        "libfontconfig1"],
+                       capture_output=True, timeout=600)
+    except Exception:
+        return False
+    return not _godot_missing_libs(_godot_editor_path())
+
+
+def _godot_install_thread():
+    key = "__install__"
+    job = _godot_job(key)
+    if job.get("status") == "running":
+        return
+    job.update({"status": "running", "phase": "starting", "progress": 0.0,
+                "done": False, "error": "", "result": {}, "log": []})
+    try:
+        v = _godot_version()
+        base = f"https://github.com/godotengine/godot/releases/download/{v}-stable"
+        root = _godot_root()
+        # 1. editor binary (~150MB)
+        editor = _godot_editor_path()
+        if not (os.path.isfile(editor) and os.access(editor, os.X_OK)):
+            job["phase"] = "downloading editor"
+            _godot_job_log(key, f"Downloading Godot editor {v} (~150MB)…")
+            zpath = os.path.join(root, f"Godot_v{v}-stable_linux.x86_64.zip")
+            if not _godot_download(f"{base}/Godot_v{v}-stable_linux.x86_64.zip", zpath, key):
+                raise RuntimeError("editor download failed (see log)")
+            job["phase"] = "extracting editor"
+            import zipfile as _zf
+            with _zf.ZipFile(zpath) as z:
+                names = z.namelist()
+                inner = next((n for n in names if n.lower().endswith((".x86_64", ".64")) and "/" not in n.strip("/")), None)
+                inner = inner or next((n for n in names if "linux" in n.lower() and not n.endswith("/")), names[0])
+                data = z.read(inner)
+            with open(editor, "wb") as f:
+                f.write(data)
+            try:
+                os.chmod(editor, 0o755)
+            except Exception:
+                pass
+            try:
+                os.remove(zpath)
+            except Exception:
+                pass
+            _godot_job_log(key, "Editor ready.")
+        # 2. export templates (~1.2GB tpz; only the web payload is kept)
+        tdir = _godot_templates_dir()
+        if not _godot_templates_ok():
+            job["phase"] = "downloading templates"
+            job["progress"] = 0.0
+            _godot_job_log(key, "Downloading export templates (~1.2GB, one time)…")
+            tpz = os.path.join(root, f"Godot_v{v}-stable_export_templates.tpz")
+            if not _godot_download(f"{base}/Godot_v{v}-stable_export_templates.tpz", tpz, key):
+                raise RuntimeError("templates download failed (see log)")
+            job["phase"] = "extracting web templates"
+            import zipfile as _zf2
+            os.makedirs(tdir, exist_ok=True)
+            with _zf2.ZipFile(tpz) as z:
+                for n in z.namelist():
+                    low = n.lower()
+                    if n.endswith("/") or "/__macosx/" in low:
+                        continue
+                    # Keep only what a Web export needs (+ the version stamp
+                    # the editor requires). Everything else stays in the tpz.
+                    keep = low.startswith("templates/web_") or low == "templates/version.txt"
+                    if not keep:
+                        continue
+                    rel = n[len("templates/"):] if low.startswith("templates/") else os.path.basename(n)
+                    dest = os.path.join(tdir, rel)
+                    if not _is_within(tdir, os.path.abspath(dest)):
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with z.open(n) as src, open(dest, "wb") as f:
+                        f.write(src.read())
+            try:
+                os.remove(tpz)
+            except Exception:
+                pass
+            _godot_job_log(key, "Templates ready.")
+        missing = _godot_missing_libs(editor)
+        if missing:
+            _godot_job_log(key, "Installing missing OS libraries: " + ", ".join(missing[:12]))
+            if not _godot_apt_fix():
+                missing = _godot_missing_libs(editor)
+                if missing:
+                    raise RuntimeError("editor binary is missing OS libraries: " + ", ".join(missing[:12]))
+        job.update({"status": "ok", "phase": "installed", "progress": 1.0,
+                    "done": True, "result": {"version": v}})
+    except Exception as e:
+        job.update({"status": "error", "phase": "failed", "done": True, "error": str(e)[:500]})
+        _godot_job_log(key, "FAILED: %s" % e)
+
+
+def _godot_export_thread(folder: str, user_id: int):
+    job = _godot_job(folder)
+    if job.get("status") == "running":
+        return
+    job.update({"status": "running", "phase": "checking", "progress": 0.0,
+                "done": False, "error": "", "result": {}, "log": []})
+
+    def _play_url(threads_on: bool):
+        try:
+            from urllib.parse import quote as _q
+            tok = _mint_preview_token(user_id, ".omniilink/godot-web", folder)
+            return ("/api/coding/godot-play?d=.omniilink/godot-web&f=index.html&t=" + _q(tok, safe=""),
+                    bool(threads_on))
+        except Exception:
+            return "", bool(threads_on)
+
+    try:
+        if not sys.platform.startswith("linux"):
+            raise RuntimeError("Godot export runs on the Linux/Docker server, not this host.")
+        editor = _godot_editor_path()
+        if not _godot_editor_ok():
+            raise RuntimeError("Godot is not installed on the server yet — install it first (one-time ~1.4GB).")
+        if not _godot_templates_ok():
+            raise RuntimeError("Godot web templates are missing — reinstall Godot on the server.")
+        missing = _godot_missing_libs(editor)
+        if missing:
+            raise RuntimeError("Godot cannot start here, missing OS libraries: " + ", ".join(missing[:12]))
+        problems = _godot_project_problems(folder)
+        if problems:
+            raise RuntimeError(" | ".join(problems))
+        threads_on = _godot_ensure_preset(folder)
+        outdir = os.path.join(folder, ".omniilink", "godot-web")
+        os.makedirs(outdir, exist_ok=True)
+        # Skip the rebuild when nothing the export reads has changed.
+        man = _godot_manifest(folder)
+        try:
+            prev = {}
+            mp = _godot_manifest_path(folder)
+            if os.path.isfile(mp):
+                import json as _j
+                prev = _j.loads(open(mp, "r", encoding="utf-8").read() or "{}")
+            if prev and prev.get("manifest") == {k: list(v) for k, v in man.items()} \
+                    and os.path.isfile(os.path.join(outdir, "index.html")):
+                play_url, _ = _play_url(bool(threads_on))
+                job.update({"status": "ok", "phase": "cached", "progress": 1.0,
+                            "done": True, "result": {"cached": True,
+                                                    "threads": bool(threads_on),
+                                                    "play_url": play_url}})
+                _godot_job_log(folder, "Nothing changed — reusing the last build.")
+                return
+        except Exception:
+            pass
+        job["phase"] = "importing"
+        _godot_job_log(folder, "Importing project (first run compiles every script)…")
+        rc, _ = _godot_run(editor, ["--headless", "--path", folder, "--import"],
+                           folder, 600, folder, "import")
+        if rc != 0:
+            raise RuntimeError("project import failed (see log)")
+        job["phase"] = "exporting"
+        job["progress"] = 0.5
+        _godot_job_log(folder, "Exporting the Web preset…")
+        rc2, _ = _godot_run(editor, ["--headless", "--path", folder,
+                                    "--export-release", "Web",
+                                    os.path.join(outdir, "index.html")],
+                            folder, 900, folder, "export")
+        if rc2 != 0 or not os.path.isfile(os.path.join(outdir, "index.html")):
+            raise RuntimeError("web export failed (see log)")
+        # Thread marker: the play endpoint adds COOP/COEP only when on.
+        try:
+            with open(os.path.join(outdir, ".threads"), "w", encoding="utf-8") as f:
+                f.write("1" if threads_on else "0")
+        except Exception:
+            pass
+        try:
+            import json as _j2
+            os.makedirs(os.path.dirname(_godot_manifest_path(folder)), exist_ok=True)
+            with open(_godot_manifest_path(folder), "w", encoding="utf-8") as f:
+                _j2.dump({"manifest": {k: list(v) for k, v in man.items()},
+                          "threads": bool(threads_on)}, f)
+        except Exception:
+            pass
+        job.update({"status": "ok", "phase": "done", "progress": 1.0,
+                    "done": True, "result": {"cached": False, "threads": bool(threads_on),
+                                             "play_url": _play_url(bool(threads_on))[0]}})
+        _godot_job_log(folder, "Build ready — press Play.")
+    except Exception as e:
+        job.update({"status": "error", "phase": "failed", "done": True, "error": str(e)[:600]})
+        _godot_job_log(folder, "FAILED: %s" % e)
+
+
+@app.get("/api/coding/godot/status")
+async def godot_status(request: Request, folder: str = ""):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    st = _godot_status_dict()
+    # The caller's project job (if any) rides along so one poll gets all.
+    if folder:
+        st["job"] = st["jobs"].get(folder)
+    return st
+
+
+@app.post("/api/coding/godot/install")
+async def godot_install(request: Request):
+    user, err = _require_admin(request)
+    if err:
+        return err
+    if _godot_editor_ok() and _godot_templates_ok():
+        return {"status": "ok", "already": True, "version": _godot_version()}
+    t = threading.Thread(target=_godot_install_thread, daemon=True)
+    t.start()
+    return {"status": "ok", "started": True, "version": _godot_version()}
+
+
+class GodotExportBody(BaseModel):
+    folder: str = ""
+
+
+@app.post("/api/coding/godot/export")
+async def godot_export(request: Request, req: GodotExportBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    coding_state = _get_coding_state(owner)
+    open_folder = coding_state.get("folder") or ""
+    mm = _coding_folder_mismatch(req.folder, open_folder)
+    if mm:
+        return mm
+    folder = open_folder
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    job = _godot_job(folder)
+    if job.get("status") == "running":
+        return {"status": "ok", "running": True, "phase": job.get("phase")}
+    t = threading.Thread(target=_godot_export_thread, args=(folder, user["id"]), daemon=True)
+    t.start()
+    return {"status": "ok", "started": True}
+
+
+@app.get("/api/coding/godot-play")
+async def godot_play(request: Request, d: str = "", f: str = "index.html", t: str = ""):
+    """Serve one file of a built Godot web game. `d` is the export dir
+    relative to the project, `f` the file inside it, `t` a signed token bound
+    to (user, project folder, export dir) — so the game always loads from the
+    project it was built from, never from whichever folder happens to be open
+    now. Session auth works too. Real-tab play: no sandbox, correct MIME
+    (.wasm/.pck), COOP/COEP only for threaded builds."""
+    from fastapi.responses import Response as _Response
+    import mimetypes as _mimetypes
+    user, err = _require_auth(request)
+    bound = ""
+    if err:
+        user, bound = _user_from_preview_token(t, d)
+        if user is None:
+            return err
+        request.state.user = user
+    dd = (d or ".omniilink/godot-web").strip().lstrip("/").replace("\\", "/")
+    if not dd or _bad_path(dd):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    if bound:
+        proj = bound
+    else:
+        owner = _safe_username(user["username"])
+        proj = _get_coding_state(owner).get("folder") or ""
+    access_err = _folder_access_error(user, proj)
+    if access_err:
+        return access_err
+    base = os.path.join(proj, dd)
+    rel = (f or "index.html").strip().lstrip("/").replace("\\", "/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(base, rel)
+    if not _is_within(base, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.getsize(full) > 512 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "File too large"})
+    try:
+        with open(full, "rb") as fh:
+            content = fh.read()
+        ext = os.path.splitext(rel)[1].lower()
+        media_type = _ASSET_MIME_OVERRIDES.get(ext) or \
+            _mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        try:
+            marker = os.path.join(base, ".threads")
+            if os.path.isfile(marker) and open(marker, "r", encoding="utf-8").read().strip() == "1":
+                headers["Cross-Origin-Opener-Policy"] = "same-origin"
+                headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        except Exception:
+            pass
+        return _Response(content=content, media_type=media_type, headers=headers)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

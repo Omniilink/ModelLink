@@ -19,6 +19,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # render listings client-side; plain HTTP returns an empty app shell).
 RUN playwright install --with-deps chromium
 
+# Runtime shared libraries for the headless Godot editor (lazy-downloaded on
+# first game export into user_data/.godot — the binary itself and its ~1.2GB
+# templates are NOT baked in). The editor runs --headless but still resolves
+# its X11/GL/audio libs at load; /api/coding/godot/status reports any gap.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libx11-6 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1 \
+      libasound2 libpulse0 libudev1 libwayland-client0 libxkbcommon0 \
+      libdbus-1-3 libfontconfig1 \
+ && rm -rf /var/lib/apt/lists/*
+
 # docker CLI for the optional execution sandbox (sibling containers).
 # The daemon socket is mounted at runtime, not baked in.
 COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
