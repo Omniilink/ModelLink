@@ -4343,36 +4343,76 @@ async function godotStatusPost(folderKey){
   if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
   return d;
 }
-async function pollGodotJob(jobKey,label){
+function godotProgressDoc(tab,title,headline){
+  // Progress page painted into the Play tab while the build runs: the tab
+  // would otherwise sit on a bare spinner for minutes while every real
+  // status line only appears in the coding log of the other tab.
+  try{
+    if(!tab||!tab.document)return;
+    const t=String(title||'Godot').replace(/</g,'').slice(0,80);
+    const h=String(headline||'Preparing…').replace(/</g,'').slice(0,160);
+    tab.document.open();
+    tab.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+t+'</title><style>html,body{margin:0;padding:0}body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0e14;color:#9aa1ab;font:14px system-ui,-apple-system,sans-serif}.box{text-align:center;max-width:520px;padding:0 20px}.ring{width:34px;height:34px;margin:0 auto 14px;border:3px solid #2a3342;border-top-color:#4f8cff;border-radius:50%;animation:spin 0.8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.phase{color:#cfd6df;margin-top:4px;min-height:20px}.log{margin-top:10px;font:11px monospace,monospace;color:#6b7480;white-space:pre-wrap;text-align:left;max-height:160px;overflow:hidden}.err .ring{display:none}.err .phase{color:#ff9d9d}</style></head><body><div class="box" id="godot-box"><div class="ring"></div><div class="phase" id="godot-prog">'+h+'</div><div class="log" id="godot-log"></div></div></body></html>');
+    tab.document.close();
+  }catch(e){}
+}
+function updateGodotTab(tab,phaseText,logTail){
+  // Mirror the latest build status line (+ log tail) into the Play tab.
+  // Same-origin tab, but it may be closed/navigated already — never throw.
+  try{
+    if(!tab||!tab.document)return;
+    const p=tab.document.getElementById('godot-prog');
+    if(p&&typeof phaseText==='string')p.textContent=phaseText;
+    if(typeof logTail==='string'){
+      const l=tab.document.getElementById('godot-log');
+      if(l)l.textContent=logTail.slice(-600);
+    }
+  }catch(e){}
+}
+function godotTabError(tab,title,msg){
+  try{
+    if(!tab||!tab.document)return;
+    const b=tab.document.getElementById('godot-box');
+    if(b)b.classList.add('err');
+    const p=tab.document.getElementById('godot-prog');
+    if(p)p.textContent=String(title||'Failed');
+    const l=tab.document.getElementById('godot-log');
+    if(l)l.textContent=String(msg||'').slice(0,1200);
+  }catch(e){}
+}
+async function pollGodotJob(jobKey,label,headline){
   // Poll until the install/export job finishes. Reports each new phase to
-  // the run log; returns the finished job record, or null (tab closed +
-  // message shown) on failure/timeout.
+  // the run log AND mirrors it live into the Play tab; returns the finished
+  // job record (+ tab), or null (tab shows the error) on failure/timeout.
   let tab=null;
   try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
-  try{if(typeof previewLoadingDoc==='function')previewLoadingDoc(tab,'Godot '+label+'…')}catch(e){}
+  godotProgressDoc(tab,'Godot '+label+'…',headline||('Godot '+label+'…'));
   let lastPhase='';
   const isInstall=jobKey==='__install__';
   const maxMs=(isInstall?3600:1800)*1000,t0=Date.now();
   const closeTab=()=>{try{if(tab)tab.close()}catch(e){}};
+  const failInTab=(title,msg)=>{godotTabError(tab,title,msg);appAlert(title+': '+msg);};
   while(Date.now()-t0<maxMs){
     await new Promise(r=>setTimeout(r,3000));
     let st=null;
     try{st=await godotStatusPost(isInstall?'':jobKey)}catch(e){continue}
     const j=st&&st.jobs?st.jobs[jobKey]:null;
     if(!j)continue;
+    const pct=(typeof j.progress==='number'&&j.progress>0&&j.progress<1)?' ('+Math.round(j.progress*100)+'%)':'';
+    const line='Godot '+label+': '+(j.phase||'working')+pct;
+    updateGodotTab(tab,line,(j.log||[]).slice(-3).join('\n'));
     if(j.phase&&j.phase!==lastPhase){
       lastPhase=j.phase;
-      try{addCodingSystemMsg('Godot '+label+': '+j.phase+(typeof j.progress==='number'&&j.progress>0&&j.progress<1?' ('+Math.round(j.progress*100)+'%)':''))}catch(e){}
+      try{addCodingSystemMsg(line)}catch(e){}
     }
     if(j.done){
       if(j.status==='ok')return{job:j,tab:tab};
-      closeTab();
       const tail=(j.log||[]).slice(-8).join('\n');
-      appAlert('Godot '+label+' failed: '+(j.error||'unknown error')+(tail?'\n\n'+tail:''));
+      failInTab('Godot '+label+' failed',(j.error||'unknown error')+(tail?'\n\n'+tail:''));
       return null;
     }
   }
-  closeTab();
+  godotTabError(tab,'Godot '+label+' timed out','It may still be running. Press Play again to check on it.');
   appAlert('Timed out waiting for the Godot '+label+' — it may still be running. Press Play again to check on it.');
   return null;
 }
@@ -4395,7 +4435,7 @@ async function playGodotGame(){
       if(!ir.ok)throw new Error(idata.error||('HTTP '+ir.status));
     }catch(e){appAlert('Godot install failed to start: '+e.message+' (installing needs an admin account)');return}
     addCodingSystemMsg('Downloading Godot '+st.version+' (one time, ~1.4GB)…');
-    const done=await pollGodotJob('__install__','install');
+    const done=await pollGodotJob('__install__','install','Downloading Godot '+st.version+' (one time, ~1.4GB)…');
     if(!done)return;
     showToast('Godot '+st.version+' installed','success');
   }
@@ -4406,7 +4446,7 @@ async function playGodotGame(){
     if(edata.running){showToast('Export already running — watching it…','info')}
     else addCodingSystemMsg('Exporting the Godot project for the browser…');
   }catch(e){appAlert('Export failed to start: '+e.message);return}
-  const fin=await pollGodotJob(folderKey,'export');
+  const fin=await pollGodotJob(folderKey,'export','Exporting the Godot project for the browser…');
   if(!fin)return;
   const playUrl=fin.job&&fin.job.result&&fin.job.result.play_url;
   if(fin.job.result&&fin.job.result.cached)showToast('Nothing changed — opening the last build','info');
