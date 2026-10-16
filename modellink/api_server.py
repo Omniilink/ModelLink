@@ -756,7 +756,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # log itself, or clearing would instantly re-add the clear request's line.
 _SKIP_LOG_PATHS = {"/api/health", "/api/logs", "/api/logs/clear", "/api/bandwidth",
-                   "/api/sysstats", "/api/coding/merge-status", "/api/provider-health",
+                   "/api/sysstats", "/api/provider-health",
                    "/favicon.svg", "/favicon.ico"}
 
 @app.middleware("http")
@@ -6592,336 +6592,18 @@ def _ws_live_locks(folder):
 
 
 def _ws_enforce_lock(user, folder, relpath):
-    """Workspace write gate.
-
-    File LOCKS ARE OFF: concurrent edits to the same file are reconciled by
-    the server-side AI merge (see _ws_merge_run) instead of blocking anyone.
-    Only owner-set quiet hours still gate writes. Returns an error
-    JSONResponse or None.
-    """
+    """Workspace write gate: one editor per file at a time (file locks), plus
+    owner-set quiet hours. Returns an error JSONResponse or None."""
     if not _workspace_row(folder):
         return None
     qb = _ws_quiet_block(user, folder)
     if qb:
         return JSONResponse(status_code=qb.get("code", 423), content=qb)
+    err = _ws_take_lock(user, folder, relpath, quiet=True)
+    if err:
+        return JSONResponse(status_code=409, content=err)
     return None
 
-
-# ---- Workspace AI merge: lock-free concurrency --------------------------
-# When two members change the same file, a small local model on the server
-# (default Qwen2.5-Coder 3B via Ollama) is given the current file plus each
-# AI's MERGE_INTENT summary and produces the smallest FILE_PATCH that lands
-# both changes. Text-only: it never gets shell/file tools. Runs in the
-# background so no request ever blocks. Configure with OMNIILINK_MERGE_MODEL
-# and OMNIILINK_MERGE_ENABLED (see DOCKER.md / server setup notes).
-_WS_MERGE_DEFAULT_MODEL = "qwen2.5-coder:3b"
-_WS_MERGE_MAX_BYTES = 90 * 1024
-_WS_MERGE_TIMEOUT = 300
-_WS_INTENT_TTL = 240
-_WS_INTENT_LOCK = threading.Lock()
-_WS_MERGE_LOCK = threading.Lock()
-_ws_intents = {}   # absfolder -> {rel: [ {user_id, username, intent, at, content} ]}
-_WS_MERGE_SYSTEM = (
-    "You are a precise code-merge assistant. You are given ONE file's CURRENT "
-    "content and the INTENT of two or more AIs that each wanted to change it. "
-    "Produce the merged file by emitting ONLY FILE_PATCH blocks (OLD:/NEW:) that "
-    "apply the needed changes onto the CURRENT content. Rules: make the SMALLEST "
-    "possible change; never rewrite, reformat or restyle unrelated code; never "
-    "delete things you were not asked to change; if an edit is already present, "
-    "skip it; if two edits conflict, combine them so both intents are satisfied. "
-    "Output only FILE_PATCH blocks and nothing else."
-)
-
-
-def _merge_env(name: str, default: str = "") -> str:
-    """Config from the process env, falling back to the server's .env file
-    (which dotenv_values reads without exporting)."""
-    v = os.environ.get(name)
-    if v is not None and v != "":
-        return str(v).strip()
-    try:
-        from dotenv import dotenv_values
-        vals = dotenv_values(os.path.join(APP_DIR, ".env"))
-        if vals.get(name):
-            return str(vals[name]).strip()
-    except Exception:
-        pass
-    return default
-
-
-def _merge_ollama_url() -> str:
-    """Where the merge model lives: a dedicated Ollama (its own container)
-    when OMNIILINK_MERGE_OLLAMA_URL is set, else the server's own Ollama."""
-    return (_merge_env("OMNIILINK_MERGE_OLLAMA_URL") or _ollama_current_url() or "").rstrip("/")
-
-
-_WS_MERGE_CONFLICT_SYSTEM = (
-    "You resolve an edit conflict. A file changed while an AI was editing it, so "
-    "that AI's change no longer applies cleanly. You get the CURRENT file and the "
-    "change the AI INTENDED (its OLD/NEW, which may no longer match because the "
-    "file already changed). Apply the AI's intended change onto the CURRENT file "
-    "and COMBINE it with the changes already there so BOTH work. Emit ONLY "
-    "FILE_PATCH blocks (FILE_PATCH:<path> / OLD: / NEW: / END_FILE_PATCH) against "
-    "the CURRENT content. Make the SMALLEST change; never reformat or delete "
-    "unrelated code; if the intended change is already present, emit nothing."
-)
-
-
-def _ws_merge_model() -> str:
-    return (_merge_env("OMNIILINK_MERGE_MODEL")
-            or _merge_env("OLLAMA_MODEL")
-            or _WS_MERGE_DEFAULT_MODEL).strip()
-
-
-def _ws_merge_enabled() -> bool:
-    if _merge_env("OMNIILINK_MERGE_ENABLED", "1") == "0":
-        return False
-    return bool(_ws_merge_model())
-
-
-def _ws_intent_key(folder, rel):
-    return (os.path.abspath(folder or ""), os.path.normpath(rel or "").lstrip("\\/"))
-
-
-def _ws_record_intent(user, folder, rel, intent, content=None):
-    """Record this user's edit intent for a file; returns how many OTHER
-    members currently have a live intent for it."""
-    absf, r = _ws_intent_key(folder, rel)
-    now = time.time()
-    with _WS_INTENT_LOCK:
-        bucket = _ws_intents.setdefault(absf, {})
-        lst = bucket.setdefault(r, [])
-        lst[:] = [e for e in lst
-                  if now - float(e.get("at") or 0) < _WS_INTENT_TTL
-                  and e.get("user_id") != user["id"]]
-        lst.append({"user_id": user["id"], "username": user.get("username", ""),
-                    "intent": str(intent or "")[:1500], "at": now, "content": content})
-        return len([e for e in lst if e.get("user_id") != user["id"]])
-
-
-def _ws_take_intents(folder, rel):
-    absf, r = _ws_intent_key(folder, rel)
-    now = time.time()
-    with _WS_INTENT_LOCK:
-        bucket = _ws_intents.get(absf) or {}
-        return [e for e in (bucket.get(r) or []) if now - float(e.get("at") or 0) < _WS_INTENT_TTL]
-
-
-def _ws_clear_intents(folder, rel):
-    absf, r = _ws_intent_key(folder, rel)
-    with _WS_INTENT_LOCK:
-        bucket = _ws_intents.get(absf)
-        if bucket:
-            bucket.pop(r, None)
-
-
-def _ws_merge_ctx() -> int:
-    try:
-        v = int(_merge_env("OMNIILINK_MERGE_CTX") or 32768)
-    except Exception:
-        v = 32768
-    return max(2048, min(131072, v))
-
-
-def _ws_merge_model_body(model, system, user_text):
-    return {"model": model, "stream": False,
-            "options": {"temperature": 0.1, "num_ctx": _ws_merge_ctx(), "num_predict": 4096},
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user_text}]}
-
-
-_MERGE_ACTIVITY = {"running": False, "started": 0.0, "last_ms": 0,
-                   "last_tps": 0, "last_tokens": 0,
-                   "live_tokens": 0, "live_tps": 0}
-
-
-def _merge_activity_begin():
-    _MERGE_ACTIVITY["running"] = True
-    _MERGE_ACTIVITY["started"] = time.time()
-    _MERGE_ACTIVITY["live_tokens"] = 0
-    _MERGE_ACTIVITY["live_tps"] = 0
-
-
-def _merge_activity_end(t0):
-    _MERGE_ACTIVITY["running"] = False
-    try:
-        _MERGE_ACTIVITY["last_ms"] = int((time.time() - t0) * 1000)
-    except Exception:
-        pass
-
-
-def _merge_record_stats(data):
-    # Ollama /api/chat reports eval_count (tokens) + eval_duration (ns).
-    try:
-        ec = int((data or {}).get("eval_count") or 0)
-        ed = int((data or {}).get("eval_duration") or 0)
-        if ec > 0 and ed > 0:
-            _MERGE_ACTIVITY["last_tokens"] = ec
-            _MERGE_ACTIVITY["last_tps"] = round(ec * 1e9 / ed, 1)
-    except Exception:
-        pass
-
-
-def _ws_merge_model_call(model: str, system: str, user_text: str, agent_id: str = "") -> str:
-    """One-shot, non-streaming Ollama /api/chat call. With agent_id the request
-    is relayed through that paired computer's Ollama instead of the server's.
-    Raises on any failure. Monkeypatched in tests."""
-    t0 = time.time()
-    _merge_activity_begin()
-    try:
-        body = _ws_merge_model_body(model, system, user_text)
-        if agent_id:
-            resp = relay.open_response(str(agent_id), "/api/chat", body,
-                                       read_timeout=_WS_MERGE_TIMEOUT, first_timeout=60.0)
-            _j = resp.json()
-            _merge_record_stats(_j)
-            return str((_j.get("message") or {}).get("content") or "")
-        base = _merge_ollama_url()
-        if not base:
-            raise RuntimeError("No Ollama URL configured")
-        # Stream so the top indicator can show live tokens/sec while a merge
-        # runs. Falls back to a normal call if streaming yields nothing.
-        sbody = dict(body)
-        sbody["stream"] = True
-        t_start = time.time()
-        try:
-            req = urllib.request.Request(base + "/api/chat",
-                                         data=json.dumps(sbody).encode("utf-8"),
-                                         headers={"Content-Type": "application/json"},
-                                         method="POST")
-            parts = []
-            with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
-                for raw in resp:
-                    try:
-                        line = raw.decode("utf-8", "replace").strip()
-                    except Exception:
-                        continue
-                    if line.startswith("data: "):
-                        line = line[6:]
-                    elif not line.startswith("{"):
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except Exception:
-                        continue
-                    delta = ((chunk.get("message") or {}).get("content")) or ""
-                    if delta:
-                        parts.append(delta)
-                        est = max(1, len("".join(parts)) // 4)
-                        dt = max(0.1, time.time() - t_start)
-                        _MERGE_ACTIVITY["live_tokens"] = est
-                        _MERGE_ACTIVITY["live_tps"] = round(est / dt, 1)
-                    if chunk.get("done"):
-                        _merge_record_stats(chunk)
-                        break
-            if parts:
-                _MERGE_ACTIVITY["live_tokens"] = 0
-                _MERGE_ACTIVITY["live_tps"] = 0
-                return "".join(parts)
-        except Exception:
-            pass
-        req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=_WS_MERGE_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-        _merge_record_stats(data)
-        return str((data.get("message") or {}).get("content") or "")
-    finally:
-        _merge_activity_end(t0)
-
-
-def _merge_device_row(user_id) -> dict:
-    try:
-        conn = get_db()
-        try:
-            r = conn.execute("SELECT * FROM merge_devices WHERE user_id = ?", (int(user_id),)).fetchone()
-        finally:
-            conn.close()
-        return dict(r) if r else {}
-    except Exception:
-        return {}
-
-
-def _merge_set_device(user_id, agent_id: str, enabled: bool):
-    conn = get_db()
-    try:
-        conn.execute("INSERT INTO merge_devices (user_id, agent_id, enabled, updated_at)"
-                     " VALUES (?, ?, ?, datetime('now'))"
-                     " ON CONFLICT(user_id) DO UPDATE SET agent_id=excluded.agent_id,"
-                     " enabled=excluded.enabled, updated_at=datetime('now')",
-                     (int(user_id), str(agent_id or ""), 1 if enabled else 0))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _merge_model_installed(agent_id, model) -> bool:
-    try:
-        return str(model) in [str(t) for t in scan_ollama_models(agent_id=str(agent_id))]
-    except Exception:
-        return False
-
-
-def _merge_pull_model(agent_id, model):
-    """Blocking pull of the merge model onto a paired computer (relay)."""
-    try:
-        resp = relay.open_response(str(agent_id), "/api/pull",
-                                   {"name": model, "stream": True},
-                                   read_timeout=3600.0, first_timeout=90.0)
-        for _ in resp.iter_lines():
-            pass
-    except Exception as e:
-        logger.warning(f"[MERGE] model install on {agent_id} failed: {e}")
-
-
-def _merge_ensure_model(agent_id, model):
-    """Install the merge model on the device if it is missing (background)."""
-    try:
-        if _merge_model_installed(agent_id, model):
-            return
-        threading.Thread(target=_merge_pull_model, args=(agent_id, model), daemon=True).start()
-    except Exception:
-        pass
-
-
-def _ws_merge_pick_device(folder, participants):
-    """Choose a member's paired computer to run the merge, if one is set up.
-
-    Preference: participants in this merge first, then other workspace
-    members. The device must belong to that member, be online and share
-    Ollama. Returns (agent_id, owner_user_id) or ("", 0)."""
-    ids = []
-    for p in (participants or []):
-        try:
-            uid = int(p.get("user_id") or 0)
-        except (TypeError, ValueError):
-            uid = 0
-        if uid and uid not in ids:
-            ids.append(uid)
-    try:
-        ws = _workspace_row(folder)
-        if ws:
-            for uid, _role in _ws_members(ws["id"]):
-                if uid and uid not in ids:
-                    ids.append(uid)
-            if ws.get("owner_id") and ws["owner_id"] not in ids:
-                ids.append(ws["owner_id"])
-    except Exception:
-        pass
-    with _AGENT_LOCK:
-        st = _agents_load()
-        agents = {str(k): dict(v) for k, v in st["agents"].items()}
-    for uid in ids:
-        row = _merge_device_row(uid)
-        if not row or not row.get("enabled") or not row.get("agent_id"):
-            continue
-        a = agents.get(str(row["agent_id"]))
-        if not a or "ollama" not in (a.get("caps") or []):
-            continue
-        if _agent_owner_id(a) != int(uid) or not _agent_online(a):
-            continue
-        return str(row["agent_id"]), uid
-    return "", 0
 
 
 def _apply_patch_server(current, old_text, new_text):
@@ -6930,334 +6612,6 @@ def _apply_patch_server(current, old_text, new_text):
         return None
     cur = _patch_trim(current)
     return cur[:hit[0]] + _patch_trim(new_text) + cur[hit[1]:]
-
-
-def _ws_merge_build_prompt(rel, current, participants):
-    parts = ["The CURRENT content of %s is between the markers." % rel,
-             "===== CURRENT FILE =====", current, "===== END CURRENT FILE =====", ""]
-    for i, p in enumerate(participants, 1):
-        parts.append("--- Edit %d by %s ---" % (i, p.get("username") or "a member"))
-        parts.append("Intent: " + (p.get("intent") or "(no summary given)"))
-        if p.get("content"):
-            parts.append("They wanted the file to become:")
-            parts.append("<<<PROPOSED>>>")
-            parts.append(str(p["content"]))
-            parts.append("<<<END PROPOSED>>>")
-        parts.append("")
-    parts.append("Emit FILE_PATCH blocks (FILE_PATCH:<path> / OLD: / NEW: / "
-                 "END_FILE_PATCH) that bring the CURRENT file to the merged result. "
-                 "Change only what is needed.")
-    return "\n".join(parts)
-
-
-def _ws_merge_chunk(rel, base_text, plist, model, device_id):
-    """One small merge request (1-2 participants). Returns
-    (new_text, applied, unavailable, error, used_device). Never raises: a failed
-    chunk just contributes nothing so the other chunks still land."""
-    if not plist:
-        return base_text, 0, False, "", ""
-    prompt = _ws_merge_build_prompt(rel, base_text, plist)
-    used_device = ""
-    try:
-        if device_id:
-            used_device = str(device_id)
-            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt, agent_id=device_id)
-        else:
-            reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
-    except Exception as e1:
-        if used_device:
-            try:
-                reply = _ws_merge_model_call(model, _WS_MERGE_SYSTEM, prompt)
-                used_device = ""
-            except Exception as e2:
-                return base_text, 0, True, str(e2), ""
-        else:
-            return base_text, 0, True, str(e1), ""
-    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
-                         reply or "", re.S)
-    out, applied = base_text, 0
-    for old_text, new_text in patches:
-        res = _apply_patch_server(out, old_text, new_text)
-        if res is None or res == out:
-            continue
-        out, applied = res, applied + 1
-    return out, applied, False, "", used_device
-
-
-_MERGE_JOB_TIMEOUT = 180
-
-
-class _MergeQueue:
-    """One global FIFO queue for merge-model work: strictly one job at a time so
-    a new request can never interrupt the merge in progress. Jobs for the same
-    (folder, file) that are still waiting are coalesced (the newest wins)."""
-
-    def __init__(self):
-        self._cv = threading.Condition()
-        self._waiting = []          # job dicts, FIFO
-        self._current = None
-        self._seq = 0
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def submit(self, key, kind, uid, fn, on_done=None):
-        with self._cv:
-            for j in self._waiting:
-                if j["key"] == key:
-                    j["fn"] = fn
-                    j["kind"] = kind
-                    j["uid"] = uid
-                    j["on_done"] = on_done
-                    j["waiters"] += 1
-                    return j
-            self._seq += 1
-            job = {"id": self._seq, "key": key, "kind": kind, "uid": uid,
-                   "fn": fn, "on_done": on_done, "event": threading.Event(),
-                   "result": None, "waiters": 1}
-            self._waiting.append(job)
-            self._cv.notify()
-            return job
-
-    def _run(self):
-        while True:
-            with self._cv:
-                while not self._waiting:
-                    self._cv.wait()
-                job = self._waiting.pop(0)
-                self._current = job
-            try:
-                job["result"] = self._exec(job["fn"])
-            except Exception as e:
-                job["result"] = {"ok": False, "error": str(e)[:200]}
-            try:
-                if job.get("on_done"):
-                    job["on_done"](job["result"])
-            except Exception:
-                pass
-            with self._cv:
-                self._current = None
-            job["event"].set()
-
-    def _exec(self, fn):
-        box = {}
-
-        def run():
-            try:
-                box["r"] = fn()
-            except Exception as e:
-                box["r"] = {"ok": False, "error": str(e)[:200]}
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        t.join(_MERGE_JOB_TIMEOUT)
-        if t.is_alive():
-            # A stuck merge must not block the queue forever.
-            return {"ok": False, "timeout": True,
-                    "error": "merge timed out after %ds" % _MERGE_JOB_TIMEOUT}
-        return box.get("r") or {"ok": False, "error": "merge returned nothing"}
-
-    def stats(self, uid=None):
-        with self._cv:
-            cur = self._current
-            ahead = None
-            if uid is not None:
-                if cur and cur.get("uid") == uid:
-                    ahead = 0
-                else:
-                    for i, j in enumerate(self._waiting):
-                        if j.get("uid") == uid:
-                            ahead = i
-                            break
-            return {"depth": len(self._waiting), "running": bool(cur),
-                    "current": (cur.get("key")[1] if cur and cur.get("key") else ""),
-                    "current_kind": (cur.get("kind") if cur else ""),
-                    "ahead": ahead}
-
-
-_MERGE_QUEUE = _MergeQueue()
-
-
-def _merge_submit(key, kind, uid, fn, on_done=None, wait=True):
-    """Queue a merge job. wait=True blocks until it runs and returns its result;
-    wait=False returns the job immediately (fire-and-forget, use on_done)."""
-    job = _MERGE_QUEUE.submit(key, kind, uid, fn, on_done)
-    if not wait:
-        return job
-    job["event"].wait(_MERGE_JOB_TIMEOUT + 30)
-    return job
-
-
-def _ws_merge_run(user, folder, rel):
-    """Blocking merge of one file from its live intents. Returns a dict."""
-    full = os.path.join(folder, rel)
-    if not _is_within(folder, full) or not os.path.isfile(full):
-        return {"ok": False, "error": "file missing"}
-    try:
-        if os.path.getsize(full) > _WS_MERGE_MAX_BYTES:
-            return {"ok": False, "error": "file over the merge size limit", "oversize": True}
-        with open(full, "r", encoding="utf-8") as fh:
-            current = fh.read()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    participants = _ws_take_intents(folder, rel)
-    if len(participants) < 2:
-        return {"ok": True, "skipped": True, "reason": "no concurrent edits"}
-    model = _ws_merge_model()
-    device_id, _dev_uid = _ws_merge_pick_device(folder, participants)
-    # 3+ editors in ONE request is what crashed the merge model. Fold pairwise
-    # instead: the first two together, then each next person in their own
-    # request, writing once at the end.
-    queue = list(participants)
-    chunks = [queue[:2]] + [[p] for p in queue[2:]]
-    out, total_applied, unavailable, _uerr = current, 0, False, ""
-    used_device = ""
-    for plist in chunks:
-        new_text, applied, unav, uerr, dev = _ws_merge_chunk(
-            rel, out, plist, model, device_id)
-        if dev:
-            used_device = dev
-        if unav:
-            unavailable, _uerr = True, uerr
-        if applied > 0:
-            out, total_applied = new_text, total_applied + applied
-    if unavailable and total_applied == 0:
-        return {"ok": False, "unavailable": True, "error": _uerr[:200]}
-    if total_applied == 0 or out == current:
-        return {"ok": True, "skipped": True, "reason": "proposed patches did not apply"}
-    with _WS_MERGE_LOCK:
-        try:
-            with open(full, "r", encoding="utf-8", errors="replace") as fh:
-                backup = fh.read()
-            _coding_save_version(_safe_username(user["username"]), rel, backup, folder)
-            with open(full, "w", encoding="utf-8") as fh:
-                fh.write(out)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-    _ws_clear_intents(folder, rel)
-    _ws_log_change(folder, "merge", rel, user, user["id"],
-                   {"by": [p.get("username") for p in participants][:5], "patches": total_applied,
-                    "device": used_device})
-    out = {"ok": True, "merged": True, "patches": total_applied,
-           "members": [p.get("username") for p in participants][:5]}
-    if used_device:
-        try:
-            out["device"] = relay.device_name(used_device)
-        except Exception:
-            out["device"] = used_device
-    return out
-
-
-def _ws_merge_conflict_prompt(rel, current, intent, old_text, new_text, participants):
-    parts = ["The CURRENT content of %s is between the markers." % rel,
-             "===== CURRENT FILE =====", current, "===== END CURRENT FILE =====", ""]
-    parts.append("--- The change THIS AI wanted (OLD may be stale) ---")
-    if intent:
-        parts.append("Intent: " + str(intent))
-    parts.append("OLD (may no longer match):")
-    parts.append(str(old_text or "")[:4000])
-    parts.append("NEW (what it wanted to write):")
-    parts.append(str(new_text or "")[:4000])
-    parts.append("")
-    others = [p for p in (participants or []) if p.get("intent") and p.get("intent") != intent]
-    if others:
-        parts.append("--- Other AIs recently editing this file (context) ---")
-        for p in others[:4]:
-            parts.append("- %s: %s" % (p.get("username") or "a member", p.get("intent")))
-        parts.append("")
-    parts.append("Emit FILE_PATCH blocks that add THIS AI's intended change to the "
-                 "CURRENT file, keeping the changes already present so both work.")
-    return "\n".join(parts)
-
-
-def _ws_merge_apply_intent(user, folder, rel, intent, old_text, new_text):
-    """Queue a conflict merge and wait its turn (strict FIFO with all merges)."""
-    job = _merge_submit((folder, rel), "conflict", user["id"],
-                        lambda: _ws_merge_apply_intent_now(user, folder, rel, intent, old_text, new_text),
-                        None, True)
-    return job.get("result")
-
-
-def _ws_merge_apply_intent_now(user, folder, rel, intent, old_text, new_text):
-    """Combine a stale patch with the current file via the merge model.
-    Returns {"patches": n, "content": text} or None (caller keeps the error)."""
-    full = os.path.join(folder, rel)
-    if not _is_within(folder, full) or not os.path.isfile(full):
-        return None
-    try:
-        if os.path.getsize(full) > _WS_MERGE_MAX_BYTES:
-            return None
-        with open(full, "r", encoding="utf-8", errors="replace") as fh:
-            current = fh.read()
-    except Exception:
-        return None
-    participants = _ws_take_intents(folder, rel)
-    model = _ws_merge_model()
-    device_id, _uid = _ws_merge_pick_device(folder, participants)
-    prompt = _ws_merge_conflict_prompt(rel, current, intent, old_text, new_text, participants)
-    try:
-        if device_id:
-            try:
-                reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt, agent_id=device_id)
-            except Exception:
-                reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt)
-        else:
-            reply = _ws_merge_model_call(model, _WS_MERGE_CONFLICT_SYSTEM, prompt)
-    except Exception:
-        return None
-    patches = re.findall(r"FILE_PATCH:[^\n]*\nOLD:\n(.*?)\nNEW:\n(.*?)(?:\nEND_FILE_PATCH|$)",
-                         reply or "", re.S)
-    if not patches:
-        return None
-    out = current
-    applied = 0
-    for o, n in patches:
-        res = _apply_patch_server(out, o, n)
-        if res is None or res == out:
-            continue
-        out = res
-        applied += 1
-    if not applied or out == current:
-        return None
-    with _WS_MERGE_LOCK:
-        try:
-            _coding_save_version(_safe_username(user["username"]), rel, current, folder)
-            with open(full, "w", encoding="utf-8") as fh:
-                fh.write(out)
-        except Exception:
-            return None
-    _ws_clear_intents(folder, rel)
-    _ws_log_change(folder, "merge", rel, user, user["id"],
-                   {"patches": applied, "conflict": True,
-                    "by": [p.get("username") for p in participants][:5]})
-    return {"patches": applied, "content": out}
-
-
-def _ws_maybe_merge(user, folder, rel, loop):
-    """Kick off a background merge when 2+ members are editing one file."""
-    if not _ws_merge_enabled() or not _workspace_row(folder):
-        return
-    if len(_ws_take_intents(folder, rel)) < 2:
-        return
-
-    def _on_done(res):
-        res = res or {}
-        try:
-            if res.get("merged"):
-                note = "auto-merged changes from " + ", ".join(res.get("members") or []) \
-                       + " (" + str(res.get("patches")) + " edits)"
-                _ws_append_event(folder, {"type": "merge", "path": rel, "user": "server-ai",
-                                          "user_id": user["id"], "extra": {"ok": True, "note": note}})
-            elif res.get("unavailable"):
-                _ws_append_event(folder, {"type": "merge", "path": rel, "user": "server-ai",
-                                          "user_id": user["id"],
-                                          "extra": {"ok": False,
-                                                    "note": "merge model unavailable — re-read the file before your next edit"}})
-        except Exception:
-            pass
-
-    # Queue it (fire-and-forget); the single worker runs merges one at a time.
-    _merge_submit((folder, rel), "auto", user["id"],
-                  lambda: _ws_merge_run(user, folder, rel),
-                  on_done=_on_done, wait=False)
 
 
 def _ws_log_change(folder, evtype, relpath, user, user_id, extra=None):
@@ -8000,124 +7354,9 @@ async def workspace_unlock(request: Request, req: WsLockBody):
     return {"status": "ok"}
 
 
-class MergeIntentBody(BaseModel):
-    path: str = ""
-    intent: str = ""
-
-
-@app.post("/api/coding/workspace/merge-intent")
-async def workspace_merge_intent(request: Request, req: MergeIntentBody):
-    """Record an AI's edit intent for a file before it changes it. Returns how
-    many OTHER members are editing the same file right now."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
-    access_err = _folder_access_error(user, folder, write=True)
-    if access_err:
-        return access_err
-    if not _workspace_row(folder):
-        return {"status": "ok", "workspace": False, "conflict": 0, "others": []}
-    rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
-    if not rel or _bad_path(rel):
-        return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    others = _ws_record_intent(user, folder, rel, req.intent)
-    return {"status": "ok", "workspace": True, "conflict": others,
-            "merge_enabled": _ws_merge_enabled(), "merge_model": _ws_merge_model()}
-
-
-@app.post("/api/coding/workspace/merge-now")
-async def workspace_merge_now(request: Request, req: MergeIntentBody):
-    """Manually run the merge for a file (the UI's 'Merge now')."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
-    access_err = _folder_access_error(user, folder, write=True)
-    if access_err:
-        return access_err
-    if not _workspace_row(folder):
-        return JSONResponse(status_code=400, content={"error": "Not a workspace"})
-    rel = (req.path or "").strip().replace("\\", "/").lstrip("/")
-    if not rel or _bad_path(rel):
-        return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    if not _ws_merge_enabled():
-        return JSONResponse(status_code=503, content={"error": "Merge is disabled on this server"})
-    job = await asyncio.to_thread(
-        _merge_submit, (folder, rel), "manual", user["id"],
-        (lambda: _ws_merge_run(user, folder, rel)), None, True)
-    res = job.get("result") or {}
-    if res.get("timeout"):
-        return JSONResponse(status_code=504, content={
-            "error": "Merge is taking too long in the queue — it will finish in the background.",
-            "queued": True})
-    return res
-
-
-class MergeDeviceBody(BaseModel):
-    agent_id: str = ""
-    enabled: bool = False
-
-
-@app.get("/api/merge-device")
-async def merge_device_get(request: Request):
-    """Which paired computer (if any) runs this user's workspace merges."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    row = _merge_device_row(user["id"])
-    aid = str(row.get("agent_id") or "")
-    enabled = bool(row.get("enabled"))
-    host = ("device" if (enabled and aid) else ("server" if enabled else ""))
-    out = {"agent_id": aid, "enabled": enabled, "host": host, "model": _ws_merge_model()}
-    reachable, tags, oerr = _server_ollama_tags()
-    out["server"] = {"reachable": reachable,
-                     "installed": (_ws_merge_model() in tags) if reachable else False,
-                     "models": len(tags)}
-    if aid:
-        with _AGENT_LOCK:
-            a = _agents_load()["agents"].get(aid)
-        a = dict(a) if a else None
-        if a and _agent_owner_id(a) == int(user["id"]):
-            online = _agent_online(a)
-            out["agent"] = {"name": a.get("name") or "", "online": online,
-                            "caps": a.get("caps") or []}
-            out["installed"] = _merge_model_installed(aid, _ws_merge_model()) if online else False
-    return out
-
-
-@app.post("/api/merge-device")
-async def merge_device_set(request: Request, req: MergeDeviceBody):
-    """Turn a user's own paired computer into the merge runner (and install
-    the model on it if missing)."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    if not req.enabled:
-        _merge_set_device(user["id"], str(req.agent_id or ""), False)
-        return {"status": "ok", "enabled": False}
-    aid = str(req.agent_id or "").strip()
-    if not aid:
-        # Empty id = the OmniLink Server itself hosts this user's merges.
-        _merge_set_device(user["id"], "", True)
-        _audit("merge.device", user.get("username", ""), "server")
-        return {"status": "ok", "agent_id": "", "enabled": True, "host": "server"}
-    with _AGENT_LOCK:
-        a = _agents_load()["agents"].get(aid)
-    if not a or _agent_owner_id(a) != int(user["id"]):
-        return JSONResponse(status_code=404, content={"error": "No such computer of yours"})
-    if "ollama" not in (a.get("caps") or []):
-        return JSONResponse(status_code=400, content={
-            "error": "That computer does not share Ollama models"})
-    _merge_set_device(user["id"], aid, True)
-    _merge_ensure_model(aid, _ws_merge_model())
-    _audit("merge.device", user.get("username", ""), aid)
-    return {"status": "ok", "agent_id": aid, "enabled": True}
-
-
 def _server_ollama_tags():
     """(reachable, tags, error) for the server's own Ollama."""
-    url = _merge_ollama_url()
+    url = (_ollama_current_url() or "").rstrip("/")
     if not url:
         return False, [], "No Ollama URL configured"
     try:
@@ -8127,25 +7366,6 @@ def _server_ollama_tags():
         return True, [str(m.get("name") or "") for m in (data.get("models") or [])], ""
     except Exception as e:
         return False, [], str(e)[:200]
-
-
-_MERGE_TAGS_CACHE = {"ts": 0.0, "result": (False, [], "not probed")}
-_MERGE_TAGS_TTL = 30
-
-
-def _server_ollama_tags_cached():
-    now = time.time()
-    if now - _MERGE_TAGS_CACHE["ts"] < _MERGE_TAGS_TTL:
-        return _MERGE_TAGS_CACHE["result"]
-    res = _server_ollama_tags()
-    _MERGE_TAGS_CACHE.update(ts=now, result=res)
-    return res
-
-
-class MergeConfigBody(BaseModel):
-    model: str = ""
-    enabled: Optional[bool] = None
-    ctx: Optional[int] = None
 
 
 _SYSSTATS_PREV = {"t": 0.0, "cpu_idle": None, "cpu_total": None,
@@ -8237,96 +7457,6 @@ async def sysstats(request: Request):
     if err:
         return err
     return await asyncio.to_thread(_sysstats_cached)
-
-
-@app.post("/api/merge/config")
-async def merge_config_set(request: Request, req: MergeConfigBody):
-    """Admin-only: choose the merge model / toggle the merge, persisted to .env."""
-    _user, err = _require_admin(request)
-    if err:
-        return err
-    model = str(req.model or "").strip()
-    if model and not re.fullmatch(r"[A-Za-z0-9._:\-/]{1,120}", model):
-        return JSONResponse(status_code=400, content={"error": "Invalid model name"})
-    if model:
-        _set_env_var("OMNIILINK_MERGE_MODEL", model)
-    if req.enabled is not None:
-        _set_env_var("OMNIILINK_MERGE_ENABLED", "1" if req.enabled else "0")
-    if req.ctx is not None:
-        _set_env_var("OMNIILINK_MERGE_CTX",
-                     str(max(2048, min(131072, int(req.ctx)))))
-    return {"status": "ok", "model": _ws_merge_model(),
-            "enabled": _ws_merge_enabled(), "ctx": _ws_merge_ctx()}
-
-
-@app.get("/api/coding/merge-status")
-async def merge_status(request: Request):
-    """Everything needed to see whether the merge model is actually working."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    reachable, tags, oerr = await asyncio.to_thread(_server_ollama_tags_cached)
-    model = _ws_merge_model()
-    _row = _merge_device_row(user["id"])
-    _host = ("device" if (_row.get("enabled") and _row.get("agent_id"))
-             else ("server" if _row.get("enabled") else ""))
-    out = {"enabled": _ws_merge_enabled(), "model": model, "host": _host,
-           "default_model": _WS_MERGE_DEFAULT_MODEL,
-           "ollama_url": _merge_ollama_url(), "reachable": reachable,
-           "model_installed": (model in tags) if reachable else False,
-           "tags": tags[:60], "error": oerr, "max_bytes": _WS_MERGE_MAX_BYTES,
-           "intent_ttl": _WS_INTENT_TTL,
-           "running": bool(_MERGE_ACTIVITY["running"]),
-           "started_at": _MERGE_ACTIVITY["started"],
-           "last_ms": _MERGE_ACTIVITY["last_ms"],
-           "last_tps": _MERGE_ACTIVITY.get("last_tps", 0),
-           "last_tokens": _MERGE_ACTIVITY.get("last_tokens", 0),
-           "live_tps": _MERGE_ACTIVITY.get("live_tps", 0),
-           "live_tokens": _MERGE_ACTIVITY.get("live_tokens", 0),
-           "merge_ctx": _ws_merge_ctx(),
-           "queue": _MERGE_QUEUE.stats(user["id"])}
-    dev = _merge_device_row(user["id"])
-    if dev and dev.get("agent_id"):
-        with _AGENT_LOCK:
-            a = _agents_load()["agents"].get(str(dev["agent_id"]))
-        if a and _agent_owner_id(a) == int(user["id"]):
-            online = _agent_online(a)
-            out["device"] = {"id": a.get("id"), "name": a.get("name") or "",
-                             "enabled": bool(dev.get("enabled")), "online": online}
-            if online:
-                try:
-                    out["device"]["installed"] = _merge_model_installed(a["id"], model)
-                except Exception:
-                    out["device"]["installed"] = False
-    return out
-
-
-@app.post("/api/coding/merge-test")
-async def merge_test(request: Request):
-    """Round-trip a tiny prompt through the merge model (server or your device)."""
-    user, err = _require_auth(request)
-    if err:
-        return err
-    if not _ws_merge_enabled():
-        return {"ok": False, "error": "Merge is disabled on this server"}
-    t0 = time.time()
-    agent_id = ""
-    dev = _merge_device_row(user["id"])
-    if dev and dev.get("enabled") and dev.get("agent_id"):
-        with _AGENT_LOCK:
-            a = _agents_load()["agents"].get(str(dev["agent_id"]))
-        if a and _agent_owner_id(a) == int(user["id"]) and "ollama" in (a.get("caps") or []) \
-                and _agent_online(a):
-            agent_id = str(a["id"])
-    try:
-        reply = _ws_merge_model_call(_ws_merge_model(),
-                                     "Reply with exactly: MERGE OK",
-                                     "Reply with exactly: MERGE OK", agent_id=agent_id)
-        return {"ok": True, "ms": int((time.time() - t0) * 1000), "model": _ws_merge_model(),
-                "device": agent_id, "reply": str(reply)[:200]}
-    except Exception as e:
-        return {"ok": False, "ms": int((time.time() - t0) * 1000),
-                "model": _ws_merge_model(), "device": agent_id, "error": str(e)[:300]}
 
 
 # ---- Collaborative workspaces, batch 2: presence rides on poll; below are
@@ -9092,7 +8222,6 @@ def _coding_run_strip(text):
     c = re.sub(r"FILE_DELETE:[^\n]*", "", c)
     c = re.sub(r"RUN_COMMAND:[^\n]*\n[\s\S]*?(?:END_RUN_COMMAND|$)", "", c)
     c = re.sub(r"TODO_LIST:\n[\s\S]*?END_TODO_LIST", "", c)
-    c = re.sub(r"MERGE_INTENT:[^\n]*\n[\s\S]*?(?:END_MERGE_INTENT|$)", "", c)
     c = re.sub(r"^[ \t]*(?:PLAN-STEPS|LOCK_RESERVE|VERDICT)[^\n]*", "", c, flags=re.M)
     return re.sub(r"\n{3,}", "\n\n", c).strip()
 
@@ -13198,11 +12327,6 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
     ws_ck = _ws_enforce_lock(user, folder, req.path)
     if ws_ck:
         return ws_ck
-    if _workspace_row(folder):
-        try:
-            _ws_record_intent(user, folder, req.path, getattr(req, "intent", ""), req.content)
-        except Exception:
-            pass
     quota_err = _check_quota(user, _safe_username(user["username"]), len(req.content.encode("utf-8", "ignore")))
     if quota_err:
         return quota_err
@@ -13240,10 +12364,6 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         _ws_log_change(folder, "write" if vts is not None else "create",
                        req.path, user, user["id"], {"added": added, "removed": removed})
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
-        try:
-            _ws_maybe_merge(user, folder, req.path, asyncio.get_running_loop())
-        except Exception:
-            pass
         return {"status": "ok", "path": req.path, "size": len(req.content),
                 "backed_up": backup is not None, "added": added, "removed": removed}
     except Exception as e:
@@ -13365,12 +12485,6 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
     ws_ck = _ws_enforce_lock(user, folder, req.path)
     if ws_ck:
         return ws_ck
-    if _workspace_row(folder):
-        try:
-            _ws_record_intent(user, folder, req.path, getattr(req, "intent", ""),
-                              (req.old_text or "")[:4000] + "\n=> " + (req.new_text or "")[:4000])
-        except Exception:
-            pass
     full = os.path.join(folder, req.path)
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -13384,23 +12498,8 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         old, new = req.old_text, req.new_text
         hit = _locate_patch_target(current, old)
         if hit is None:
-            # Concurrent-edit conflict: a collaborator (or their AI) changed
-            # this file, so this patch's OLD no longer matches. Instead of
-            # bouncing it back, let the merge model combine both changes.
-            if _workspace_row(folder) and _ws_merge_enabled():
-                merged = await asyncio.to_thread(
-                    _ws_merge_apply_intent, user, folder, req.path,
-                    getattr(req, "intent", ""), old, new)
-                if merged:
-                    _ws_append_event(folder, {
-                        "type": "merge", "path": req.path, "user": "server-ai",
-                        "user_id": user["id"],
-                        "extra": {"ok": True,
-                                  "note": "combined a conflicting edit from "
-                                          + (user.get("username") or "a member")
-                                          + " into " + req.path}})
-                    return {"status": "ok", "merged": True, "path": req.path,
-                            "size": len(merged["content"]), "added": 0, "removed": 0}
+            # Concurrent edit: a collaborator changed this file, so OLD no
+            # longer matches. Bounce it back with the exact current content.
             return JSONResponse(status_code=404, content={
                 "error": "Old text not found — nothing was changed. "
                          + _patch_miss_reason(current, old),
@@ -13433,10 +12532,6 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         _ws_log_change(folder, "patch", req.path, user, user["id"],
                        {"added": added, "removed": removed})
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
-        try:
-            _ws_maybe_merge(user, folder, req.path, asyncio.get_running_loop())
-        except Exception:
-            pass
         return {"status": "ok", "path": req.path, "size": len(patched),
                 "added": added, "removed": removed}
     except Exception as e:
@@ -15335,8 +14430,7 @@ async def coding_get_settings(request: Request):
     settings["host_os"] = sys.platform
     settings["upload_limit_mb"] = UPLOAD_LIMIT_MB
     settings["upload_chunk_mb"] = UPLOAD_CHUNK_BYTES // (1024 * 1024)
-    settings["merge_model"] = _ws_merge_model()
-    settings["merge_enabled"] = _ws_merge_enabled()
+
     return settings
 
 @app.post("/api/coding/settings")
@@ -19260,9 +18354,8 @@ async def serve_spa(path: str):
     return FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 def _prewarm_caches():
-    """Warm the slow admin/merge probes in the background at boot so the first
-    Admin open and merge pill are instant instead of waiting on cold docker/git
-    CLI spawns and a slow Ollama."""
+    """Warm the slow admin probes in the background at boot so the first Admin
+    open is instant instead of waiting on cold docker/git CLI spawns."""
     try:
         _probe_capabilities()
     except Exception:

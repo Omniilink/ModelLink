@@ -1414,8 +1414,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 <div id="adm-ollama-models" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
                 <div class="tool-result-sub" style="margin-top:6px">Stored on the server, so it reaches Ollama running on the server machine — not your browser's localhost.</div>
               </div></div>
-              <div class="usage-section-title" style="margin-top:16px">Workspace merge AI</div>
-              <div class="usage-chart-wrap"><div class="usage-chart-body"><div id="adm-merge-box">Checking…</div></div></div>
               <div id="adm-jobs"></div>
             </div>
             <div data-apane="reports" style="display:none">
@@ -2083,7 +2081,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
   connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
-  try{if(typeof mergeIndicatorStart==='function')mergeIndicatorStart()}catch(e){}
+  try{if(typeof assistantPillStart==='function')assistantPillStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
   try{if(typeof checkBuildVersion==='function')checkBuildVersion()}catch(e){}
   try{if(typeof updateSuperPromptUI==='function')updateSuperPromptUI()}catch(e){}
@@ -3106,7 +3104,7 @@ const LOCAL_ASSISTANT_KEY='omnilink_local_assistant';
 const LOCAL_ASSISTANT_MODEL_KEY='omnilink_local_assistant_model';
 // ---- capability tiers: a bigger model is trusted with more jobs ----
 // min tier: 1=0.5B, 2=1.5B, 3=3B, 4=7B
-const ASSISTANT_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1,super_prompt:1,super_research:1, compress:2,summary:2,explain:2,research:2,tool_choice:2,turn_router:2,finding:2, coding:3,merge_intent:3,sanity:3,stubs:3, merge_propose:4};
+const ASSISTANT_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1,super_prompt:1,super_research:1, compress:2,summary:2,explain:2,research:2,tool_choice:2,turn_router:2,finding:2, coding:3,sanity:3,stubs:3};
 const ASSISTANT_BASIC_JOBS={routing:1,titles:1,commit:1,redaction:1,translation:1};
 const ASSISTANT_TIER_NAMES={1:'Basic (0.5B)',2:'Standard (1.5B)',3:'Advanced (3B)',4:'Maximum (7B)'};
 const EMBED_MODELS={small:'snowflake-arctic-embed-s-q0f32-MLC-b4',medium:'snowflake-arctic-embed-m-q0f32-MLC-b4'};
@@ -3187,13 +3185,8 @@ function assistantPillHtml(dot,pulse,name,stateText,task){
     +(task?'<span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">'+escapeHtml(task)+'</span>':'')
     +'</div>';
 }
-var mergeIndicatorState=null,mergeIndicatorTimer=null;
-async function mergeIndicatorPoll(){
-  try{const r=await authFetch(API+'/api/coding/merge-status');if(r.ok)mergeIndicatorState=await r.json().catch(()=>null)}catch(e){}
-  try{localAssistantIndicatorRender()}catch(e){}
-}
-var mergeIndicatorTick=null;
-function mergeIndicatorStart(){try{if(mergeIndicatorTimer)return;mergeIndicatorPoll();mergeIndicatorTimer=setInterval(mergeIndicatorPoll,6000);if(!mergeIndicatorTick)mergeIndicatorTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}try{updateSuperPromptUI()}catch(e){}},1000)}catch(e){}}
+var assistantPillTick=null;
+function assistantPillStart(){try{if(assistantPillTick)return;localAssistantIndicatorRender();assistantPillTick=setInterval(()=>{try{localAssistantIndicatorRender()}catch(e){}try{updateSuperPromptUI()}catch(e){}},1000)}catch(e){}}
 var sysstatsData=null,sysstatsTimer=null;
 function fmtSysMB(v){v=Number(v)||0;return v>=1024?(v/1024).toFixed(1)+'GB':Math.round(v)+'MB'}
 function fmtSysRate(v){v=Number(v)||0;if(v>=1024)return (v/1024).toFixed(1)+'MB/s';return Math.round(v)+'KB/s'}
@@ -3227,10 +3220,9 @@ function sysstatsStart(){try{if(sysstatsTimer)return;sysstatsPoll();sysstatsTime
 function localAssistantIndicatorRender(){
   let el=document.getElementById('helper-indicator');
   const showAssistant=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
-  const showMerge=!!(mergeIndicatorState&&mergeIndicatorState.enabled);
-  if(!showAssistant&&!showMerge){if(el)el.remove();return}
+  if(!showAssistant){if(el)el.remove();return}
   if(!el){
-    el=document.createElement('div');el.id='helper-indicator';el.title='In-browser + merge model activity';
+    el=document.createElement('div');el.id='helper-indicator';el.title='In-browser model activity';
     el.style.cssText='display:flex;gap:6px;align-items:center;margin-left:12px;margin-right:12px;max-width:min(80vw,1100px);min-width:0;flex-shrink:1;overflow:hidden';
     const header=document.querySelector('.header');
     const anchor=header&&header.querySelector('.crumbs');
@@ -3249,27 +3241,6 @@ function localAssistantIndicatorRender(){
       if(s.state==='processing'&&s.tps>0&&s.maxTokens>0&&s.tokens>0){eta=' · ~'+Math.max(0,Math.round((s.maxTokens-s.tokens)/s.tps))+'s left'}
       parts.push(assistantPillHtml(dot,pulse,localAssistantShort(m),s.state+tps+eta,s.task));
     }
-  }
-  if(showMerge){
-    const mm=mergeIndicatorState;
-    const dot=mm.running?'#f5a623':(mm.reachable?'#30a46c':'#e5484d');
-    const pulse=mm.running?'animation:pulse 1s infinite':'';
-    const state=mm.running?'running':(mm.reachable?'idle':'offline');
-    const el2=Math.max(0,(Date.now()/1000)-(mm.started_at||Date.now()/1000));
-    let eta='';
-    if(mm.running){
-      const exp=(mm.last_ms&&mm.last_ms>0)?(mm.last_ms/1000):15;
-      const rem=Math.round(exp-el2);
-      eta=' · '+Math.round(el2)+'s'+(rem>0?(' · ~'+rem+'s left'):'');
-    }
-    let tpsTxt='';
-    const _tps=(mm.running&&mm.live_tps&&Number(mm.live_tps)>0)?Number(mm.live_tps):((mm.last_tps&&Number(mm.last_tps)>0)?Number(mm.last_tps):0);
-    if(_tps>0)tpsTxt=' · '+_tps.toFixed(1)+' tok/s';
-    let qtxt='';
-    const q=mm.queue||{};
-    if(q.depth>0)qtxt+=' · '+q.depth+' queued';
-    if(q.ahead!=null)qtxt+=' · you\'re '+ordinal(q.ahead+1);
-    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta+tpsTxt+qtxt,''));
   }
   el.innerHTML=parts.join('');
   try{updateSuperPromptUI()}catch(e){}
@@ -4583,19 +4554,6 @@ function codingOsBlock(kind){
 var codingAttachFailures=[];
 var codingRefFiles=[];
 var codingRefCache={};
-var codingMergeIntent='',codingMergeIntents={};
-function codingIntentFor(path){try{return (codingMergeIntents&&codingMergeIntents[path])||codingMergeIntent||''}catch(e){return codingMergeIntent||''}}
-function parseMergeIntents(text){
-  // MERGE_INTENT: <path>\n<short summary>\nEND_MERGE_INTENT — what an AI plans
-  // to do to a file, handed to the server-side merge model on a collision.
-  const out={};let m;
-  const re=/MERGE_INTENT:\s*([^\n]+)\n([\s\S]*?)(?:\nEND_MERGE_INTENT|$)/g;
-  while((m=re.exec(String(text||'')))){
-    const key=String(m[1]||'').trim().replace(/['"`]/g,'');
-    if(key)out[key]=String(m[2]||'').trim().slice(0,600);
-  }
-  return out;
-}
 // ---- secret / PII scan (warn + one-click redact before cloud sends) ----
 var codingSecretsFound=[],redactSecretsActive=false;
 const SECRET_PATTERNS=[
@@ -4689,7 +4647,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   // derail the model and leave half-finished work behind.
   if(codingSplitPending)sysPrompt+='\nTODO GRANULARITY (your TODO_LIST is too coarse): split each open item into its own smaller steps — one file, one feature, or one check per item — and continue working in the SAME reply. Do NOT stop, restart, or ask anything: just emit a finer TODO_LIST with the already-done items still marked [x] and carry on with the next tool block.\n';
   if(wsActive&&currentWorkspace){try{const cr=await authFetch(API+'/api/coding/workspace/context');if(cr.ok){const cd=await cr.json().catch(()=>({}));if(cd&&cd.active){const wsLabel=String(currentWorkspace.name||'collaborative').slice(0,48);const summary=String(cd.summary||'(no recent activity yet)').slice(0,1500);
-    sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- FILES ARE NOT LOCKED. Several people (and their AIs) may edit the same file. When two edits collide, a small server-side model merges them automatically, so you NEVER wait for a file and you are NEVER blocked.\n- Before you change any file, emit a one-line summary of what you are about to do so the merge model understands your intent:\nMERGE_INTENT: <path>\n<one short sentence: what and why>\nEND_MERGE_INTENT\nEmit one per file you are about to edit, before the FILE_* blocks.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Keep edits small and targeted (FILE_PATCH). Small, well-described changes merge cleanly with someone else\'s; large rewrites collide and lose detail.\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n- If a live notice says your work was auto-merged, re-read the file to pick up the combined result before continuing.\n'}}}catch(e){}}
+    sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- Files are LOCKED while someone edits them. If a file is locked by another editor your change is rejected — do NOT resend it; work on a different file or wait and re-read it later.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Keep edits small and targeted (FILE_PATCH).\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n'}}}catch(e){}}
   if((typeof codingReviewModeOn==='function')&&codingReviewModeOn())sysPrompt+='\nREVIEW MODE (the user enabled it): audit ONLY. Do NOT emit FILE_CREATE/FILE_EDIT/FILE_PATCH/FILE_DELETE blocks and do NOT run state-changing commands — read-only inspection (cat, ls, grep, node --check) is allowed. Deliver a findings list ordered by severity, then end with VERDICT:PASS and a short summary. Never write files in this mode.\n';
   return sysPrompt}
 
@@ -4714,7 +4672,7 @@ function findBareRunSpans(text){
   return spans;
 }
 function streamHasMarkers(t){
-  return t.indexOf('```')>-1||t.indexOf('FILE_')>-1||t.indexOf('RUN_COMMAND')>-1||t.indexOf('WEB_FETCH')>-1||t.indexOf('WEB_SEARCH')>-1||t.indexOf('RESEARCH')>-1||t.indexOf('TODO_LIST')>-1||t.indexOf('QUESTION:')>-1||t.indexOf('PLAN-STEPS')>-1||t.indexOf('VERDICT')>-1||t.indexOf('MERGE_INTENT')>-1;
+  return t.indexOf('```')>-1||t.indexOf('FILE_')>-1||t.indexOf('RUN_COMMAND')>-1||t.indexOf('WEB_FETCH')>-1||t.indexOf('WEB_SEARCH')>-1||t.indexOf('RESEARCH')>-1||t.indexOf('TODO_LIST')>-1||t.indexOf('QUESTION:')>-1||t.indexOf('PLAN-STEPS')>-1||t.indexOf('VERDICT')>-1;
 }
 function streamHiddenSpans(fullText){
   // Regions the chat must never render raw mid-stream. Mirrors the final
@@ -4728,7 +4686,7 @@ function streamHiddenSpans(fullText){
   let m;
   const fp=/```\w*\n[\s\S]*?\n```/g;
   while((m=fp.exec(fullText)))push(m.index,m.index+m[0].length);
-  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|MERGE_INTENT:[ \t]*\r?\n?[^\n]+?\n[\s\S]*?END_MERGE_INTENT|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
+  const bp=/(FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_CREATE|FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_EDIT|FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)|FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\n[\s\S]*?END_FILE_PATCH|RUN_COMMAND:[ \t]*\n?[\s\S]+?(?:\nEND_RUN_COMMAND|$)|WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)|TODO_LIST:\n[\s\S]*?END_TODO_LIST|QUESTION:[^\n]*(?:\n(?:OPTION:[^\n]*\n?)+)?(?:END_QUESTION|$))/g;
   while((m=bp.exec(fullText)))push(m.index,m.index+m[0].length);
   // Protocol lines: the parser reads them, the user never should.
   const pp1=/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*[ \t]*\r?\n?/gmi;
@@ -4754,7 +4712,7 @@ function streamHiddenSpans(fullText){
     const lines=fullText.split('\n');
     let acc=0;
     for(const ln of lines){
-      if(/^[ \t]*(```\w*|FILE_CREATE:|FILE_EDIT:|FILE_DELETE:|FILE_PATCH:|RUN_COMMAND:|WEB_FETCH:|WEB_SEARCH:|RESEARCH:|TODO_LIST:|QUESTION:|MERGE_INTENT:)/.test(ln)){
+      if(/^[ \t]*(```\w*|FILE_CREATE:|FILE_EDIT:|FILE_DELETE:|FILE_PATCH:|RUN_COMMAND:|WEB_FETCH:|WEB_SEARCH:|RESEARCH:|TODO_LIST:|QUESTION:)/.test(ln)){
         if(!merged.some(o=>acc>=o[0]&&acc<o[1])){merged.push([acc,fullText.length]);break}
       }
       acc+=ln.length+1;
@@ -5056,7 +5014,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingMergeIntent='';codingMergeIntents={};codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -5297,7 +5255,6 @@ function stripToolBlocks(text){
   c=c.replace(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g,'');
   c=c.replace(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g,'');
   // Workspace protocol the parser reads but the user must never see.
-  c=c.replace(/MERGE_INTENT:[ \t]*\r?\n?[^\n]+?\n[\s\S]*?(?:\nEND_MERGE_INTENT|$)/g,'');
   c=c.replace(/^[ \t]*LOCK_RESERVE:[^\n]*\r?\n?/gmi,'');
   c=c.replace(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm,'');
    c=c.replace(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g,'');
@@ -5312,7 +5269,7 @@ function stripProtocolLines(text){
   let c=String(text||'');
   c=c.replace(/^[ \t]*PLAN-STEPS[ \t]*:[^\n]*\r?\n?/gmi,'');
   c=c.replace(/VERDICT[ \t]*:[ \t]*(?:PASS|FAIL)\b[ \t]*/gi,'');
-  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST|MERGE_INTENT|END_MERGE_INTENT|LOCK_RESERVE)[^\n]*\r?\n?/gmi,'');
+  c=c.replace(/^[ \t]*(?:FILE_CREATE|FILE_EDIT|FILE_DELETE|FILE_PATCH|RUN_COMMAND|WEB_FETCH|TODO_LIST|END_FILE_CREATE|END_FILE_EDIT|END_FILE_DELETE|END_FILE_PATCH|END_RUN_COMMAND|END_WEB_FETCH|END_TODO_LIST|LOCK_RESERVE)[^\n]*\r?\n?/gmi,'');
   return c;
 }
 function stripJunkSpec(text){
@@ -6252,7 +6209,6 @@ async function processCodingActions(text,msgEl){
   const fileMerges=(typeof parseMergeBlocks==='function')?parseMergeBlocks(parseText):[];
   const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+webSearches.length+researches.length+fileSplits.length+fileMerges.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   const hadTodos=parseCodingTodos(parseText);
-  try{const mi=(typeof parseMergeIntents==='function')?parseMergeIntents(parseText):{};codingMergeIntents=mi;const mk=Object.keys(mi);codingMergeIntent=mk.length?mi[mk[0]]:''}catch(e){}
   // A turn that writes files but never declared a TODO_LIST leaves the loop
   // blind. Derive one from the files it touched so the next round has real
   // "open work" to refer to.
@@ -7949,24 +7905,6 @@ function wsOthersActive(){
     return (wsRecentEvents||[]).some(e=>e&&e.user_id&&e.user_id!==myId&&(now-parseFloat(e.at||0))<300);
   }catch(e){return false}
 }
-async function localIntentFor(path,content){
-  // In a collaborative workspace with the local assistant on, the 0.5B writes a
-  // 1-2 sentence summary of the change (what it is for + the current todo) that
-  // is sent to the server merge model instead of the full prompt/context —
-  // cutting the merge model's load. Returns '' to fall back to the model's own
-  // MERGE_INTENT.
-  try{
-    if(!(typeof wsActive!=='undefined'&&wsActive))return '';
-    if(typeof wsOthersActive==='function'&&!wsOthersActive())return '';
-    if(typeof assistantJobEnabled!=='function'||!assistantJobEnabled('merge_intent'))return '';
-    const todo=(typeof codingTodos!=='undefined'&&codingTodos)?codingTodos.filter(t=>!t.done).map(t=>t.text).slice(0,3).join('; '):'';
-    const sys='You summarise a code change for a merge assistant. In 1-2 short sentences state WHAT the change is for and its purpose. Output only the summary, no preamble.';
-    const usr='File: '+path+'\nCurrent todo: '+(todo||'(none)')+'\nChange (excerpt):\n'+String(content||'').slice(0,1200);
-    const s=String(await localAssistantRunJob('merge_intent',sys,usr,120)).trim().replace(/\s+/g,' ').slice(0,400);
-    if(s){try{codingMergeIntents[path]=s;codingMergeIntent=s}catch(e){}return s}
-  }catch(e){}
-  return '';
-}
 async function codingWriteFile(path,content){
   try{
     if(isRemote()){const out=await agentFileOp(remoteCtx.id,{op:'write',path:remoteRel(path),content});if(!out||!out.ok)throw new Error((out&&out.error)||'Write failed');const lines=content.split('\n').length;codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:lines,removed:0,path:(out.path||remoteRel(path))}}
@@ -7979,8 +7917,7 @@ async function codingWriteFile(path,content){
       if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}
       return{ok:true,added:lines,removed:0};
     }
-    const _intent=((typeof localIntentFor==='function')?(await localIntentFor(path,content)):'')||((typeof codingIntentFor==='function')?codingIntentFor(path):'');
-    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content,intent:_intent,intent_local:!!_intent})});
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
     const data=await r.json();
     if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
@@ -8230,8 +8167,7 @@ async function codingPatchFile(path,oldText,newText){
   try{
     const remote=isRemote();
     if(!remote&&!fsHandle){
-const _pintent=((typeof localIntentFor==='function')?(await localIntentFor(path,newText)):'')||((typeof codingIntentFor==='function')?codingIntentFor(path):'');
-const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText,intent:_pintent,intent_local:!!_pintent})});
+const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
 const data=await r.json();
 if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
@@ -9103,49 +9039,6 @@ async function runApprove(cmdId){
 async function runDeny(cmdId){
   try{await authFetch(API+'/api/coding/run/command-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunId,cmd_id:cmdId,denied:true})})}catch(e){}
   runsPoll();
-}
-async function mergeStatusRender(into){
-  const boxId=into||'merge-status-box';
-  const box=document.getElementById(boxId);if(!box)return;
-  box.textContent='Checking…';
-  try{
-    const r=await authFetch(API+'/api/coding/merge-status');const d=await r.json().catch(()=>({}));
-    const devBad=d.device&&d.device.enabled&&(!d.device.online||d.device.installed===false);
-    const ok=d.enabled&&d.reachable&&d.model_installed&&!devBad;
-    let line='Model: '+(d.model||'?')+(d.model===d.default_model?' (default)':'');
-    line+=' · '+(d.enabled?'enabled':'DISABLED');
-    line+=' · server '+(d.reachable?('reachable, '+(d.tags||[]).length+' models'):('UNREACHABLE — '+(d.error||'no response')));
-    line+=' · '+(d.model_installed?'model installed':'MODEL NOT INSTALLED');
-    if(d.device)line+=' · device '+d.device.name+(d.device.enabled?(' ('+(d.device.online?(d.device.installed?'ready':'model missing'):'offline')+')'):' (off)');
-    box.innerHTML='<div style="color:'+(ok?'var(--success)':'var(--warning)')+'">'+escapeHtml(line)+'</div>';
-    const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
-    const test=document.createElement('button');test.className='btn btn-primary btn-sm';test.textContent='Test merge model';
-    test.onclick=async()=>{test.disabled=true;test.textContent='Testing…';try{const rr=await authFetch(API+'/api/coding/merge-test',{method:'POST'});const dd=await rr.json().catch(()=>({}));if(dd.ok)showToast('Merge model OK ('+dd.ms+'ms'+(dd.device?' on your device':' on the server')+'): '+(dd.reply||''),'success');else showToast('Merge model failed: '+(dd.error||'unknown'),'error')}catch(e){showToast(e.message,'error')}test.disabled=false;test.textContent='Test merge model'};
-    row.appendChild(test);
-    if(window.__user&&window.__user.is_admin){
-      const sel=document.createElement('select');sel.style.cssText='background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text-primary);font-size:12px';
-      const cur=d.model;let found=false;
-      (d.tags||[]).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;if(t===cur){o.selected=true;found=true}sel.appendChild(o)});
-      if(!found&&cur){const o=document.createElement('option');o.value=cur;o.textContent=cur+(d.model_installed?'':' (not installed)');o.selected=true;sel.appendChild(o)}
-      const save=document.createElement('button');save.className='btn btn-ghost btn-sm';save.textContent='Use this model';
-      save.onclick=async()=>{const cfgBody={model:sel.value,enabled:true};const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfgBody)});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge model set to '+dd.model+' — remember to ollama pull it on the server','success');mergeStatusRender(boxId)};
-      row.appendChild(sel);row.appendChild(save);
-      const tog=document.createElement('button');tog.className='btn btn-ghost btn-sm';tog.textContent=d.enabled?'Disable merge':'Enable merge';
-      tog.onclick=async()=>{await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!d.enabled})});mergeStatusRender(boxId)};
-      row.appendChild(tog);
-      // Merge context window slider (4k-128k). Saved server-side; applies to
-      // every merge request (larger fits more editors, uses more RAM).
-      const ctxRow=document.createElement('div');ctxRow.style.cssText='display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;width:100%';
-      const ctxLab=document.createElement('span');ctxLab.className='tool-result-sub';ctxLab.textContent='Context window';
-      const ctx=document.createElement('input');ctx.type='range';ctx.min='4';ctx.max='128';ctx.step='4';ctx.value=String(Math.round((d.merge_ctx||32768)/1024));ctx.style.flex='1';ctx.style.minWidth='140px';
-      const ctxV=document.createElement('span');ctxV.className='tool-result-sub';ctxV.style.minWidth='44px';ctxV.textContent=Math.round((d.merge_ctx||32768)/1024)+'k';
-      ctx.oninput=()=>{ctxV.textContent=ctx.value+'k'};
-      ctx.onchange=async()=>{const rr=await authFetch(API+'/api/merge/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ctx:Number(ctx.value)*1024})});const dd=await rr.json().catch(()=>({}));if(!rr.ok){showToast(dd.error||'Could not save','error');return}showToast('Merge context set to '+ctx.value+'k','success')};
-      ctxRow.appendChild(ctxLab);ctxRow.appendChild(ctx);ctxRow.appendChild(ctxV);
-      box.appendChild(ctxRow);
-    }
-    box.appendChild(row);
-  }catch(e){box.textContent='Could not check merge status';}
 }
 async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
@@ -13120,7 +13013,6 @@ async function admLoadOverview(){try{const r=await authFetch(API+'/api/admin/ove
   kv(document.getElementById('adm-env'),[['App directory',caps.app_dir],['Platform',caps.platform],['Python',caps.python],['Execution mode',caps.shell_mode],['Shell reason',caps.shell_reason],['Host volume',caps.host_root||'—'],['Docker CLI',caps.docker_version||'not installed'],['docker compose',caps.docker_compose||'not available'],['git',caps.git_version||'not installed'],['docker socket',caps.docker_socket?'mounted':'not mounted'],['host checkout',caps.host_checkout||'—'],['git token',caps.git_token?'configured':'not set']]);
   kv(document.getElementById('adm-access'),[['Allowlist',(caps.admin_users||[]).join(', ')],['Promotion','OMNIILINK_ADMIN_USERS (is_admin=1 at boot)'],['Endpoints','/api/admin/* (super-admin only)'],['Audit file','user_data/audit.log']]);
   const jb=document.getElementById('adm-jobs');jb.innerHTML='';(d.jobs||[]).forEach(j=>{const p=document.createElement('div');p.className='usage-chart-wrap';p.innerHTML='<div class="usage-chart-header">Job '+escapeHtml(j.kind)+' — '+escapeHtml(j.status)+'</div><div class="usage-chart-body"><pre class="code-block">'+escapeHtml((j.lines||[]).join('\n'))+'</pre></div>';jb.appendChild(p)});
-  try{mergeStatusRender('adm-merge-box')}catch(e){}
 }catch(e){}}
 async function admLoadOllama(){
   const st=document.getElementById('adm-ollama-status');if(!st)return;
@@ -13768,39 +13660,12 @@ async function admGenPairing(){try{const ownerEl=document.getElementById('adm-pa
 function admAgo(t){t=Number(t)||0;if(!t)return 'never';const s=Math.max(0,Date.now()/1000-t);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
 async function admLoadAgents(){const box=document.getElementById('adm-agents');try{try{const hr=await authFetch(API+'/api/health');const hd=await hr.json();document.getElementById('adm-api-build').textContent='api '+(hd.build||'?')}catch(e){}
 const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();admAgentsCache=d.agents||[];box.innerHTML='';
-  try{const mr=await authFetch(API+'/api/merge-device');window.__mergeDev=mr.ok?await mr.json().catch(()=>({})):({})}catch(e){window.__mergeDev={}}
   const sel=document.getElementById('adm-cmd-agent');sel.innerHTML='';
-  // The server itself can host merges — shown as its own selectable row.
-  {
-    const srv=window.__mergeDev&&window.__mergeDev.server||{};
-    const srvOn=!!(window.__mergeDev&&window.__mergeDev.host==='server');
-    const sItem=document.createElement('div');sItem.className='usage-activity-item';sItem.style.flexWrap='wrap';
-    const sName=(window.__mergeDev&&window.__mergeDev.model)||'merge model';
-    const sState=srv.reachable?(srv.installed?('ready · '+sName):('model not installed · '+sName)):'Ollama unreachable';
-    sItem.innerHTML='<span class="act-status-'+(srv.reachable?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+escapeHtml(srv.reachable?(srv.installed?'ready':'no model'):'offline')+'</span><span class="act-model">OmniLink Server</span><span class="act-provider">this server</span><span class="act-detail">'+escapeHtml(sState)+'</span>';
-    const caption=document.createElement('div');caption.className='usage-section-title';caption.style.margin='0 0 8px';caption.textContent='Workspace merges run on: '+ (srvOn?'This server':(window.__mergeDev&&window.__mergeDev.host==='device'?'a paired computer':'This server (default)'));box.appendChild(caption);
-    const sBtn=document.createElement('button');sBtn.className='btn btn-ghost btn-sm';sBtn.style.marginLeft='auto';
-    sBtn.textContent=srvOn?'Merge AI: on':'Merge AI: off';
-    sBtn.title='Host workspace merges on This server using its own Ollama';
-    if(srvOn)sBtn.style.borderColor='var(--accent)';
-    sBtn.onclick=()=>admUseServerMerges(!srvOn);
-    sItem.appendChild(sBtn);box.appendChild(sItem);
-  }
   if(!(d.agents||[]).length){const e=document.createElement('div');e.className='tool-status';e.textContent='No paired computers yet. Generate a pairing code above, then run the agent on the client.';box.appendChild(e)}
   d.agents.forEach(a=>{const caps=Array.isArray(a.caps)?a.caps:[];const chip=caps.indexOf('ollama')>-1?'<span class="act-provider" style="font-size:10px;border:1px solid var(--border);border-radius:10px;padding:0 6px;margin-left:6px" title="Shares its local Ollama models with your account">ollama</span>':(a.online?'<span class="act-time" style="font-size:10px;margin-left:6px" title="Update Omniilink Server on that computer to share its Ollama models">no model relay</span>':'');
   const item=document.createElement('div');item.className='usage-activity-item';item.style.flexWrap='wrap';item.innerHTML='<span class="act-status-'+(a.online?'success':'warning')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(a.online?'online':'stale')+'</span><span class="act-model">'+escapeHtml(a.name||('agent '+a.id))+'</span><span class="act-provider">'+escapeHtml(a.platform||'')+'</span><span class="act-detail">'+escapeHtml(a.hostname||'')+'</span>'+chip+'<span class="act-time">'+escapeHtml(admAgo(a.last_seen))+'</span>';box.appendChild(item);
     const access=document.createElement('div');access.className='act-detail';access.style.cssText='width:100%;flex-basis:100%;white-space:normal';const shared=Array.isArray(a.shared_with)?a.shared_with:[];const mshared=Array.isArray(a.ollama_shared_with)?a.ollama_shared_with:[];access.textContent='Owner: '+(a.owner||'unknown')+(a.is_owner?((shared.length?' · shared with '+shared.join(', '):' · private')+(mshared.length?' · models: '+mshared.join(', '):'')):a.access==='shared'?' · shared with you':' · temporary support access');item.appendChild(access);
     if(caps.indexOf('ollama')>-1){const mb=document.createElement('button');mb.className='btn btn-ghost btn-sm';mb.style.marginLeft='auto';mb.textContent='Models';mb.title='Check the Ollama models this computer shares';mb.onclick=()=>admAgentOllama(a.id);item.appendChild(mb)}
-    if(a.is_owner&&caps.indexOf('ollama')>-1){
-      const on=!!(window.__mergeDev&&window.__mergeDev.enabled&&String(window.__mergeDev.agent_id)===String(a.id));
-      const mm=document.createElement('button');mm.className='btn btn-ghost btn-sm';mm.style.marginLeft='auto';
-      mm.textContent=on?'Merge AI: on':'Merge AI: off';
-      mm.title=on?('This computer runs your workspace merges ('+(window.__mergeDev.model||'')+')'):'Use this computer to run workspace merges (installs the model)';
-      mm.title+=' — only affects workspaces you are in';
-      if(on)mm.style.borderColor='var(--accent)';
-      mm.onclick=()=>admToggleMergeDevice(a.id,!on);
-      item.appendChild(mm);
-    }
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
   const shareSel=document.getElementById('adm-share-agent');if(shareSel){shareSel.innerHTML='';const owned=(d.agents||[]).filter(x=>x&&x.is_owner);if(!owned.length){const o=document.createElement('option');o.value='';o.textContent='No computers owned by you';shareSel.appendChild(o)}owned.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=(x.name||('agent '+x.id))+' ('+(x.hostname||'no hostname')+')';shareSel.appendChild(o)})}
@@ -13810,16 +13675,6 @@ function admShareTarget(){const id=(document.getElementById('adm-share-agent')||
 async function admShareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Shared with '+t.username+(d.shared_with&&d.shared_with.length?' — access: '+d.shared_with.join(', '):''),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admUnshareAgent(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/share/'+encodeURIComponent(t.username),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Removed access for '+t.username,'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admShareOllama(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/ollama-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast(t.username+' can now use this computer\u2019s Ollama models (shell and files stay private)'+(d.shared_with&&d.shared_with.length?' — models access: '+d.shared_with.join(', '):''),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
-function admUseServerMerges(on){return admToggleMergeDevice('',!!on)}
-async function admToggleMergeDevice(agentId,on){
-  try{
-    const r=await authFetch(API+'/api/merge-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:agentId,enabled:!!on})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok){showToast((d&&d.error)||'Could not change','error');return}
-    showToast(on?'This computer will run your workspace merges — the model installs automatically if missing':'Workspace merges will use the server again',on?'success':'info');
-    admLoadAgents();
-  }catch(e){showToast(e.message,'error')}
-}
 async function admUnshareOllama(){const t=admShareTarget();if(!t)return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/ollama-share/'+encodeURIComponent(t.username),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Stopped sharing models with '+t.username+' — their access ends immediately','success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admTransferAgent(){const t=admShareTarget();if(!t)return;if(!(await appConfirm('Transfer this computer to '+t.username+'? You will immediately lose access unless they share it back.')))return;try{const r=await authFetch(API+'/api/agents/'+t.id+'/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:t.username})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));showToast('Ownership transferred to '+(d.owner||t.username),'success');admLoadAgents()}catch(e){showToast(e.message,'error')}}
 async function admAgentOllama(id){try{const r=await authFetch(API+'/api/devices/'+id+'/ollama');const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));const o=d.ollama||{};if(!o.ok)showToast(o.error||'Ollama status unavailable','error');else showToast((d.name||'Device')+': '+o.models.length+' Ollama model(s) ready'+(o.models.length?' — '+o.models.slice(0,3).join(', ')+(o.models.length>3?'…':''):''),'success')}catch(e){showToast(e.message,'error')}}
