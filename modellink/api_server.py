@@ -8235,6 +8235,9 @@ def _coding_run_strip(text):
     c = re.sub(r"FILE_PATCH:[^\n]*\n[\s\S]*?(?:END_FILE_PATCH|$)", "", c)
     c = re.sub(r"FILE_DELETE:[^\n]*", "", c)
     c = re.sub(r"RUN_COMMAND:[^\n]*\n[\s\S]*?(?:END_RUN_COMMAND|$)", "", c)
+    c = re.sub(r"WEB_SEARCH:[^\n]*", "", c)
+    c = re.sub(r"RESEARCH:[^\n]*", "", c)
+    c = re.sub(r"WEB_FETCH:[^\n]*\n?[\s\S]*?(?:END_WEB_FETCH|$)", "", c)
     c = re.sub(r"TODO_LIST:\n[\s\S]*?END_TODO_LIST", "", c)
     c = re.sub(r"^[ \t]*(?:PLAN-STEPS|LOCK_RESERVE|VERDICT)[^\n]*", "", c, flags=re.M)
     return re.sub(r"\n{3,}", "\n\n", c).strip()
@@ -8248,6 +8251,40 @@ def _coding_run_parse(text):
     deletes = re.findall(r"FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)", t)
     commands = [c.strip() for c in re.findall(r"RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)", t, re.M)]
     return creates, edits, patches, deletes, commands
+
+
+def _coding_run_parse_web(text):
+    """WEB_SEARCH / RESEARCH / WEB_FETCH blocks, so a server-side coding run has
+    the same web tools the in-browser models get. Returns (searches, research,
+    fetches)."""
+    t = str(text or "")
+    searches = [s.strip() for s in re.findall(r"^[ \t]*WEB_SEARCH:[ \t]*(.+)$", t, re.M) if s.strip()]
+    research = [s.strip() for s in re.findall(r"^[ \t]*RESEARCH:[ \t]*(.+)$", t, re.M) if s.strip()]
+    fetches = [u.strip() for u in re.findall(r"^[ \t]*WEB_FETCH:[ \t]*\r?\n?([^\n]+?)(?:\nEND_WEB_FETCH|$)", t, re.M) if u.strip()]
+    return searches, research, fetches
+
+
+def _coding_run_web(searches, research, fetches):
+    """Execute the web blocks for a server coding run and return tool-result
+    lines (same shape the client prints for the model)."""
+    results = []
+    for q in searches[:3]:
+        try:
+            hits = web_search(q, limit=5) or []
+        except Exception as e:
+            results.append("- Web search '%s': error %s" % (q, str(e)[:120]))
+            continue
+        body = "\n".join("  %d. %s — %s\n     %s" % (i, h.get("title") or "", h.get("url") or "",
+                                                     str(h.get("snippet") or "")[:240])
+                         for i, h in enumerate(hits[:5], 1)) or "  (no results)"
+        results.append("- Web search '%s':\n%s" % (q, body))
+    for q in research[:2]:
+        corpus = _assistant_research(q)
+        results.append("- Research '%s':\n%s" % (q, (corpus[:4000] or "(no results)")))
+    for url in fetches[:2]:
+        page = _fetch_page_text(url)
+        results.append("- Fetch %s:\n%s" % (url, (page[:4000] or "(could not fetch)")))
+    return results
 
 
 def _coding_run_write(user, folder, rel, content):
@@ -8359,6 +8396,7 @@ async def _coding_run_iterate(user, run):
         if shown:
             _coding_run_log(run, "assistant", shown)
         creates, edits, patches, deletes, commands = _coding_run_parse(text)
+        web_searches, web_research, web_fetches = _coding_run_parse_web(text)
         results = []
         for rel, content in creates:
             r = _coding_run_write(user, folder, rel, content)
@@ -8377,6 +8415,15 @@ async def _coding_run_iterate(user, run):
             _coding_run_log(run, "tool", ("Deleted " if r.get("ok") else "Delete failed: ") + rel, ok=r.get("ok"), path=rel)
             results.append("- Delete %s: %s" % (rel, "ok" if r.get("ok") else r.get("error")))
         _coding_run_save_history(user, folder, run["history"])
+        if web_searches or web_research or web_fetches:
+            web_results = _coding_run_web(web_searches, web_research, web_fetches)
+            for line in web_results:
+                _coding_run_log(run, "tool", line[:2000])
+            run["history"].append({"role": "user", "content":
+                "Web tool results:\n" + "\n".join(web_results)
+                + "\nUse these results. Continue the task with FILE_* / RUN_COMMAND blocks, or reply with a short summary if it is finished."})
+            _coding_run_save_history(user, folder, run["history"])
+            continue
         if commands:
             run["pending"] = [{"id": secrets.token_hex(6), "command": c} for c in commands[:5]]
             run["status"] = "awaiting_approval"
@@ -8465,15 +8512,28 @@ def _ws_queue_len(folder):
         return len(_WS_PROMPT_QUEUE.get(key) or [])
 
 
-def _ollama_chat_once(model, system, user_text, timeout=180.0):
-    """One blocking Ollama /api/chat call (used by the batch summariser). Uses
-    the dedicated always-on batch Ollama if configured, else the server's."""
-    base = (os.environ.get("OMNIILINK_WS_BATCH_OLLAMA_URL") or "").strip().rstrip("/") \
+def _assistant_ollama_url() -> str:
+    """Ollama address used by the server-side assistant: the always-on batch
+    Ollama when configured, else the server's own Ollama."""
+    return (os.environ.get("OMNIILINK_WS_BATCH_OLLAMA_URL") or "").strip().rstrip("/") \
         or (_ollama_current_url() or "").rstrip("/")
+
+
+def _assistant_model() -> str:
+    """Model the server-side assistant runs on (super prompt / research)."""
+    return (os.environ.get("OMNIILINK_ASSISTANT_MODEL") or "").strip() or _ws_batch_model()
+
+
+def _ollama_chat_once(model, system, user_text, timeout=180.0, max_tokens=1024):
+    """One blocking Ollama /api/chat call (used by the batch summariser and the
+    server-side assistant). Uses the dedicated always-on batch Ollama if
+    configured, else the server's."""
+    base = _assistant_ollama_url()
     if not base:
         raise RuntimeError("No Ollama URL configured")
     body = {"model": model, "stream": False,
-            "options": {"temperature": 0.2, "num_ctx": 8192, "num_predict": 1024},
+            "options": {"temperature": 0.2, "num_ctx": 8192,
+                        "num_predict": max(64, int(max_tokens or 1024))},
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user_text}]}
     req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
@@ -8481,6 +8541,119 @@ def _ollama_chat_once(model, system, user_text, timeout=180.0):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", "replace"))
     return str((data.get("message") or {}).get("content") or "")
+
+
+def _assistant_tags():
+    """(reachable, tags) for the Ollama the server-side assistant would use."""
+    url = _assistant_ollama_url()
+    if not url:
+        return False, []
+    try:
+        req = urllib.request.Request(url + "/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        return True, [str(m.get("name") or "") for m in (data.get("models") or [])]
+    except Exception:
+        return False, []
+
+
+def _fetch_page_text(url, timeout=15, cap=100000):
+    """SSRF-guarded page fetch that flattens HTML to readable text. Same rules as
+    the coding web-fetch tool; returns '' on any failure."""
+    u, verr = _coding_validate_fetch_url(url)
+    if verr:
+        return ""
+    final_url = [u.geturl()]
+    opener = urllib.request.build_opener(_CodingRedirectHandler(final_url))
+    req = urllib.request.Request(u.geturl(),
+                                 headers={"User-Agent": "Mozilla/5.0 (compatible; ModellinkAssistant/1.0)"})
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            ctype = resp.headers.get("Content-Type", "text/plain")
+            raw = resp.read(cap)
+    except Exception:
+        return ""
+    text = raw.decode("utf-8", errors="replace")
+    if "html" in ctype.lower():
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _assistant_research(query):
+    """Server-side web research: search, read the top pages, return a corpus.
+    This is what gives the server Ollama the same websearch/webget reach the
+    in-browser models get through the app."""
+    q = (query or "").strip()
+    if not q:
+        return ""
+    try:
+        hits = web_search(q, limit=6) or []
+    except Exception:
+        hits = []
+    parts = []
+    for i, h in enumerate(hits[:6], 1):
+        parts.append("%d. %s — %s\n%s" % (i, h.get("title") or "", h.get("url") or "",
+                                          str(h.get("snippet") or h.get("body") or "")[:500]))
+    corpus = "\n\n".join(parts)
+    for h in hits[:2]:
+        url = str(h.get("url") or "")
+        if url.startswith("http"):
+            page = _fetch_page_text(url)
+            if page:
+                corpus += "\n\n--- %s ---\n%s" % (url, page[:4000])
+    return corpus
+
+
+class AssistantRunBody(BaseModel):
+    job: str = ""
+    system: str = ""
+    user: str = ""
+    max_tokens: int = 512
+    research: bool = False
+    model: str = ""
+
+
+@app.get("/api/assistant/info")
+async def assistant_info(request: Request):
+    """Whether the server can run assistant jobs (super prompt / research) on
+    its own Ollama, and which model it would use."""
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    reachable, tags = await asyncio.to_thread(_assistant_tags)
+    model = _assistant_model()
+    if tags and model not in tags:
+        model = tags[0]
+    return {"available": bool(reachable and tags), "model": model,
+            "tags": tags[:40], "backend": "server"}
+
+
+@app.post("/api/assistant/run")
+async def assistant_run(request: Request, req: AssistantRunBody):
+    """Run one assistant job on the server Ollama. With research=True it first
+    searches the web and reads the top pages, so the server model has the same
+    websearch/webget capability the browser models have."""
+    _user, err = _require_auth(request)
+    if err:
+        return err
+    system = str(req.system or "")
+    user_text = str(req.user or "")
+    if req.research:
+        try:
+            corpus = await asyncio.to_thread(_assistant_research, user_text)
+        except Exception:
+            corpus = ""
+        if corpus:
+            user_text = user_text + "\n\nWeb results:\n" + corpus
+    model = (str(req.model or "").strip() or _assistant_model())
+    try:
+        text = await asyncio.to_thread(_ollama_chat_once, model, system, user_text,
+                                       180.0, int(req.max_tokens or 1024))
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": str(e)[:300]})
+    return {"text": text, "model": model, "backend": "server"}
 
 
 def _ws_batch_summarise(items):

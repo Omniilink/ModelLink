@@ -1129,9 +1129,12 @@ pre{max-width:100%}
            </button>
            <span id="superprompt-extra" style="display:none;gap:6px;align-items:center">
              <button class="ws-toggle" id="superresearch-toggle" onclick="toggleSuperResearch()" title="Let the assistant research the web before writing the prompt" aria-pressed="false"><span>Research</span></button>
-             <button class="ws-toggle" id="superfeatures-toggle" onclick="toggleSuperFeatures()" title="Allow the assistant to add closely-related features (off = exactly what you asked)" aria-pressed="false"><span>+Features</span></button>
-           </span>
-         </div>
+              <button class="ws-toggle" id="superfeatures-toggle" onclick="toggleSuperFeatures()" title="Allow the assistant to add closely-related features (off = exactly what you asked)" aria-pressed="false"><span>+Features</span></button>
+            </span>
+            <button class="ws-toggle" id="checkall-toggle" onclick="checkAllCode()" title="Read and verify ALL the project code, then fix what is broken" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Check all</span>
+            </button>
+          </div>
         <div class="img-strip" id="img-strip" style="display:none"></div>
         <div class="input-box">
           <button class="img-btn" id="img-btn" onclick="document.getElementById('img-file').click()" title="Attach images (vision models only)">
@@ -1713,6 +1716,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                   <button class="ws-toggle" id="coding-superresearch-toggle" onclick="toggleSuperResearch()" title="Let the assistant research the web before writing the prompt" aria-pressed="false"><span>Research</span></button>
                   <button class="ws-toggle" id="coding-superfeatures-toggle" onclick="toggleSuperFeatures()" title="Allow the assistant to add closely-related features (off = exactly what you asked)" aria-pressed="false"><span>+Features</span></button>
                 </span>
+                <button class="ws-toggle" id="coding-checkall-toggle" onclick="checkAllCode()" title="Read and verify ALL the project code, then fix what is broken" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Check all</span></button>
               </div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
@@ -2090,6 +2094,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
   try{if(typeof checkBuildVersion==='function')checkBuildVersion()}catch(e){}
   try{if(typeof updateSuperPromptUI==='function')updateSuperPromptUI()}catch(e){}
+  try{if(typeof refreshServerAssistant==='function')refreshServerAssistant()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
@@ -2623,8 +2628,8 @@ async function sendMessage(){
   // Auto super-prompt: the local assistant expands the message before the AI sees it.
   let _modelContent=content;
   try{
-    if(!imgs.length&&typeof superPromptOn==='function'&&superPromptOn()&&typeof localAssistantEnabled==='function'&&localAssistantEnabled()&&typeof localAssistantReady==='function'&&localAssistantReady()){
-      showToast('Expanding your prompt with the local assistant…','info');
+    if(!imgs.length&&typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()&&superPromptReady()){
+      showToast('Expanding your prompt with the '+(assistantBackend()==='server'?'server':'local')+' assistant…','info');
       const _sp=await buildSuperPrompt(text);
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==text)_modelContent=_sp;
     }
@@ -2634,12 +2639,13 @@ async function sendMessage(){
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   if(isOllamaModel(model))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
   const startTime=Date.now();
+  const _liveTps=isBrowserModel(model)?chatLiveTpsStart(assistantEl.closest('.message'),startTime):null;
   try{
     const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:await resolveHistoryImages(chatHistory),stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
-      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText)}}catch(e){}}}}
+      for(const line of lines){if(line.startsWith('data: ')){const data=line.slice(6).trim();if(data==='[DONE]'){seenDone=true;continue}try{const chunk=JSON.parse(data);if(chunk.model)actualModel=chunk.model;const delta=chunk.choices?.[0]?.delta?.content;if(delta){fullText+=delta;updateMessage(assistantEl,fullText);chatLiveTpsTick(_liveTps,fullText)}}catch(e){}}}}
     if(!seenDone){fullText=(fullText?fullText+'\n\n':'')+'[Connection interrupted — the reply may be incomplete. Please retry.]';updateMessage(assistantEl,fullText)}
     try{const _tr=await maybeTranslateReply(fullText,actualModel);if(_tr&&_tr!==fullText){fullText=_tr;updateMessage(assistantEl,fullText)}}catch(e){}
     const metaEl=assistantEl.closest('.message')?.querySelector('.message-meta');if(metaEl)metaEl.textContent=actualModel;
@@ -3251,6 +3257,45 @@ function localAssistantIndicatorRender(){
   try{updateSuperPromptUI()}catch(e){}
 }
 function localAssistantMaybeAutoStart(){try{localAssistantIndicatorRender();if(localAssistantEnabled()&&webllmSupported()&&!localAssistantReady())localAssistantInit().catch(()=>{})}catch(e){}}
+// ---- Server-side assistant (used when browser models are OFF) ----
+// The super prompt must not depend on a WebGPU browser model. When the browser
+// assistant is off (or the job is above its tier), these jobs run on the
+// server's Ollama instead — with the same websearch/webget reach, because the
+// server endpoint can search and read pages itself.
+var serverAssistantInfo=null;
+function serverAssistantAvailable(){try{return !!(serverAssistantInfo&&serverAssistantInfo.available)}catch(e){return false}}
+function serverAssistantModel(){try{return (serverAssistantInfo&&serverAssistantInfo.model)||''}catch(e){return ''}}
+async function refreshServerAssistant(){
+  try{const r=await authFetch(API+'/api/assistant/info');serverAssistantInfo=r.ok?(await r.json().catch(()=>null)):null}catch(e){serverAssistantInfo=null}
+  try{updateSuperPromptUI()}catch(e){}
+}
+async function serverAssistantRun(system,user,maxTokens,research){
+  try{
+    const r=await authFetch(API+'/api/assistant/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:research?'super_research':'super_prompt',system:String(system||''),user:String(user||''),max_tokens:maxTokens||512,research:!!research})});
+    if(!r.ok)return '';
+    const d=await r.json().catch(()=>({}));
+    return String(d.text||'');
+  }catch(e){return ''}
+}
+function assistantBackend(){try{return ((typeof localAssistantEnabled==='function')&&localAssistantEnabled())?'browser':'server'}catch(e){return 'server'}}
+async function assistantRunJob(job,system,user,maxTokens){
+  // Browser assistant first (when on and the tier allows the job), then the
+  // server Ollama. Either way the caller gets text back.
+  try{
+    if(typeof assistantJobEnabled==='function'&&assistantJobEnabled(job)){
+      const out=await localAssistantRunJob(job,system,user,maxTokens);
+      if(out)return out;
+    }
+    return await serverAssistantRun(system,user,maxTokens,job==='super_research');
+  }catch(e){return ''}
+}
+function superPromptAvailable(){try{return ((typeof localAssistantEnabled==='function')&&localAssistantEnabled())||serverAssistantAvailable()}catch(e){return false}}
+function superPromptReady(){
+  try{
+    if(assistantBackend()==='browser')return (typeof localAssistantReady==='function')&&localAssistantReady();
+    return serverAssistantAvailable();
+  }catch(e){return false}
+}
 // ---- Auto super-prompt (chat) ----
 const SUPER_PROMPT_KEY='omnilink_super_prompt',SUPER_RESEARCH_KEY='omnilink_super_research',SUPER_FEATURES_KEY='omnilink_super_features';
 function superPromptOn(){try{return localStorage.getItem(SUPER_PROMPT_KEY)==='1'}catch(e){return false}}
@@ -3258,17 +3303,18 @@ function superResearchOn(){try{return localStorage.getItem(SUPER_RESEARCH_KEY)==
 function superFeaturesOn(){try{return localStorage.getItem(SUPER_FEATURES_KEY)==='1'}catch(e){return false}}
 function superSet(key,on){try{localStorage.setItem(key,on?'1':'0')}catch(e){}}
 function updateSuperPromptUI(){
-  // Visible whenever the assistant toggle is ON (even while the model is still
-  // loading), so it is discoverable; it only activates once the model is ready.
+  // Visible whenever the assistant toggle is ON or the server can run the job
+  // (browser models off), so super prompting is always discoverable; it only
+  // activates once the chosen backend is ready.
   try{
     const wrap=document.getElementById('superprompt-toggle'),extra=document.getElementById('superprompt-extra');
-    const on=(typeof localAssistantEnabled==='function')&&localAssistantEnabled();
-    const ready=on&&(typeof localAssistantReady==='function')&&localAssistantReady();
+    const on=superPromptAvailable();
+    const ready=superPromptReady();
     if(wrap){
       wrap.style.display=on?'':'none';
       wrap.classList.toggle('on',superPromptOn());
       wrap.disabled=false;
-      wrap.title=ready?'Expand your message with the local assistant into a detailed prompt before sending':'Super prompt (waiting for the local assistant model to load…)';
+      wrap.title=ready?(assistantBackend()==='server'?'Expand your message with the server assistant into a detailed prompt before sending':'Expand your message with the local assistant into a detailed prompt before sending'):'Super prompt (waiting for the local assistant model to load…)';
       wrap.setAttribute('aria-pressed',superPromptOn()?'true':'false');
     }
     if(extra)extra.style.display=(on&&superPromptOn())?'inline-flex':'none';
@@ -3284,15 +3330,20 @@ function updateSuperPromptUI(){
 }
 function toggleSuperPrompt(){
   superSet(SUPER_PROMPT_KEY,!superPromptOn());updateSuperPromptUI();
-  const ready=(typeof localAssistantReady==='function')&&localAssistantReady();
-  showToast('Super prompt '+(superPromptOn()?'ON'+(ready?'':' — the model loads on first use'):'OFF'),'info');
+  const ready=superPromptReady();
+  const backend=assistantBackend();
+  showToast('Super prompt '+(superPromptOn()?'ON'+(ready?'':' — the model loads on first use'):'OFF')+(superPromptOn()&&backend==='server'?' (server assistant)':''),'info');
 }
 function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
 function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
 async function superPromptResearch(text){
   // Research phase (only when the Research toggle is on): search + read a few
-  // pages, then let the assistant extract the relevant facts.
+  // pages, then let the assistant extract the relevant facts. On the server
+  // backend the server does the searching and reading itself.
   try{
+    if(assistantBackend()==='server'){
+      return String(await serverAssistantRun('You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500),300,true)).trim();
+    }
     const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(text)+'&limit=6');
     const d=await r.json().catch(()=>({}));
     const hits=(d.results||[]).slice(0,6);
@@ -3301,14 +3352,15 @@ async function superPromptResearch(text){
       try{if(h.url&&/^https?:\/\//i.test(h.url)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(h.url));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- '+h.url+' ---\n'+String(fd.text).slice(0,4000)}}catch(e){}
     }
     if(!corpus.trim())return '';
-    const out=String(await localAssistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+'\n\nWeb results:\n'+corpus,300)).trim();
+    const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+'\n\nWeb results:\n'+corpus,300)).trim();
     return out||corpus.slice(0,1500);
   }catch(e){return ''}
 }
 async function buildSuperPrompt(text){
-  // Rewrite the user's message into a detailed prompt with the local assistant.
+  // Rewrite the user's message into a detailed prompt with the assistant
+  // (browser WebGPU model when on, otherwise the server Ollama).
   try{
-    if(!(typeof localAssistantEnabled==='function'&&localAssistantEnabled()))return text;
+    if(!superPromptAvailable())return text;
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
     if(research)researchCtx=await superPromptResearch(text);
@@ -3317,7 +3369,7 @@ async function buildSuperPrompt(text){
       +(features?'You MAY add a few closely-related, genuinely useful details or features that clearly fit the request.':'Do NOT add any features, extras or scope beyond what the user asked — expand only the clarity and specificity of their request. ')
       +'Make it specific and unambiguous (inputs, outputs, constraints, edge cases, format) but never invent unrelated requirements. Output ONLY the improved prompt, no preamble or commentary.';
     const usr='User request:\n'+String(text||'').slice(0,2000)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
-    const out=String(await localAssistantRunJob('super_prompt',sys,usr,900)).trim();
+    const out=String(await assistantRunJob('super_prompt',sys,usr,900)).trim();
     return out||text;
   }catch(e){return text}
 }
@@ -4258,6 +4310,31 @@ async function attachAllFiles(){
   }catch(e){showToast('Attach failed: '+e.message,'error')}
 }
 async function autoAttachAllFiles(){if(codingFolder)await attachAllFiles()}
+// ---- One-click full-project check ("Check all") ----
+// Reads the whole project into context and asks the model to verify every file
+// end to end and fix what is broken — the user should never have to spot the
+// mistake themselves.
+async function checkAllCode(){
+  try{
+    if((typeof codingAutoLoop!=='undefined'&&codingAutoLoop)||(typeof codingStream!=='undefined'&&codingStream)){showToast('A run is already in progress.','info');return}
+    const hasProject=(typeof codingFolder!=='undefined'&&codingFolder)||(typeof fsHandle!=='undefined'&&fsHandle)||(typeof isRemote==='function'&&isRemote());
+    if(!hasProject){showToast('Open a project in Code first.','error');return}
+    if(typeof navigate==='function')navigate('coding');
+    let listing='';
+    try{await attachAllFiles();await loadAllCodingFiles(true);listing=(allCodingFiles||[]).slice(0,300).join('\n')}catch(e){}
+    const prompt='CHECK ALL THE CODE: read EVERY file in this project and verify it actually works. '
+      +'Find and fix every syntax error, broken file reference, undefined variable/function, missing asset, dead link, and logic bug. '
+      +'Re-read each file before editing it, and make targeted FILE_PATCH blocks (never rewrite whole files). '
+      +'Pay special attention to stylesheets and scripts actually being linked and parsing cleanly. '
+      +(listing?('\n\nProject files:\n'+listing+'\n'):'')
+      +'\nWhen every file is correct and consistent, reply with VERDICT:PASS and a one-line summary of what you verified.';
+    const input=document.getElementById('coding-input');
+    if(!input){showToast('Coding input is not available.','error');return}
+    input.value=prompt;input.style.height='auto';
+    showToast('Checking all project code…','info');
+    if(typeof sendCodingMessage==='function')sendCodingMessage();
+  }catch(e){try{showToast('Check-all failed: '+((e&&e.message)||e),'error')}catch(e2){}}
+}
 async function toggleOmniiIgnore(path){
   await loadOmniiignore();
   const idx=omniiignorePatterns.indexOf(path);
@@ -4992,8 +5069,8 @@ async function sendCodingMessage(){
   // assistant before it is sent — or before it is queued for the team batch.
   let modelText=rawText;
   try{
-    if(typeof superPromptOn==='function'&&superPromptOn()&&typeof localAssistantEnabled==='function'&&localAssistantEnabled()){
-      addCodingSystemMsg('Expanding your message with the local assistant…');
+    if(typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()){
+      addCodingSystemMsg('Expanding your message with the '+(assistantBackend()==='server'?'server':'local')+' assistant…');
       const _sp=await buildSuperPrompt(rawText);
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==rawText)modelText=String(_sp).trim();
     }
@@ -10848,15 +10925,39 @@ function addBookmarkBtnToMessage(msgEl,msgIdx){
 // ========== RESPONSE TIME & TOKENS ==========
 let messageStartTime=0;
 function estimateTokens(text){return Math.ceil(text.length/4)}
+function isBrowserModel(m){return String(m||'').indexOf('browser:')===0}
+// Live tokens/sec counter for in-browser (WebGPU) model replies. Roughly 4
+// chars per token, updated at most every 200ms so it never churns the DOM.
+function chatLiveTpsStart(msgEl,t0){
+  try{
+    const meta=msgEl&&msgEl.querySelector('.message-meta');if(!meta)return null;
+    let el=meta.querySelector('.msg-live-tps');
+    if(!el){el=document.createElement('span');el.className='msg-live-tps';el.style.cssText='margin-left:8px;color:var(--accent-light);font-size:11px;font-family:var(--mono)';meta.appendChild(el)}
+    return {meta:meta,el:el,t0:t0,last:0};
+  }catch(e){return null}
+}
+function chatLiveTpsTick(state,text){
+  try{
+    if(!state)return;
+    const now=Date.now();if(now-state.last<200)return;state.last=now;
+    const secs=Math.max(0.001,(now-state.t0)/1000);
+    const tps=(String(text||'').length/4)/secs;
+    state.el.textContent='● '+tps.toFixed(1)+' tok/s';
+  }catch(e){}
+}
 function addMsgStats(msgEl,startTime,content,role){
   if(role!=='assistant'||!startTime)return;
   const elapsed=Date.now()-startTime;
   const tokens=estimateTokens(content);
   const meta=msgEl.querySelector('.message-meta');
   if(!meta)return;
+  try{const lv=meta.querySelector('.msg-live-tps');if(lv)lv.remove()}catch(e){}
+  const model=(meta.textContent||'').trim();
   const stats=document.createElement('div');stats.className='msg-stats';
   const secs=(elapsed/1000).toFixed(1);
-  stats.innerHTML='<span class="stat stat-time"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'+secs+'s</span><span class="stat stat-tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>~'+tokens+' tok</span>';
+  const tps=elapsed>0?(tokens/(elapsed/1000)):0;
+  stats.innerHTML='<span class="stat stat-time"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'+secs+'s</span><span class="stat stat-tokens"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>~'+tokens+' tok</span>'
+    +(isBrowserModel(model)?'<span class="stat stat-tps" style="color:var(--accent-light)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'+tps.toFixed(1)+' tok/s</span>':'');
   meta.appendChild(stats);
 }
 
