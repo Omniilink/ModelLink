@@ -8429,8 +8429,10 @@ def _ws_queue_len(folder):
 
 
 def _ollama_chat_once(model, system, user_text, timeout=180.0):
-    """One blocking server-Ollama /api/chat call (used by the batch summariser)."""
-    base = (_ollama_current_url() or "").rstrip("/")
+    """One blocking Ollama /api/chat call (used by the batch summariser). Uses
+    the dedicated always-on batch Ollama if configured, else the server's."""
+    base = (os.environ.get("OMNIILINK_WS_BATCH_OLLAMA_URL") or "").strip().rstrip("/") \
+        or (_ollama_current_url() or "").rstrip("/")
     if not base:
         raise RuntimeError("No Ollama URL configured")
     body = {"model": model, "stream": False,

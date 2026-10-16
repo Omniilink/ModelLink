@@ -86,11 +86,37 @@ services:
       # run as a background coding run using a submitting user's cloud key.
       - OMNIILINK_WS_BATCH_MODEL=${OMNIILINK_WS_BATCH_MODEL:-qwen2.5-coder:3b}
       - OMNIILINK_WS_BATCH_SECS=${OMNIILINK_WS_BATCH_SECS:-15}
+      # The batch summariser runs against the dedicated always-on Ollama below.
+      - OMNIILINK_WS_BATCH_OLLAMA_URL=http://batch-ollama:11434
     # Lets the container reach Ollama running on the Docker host via
     # http://host.docker.internal:11434 (the default when no URL is set).
     # Works out of the box on Docker Desktop; this line adds it on Linux too.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - batch-ollama
+    networks:
+      - omniilink-net
+
+  # Dedicated CPU-only Ollama that keeps the workspace batch model (default
+  # qwen2.5-coder:3b) loaded 24/7 (OLLAMA_KEEP_ALIVE=-1). It pulls the model
+  # on first start. ~30MB image (not the 9GB GPU one).
+  batch-ollama:
+    image: alpine/ollama:0.40.3
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/batch/entrypoint.sh"]
+    volumes:
+      - ./batch-ollama:/batch:ro
+      - batch-ollama-data:/root/.ollama
+    environment:
+      - OMNIILINK_WS_BATCH_MODEL=${OMNIILINK_WS_BATCH_MODEL:-qwen2.5-coder:3b}
+      - OLLAMA_HOST=0.0.0.0
+      # Never unload the model — keep it resident all the time.
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+    cpus: "3.0"
+    mem_limit: 5g
     networks:
       - omniilink-net
 
@@ -156,3 +182,7 @@ services:
 
 networks:
   omniilink-net: {}
+
+volumes:
+  # Persists the pulled batch model between restarts.
+  batch-ollama-data: {}
