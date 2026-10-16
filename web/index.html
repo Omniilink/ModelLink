@@ -3178,6 +3178,7 @@ function localAssistantIndicatorModels(){
   try{if(assistantTierIndex()>=3&&assistantBoostOn()){const b=LOCAL_ASSISTANT_MODELS[0].id;if(models.indexOf(b)<0)models.push(b)}}catch(e){}
   return models;
 }
+function ordinal(n){n=Number(n)||0;const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0])}
 function assistantPillHtml(dot,pulse,name,stateText,task){
   return '<div style="display:flex;gap:7px;align-items:center;padding:4px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);font-size:11px;font-family:var(--mono);color:var(--text-secondary);white-space:nowrap;overflow:hidden">'
     +'<span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;'+pulse+'"></span>'
@@ -3264,7 +3265,11 @@ function localAssistantIndicatorRender(){
     let tpsTxt='';
     const _tps=(mm.running&&mm.live_tps&&Number(mm.live_tps)>0)?Number(mm.live_tps):((mm.last_tps&&Number(mm.last_tps)>0)?Number(mm.last_tps):0);
     if(_tps>0)tpsTxt=' · '+_tps.toFixed(1)+' tok/s';
-    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta+tpsTxt,''));
+    let qtxt='';
+    const q=mm.queue||{};
+    if(q.depth>0)qtxt+=' · '+q.depth+' queued';
+    if(q.ahead!=null)qtxt+=' · you\'re '+ordinal(q.ahead+1);
+    parts.push(assistantPillHtml(dot,pulse,(mm.model||'merge'),state+eta+tpsTxt+qtxt,''));
   }
   el.innerHTML=parts.join('');
   try{updateSuperPromptUI()}catch(e){}

@@ -6984,6 +6984,108 @@ def _ws_merge_chunk(rel, base_text, plist, model, device_id):
     return out, applied, False, "", used_device
 
 
+_MERGE_JOB_TIMEOUT = 180
+
+
+class _MergeQueue:
+    """One global FIFO queue for merge-model work: strictly one job at a time so
+    a new request can never interrupt the merge in progress. Jobs for the same
+    (folder, file) that are still waiting are coalesced (the newest wins)."""
+
+    def __init__(self):
+        self._cv = threading.Condition()
+        self._waiting = []          # job dicts, FIFO
+        self._current = None
+        self._seq = 0
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def submit(self, key, kind, uid, fn, on_done=None):
+        with self._cv:
+            for j in self._waiting:
+                if j["key"] == key:
+                    j["fn"] = fn
+                    j["kind"] = kind
+                    j["uid"] = uid
+                    j["on_done"] = on_done
+                    j["waiters"] += 1
+                    return j
+            self._seq += 1
+            job = {"id": self._seq, "key": key, "kind": kind, "uid": uid,
+                   "fn": fn, "on_done": on_done, "event": threading.Event(),
+                   "result": None, "waiters": 1}
+            self._waiting.append(job)
+            self._cv.notify()
+            return job
+
+    def _run(self):
+        while True:
+            with self._cv:
+                while not self._waiting:
+                    self._cv.wait()
+                job = self._waiting.pop(0)
+                self._current = job
+            try:
+                job["result"] = self._exec(job["fn"])
+            except Exception as e:
+                job["result"] = {"ok": False, "error": str(e)[:200]}
+            try:
+                if job.get("on_done"):
+                    job["on_done"](job["result"])
+            except Exception:
+                pass
+            with self._cv:
+                self._current = None
+            job["event"].set()
+
+    def _exec(self, fn):
+        box = {}
+
+        def run():
+            try:
+                box["r"] = fn()
+            except Exception as e:
+                box["r"] = {"ok": False, "error": str(e)[:200]}
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(_MERGE_JOB_TIMEOUT)
+        if t.is_alive():
+            # A stuck merge must not block the queue forever.
+            return {"ok": False, "timeout": True,
+                    "error": "merge timed out after %ds" % _MERGE_JOB_TIMEOUT}
+        return box.get("r") or {"ok": False, "error": "merge returned nothing"}
+
+    def stats(self, uid=None):
+        with self._cv:
+            cur = self._current
+            ahead = None
+            if uid is not None:
+                if cur and cur.get("uid") == uid:
+                    ahead = 0
+                else:
+                    for i, j in enumerate(self._waiting):
+                        if j.get("uid") == uid:
+                            ahead = i
+                            break
+            return {"depth": len(self._waiting), "running": bool(cur),
+                    "current": (cur.get("key")[1] if cur and cur.get("key") else ""),
+                    "current_kind": (cur.get("kind") if cur else ""),
+                    "ahead": ahead}
+
+
+_MERGE_QUEUE = _MergeQueue()
+
+
+def _merge_submit(key, kind, uid, fn, on_done=None, wait=True):
+    """Queue a merge job. wait=True blocks until it runs and returns its result;
+    wait=False returns the job immediately (fire-and-forget, use on_done)."""
+    job = _MERGE_QUEUE.submit(key, kind, uid, fn, on_done)
+    if not wait:
+        return job
+    job["event"].wait(_MERGE_JOB_TIMEOUT + 30)
+    return job
+
+
 def _ws_merge_run(user, folder, rel):
     """Blocking merge of one file from its live intents. Returns a dict."""
     full = os.path.join(folder, rel)
@@ -7067,6 +7169,14 @@ def _ws_merge_conflict_prompt(rel, current, intent, old_text, new_text, particip
 
 
 def _ws_merge_apply_intent(user, folder, rel, intent, old_text, new_text):
+    """Queue a conflict merge and wait its turn (strict FIFO with all merges)."""
+    job = _merge_submit((folder, rel), "conflict", user["id"],
+                        lambda: _ws_merge_apply_intent_now(user, folder, rel, intent, old_text, new_text),
+                        None, True)
+    return job.get("result")
+
+
+def _ws_merge_apply_intent_now(user, folder, rel, intent, old_text, new_text):
     """Combine a stale patch with the current file via the merge model.
     Returns {"patches": n, "content": text} or None (caller keeps the error)."""
     full = os.path.join(folder, rel)
@@ -7128,11 +7238,8 @@ def _ws_maybe_merge(user, folder, rel, loop):
     if len(_ws_take_intents(folder, rel)) < 2:
         return
 
-    def _job():
-        try:
-            res = _ws_merge_run(user, folder, rel)
-        except Exception as e:
-            res = {"ok": False, "error": str(e)[:200]}
+    def _on_done(res):
+        res = res or {}
         try:
             if res.get("merged"):
                 note = "auto-merged changes from " + ", ".join(res.get("members") or []) \
@@ -7147,10 +7254,10 @@ def _ws_maybe_merge(user, folder, rel, loop):
         except Exception:
             pass
 
-    try:
-        loop.run_in_executor(None, _job)
-    except Exception:
-        threading.Thread(target=_job, daemon=True).start()
+    # Queue it (fire-and-forget); the single worker runs merges one at a time.
+    _merge_submit((folder, rel), "auto", user["id"],
+                  lambda: _ws_merge_run(user, folder, rel),
+                  on_done=_on_done, wait=False)
 
 
 def _ws_log_change(folder, evtype, relpath, user, user_id, extra=None):
@@ -7936,7 +8043,14 @@ async def workspace_merge_now(request: Request, req: MergeIntentBody):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     if not _ws_merge_enabled():
         return JSONResponse(status_code=503, content={"error": "Merge is disabled on this server"})
-    res = await asyncio.to_thread(_ws_merge_run, user, folder, rel)
+    job = await asyncio.to_thread(
+        _merge_submit, (folder, rel), "manual", user["id"],
+        (lambda: _ws_merge_run(user, folder, rel)), None, True)
+    res = job.get("result") or {}
+    if res.get("timeout"):
+        return JSONResponse(status_code=504, content={
+            "error": "Merge is taking too long in the queue — it will finish in the background.",
+            "queued": True})
     return res
 
 
@@ -8169,7 +8283,8 @@ async def merge_status(request: Request):
            "last_tokens": _MERGE_ACTIVITY.get("last_tokens", 0),
            "live_tps": _MERGE_ACTIVITY.get("live_tps", 0),
            "live_tokens": _MERGE_ACTIVITY.get("live_tokens", 0),
-           "merge_ctx": _ws_merge_ctx()}
+           "merge_ctx": _ws_merge_ctx(),
+           "queue": _MERGE_QUEUE.stats(user["id"])}
     dev = _merge_device_row(user["id"])
     if dev and dev.get("agent_id"):
         with _AGENT_LOCK:
