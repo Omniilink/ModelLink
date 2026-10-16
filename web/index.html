@@ -1708,6 +1708,11 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
                 <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
                 <button class="ws-toggle" id="coding-websearch-toggle" onclick="toggleCodingWebSearch()" title="Let the model search the web for current information" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Web</span></button>
+                <button class="ws-toggle" id="coding-superprompt-toggle" onclick="toggleSuperPrompt()" title="Expand your message with the local assistant into a detailed prompt before sending" aria-pressed="false" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 2l2.4 6.2L21 9l-5 4.2L17.5 20 12 16.6 6.5 20 8 13.2 3 9l6.6-.8z"/></svg><span>Super</span></button>
+                <span id="coding-superprompt-extra" style="display:none;gap:6px;align-items:center">
+                  <button class="ws-toggle" id="coding-superresearch-toggle" onclick="toggleSuperResearch()" title="Let the assistant research the web before writing the prompt" aria-pressed="false"><span>Research</span></button>
+                  <button class="ws-toggle" id="coding-superfeatures-toggle" onclick="toggleSuperFeatures()" title="Allow the assistant to add closely-related features (off = exactly what you asked)" aria-pressed="false"><span>+Features</span></button>
+                </span>
               </div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
@@ -3269,6 +3274,12 @@ function updateSuperPromptUI(){
     if(extra)extra.style.display=(on&&superPromptOn())?'inline-flex':'none';
     const r=document.getElementById('superresearch-toggle');if(r){r.classList.toggle('on',superResearchOn())}
     const f=document.getElementById('superfeatures-toggle');if(f){f.classList.toggle('on',superFeaturesOn())}
+    // Mirror into the coding composer.
+    const cw=document.getElementById('coding-superprompt-toggle');
+    if(cw){cw.style.display=on?'':'none';cw.classList.toggle('on',superPromptOn());cw.setAttribute('aria-pressed',superPromptOn()?'true':'false')}
+    const ce=document.getElementById('coding-superprompt-extra');if(ce)ce.style.display=(on&&superPromptOn())?'inline-flex':'none';
+    const cr=document.getElementById('coding-superresearch-toggle');if(cr)cr.classList.toggle('on',superResearchOn());
+    const cf=document.getElementById('coding-superfeatures-toggle');if(cf)cf.classList.toggle('on',superFeaturesOn());
   }catch(e){}
 }
 function toggleSuperPrompt(){
@@ -4976,12 +4987,22 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
+  // Super prompt (coding + workspace): expand the message with the local
+  // assistant before it is sent — or before it is queued for the team batch.
+  let modelText=rawText;
+  try{
+    if(typeof superPromptOn==='function'&&superPromptOn()&&typeof localAssistantEnabled==='function'&&localAssistantEnabled()){
+      addCodingSystemMsg('Expanding your message with the local assistant…');
+      const _sp=await buildSuperPrompt(rawText);
+      if(_sp&&String(_sp).trim()&&String(_sp).trim()!==rawText)modelText=String(_sp).trim();
+    }
+  }catch(e){}
   // Collaborative workspace + others active: queue this prompt for the 15s
   // team batch instead of running it now (one combined instruction is run for
   // the whole team by a randomly-chosen submitter's cloud key).
   if(!cimgs.length&&!fsHandle&&!isRemote()&&typeof wsOthersActive==='function'&&wsOthersActive()&&wsActive&&currentWorkspace){
     try{
-      const qr=await authFetch(API+'/api/coding/workspace/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:rawText})});
+      const qr=await authFetch(API+'/api/coding/workspace/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:modelText})});
       const qd=await qr.json().catch(()=>({}));
       if(qr.ok){
         addCodingSystemMsg('Queued for the team batch — the workspace combines everyone\'s requests every '+(qd.batch_secs||15)+'s, then runs them together ('+(qd.queued||1)+' queued).');
@@ -4989,7 +5010,7 @@ async function sendCodingMessage(){
       }
     }catch(e){}
   }
-  const slash=await execSlashCommands(rawText);
+  const slash=await execSlashCommands(modelText);
   const refParsed=parseRefCommands(slash.cleaned);
   try{codingRefCache={}}catch(e){}
   let cleanText=parseAtFiles(refParsed.cleaned);updateAtIndicator();
