@@ -94,9 +94,6 @@ services:
     networks:
       - omniilink-net
 
-  # (the dedicated merge-ollama service was removed)
-      - omniilink-net
-
   # Builds/pins the sandbox image so it always exists before first use.
   sandbox-image:
     build:
