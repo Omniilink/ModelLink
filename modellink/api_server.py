@@ -8382,6 +8382,210 @@ async def _coding_run_iterate(user, run):
     _coding_run_save_history(user, folder, run["history"])
 
 
+# ---- Workspace prompt queue + 15s batch ---------------------------------
+# In a shared workspace, prompts from several people are QUEUED and combined
+# by the server's Ollama into one instruction, which is then run as a
+# server-side coding run using a randomly-chosen submitting user's cloud key.
+_WS_BATCH_DEFAULT_MODEL = "qwen2.5-coder:3b"
+_WS_PROMPT_QUEUE = {}          # absfolder -> [{user_id, username, prompt, at}]
+_WS_QUEUE_LOCK = threading.Lock()
+
+
+def _ws_batch_model() -> str:
+    return (os.environ.get("OMNIILINK_WS_BATCH_MODEL") or _WS_BATCH_DEFAULT_MODEL).strip()
+
+
+def _ws_batch_secs() -> int:
+    try:
+        return max(5, min(600, int(os.environ.get("OMNIILINK_WS_BATCH_SECS") or 15)))
+    except Exception:
+        return 15
+
+
+def _ws_queue_prompt(folder, user, prompt):
+    key = os.path.abspath(folder)
+    with _WS_QUEUE_LOCK:
+        _WS_PROMPT_QUEUE.setdefault(key, []).append(
+            {"user_id": user["id"], "username": user.get("username", ""),
+             "prompt": prompt, "at": time.time()})
+
+
+def _ws_take_queue(folder):
+    key = os.path.abspath(folder)
+    with _WS_QUEUE_LOCK:
+        return _WS_PROMPT_QUEUE.pop(key, [])
+
+
+def _ws_queue_put_back(folder, items):
+    key = os.path.abspath(folder)
+    with _WS_QUEUE_LOCK:
+        _WS_PROMPT_QUEUE.setdefault(key, []).extend(items)
+
+
+def _ws_queue_len(folder):
+    key = os.path.abspath(folder)
+    with _WS_QUEUE_LOCK:
+        return len(_WS_PROMPT_QUEUE.get(key) or [])
+
+
+def _ollama_chat_once(model, system, user_text, timeout=180.0):
+    """One blocking server-Ollama /api/chat call (used by the batch summariser)."""
+    base = (_ollama_current_url() or "").rstrip("/")
+    if not base:
+        raise RuntimeError("No Ollama URL configured")
+    body = {"model": model, "stream": False,
+            "options": {"temperature": 0.2, "num_ctx": 8192, "num_predict": 1024},
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user_text}]}
+    req = urllib.request.Request(base + "/api/chat", data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return str((data.get("message") or {}).get("content") or "")
+
+
+def _ws_batch_summarise(items):
+    lines = []
+    for i, it in enumerate(items, 1):
+        lines.append("%d. %s: %s" % (i, it.get("username") or "someone",
+                                     (it.get("prompt") or "").strip()[:1500]))
+    sys = ("You combine several teammates' requests for a coding AI into ONE "
+           "clear, specific instruction. Merge duplicates, keep EVERY distinct "
+           "requirement, and output only the combined instruction — no preamble.")
+    return _ollama_chat_once(_ws_batch_model(), sys,
+                             "Team requests:\n" + "\n".join(lines)).strip()
+
+
+def _ws_user_by_id(uid):
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT id, username, is_admin FROM users WHERE id = ?", (uid,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def _ws_pick_batch_runner(items):
+    """A random submitting user who has at least one usable provider key."""
+    import random
+    seen = {}
+    for it in items:
+        seen.setdefault(int(it.get("user_id") or 0), it)
+    order = list(seen.values())
+    random.shuffle(order)
+    for it in order:
+        u = _ws_user_by_id(int(it.get("user_id") or 0))
+        if not u:
+            continue
+        try:
+            keys = get_user_provider_keys(u["id"])
+        except Exception:
+            keys = None
+        if keys:
+            return u
+    return None
+
+
+async def _ws_batch_tick():
+    with _WS_QUEUE_LOCK:
+        folders = [f for f, v in _WS_PROMPT_QUEUE.items() if v]
+    for folder in folders:
+        if not _workspace_row(folder):
+            _ws_take_queue(folder)
+            continue
+        items = _ws_take_queue(folder)
+        if not items:
+            continue
+        try:
+            combined = await asyncio.to_thread(_ws_batch_summarise, items)
+        except Exception:
+            combined = ""
+        if not combined:
+            _ws_queue_put_back(folder, items)   # summariser unavailable — retry
+            continue
+        runner = _ws_pick_batch_runner(items)
+        if not runner:
+            _ws_queue_put_back(folder, items)   # wait for a usable key
+            continue
+        try:
+            _ws_start_batch_run(runner, folder, combined, items)
+        except Exception as e:
+            logger.warning(f"[WS-BATCH] run failed: {e}")
+            _ws_queue_put_back(folder, items)
+
+
+def _ws_start_batch_run(user, folder, combined, items):
+    cur = _coding_runs.get(user["id"])
+    if cur and cur["status"] in ("running", "awaiting_approval"):
+        # Their own run is busy; leave the batch for the next tick.
+        _ws_queue_put_back(folder, items)
+        return
+    run = {"id": secrets.token_hex(8), "user_id": user["id"],
+           "username": user.get("username", ""), "folder": folder,
+           "model": "omniilink", "message": combined, "status": "running",
+           "rounds": 0, "log": [], "pending": [], "error": "",
+           "history": _coding_run_load_history(user, folder),
+           "created": time.time(), "updated": time.time(),
+           "batch": True, "by": [it.get("username") for it in items]}
+    run["history"].append({"role": "user", "content": combined})
+    _coding_run_log(run, "user", "Team batch (" + ", ".join(run["by"]) + "): " + combined[:600])
+    _coding_runs[user["id"]] = run
+    _audit("coding.batch.start", user.get("username", ""),
+           f"{run['id']} by={','.join(run['by'])}")
+    asyncio.create_task(_coding_run_iterate(dict(user), run))
+
+
+async def _ws_batch_loop():
+    while True:
+        await asyncio.sleep(_ws_batch_secs())
+        try:
+            await _ws_batch_tick()
+        except Exception as e:
+            logger.warning(f"[WS-BATCH] tick error: {e}")
+
+
+@app.on_event("startup")
+async def _ws_batch_on_start():
+    asyncio.create_task(_ws_batch_loop())
+
+
+class WsQueueBody(BaseModel):
+    prompt: str = ""
+
+
+@app.post("/api/coding/workspace/queue")
+async def workspace_queue_prompt(request: Request, req: WsQueueBody):
+    """Queue a prompt for the team batch (workspace, others active)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not _workspace_row(folder):
+        return JSONResponse(status_code=400, content={"error": "Not a workspace"})
+    prompt = str(req.prompt or "").strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "Empty prompt"})
+    _ws_queue_prompt(folder, user, prompt)
+    _audit("coding.batch.queue", user.get("username", ""), prompt[:80])
+    return {"status": "ok", "queued": _ws_queue_len(folder),
+            "batch_secs": _ws_batch_secs()}
+
+
+@app.get("/api/coding/workspace/queue")
+async def workspace_queue_status(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    folder = _get_coding_state(_safe_username(user["username"])).get("folder")
+    if not folder:
+        return {"queued": 0, "batch_secs": _ws_batch_secs()}
+    return {"queued": _ws_queue_len(folder), "batch_secs": _ws_batch_secs(),
+            "model": _ws_batch_model()}
+
+
 class CodingRunStart(BaseModel):
     message: str = ""
     model: str = "omniilink"

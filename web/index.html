@@ -4976,6 +4976,19 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
+  // Collaborative workspace + others active: queue this prompt for the 15s
+  // team batch instead of running it now (one combined instruction is run for
+  // the whole team by a randomly-chosen submitter's cloud key).
+  if(!cimgs.length&&!fsHandle&&!isRemote()&&typeof wsOthersActive==='function'&&wsOthersActive()&&wsActive&&currentWorkspace){
+    try{
+      const qr=await authFetch(API+'/api/coding/workspace/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:rawText})});
+      const qd=await qr.json().catch(()=>({}));
+      if(qr.ok){
+        addCodingSystemMsg('Queued for the team batch — the workspace combines everyone\'s requests every '+(qd.batch_secs||15)+'s, then runs them together ('+(qd.queued||1)+' queued).');
+        return;
+      }
+    }catch(e){}
+  }
   const slash=await execSlashCommands(rawText);
   const refParsed=parseRefCommands(slash.cleaned);
   try{codingRefCache={}}catch(e){}
