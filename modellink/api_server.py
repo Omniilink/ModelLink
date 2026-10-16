@@ -10434,10 +10434,13 @@ def _godot_export_thread(folder: str, user_id: int, owner: str):
                 "done": False, "error": "", "result": {}, "log": []})
 
     def _play_url(bid):
+        # Token lives IN THE PATH, not the query string: the engine page
+        # loads index.js/.wasm/.pck via relative URLs, and relative
+        # resolution drops query strings (which 404'd every engine file into
+        # a black screen) but preserves path segments.
         try:
-            from urllib.parse import quote as _q
             tok = _mint_preview_token(user_id, bid, folder)
-            return "/api/coding/godot-play?d=" + bid + "&f=index.html&t=" + _q(tok, safe="")
+            return "/api/coding/godot-play/" + bid + "/" + tok + "/index.html"
         except Exception:
             return ""
 
@@ -10592,13 +10595,102 @@ _GODOT_DIAG_OVERLAY = (
     b"else if(e.message){show('JS ERROR: '+String(e.message).slice(0,220));}},true);"
     b"window.addEventListener('unhandledrejection',function(e){var r=e.reason;"
     b"show('PROMISE REJECTION: '+String((r&&(r.message||r.stack||r))||'').slice(0,220));});"
-    b"setTimeout(function(){if(!msgs.length){box.style.display='block';box.style.color='#9fd08a';"
+    # Parser-blocking script failures (the usual engine 404) dispatch BEFORE
+    # this script runs, so live listeners alone miss them. The resource timing
+    # buffer keeps every fetch with its HTTP status — scan it for failures.
+    b"function scanPerf(){try{var rs=(window.performance&&performance.getEntriesByType)?"
+    b"performance.getEntriesByType('resource'):[];var seen={};"
+    b"for(var i=0;i<rs.length;i++){var r=rs[i];var st=r.responseStatus||0;"
+    b"if(st>=400&&!seen[r.name]){seen[r.name]=1;show('FAILED TO LOAD ('+st+'): '+r.name);}}"
+    b"}catch(e){}}"
+    b"scanPerf();"
+    b"setTimeout(function(){scanPerf();if(!msgs.length){box.style.display='block';box.style.color='#9fd08a';"
     b"box.style.borderColor='#2a5';box.innerHTML='<b>Game files all loaded.</b> (click to hide)<br>'"
     b"+'If the screen is still black, the game itself is rendering nothing -- usually an empty main scene or a "
     b"script error stopping startup. Open DevTools (F12) and read the Console, or ask the AI to verify the main scene runs.';}},45000);"
     b"})();"
     b"</scr" b"ipt>"
 )
+
+
+def _godot_serve_rel(base: str, rel: str):
+    """Shared file-serving tail for the godot-play routes: containment,
+    size cap, correct MIME, diagnostics overlay on the entry page, and
+    COOP/COEP only for threaded builds."""
+    from fastapi.responses import Response as _Response
+    import mimetypes as _mimetypes
+    rel = (rel or "index.html").strip().lstrip("/").replace("\\", "/")
+    if not rel or _bad_path(rel):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    full = os.path.join(base, rel)
+    if not _is_within(base, full) or not os.path.isfile(full):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    if os.path.getsize(full) > 512 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "File too large"})
+    try:
+        with open(full, "rb") as fh:
+            content = fh.read()
+        ext = os.path.splitext(rel)[1].lower()
+        media_type = _ASSET_MIME_OVERRIDES.get(ext) or \
+            _mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        if ext in (".html", ".htm") and rel.lower() == "index.html":
+            # Diagnostics overlay (see _GODOT_DIAG_OVERLAY): without it a 404
+            # engine file and a game-side black screen are indistinguishable.
+            try:
+                new_content, n = re.subn(rb"</body\s*>", _GODOT_DIAG_OVERLAY + b"</body>",
+                                         content, count=1, flags=re.I)
+                content = new_content if n else content + _GODOT_DIAG_OVERLAY
+            except Exception:
+                pass
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        try:
+            marker = os.path.join(base, ".threads")
+            if os.path.isfile(marker) and open(marker, "r", encoding="utf-8").read().strip() == "1":
+                headers["Cross-Origin-Opener-Policy"] = "same-origin"
+                headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        except Exception:
+            pass
+        return _Response(content=content, media_type=media_type, headers=headers)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/coding/godot-play/{bid}/{tok}/{f:path}")
+async def godot_play_file(request: Request, bid: str = "", tok: str = "", f: str = "index.html"):
+    """Path-scoped play route: /godot-play/<build>/<token>/<file>. The token
+    authenticates every request by itself (no session needed), because the
+    engine page fetches index.js/.wasm/.pck via RELATIVE urls — relative
+    resolution keeps path segments but drops query strings, so a ?t= token
+    never reaches subrequests (every engine file 404'd into a black screen).
+    Binds (user, project folder, build id); serves only the registered
+    output dir of that build."""
+    if not re.fullmatch(r"godot-[0-9a-f]{16}", bid or ""):
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    user, bound = _user_from_preview_token(tok, bid)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Invalid token"})
+    owner = _safe_username(user["username"])
+    row = _godot_registry_load(owner).get(bid) or {}
+    proj = row.get("folder") or ""
+    outdir = row.get("outdir") or ""
+    if not outdir or not os.path.isdir(outdir):
+        return JSONResponse(status_code=404, content={
+            "error": "Build not found (it may have been swept as stale) — press Play again."})
+    if bound != proj:
+        return JSONResponse(status_code=401, content={"error": "Invalid token"})
+    access_err = _folder_access_error(user, proj)
+    if access_err:
+        return access_err
+    if (f or "index.html").strip().lower() == "index.html":
+        try:
+            import time as _t
+            reg = _godot_registry_load(owner)
+            if bid in reg:
+                reg[bid]["last_play"] = _t.time()
+                _godot_registry_save(owner, reg)
+        except Exception:
+            pass
+    return _godot_serve_rel(outdir, f)
 
 
 @app.get("/api/coding/godot-play")
@@ -10611,8 +10703,6 @@ async def godot_play(request: Request, d: str = "", f: str = "index.html", t: st
     are swept automatically. Pre-build-id URLs (project-relative, <=1h old)
     still serve the legacy way. Session auth works too. Real-tab play: no
     sandbox, correct MIME (.wasm/.pck), COOP/COEP only for threaded builds."""
-    from fastapi.responses import Response as _Response
-    import mimetypes as _mimetypes
     user, err = _require_auth(request)
     bound = ""
     tok_ok = False
@@ -10657,40 +10747,7 @@ async def godot_play(request: Request, d: str = "", f: str = "index.html", t: st
         if access_err:
             return access_err
         base = os.path.join(proj, dd)
-    rel = (f or "index.html").strip().lstrip("/").replace("\\", "/")
-    if not rel or _bad_path(rel):
-        return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    full = os.path.join(base, rel)
-    if not _is_within(base, full) or not os.path.isfile(full):
-        return JSONResponse(status_code=404, content={"error": "File not found"})
-    if os.path.getsize(full) > 512 * 1024 * 1024:
-        return JSONResponse(status_code=400, content={"error": "File too large"})
-    try:
-        with open(full, "rb") as fh:
-            content = fh.read()
-        ext = os.path.splitext(rel)[1].lower()
-        media_type = _ASSET_MIME_OVERRIDES.get(ext) or \
-            _mimetypes.guess_type(rel)[0] or "application/octet-stream"
-        if ext in (".html", ".htm") and rel.lower() == "index.html":
-            # Diagnostics overlay (see _GODOT_DIAG_OVERLAY): without it a 404
-            # engine file and a game-side black screen are indistinguishable.
-            try:
-                new_content, n = re.subn(rb"</body\s*>", _GODOT_DIAG_OVERLAY + b"</body>",
-                                         content, count=1, flags=re.I)
-                content = new_content if n else content + _GODOT_DIAG_OVERLAY
-            except Exception:
-                pass
-        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
-        try:
-            marker = os.path.join(base, ".threads")
-            if os.path.isfile(marker) and open(marker, "r", encoding="utf-8").read().strip() == "1":
-                headers["Cross-Origin-Opener-Policy"] = "same-origin"
-                headers["Cross-Origin-Embedder-Policy"] = "require-corp"
-        except Exception:
-            pass
-        return _Response(content=content, media_type=media_type, headers=headers)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    return _godot_serve_rel(base, f)
 
 
 # ==========================================
