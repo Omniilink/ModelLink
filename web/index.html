@@ -7193,6 +7193,8 @@ function appendCodingHistoryMsg(m){
   // re-synced chat looks exactly like it did when it was live.
   try{renderCodingStats(m.stats,el.querySelector('.coding-msg-content').parentElement)}catch(e){}
   try{if(typeof renderSavedTools==='function')renderSavedTools(el,m.tools)}catch(e){}
+  // Finding turns restore collapsed too, not as full raw blocks.
+  try{if(typeof collapseFindingMsg==='function')collapseFindingMsg(null)}catch(e){}
   chat.appendChild(el);
 }
 function renderSavedTools(msgEl,tools){
@@ -7817,6 +7819,36 @@ function parseFindingBlock(text){
   if(!out.title||(!out.problem&&!out.solution))return null;
   return out;
 }
+function collapseFindingMsg(f){
+  // The finding turn raw FINDING:/END_FINDING block renders as a huge noisy
+  // message in the run log. Collapse the message that carried it into a small
+  // "finding logged" line with a dropdown for the full text.
+  try{
+    const chat=document.getElementById('coding-chat');
+    if(!chat)return;
+    const msgs=chat.querySelectorAll('.coding-msg.assistant');
+    for(let i=msgs.length-1;i>=0;i--){
+      const content=msgs[i].querySelector('.coding-msg-content');
+      if(!content)continue;
+      const txt=content.innerText||content.textContent||'';
+      if(txt.indexOf('FINDING:')<0||txt.indexOf('END_FINDING')<0)continue;
+      const title=(f&&f.title)?String(f.title):(function(){const tm=txt.match(/^TITLE:[ \t]*([^\n]+)/mi);return tm?tm[1].trim():'finding';})();
+      const det=document.createElement('details');
+      det.style.cssText='margin-top:2px';
+      const sum=document.createElement('summary');
+      sum.style.cssText='cursor:pointer;color:var(--accent-light);font-size:11px;list-style:none';
+      sum.textContent='\uD83D\uDCDD Finding logged: '+title.slice(0,120);
+      const pre=document.createElement('pre');
+      pre.style.cssText='margin:6px 0 0;font:11px monospace,monospace;white-space:pre-wrap;color:var(--text-secondary)';
+      pre.textContent=txt;
+      det.appendChild(sum);det.appendChild(pre);
+      content.innerHTML='';
+      content.appendChild(det);
+      try{chat.scrollTop=chat.scrollHeight}catch(e2){}
+      return;
+    }
+  }catch(e){}
+}
 async function requestFindingLog(){
   // One bounded turn after a troubled-but-finished run: ask for a FINDING
   // block and save it. One shot — never retried, never looped. When the local
@@ -7844,6 +7876,7 @@ async function requestFindingLog(){
   }
   const f=parseFindingBlock(fullText);
   if(!f)return;
+  try{collapseFindingMsg(f)}catch(e){}
   const logModel=useLocal?localAssistantId():model;
   try{
     await authFetch(API+'/api/coding/findings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:f.kind,title:f.title,problem:f.problem,solution:f.solution,why:f.why,model:logModel,provider:findingProvider(logModel),language:f.language,code:f.code})});
