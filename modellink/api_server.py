@@ -6293,9 +6293,11 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
 - GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
   `export_presets.cfg` alone unless it is missing; never write a custom
   HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
-  yourself. The user plays via the Play button, which exports
-  `.omniilink/godot-web/` and opens it in a real tab. Your job ends at a
-  complete, consistent Godot project that imports cleanly.
+  yourself, and never create `.uid` files (the editor generates those on
+  import). The user plays via the Play button, which builds on a temp copy
+  — no build files ever land in the project — and opens the game in a real
+  tab. Your job ends at a complete, consistent Godot project that imports
+  cleanly.
 - Every control the user asked for MUST exist and be wired on first
   delivery: keyboard (WASD/arrows/space via keydown/keyup state maps),
   mouse look (pointer lock requested on canvas click), touch buttons on
@@ -9455,6 +9457,14 @@ _ASSET_MIME_OVERRIDES = {
     ".cjs": "text/javascript",
     ".css": "text/css",
     ".svg": "image/svg+xml",
+    # Godot web games: the loader REQUIRES application/wasm for streaming
+    # compilation (a guessed octet-stream stalls or kills the boot with a
+    # black screen), and the game pack must stay a plain binary download.
+    ".wasm": "application/wasm",
+    ".pck": "application/octet-stream",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".json": "application/json",
 }
 
 
@@ -10097,9 +10107,9 @@ def _godot_ensure_preset(folder: str):
 
 
 def _godot_project_problems(folder: str):
-    """Blocking problems for a web export (plain strings). Also ensures the
-    additive `rendering_method.web=gl_compatibility` override the web build
-    requires — Forward+/Mobile cannot target the browser."""
+    """Blocking problems for a web export (plain strings). Strictly
+    READ-ONLY: Play must never write into the project (no .uid files, no
+    .godot cache, no preset edits) — the build happens on a temp copy."""
     problems = []
     proj = os.path.join(folder, "project.godot")
     if not os.path.isfile(proj):
@@ -10116,23 +10126,113 @@ def _godot_project_problems(folder: str):
         rel = scene[6:] if scene.startswith("res://") else scene
         if not os.path.isfile(os.path.join(folder, rel.replace("/", os.sep))):
             problems.append(f"Main scene is missing on disk: {scene}")
-    if "renderer/rendering_method.web" not in text:
-        # Additive only: never changes the desktop renderer, just pins the
-        # web build to Compatibility (the only GL the browser supports).
-        try:
-            if "[rendering]" not in text:
-                if text and not text.endswith("\n"):
-                    text += "\n"
-                text += '\n[rendering]\n\nrenderer/rendering_method.web="gl_compatibility"\n'
-            else:
-                text = text.replace("[rendering]",
-                                    '[rendering]\nrenderer/rendering_method.web="gl_compatibility"',
-                                    1)
-            with open(proj, "w", encoding="utf-8") as f:
-                f.write(text)
-        except Exception as e:
-            problems.append(f"Could not pin the web renderer to Compatibility: {e}")
     return problems
+
+
+def _godot_builds_root(owner: str) -> str:
+    """Every build artifact lives here — never in the project. Per user, on
+    the user_data volume, so exports never pollute game folders and stale
+    builds can be swept without touching anyone's files."""
+    d = os.path.join(APP_DIR, "user_data", ".godot-builds", owner)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _godot_build_id(folder: str) -> str:
+    return "godot-" + hashlib.sha1(os.path.abspath(folder).encode("utf-8")).hexdigest()[:16]
+
+
+def _godot_registry_path(owner: str) -> str:
+    return os.path.join(_godot_builds_root(owner), "registry.json")
+
+
+def _godot_registry_load(owner: str) -> dict:
+    try:
+        p = _godot_registry_path(owner)
+        if os.path.isfile(p):
+            import json as _j
+            data = _j.loads(open(p, "r", encoding="utf-8").read() or "{}")
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _godot_registry_save(owner: str, reg: dict):
+    try:
+        import json as _j
+        with open(_godot_registry_path(owner), "w", encoding="utf-8") as f:
+            _j.dump(reg, f)
+    except Exception:
+        pass
+
+
+def _godot_sweep(owner: str, keep_id: str = "", max_age_s: int = 86400):
+    """Delete builds nobody played in the last day (and builds whose project
+    is gone). The current build is always kept."""
+    import time as _t
+    import shutil as _sh
+    try:
+        reg = _godot_registry_load(owner)
+        now = _t.time()
+        changed = False
+        for bid, row in list(reg.items()):
+            if bid == keep_id:
+                continue
+            stale = (now - float(row.get("last_play") or 0)) > max_age_s
+            gone = not os.path.isdir(row.get("folder") or "")
+            if stale or gone:
+                try:
+                    _sh.rmtree(row.get("outdir") or "", ignore_errors=True)
+                    src = os.path.join(_godot_builds_root(owner), bid)
+                    if os.path.isdir(src):
+                        _sh.rmtree(src, ignore_errors=True)
+                except Exception:
+                    pass
+                reg.pop(bid, None)
+                changed = True
+        if changed:
+            _godot_registry_save(owner, reg)
+    except Exception:
+        pass
+
+
+def _godot_snapshot(src: str, dst: str):
+    """Copy the project to a temp build dir, leaving caches, VCS state and
+    previous outputs behind. The source project is never modified."""
+    import shutil as _sh
+    if os.path.isdir(dst):
+        _sh.rmtree(dst, ignore_errors=True)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    _sh.copytree(src, dst, ignore=_sh.ignore_patterns(
+        ".godot", ".git", ".svn", ".hg", ".omniilink", "__pycache__",
+        "*.tmp", "*.log"),
+        copy_function=_sh.copy2)
+
+
+def _godot_pin_renderer(copy_proj: str) -> bool:
+    """Additive `rendering_method.web=gl_compatibility` in the COPY only —
+    Forward+/Mobile cannot target the browser, and the desktop renderer is
+    never touched. Returns True when it added the override."""
+    try:
+        with open(copy_proj, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if "renderer/rendering_method.web" in text:
+            return False
+        if "[rendering]" not in text:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += '\n[rendering]\n\nrenderer/rendering_method.web="gl_compatibility"\n'
+        else:
+            text = text.replace("[rendering]",
+                                '[rendering]\nrenderer/rendering_method.web="gl_compatibility"',
+                                1)
+        with open(copy_proj, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except Exception:
+        return False
 
 
 def _godot_manifest(folder: str, cap: int = 5000):
@@ -10158,10 +10258,6 @@ def _godot_manifest(folder: str, cap: int = 5000):
     except Exception:
         pass
     return out
-
-
-def _godot_manifest_path(folder: str) -> str:
-    return os.path.join(folder, ".omniilink", "godot-export.json")
 
 
 def _godot_run(editor: str, args, cwd: str, timeout: int, job_key: str, label: str):
@@ -10325,21 +10421,25 @@ def _godot_install_thread():
         _godot_job_log(key, "FAILED: %s" % e)
 
 
-def _godot_export_thread(folder: str, user_id: int):
+def _godot_export_thread(folder: str, user_id: int, owner: str):
+    """Build the game WITHOUT touching the project: snapshot it to a temp
+    build dir (Godot's .uid files, .godot cache and the exported output all
+    land there — nothing new is ever written into the game folder), import +
+    export there, and register the build for token-bound play. Rebuilds only
+    when the source manifest changed; sweeps builds unplayed for a day."""
     job = _godot_job(folder)
     if job.get("status") == "running":
         return
     job.update({"status": "running", "phase": "checking", "progress": 0.0,
                 "done": False, "error": "", "result": {}, "log": []})
 
-    def _play_url(threads_on: bool):
+    def _play_url(bid):
         try:
             from urllib.parse import quote as _q
-            tok = _mint_preview_token(user_id, ".omniilink/godot-web", folder)
-            return ("/api/coding/godot-play?d=.omniilink/godot-web&f=index.html&t=" + _q(tok, safe=""),
-                    bool(threads_on))
+            tok = _mint_preview_token(user_id, bid, folder)
+            return "/api/coding/godot-play?d=" + bid + "&f=index.html&t=" + _q(tok, safe="")
         except Exception:
-            return "", bool(threads_on)
+            return ""
 
     try:
         if not sys.platform.startswith("linux"):
@@ -10355,41 +10455,48 @@ def _godot_export_thread(folder: str, user_id: int):
         problems = _godot_project_problems(folder)
         if problems:
             raise RuntimeError(" | ".join(problems))
-        threads_on = _godot_ensure_preset(folder)
-        outdir = os.path.join(folder, ".omniilink", "godot-web")
-        os.makedirs(outdir, exist_ok=True)
-        # Skip the rebuild when nothing the export reads has changed.
         man = _godot_manifest(folder)
+        man_cmp = {k: list(v) for k, v in man.items()}
+        bid = _godot_build_id(folder)
+        reg = _godot_registry_load(owner)
+        row = reg.get(bid)
+        outdir = os.path.join(_godot_builds_root(owner), bid, "web")
+        if row and row.get("manifest") == man_cmp and row.get("folder") == folder \
+                and os.path.isfile(os.path.join(outdir, "index.html")):
+            job.update({"status": "ok", "phase": "cached", "progress": 1.0,
+                        "done": True, "result": {"cached": True,
+                                                "threads": bool(row.get("threads")),
+                                                "play_url": _play_url(bid)}})
+            _godot_job_log(folder, "Nothing changed — reusing the last build.")
+            return
+        job["phase"] = "snapshotting"
+        _godot_job_log(folder, "Copying the project to a temp build dir (your files stay untouched)…")
+        src = os.path.join(_godot_builds_root(owner), bid, "src")
         try:
-            prev = {}
-            mp = _godot_manifest_path(folder)
-            if os.path.isfile(mp):
-                import json as _j
-                prev = _j.loads(open(mp, "r", encoding="utf-8").read() or "{}")
-            if prev and prev.get("manifest") == {k: list(v) for k, v in man.items()} \
-                    and os.path.isfile(os.path.join(outdir, "index.html")):
-                play_url, _ = _play_url(bool(threads_on))
-                job.update({"status": "ok", "phase": "cached", "progress": 1.0,
-                            "done": True, "result": {"cached": True,
-                                                    "threads": bool(threads_on),
-                                                    "play_url": play_url}})
-                _godot_job_log(folder, "Nothing changed — reusing the last build.")
-                return
-        except Exception:
-            pass
+            _godot_snapshot(folder, src)
+        except Exception as e:
+            raise RuntimeError(f"could not snapshot the project: {e}")
+        notes = []
+        threads_on = _godot_ensure_preset(src)
+        if _godot_pin_renderer(os.path.join(src, "project.godot")):
+            notes.append("pinned the web renderer to Compatibility (build copy only)")
+        if notes:
+            _godot_job_log(folder, "Build adjustments: " + "; ".join(notes))
+        os.makedirs(outdir, exist_ok=True)
         job["phase"] = "importing"
+        job["progress"] = 0.25
         _godot_job_log(folder, "Importing project (first run compiles every script)…")
-        rc, _ = _godot_run(editor, ["--headless", "--path", folder, "--import"],
-                           folder, 600, folder, "import")
+        rc, _ = _godot_run(editor, ["--headless", "--path", src, "--import"],
+                           src, 600, folder, "import")
         if rc != 0:
             raise RuntimeError("project import failed (see log)")
         job["phase"] = "exporting"
         job["progress"] = 0.5
         _godot_job_log(folder, "Exporting the Web preset…")
-        rc2, _ = _godot_run(editor, ["--headless", "--path", folder,
+        rc2, _ = _godot_run(editor, ["--headless", "--path", src,
                                     "--export-release", "Web",
                                     os.path.join(outdir, "index.html")],
-                            folder, 900, folder, "export")
+                            src, 900, folder, "export")
         if rc2 != 0 or not os.path.isfile(os.path.join(outdir, "index.html")):
             raise RuntimeError("web export failed (see log)")
         # Thread marker: the play endpoint adds COOP/COEP only when on.
@@ -10398,18 +10505,16 @@ def _godot_export_thread(folder: str, user_id: int):
                 f.write("1" if threads_on else "0")
         except Exception:
             pass
-        try:
-            import json as _j2
-            os.makedirs(os.path.dirname(_godot_manifest_path(folder)), exist_ok=True)
-            with open(_godot_manifest_path(folder), "w", encoding="utf-8") as f:
-                _j2.dump({"manifest": {k: list(v) for k, v in man.items()},
-                          "threads": bool(threads_on)}, f)
-        except Exception:
-            pass
+        import time as _t
+        reg = _godot_registry_load(owner)
+        reg[bid] = {"folder": folder, "outdir": outdir, "manifest": man_cmp,
+                    "threads": bool(threads_on), "created": _t.time(), "last_play": _t.time()}
+        _godot_registry_save(owner, reg)
+        _godot_sweep(owner, keep_id=bid)
         job.update({"status": "ok", "phase": "done", "progress": 1.0,
                     "done": True, "result": {"cached": False, "threads": bool(threads_on),
-                                             "play_url": _play_url(bool(threads_on))[0]}})
-        _godot_job_log(folder, "Build ready — press Play.")
+                                             "play_url": _play_url(bid)}})
+        _godot_job_log(folder, "Build ready — opening it now.")
     except Exception as e:
         job.update({"status": "error", "phase": "failed", "done": True, "error": str(e)[:600]})
         _godot_job_log(folder, "FAILED: %s" % e)
@@ -10461,40 +10566,97 @@ async def godot_export(request: Request, req: GodotExportBody):
     job = _godot_job(folder)
     if job.get("status") == "running":
         return {"status": "ok", "running": True, "phase": job.get("phase")}
-    t = threading.Thread(target=_godot_export_thread, args=(folder, user["id"]), daemon=True)
+    t = threading.Thread(target=_godot_export_thread, args=(folder, user["id"], owner), daemon=True)
     t.start()
     return {"status": "ok", "started": True}
 
 
+# Visible load diagnostics injected into the served game page: failed engine
+# files (404 .wasm/.pck) vs game-side black screens look identical otherwise,
+# and only the browser console knows which. This overlay shows fetch/JS
+# failures live, and after 45s of silence says plainly that the files loaded
+# fine — so a still-black screen is the game rendering nothing (empty main
+# scene or a startup script error), not the serving. (No literal </script>
+# sequence may appear inside the script below — it would end the element.)
+_GODOT_DIAG_OVERLAY = (
+    b'<div id="omni-godot-diag" style="position:fixed;right:8px;bottom:8px;max-width:46ch;z-index:999999;'
+    b'font:12px/1.5 monospace,monospace;background:rgba(10,10,10,.88);color:#ffb4b4;border:1px solid #a33;'
+    b'border-radius:8px;padding:8px 10px;display:none;white-space:pre-wrap"></div>'
+    b"<script>(function(){var box=document.getElementById('omni-godot-diag');var msgs=[];"
+    b"function esc(s){return String(s).replace(/</g,'&lt;');}"
+    b"function show(m){msgs.push(m);box.style.display='block';var h='<b>Godot play diagnostics</b> (click to hide)<br>';"
+    b"for(var i=Math.max(0,msgs.length-6);i<msgs.length;i++){h+=esc(msgs[i])+'<br>';}box.innerHTML=h;}"
+    b"box.onclick=function(){box.style.display='none';};"
+    b"window.addEventListener('error',function(e){var t=e.target;"
+    b"if(t&&t!==window&&t!==document&&(t.src||t.href)){show('FAILED TO LOAD: '+(t.src||t.href));}"
+    b"else if(e.message){show('JS ERROR: '+String(e.message).slice(0,220));}},true);"
+    b"window.addEventListener('unhandledrejection',function(e){var r=e.reason;"
+    b"show('PROMISE REJECTION: '+String((r&&(r.message||r.stack||r))||'').slice(0,220));});"
+    b"setTimeout(function(){if(!msgs.length){box.style.display='block';box.style.color='#9fd08a';"
+    b"box.style.borderColor='#2a5';box.innerHTML='<b>Game files all loaded.</b> (click to hide)<br>'"
+    b"+'If the screen is still black, the game itself is rendering nothing -- usually an empty main scene or a "
+    b"script error stopping startup. Open DevTools (F12) and read the Console, or ask the AI to verify the main scene runs.';}},45000);"
+    b"})();"
+    b"</scr" b"ipt>"
+)
+
+
 @app.get("/api/coding/godot-play")
 async def godot_play(request: Request, d: str = "", f: str = "index.html", t: str = ""):
-    """Serve one file of a built Godot web game. `d` is the export dir
-    relative to the project, `f` the file inside it, `t` a signed token bound
-    to (user, project folder, export dir) — so the game always loads from the
-    project it was built from, never from whichever folder happens to be open
-    now. Session auth works too. Real-tab play: no sandbox, correct MIME
-    (.wasm/.pck), COOP/COEP only for threaded builds."""
+    """Serve one file of a built Godot web game. `d` is a build id
+    (godot-<hex>, resolved via the per-user build registry to an output dir
+    OUTSIDE any project), `f` the file inside it, `t` a signed token bound to
+    (user, project folder, build id). Builds live under user_data, so Play
+    never writes .uid/.godot/output files into game folders, and stale builds
+    are swept automatically. Pre-build-id URLs (project-relative, <=1h old)
+    still serve the legacy way. Session auth works too. Real-tab play: no
+    sandbox, correct MIME (.wasm/.pck), COOP/COEP only for threaded builds."""
     from fastapi.responses import Response as _Response
     import mimetypes as _mimetypes
     user, err = _require_auth(request)
     bound = ""
+    tok_ok = False
     if err:
         user, bound = _user_from_preview_token(t, d)
         if user is None:
             return err
         request.state.user = user
-    dd = (d or ".omniilink/godot-web").strip().lstrip("/").replace("\\", "/")
-    if not dd or _bad_path(dd):
-        return JSONResponse(status_code=400, content={"error": "Invalid path"})
-    if bound:
-        proj = bound
+        tok_ok = True
+    owner = _safe_username(user["username"])
+    bid = (d or "").strip()
+    base = ""
+    if re.fullmatch(r"godot-[0-9a-f]{16}", bid or ""):
+        row = _godot_registry_load(owner).get(bid) or {}
+        proj = row.get("folder") or ""
+        outdir = row.get("outdir") or ""
+        if not outdir or not os.path.isdir(outdir):
+            return JSONResponse(status_code=404, content={
+                "error": "Build not found (it may have been swept as stale) — press Play again."})
+        access_err = _folder_access_error(user, proj)
+        if access_err:
+            return access_err
+        if tok_ok and bound != proj:
+            return JSONResponse(status_code=401, content={"error": "Invalid token"})
+        base = outdir
+        if (f or "index.html").strip().lower() == "index.html":
+            try:
+                import time as _t
+                reg = _godot_registry_load(owner)
+                if bid in reg:
+                    reg[bid]["last_play"] = _t.time()
+                    _godot_registry_save(owner, reg)
+            except Exception:
+                pass
     else:
-        owner = _safe_username(user["username"])
-        proj = _get_coding_state(owner).get("folder") or ""
-    access_err = _folder_access_error(user, proj)
-    if access_err:
-        return access_err
-    base = os.path.join(proj, dd)
+        # Legacy project-relative URLs (minted before build ids existed).
+        dd = (d or ".omniilink/godot-web").strip().lstrip("/").replace("\\", "/")
+        if not dd or _bad_path(dd):
+            return JSONResponse(status_code=400, content={"error": "Invalid path"})
+        proj = bound or _get_coding_state(owner).get("folder") or ""
+        access_err = _folder_access_error(user, proj)
+        if access_err:
+            return access_err
+        base = os.path.join(proj, dd)
     rel = (f or "index.html").strip().lstrip("/").replace("\\", "/")
     if not rel or _bad_path(rel):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
@@ -10509,6 +10671,15 @@ async def godot_play(request: Request, d: str = "", f: str = "index.html", t: st
         ext = os.path.splitext(rel)[1].lower()
         media_type = _ASSET_MIME_OVERRIDES.get(ext) or \
             _mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        if ext in (".html", ".htm") and rel.lower() == "index.html":
+            # Diagnostics overlay (see _GODOT_DIAG_OVERLAY): without it a 404
+            # engine file and a game-side black screen are indistinguishable.
+            try:
+                new_content, n = re.subn(rb"</body\s*>", _GODOT_DIAG_OVERLAY + b"</body>",
+                                         content, count=1, flags=re.I)
+                content = new_content if n else content + _GODOT_DIAG_OVERLAY
+            except Exception:
+                pass
         headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
         try:
             marker = os.path.join(base, ".threads")
