@@ -2957,6 +2957,18 @@ function webllmTruncate(text,maxChars,where){
   if(where==='tail')return '…[older text trimmed]…\n'+text.slice(text.length-maxChars);
   return text.slice(0,maxChars)+'\n…[later text trimmed]…';
 }
+// Fraction of the model's context window a single request may use. 0.7 leaves
+// 30% headroom for the completion plus WebLLM's own bookkeeping, so a long
+// coding turn cannot overflow the window and crash the run.
+const WEBLLM_PROMPT_FRACTION=0.7;
+function webllmPromptBudget(modelId){
+  // {ctx, budget, est} so the coding loop can MEASURE the prompt before it
+  // builds one, instead of only discovering the overflow after the fact.
+  const ctx=Math.max(1024,webllmContextWindowFor(modelId));
+  const reserve=Math.max(256,Math.floor(ctx*(1-WEBLLM_PROMPT_FRACTION)));
+  return {ctx:ctx,reserve:reserve,budget:Math.max(200,ctx-reserve),
+          est:s=>Math.ceil(String(typeof s==='string'?s:JSON.stringify(s||'')).length/4)};
+}
 function webllmFit(messages,wantMaxTokens,modelId){
   // Fit a request inside the model's context window: keep the system message,
   // keep the most recent turns, drop/trim older ones, and cap the output so
@@ -2964,7 +2976,7 @@ function webllmFit(messages,wantMaxTokens,modelId){
   // context window size" error).
   const ctx=Math.max(1024,webllmContextWindowFor(modelId));
   const est=s=>Math.ceil(String(typeof s==='string'?s:JSON.stringify(s||'')).length/4);
-  const reserve=Math.max(256,Math.floor(ctx*0.2));
+  const reserve=Math.max(256,Math.floor(ctx*(1-WEBLLM_PROMPT_FRACTION)));
   const budget=Math.max(200,ctx-reserve);
   const arr=Array.isArray(messages)?messages:[];
   const sys=(arr[0]&&arr[0].role==='system')?arr[0]:null;
@@ -3829,11 +3841,17 @@ async function loadProjectsSidebar(){
   }catch(e){if(gen!==projectsSidebarGen)return;const err=document.createElement('div');err.style.cssText='padding:16px;color:var(--error);font-size:12px;text-align:center';err.textContent='Server offline';container.appendChild(err)}
 }
 async function openCodingFolderPicker(){
-    if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;remoteCtx=null;currentProjectShared=false;currentProjectRole='';codingFolder=handle.name;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
+    hardStopCodingLoop();
+    if(window.showDirectoryPicker){try{const handle=await window.showDirectoryPicker({mode:'readwrite'});if(!(await fsEnsurePermission(handle))){appAlert('Write permission required.');return}fsHandle=handle;remoteCtx=null;currentProjectShared=false;currentProjectRole='';codingFolder=handle.name;
+        // A purely local (File System Access) folder is invisible to the
+        // server, which still remembers the PREVIOUS project. Leaving that
+        // stale is what let writes/preview run against the wrong folder, so
+        // close it on the server too.
+        try{authFetch(API+'/api/coding/close-folder',{method:'POST'}).catch(()=>{})}catch(e){}document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';const tree=await fsBuildTree(handle);renderFileTree(tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();addCodingSystemMsg('Opened project: '+handle.name+'\n'+tree.length+' top-level items.');updateProjectBadge(handle.name)}catch(e){if(e.name!=='AbortError')appAlert('Error: '+e.message)}}
   else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;inp.multiple=true;inp.addEventListener('change',async()=>{if(inp.files.length>0){const first=inp.files[0];const path=first.webkitRelativePath.split('/')[0];await openCodingFolderDirect(path)}});inp.click()}
     }
   async function openCodingFolder(){await openCodingFolderPicker()}
-  async function openCodingFolderDirect(path){
+  async function openCodingFolderDirect(path){hardStopCodingLoop();
    try{const r=await authFetch(API+ '/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open folder');return}
            fsHandle=null;remoteCtx=null;currentProjectShared=false;currentProjectRole='';codingFolder=data.folder;document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;allCodingFiles=[];restoreCodingChat();
   // Wait for auto-attach to complete so AI has file context immediately
@@ -4051,7 +4069,7 @@ function openRenameModal(path){
     const dir=path.includes('/')?path.slice(0,path.lastIndexOf('/')):'';
     const newPath=dir?dir+'/'+newName:newName;
     try{
-      const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:path,new_path:newPath})});
+      const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:path,new_path:newPath,folder:typeof codingFolder==='string'?codingFolder:''})});
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(d.error||'Rename failed');
       ov.remove();refreshCodingTree();showToast('Renamed to '+newName,'success');
@@ -4101,7 +4119,7 @@ async function deleteMultipleFiles(paths){
   let ok=0,fail=0;
   for(const p of paths){
     try{
-      const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p),{method:'DELETE'});
+      const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p)+(typeof codingFolder==='string'&&codingFolder?'&folder='+encodeURIComponent(codingFolder):''),{method:'DELETE'});
       if(r.ok)ok++;else fail++;
     }catch(e){fail++}
   }
@@ -4527,7 +4545,7 @@ async function execSlashCommands(rawText){
         try{
           if(isRemote()){const dr=await agentFileOp(remoteCtx.id,{op:'delete',path:remoteRel(p)});if(!dr||!dr.ok)throw new Error((dr&&dr.error)||'Delete failed')}
           else if(fsHandle){await fsDeleteFile(p)}
-          else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||'Delete failed')}
+          else{const r=await authFetch(API+'/api/coding/file-delete?path='+encodeURIComponent(p)+(typeof codingFolder==='string'&&codingFolder?'&folder='+encodeURIComponent(codingFolder):''),{method:'DELETE'});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error((d&&d.error)||'Delete failed')}
           refreshCodingTree();showToast('Deleted '+p,'success');
         }catch(e){showToast('Delete failed: '+e.message,'error')}
       }
@@ -4536,7 +4554,7 @@ async function execSlashCommands(rawText){
         if(!from||!to){showToast('Usage: /rename <old> <new>','error');break}
         if(!(await appConfirm('Rename "'+from+'" to "'+to+'"?')))break;
         try{
-          const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:from,new_path:to})});
+          const r=await authFetch(API+'/api/coding/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:from,new_path:to,folder:typeof codingFolder==='string'?codingFolder:''})});
           const d=await r.json().catch(()=>({}));
           if(!r.ok)throw new Error((d&&d.error)||'Rename failed');
           refreshCodingTree();showToast('Renamed to '+to,'success');
@@ -6620,6 +6638,25 @@ function trackPatchMiss(path,failed){
     if(typeof reportCodingProblem==='function')reportCodingProblem('patch','patch-old-not-found',path+' ('+patchMissByFile[path]+'x this run)');
   }catch(e){}
 }
+// Hard-stop the agentic loop for a project SWITCH (not the user's Stop button).
+// Switching projects while a turn is in flight is how one project's files got
+// written into another: the still-running loop flushes its queued writes /
+// auto-approves pending cards against the folder that is open *now*. Tear the
+// whole run down first, then let the switch happen.
+function hardStopCodingLoop(){
+  try{
+    codingStopRequested=true;
+    codingAutoLoop=false;
+    if(codingAbort){try{codingAbort.abort()}catch(e){}}
+    // Drop every queued approval / unanswered question so nothing from the
+    // old project can be clicked (or auto-applied) after the switch.
+    try{document.querySelectorAll('#coding-chat .approve-bar').forEach(b=>b.remove())}catch(e){}
+    try{document.querySelectorAll('#coding-chat .qopt:not([data-picked])').forEach(b=>b.remove())}catch(e){}
+    pendingFilesOffered='';
+    codingStream=false;
+    if(typeof setCodingLoopUI==='function'){try{setCodingLoopUI(false)}catch(e){}}
+  }catch(e){}
+}
 // STEP BUDGET: the model counts what its own plan needs and declares it with
 // `PLAN-STEPS: N` (one step = one tool round). The loop runs exactly that many
 // steps; when they run out with work still open it asks the model to RECOUNT
@@ -7297,6 +7334,30 @@ function codingTurnModel(){
   try{if(codingOffloadOn()&&typeof assistantJobEnabled==='function'&&assistantJobEnabled('coding'))return localAssistantId()}catch(e){}
   return selectedModel;
 }
+function batchOpenTodos(open,modelId){
+  // In-browser models have a small context window, so hand the loop only the
+  // slice of open todos that fits in ~70% of it. The rest are named as the
+  // next batch, and the loop re-reads the full todo list every round, so the
+  // remainder is picked up on the following iteration instead of overflowing
+  // the window (which crashed the run with "Prompt tokens exceed context
+  // window size").
+  try{
+    const arr=Array.isArray(open)?open:[];
+    if(!arr.length)return{shown:[],note:''};
+    if(!modelId||!String(modelId).startsWith('browser:'))return{shown:arr,note:''};
+    const b=webllmPromptBudget(modelId);
+    // ~160 tokens per todo is generous (todo text plus the tool round that
+    // answers it). Only 25% of the prompt budget is reserved for the todo
+    // list, so the system prompt + recent turns + tool results fit too.
+    const perTodo=160;
+    const room=Math.max(1,Math.floor(b.budget*0.25));
+    const maxN=Math.max(1,Math.min(arr.length,Math.floor(room/perTodo)));
+    if(arr.length<=maxN)return{shown:arr,note:''};
+    const shown=arr.slice(0,maxN);
+    const rest=arr.length-maxN;
+    return{shown:shown,note:'\nBATCH: only the first '+shown.length+' of '+arr.length+' open todos are listed (in-browser model, limited context). Work these '+shown.length+' now; the remaining '+rest+' are the next batch and will be sent next round.'};
+  }catch(e){return{shown:Array.isArray(open)?open:[],note:''}}
+}
 async function streamCodingTurn(messages){
   // Compact everything after the system message: callers assemble the window,
   // this is the single choke point where stale file bodies get elided.
@@ -7377,22 +7438,39 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
   if(isHelper)localAssistantSetStatus({state:'idle',task:''},localAssistantModel());
   return{fullText,actualModel,actions};
 }
-function offerCreateMissingFiles(missing){
+// Suffix appended to harness "create the missing file" messages when
+// Auto-Create is on. Without it the model is free to emit a QUESTION block or
+// just ask — and the loop then parks on the unanswered question. With it the
+// model is told to act, not ask.
+async function autoCreateDirective(){
+  try{
+    const cs=await getCodingSettings();
+    const plan=!!(cs&&cs.plan_mode);
+    const review=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
+    if(cs&&cs.auto_create&&!plan&&!review){
+      return' Auto-Create Files is ON: do NOT ask the user, do NOT emit QUESTION blocks, do NOT offer options. Emit FILE_CREATE blocks with real, working content for every missing file immediately, then reply with the TODO_LIST.';
+    }
+  }catch(e){}
+  return'';
+}
+async function offerCreateMissingFiles(missing){
   // Approval-gated stub creation for verify-missing files. Harvest- and
   // approval-loop-compatible: the loop waits on these buttons, and the
   // outcome feeds back like any other tool result.
   // With Auto-Create on (and not in plan/review mode) just create them — the
-  // user asked not to be prompted.
+  // user asked not to be prompted. Returns true when it created them itself
+  // so the caller can skip the "create them now" nudge.
   try{
-    const plan=!!(typeof codingSettings!=='undefined'&&codingSettings&&codingSettings.plan_mode);
+    const cs=await getCodingSettings();
+    const plan=!!(cs&&cs.plan_mode);
     const review=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
-    if(codingSettings&&codingSettings.auto_create&&!plan&&!review){
-      (async()=>{let ok=0;const failed=[];for(const p of missing){try{const r=await codingWriteFile(p,'');if(r.ok)ok++;else failed.push(p)}catch(e){failed.push(p)}}
-        try{refreshCodingTree()}catch(e){}
-        addCodingSystemMsg('Auto-created '+ok+' of '+missing.length+' missing file'+(missing.length!==1?'s':'')+(failed.length?' (failed: '+failed.join(', ')+')':''));
-        if(ok>0&&typeof recordCodingVersion==='function')recordCodingVersion(missing.slice()).catch(()=>{});
-      })();
-      return;
+    if(cs&&cs.auto_create&&!plan&&!review){
+      let ok=0;const failed=[];
+      for(const p of missing){try{const r=await codingWriteFile(p,'');if(r.ok)ok++;else failed.push(p)}catch(e){failed.push(p)}}
+      try{await refreshCodingTree()}catch(e){}
+      addCodingSystemMsg('Auto-created '+ok+' of '+missing.length+' missing file'+(missing.length!==1?'s':'')+(failed.length?' (failed: '+failed.join(', ')+')':''));
+      if(ok>0&&typeof recordCodingVersion==='function')recordCodingVersion(missing.slice()).catch(()=>{});
+      return true;
     }
   }catch(e){}
   const chat=document.getElementById('coding-chat');
@@ -7425,6 +7503,7 @@ function offerCreateMissingFiles(missing){
   db.onclick=()=>bar.innerHTML='<span style="color:var(--text-muted);font-size:11px">Skipped</span>';
   bar.appendChild(ab);bar.appendChild(db);toolDiv.appendChild(bar);
   body.appendChild(toolDiv);chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;
+  return false;
 }
 async function sendCodingImprove(reason,nextAttempt){
   codingHistory.push({role:'user',content:'Not done yet: '+reason+'\nImprove the work now using tool blocks (attempt '+nextAttempt+' of '+(CODING_MAX_SETBACKS+1)+').'});
@@ -7685,7 +7764,7 @@ async function codingAutoContinue(){
             if(akey!==lastAssetKey){
               lastAssetKey=akey;
               addCodingSystemMsg('Broken references found: '+miss.join(', '));
-              codingHistory.push({role:'user',content:'Your HTML references files that do not exist in the project: '+miss.join(', ')+' — the page would render with no styling or scripts. Create each missing file now with FILE_CREATE blocks containing real, working content, then reply with a TODO_LIST covering any work that is still outstanding.'});
+              codingHistory.push({role:'user',content:'Your HTML references files that do not exist in the project: '+miss.join(', ')+' — the page would render with no styling or scripts. Create each missing file now with FILE_CREATE blocks containing real, working content, then reply with a TODO_LIST covering any work that is still outstanding.'+(await autoCreateDirective())});
               persistCodingChat();
               codingStream=true;
               const aturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -7706,7 +7785,7 @@ async function codingAutoContinue(){
             if(missTrio.length){
               webTrioAuditDone=true;
               addCodingSystemMsg('Web project is missing '+missTrio.join(', ')+' — asking AI to create and link '+missTrio.join(' and ')+'…');
-              codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'});
+              codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'+(await autoCreateDirective())});
               persistCodingChat();
               codingStream=true;
               const tturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -7733,7 +7812,9 @@ async function codingAutoContinue(){
           // but the harness decides the increment, so a model that keeps
           // "recounting" upward cannot extend the run forever.
           const beforePlan=codingPlanSteps;
-          const remainTxt=open.length?('this work is still open:\n- '+open.join('\n- ')):'no todos are open, but the task is not verified yet (nothing written or validated)';
+          let _rbShown=open,_rbNote='';
+          try{if(typeof batchOpenTodos==='function'){const _rb=batchOpenTodos(open,codingTurnModel());_rbShown=_rb.shown||open;_rbNote=_rb.note||''}}catch(e){}
+          const remainTxt=open.length?('this work is still open:\n- '+_rbShown.join('\n- ')+_rbNote):'no todos are open, but the task is not verified yet (nothing written or validated)';
           if(codingReplans<CODING_MAX_REPLANS&&codingRounds<CODING_MAX_TOTAL_ROUNDS){
             codingReplans++;
             addCodingSystemMsg('Reached the '+beforePlan+'-step plan with work remaining — asking the AI to recount the steps it needs…');
@@ -7816,7 +7897,11 @@ async function codingAutoContinue(){
         const lockHits=(results.text.match(/locked by another editor/gi)||[]).length;
         const lockNote=lockHits>0?'\nLOCKED FILES: '+lockHits+' of your blocks were rejected because a collaborator is editing those files — those changes did NOT land. Do not resend them. Continue with a todo that uses OTHER files; re-read a locked file before touching it again later. Work ONE todo at a time.':'';
         const tcHint=(typeof localToolChoiceHint==='function')?(await localToolChoiceHint(open,results.text)):'';
-        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(open.length?'\nOpen todos:\n- '+open.join('\n- '):'')+repeatNote+noopNote+echoNote+patchNote+lockNote+rewriteNote+budgetNote+truncNote+codingErrorHint(results.text)+tcHint+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
+        // In-browser models: hand over only the slice of open todos that fits
+        // in ~70% of the context window; the rest are the next batch.
+        let _shownTodos=open,_batchNote='';
+        try{if(typeof batchOpenTodos==='function'){const _b=batchOpenTodos(open,codingTurnModel());_shownTodos=_b.shown||open;_batchNote=_b.note||''}}catch(e){}
+        codingHistory.push({role:'user',content:'Tool results:\n'+results.text+(_shownTodos.length?'\nOpen todos:\n- '+_shownTodos.join('\n- '):'')+_batchNote+repeatNote+noopNote+echoNote+patchNote+lockNote+rewriteNote+budgetNote+truncNote+codingErrorHint(results.text)+tcHint+'\nContinue the task. If it is finished, reply with a short summary and no tool blocks.'});
         persistCodingChat();
         codingStream=true;
         const turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -7858,7 +7943,7 @@ async function codingAutoContinue(){
           if(missTrio.length){
             webTrioAuditDone=true;
             addCodingSystemMsg('Web project is missing '+missTrio.join(', ')+' — asking AI to create and link '+missTrio.join(' and ')+'…');
-            codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'});
+            codingHistory.push({role:'user',content:'Your HTML project is missing '+missTrio.join(' and ')+'. Whenever building a website or HTML page, you MUST create all three files — HTML, CSS (`styles.css`), and JS (`app.js`) — and link them in the HTML. Create '+missTrio.join(' and ')+' now with FILE_CREATE blocks containing real, complete styling/logic, and link them in your HTML file with FILE_PATCH.'+(await autoCreateDirective())});
             persistCodingChat();
             codingStream=true;
             const tturn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -7874,7 +7959,7 @@ async function codingAutoContinue(){
         if(!planAuditDone&&vfin.files.length>0&&todosAtStart===0&&!todoListEverDeclared()){
           planAuditDone=true;
           addCodingSystemMsg('Checking that nothing required was left out…');
-          codingHistory.push({role:'user',content:'Before this counts as finished: list EVERY file this task requires (a website needs its CSS and JS assets too), then compare against what exists. If ANY required file is missing, create it now with FILE_CREATE blocks containing real working content and emit a TODO_LIST naming the remaining work. Only if everything already exists reply with: VERDICT:PASS <one-line summary>.'});
+          codingHistory.push({role:'user',content:'Before this counts as finished: list EVERY file this task requires (a website needs its CSS and JS assets too), then compare against what exists. If ANY required file is missing, create it now with FILE_CREATE blocks containing real working content and emit a TODO_LIST naming the remaining work. Only if everything already exists reply with: VERDICT:PASS <one-line summary>.'+(await autoCreateDirective())});
           persistCodingChat();
           codingStream=true;
           const aut=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
@@ -7927,8 +8012,8 @@ async function codingAutoContinue(){
         addCodingSystemMsg('Verification failed — '+lastReason);
         // Let the USER break the loop with one click (permission-gated);
         // offer once per missing-set so skips don't pile up offers.
-        if(mkey!==lastOfferedKey){lastOfferedKey=mkey;offerCreateMissingFiles(reality.missing)}
-        const iturn0=await sendCodingImprove('Verification FAILED: '+lastReason+'. Create the missing files now using FILE_CREATE blocks. Do NOT claim completion until the files exist.',setbacks+1);
+        if(mkey!==lastOfferedKey){lastOfferedKey=mkey;await offerCreateMissingFiles(reality.missing)}
+        const iturn0=await sendCodingImprove('Verification FAILED: '+lastReason+'. Create the missing files now using FILE_CREATE blocks with real, working content. Do NOT claim completion until the files exist and are non-empty.',setbacks+1);
         if(iturn0.error)break;
         continue;
       }
@@ -7952,8 +8037,8 @@ async function codingAutoContinue(){
           if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
           addCodingSystemMsg('Claim rejected — '+lastReason);
           const mkey2=reality2.missing.slice().sort().join('|');
-          if(mkey2!==lastOfferedKey){lastOfferedKey=mkey2;offerCreateMissingFiles(reality2.missing)}
-          const iturnR=await sendCodingImprove(lastReason+'. Create them now with FILE_CREATE blocks.',setbacks+1);
+          if(mkey2!==lastOfferedKey){lastOfferedKey=mkey2;await offerCreateMissingFiles(reality2.missing)}
+          const iturnR=await sendCodingImprove(lastReason+'. Create them now with FILE_CREATE blocks containing real, working content.',setbacks+1);
           if(iturnR.error)break;
           continue;
         }
@@ -8082,8 +8167,12 @@ async function codingWriteFile(path,content){
       if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}
       return{ok:true,added:lines,removed:0};
     }
-    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})});
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content,folder:typeof codingFolder==='string'?codingFolder:''})});
     const data=await r.json();
+    // The server refuses writes whose project no longer matches the one this
+    // tab has open (data-loss guard). Stop the loop instead of retrying into
+    // the wrong folder.
+    if(r.status===409&&data&&data.error==='PROJECT_CHANGED'){codingStopRequested=true;return{ok:false,error:'Project changed — reload the page before editing.'}}
     if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
     return{ok:false,error:data.error};
   }catch(e){return{ok:false,error:e.message}}
@@ -8332,8 +8421,9 @@ async function codingPatchFile(path,oldText,newText){
   try{
     const remote=isRemote();
     if(!remote&&!fsHandle){
-const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText})});
+const r=await authFetch(API+'/api/coding/file-patch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,old_text:oldText,new_text:newText,folder:typeof codingFolder==='string'?codingFolder:''})});
 const data=await r.json();
+if(r.status===409&&data&&data.error==='PROJECT_CHANGED'){codingStopRequested=true;return{ok:false,error:'Project changed — reload the page before editing.'}}
 if(r.ok){if(data.noop)return{ok:true,noop:true,added:0,removed:0};codingWrittenPaths.push(path);if(typeof autoCheckTodos==='function'){try{autoCheckTodos()}catch(e){}}return{ok:true,added:data.added,removed:data.removed}}
       return{ok:false,error:(data.error||'patch failed')+(data.hint?'\n'+data.hint:'')};
     }
@@ -8369,7 +8459,18 @@ async function codingRunCmd(command){
   try{const r=await authFetch(API+'/api/coding/run-command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,cwd:codingFolder||undefined})});const data=await r.json();if(!r.ok&&data.error){const rr={stdout:'',stderr:data.error,exit_code:1};reportCommandProblem(command,rr);return rr}const res={stdout:data.stdout||'',stderr:data.stderr||'',exit_code:data.exit_code};reportCommandProblem(command,res);return res}catch(e){const rr={stdout:'',stderr:e.message,exit_code:1};reportCommandProblem(command,rr);return rr}
 }
 const CODING_SETTINGS_KEY='omnilink_coding_settings';
-async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved)return saved}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}}
+// Module-level cache of the coding settings. `offerCreateMissingFiles` and the
+// optimiser used to read a bare `codingSettings` that only existed as a local
+// inside processCodingActions, so the ReferenceError was swallowed by their
+// try/catch and Auto-Create silently never fired — every missing file fell
+// back to the Create/Skip approval bar that blocks the loop.
+let codingSettings=null;
+async function getCodingSettings(){
+  if(codingSettings)return codingSettings;
+  try{codingSettings=await fetchCodingSettings()}catch(e){}
+  return codingSettings||null;
+}
+async function fetchCodingSettings(){try{const r=await authFetch(API+'/api/coding/settings');const data=await r.json();codingSettings=data;try{localStorage.setItem(CODING_SETTINGS_KEY,JSON.stringify(data))}catch(e){}return data}catch(e){try{const saved=JSON.parse(localStorage.getItem(CODING_SETTINGS_KEY)||'null');if(saved){codingSettings=saved;return saved}}catch(e2){}return{auto_create:false,auto_edit:false,auto_command:false,auto_attach:false,plan_mode:false}}}
 function archiveFormat(){const el=document.getElementById('coding-dl-format');return(el&&el.value)||localStorage.getItem('omnilink_dl_format')||'zip'}
 function downloadBlob(blob,name){
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
@@ -9082,7 +9183,7 @@ async function loadProjectList(){const list=document.getElementById('project-lis
     if(typeof loadRemoteProjectsInto==='function'){try{await loadRemoteProjectsInto(list,'item')}catch(e){}}
   }catch(e){list.innerHTML='<div style="padding:12px;color:var(--error);font-size:12px">Server offline</div>'}
 }
-async function openProject(name){try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
+async function openProject(name){hardStopCodingLoop();try{const r=await authFetch(API+'/api/projects/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const data=await r.json();if(!r.ok){appAlert(data.error||'Failed to open project');return}
   codingFolder=data.folder;currentProjectShared=false;currentProjectRole='';fsHandle=null;remoteCtx=null;allCodingFiles=[];currentPublicFork=null;currentWorkspace=null;wsActive=false;if(wsTimer){clearInterval(wsTimer);wsTimer=null}wsFolder='';wsLastEvents=0;wsLockedPaths=[];document.getElementById('coding-close-btn').style.display='';document.getElementById('coding-reconnect-btn').style.display='none';renderFileTree(data.tree);codingTodos=[];renderCodingTodos();codingAtFiles=[];lastOpenedFile=null;lastFileContent=null;restoreCodingChat();renderCodingMetaBar();
   // Wait for auto-attach to complete so AI has file context immediately
   try{await autoAttachProjectFiles()}catch(e){}
@@ -9205,7 +9306,7 @@ async function runDeny(cmdId){
   try{await authFetch(API+'/api/coding/run/command-result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunId,cmd_id:cmdId,denied:true})})}catch(e){}
   runsPoll();
 }
-async function openSharedProject(p){p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
+async function openSharedProject(p){hardStopCodingLoop();p=p||{};const path=String(p.path||'');if(!path){appAlert('Shared project path is missing');return}
   const name=String(p.name||path.split(/[\\/]/).filter(Boolean).pop()||'shared project');
   const role=String(p.role||'edit'),owner=String(p.owner||'');
   try{const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const data=await r.json().catch(()=>({}));if(!r.ok){appAlert(data.error||'Failed to open shared project');return}
@@ -9224,6 +9325,7 @@ function treeSig(tree){let s='';const walk=a=>{(a||[]).forEach(n=>{if(n&&n.type=
 async function openCodingFolderPath(path,opts){
   opts=opts||{};
   if(!path){appAlert('Folder path is missing');return}
+  hardStopCodingLoop();
   try{
     const r=await authFetch(API+'/api/coding/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
     const data=await r.json().catch(()=>({}));
@@ -11973,8 +12075,9 @@ async function startOptimise(onlyPaths){
   const inten=OPT_INTENSITY[cfg.intensity]||OPT_INTENSITY.balanced;
   const started=Date.now();
   optRunning=true;
-  const wasAuto=codingSettings&&codingSettings.auto_edit;
-  if(cfg.autoRun)codingSettings.auto_edit=true;
+  const csOpt=await getCodingSettings();
+  const wasAuto=csOpt&&csOpt.auto_edit;
+  if(cfg.autoRun&&csOpt)csOpt.auto_edit=true;
   const view=[];
   // Declared outside the try so the catch path can still build a debrief.
   let reason='completed',bytes0=0,findings=[],analysis=null,rep=null;
@@ -12223,7 +12326,7 @@ async function startOptimise(onlyPaths){
     optBanner('<b>Optimise stopped:</b> '+escapeHtml(e.message||String(e))
       +' <button class="btn btn-ghost" style="font-size:10px;padding:2px 10px" onclick="optBanner(\'\')">Dismiss</button>');
   }finally{
-    if(cfg.autoRun)codingSettings.auto_edit=wasAuto;
+    if(cfg.autoRun&&csOpt)csOpt.auto_edit=wasAuto;
     optProg.active=false;
     optTickStop();
     if(typeof optPaintButton==='function')optPaintButton();
@@ -12766,7 +12869,7 @@ async function saveGeneratedTest(){
   const content=document.getElementById('gen-tests-code').value||'';
   if(!path){showToast('Enter a path','error');return}
   try{
-    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,content:content})});
+    const r=await authFetch(API+'/api/coding/file-write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,content:content,folder:typeof codingFolder==='string'?codingFolder:''})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
     showToast('Saved '+path,'success');closeTestsModal();

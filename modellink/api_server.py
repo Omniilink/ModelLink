@@ -1935,12 +1935,14 @@ class CodingFileWrite(BaseModel):
     path: str
     content: str
     intent: str = ""
+    folder: str = ""
 
 class CodingFilePatch(BaseModel):
     path: str
     old_text: str
     new_text: str
     intent: str = ""
+    folder: str = ""
 
 class CodingRunCommand(BaseModel):
     command: str
@@ -6693,16 +6695,39 @@ def _folder_access_error(user, folder, write=False):
         return _shared_write_block(user, folder)
     return None
 
+def _coding_folder_mismatch(req_folder, open_folder):
+    """Refuse a write when the client's open project differs from the server's.
+
+    The server resolves every coding operation against its own remembered
+    folder. If the tab switched projects but an in-flight AI turn / queued
+    approval still posts against the old one, the write would silently land in
+    the *other* project — overwriting one project with another's files. A
+    hard 409 beats data loss; the client re-syncs and retries. Returns None
+    when the request is safe."""
+    rf = str(req_folder or "").strip().replace("\\", "/").rstrip("/")
+    of = str(open_folder or "").strip().replace("\\", "/").rstrip("/")
+    if not rf or not of:
+        return None  # client didn't send one (older tab) or nothing open
+    if rf == of:
+        return None
+    return JSONResponse(status_code=409, content={
+        "error": "PROJECT_CHANGED",
+        "detail": "This tab is editing a different project than the server has open.",
+        "open_folder": of})
+
 # ---- AI/file actions log (one-click undo) --------------------------------
-def _action_log(owner: str, path: str, kind: str, prev_ts, added=0, removed=0) -> None:
+def _action_log(owner: str, path: str, kind: str, prev_ts, added=0, removed=0, folder: str = "") -> None:
     """Record a file mutation so it can be undone later. `owner` is the
-    filesystem-safe username (matches the per-file version store)."""
+    filesystem-safe username (matches the per-file version store). `folder` is
+    the absolute project folder the action happened in — undo must never
+    resolve it against a *different* project that happens to be open later."""
     try:
         conn = get_db()
         try:
             conn.execute("INSERT INTO file_actions (user_id, path, kind, prev_ts,"
-                         " added, removed) VALUES (?, ?, ?, ?, ?, ?)",
-                         (owner, path[:500], kind, prev_ts, int(added or 0), int(removed or 0)))
+                         " added, removed, folder) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (owner, path[:500], kind, prev_ts, int(added or 0), int(removed or 0),
+                          str(folder or "")[:500]))
             conn.commit()
         finally:
             conn.close()
@@ -6725,6 +6750,22 @@ def _action_undo(action_id: int, owner: str):
     folder = _get_coding_state(owner).get("folder")
     if not folder:
         return JSONResponse(status_code=400, content={"error": "No folder open"})
+    # The action must belong to the project that is open right now. Undo used
+    # to resolve the folder from current state, so reverting a create from
+    # project A deleted the same-named file in project B — silent data loss.
+    try:
+        rec_folder = (row["folder"] or "").strip()
+    except Exception:
+        rec_folder = ""
+    if rec_folder:
+        if os.path.normcase(os.path.normpath(rec_folder)) != \
+                os.path.normcase(os.path.normpath(folder)):
+            return JSONResponse(status_code=409, content={
+                "error": "This action belongs to a different project. Open that project to undo it."})
+    else:
+        return JSONResponse(status_code=409, content={
+            "error": "This action predates project tracking and cannot be undone safely. "
+                     "Use the per-file version history instead."})
     full = os.path.join(folder, row["path"])
     if not _is_within(folder, full):
         return JSONResponse(status_code=403, content={"error": "Path outside project folder"})
@@ -6761,11 +6802,16 @@ async def coding_actions(request: Request, limit: int = 50):
         return err
     owner = _safe_username(user["username"])
     limit = max(1, min(200, int(limit or 50)))
+    # Only the currently-open project's actions: the undo log used to mix
+    # every project together, so reverting one row hit whichever folder was
+    # open now — not the one the action was recorded in.
+    open_folder = (_get_coding_state(owner).get("folder") or "")
     conn = get_db()
     try:
         rows = conn.execute("SELECT id, path, kind, prev_ts, added, removed, undone,"
                             " created_at FROM file_actions WHERE user_id = ?"
-                            " ORDER BY id DESC LIMIT ?", (owner, limit)).fetchall()
+                            " AND folder = ?"
+                            " ORDER BY id DESC LIMIT ?", (owner, open_folder, limit)).fetchall()
     finally:
         conn.close()
     return {"actions": [dict(r) for r in rows]}
@@ -8306,7 +8352,7 @@ def _coding_run_write(user, folder, rel, content):
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
         _action_log(_safe_username(user["username"]), rel,
-                    "write" if prev is not None else "create", None)
+                    "write" if prev is not None else "create", None, folder=folder)
         _ws_log_change(folder, "write" if prev is not None else "create", rel, user, user["id"])
         return {"ok": True, "path": rel}
     except Exception as e:
@@ -8331,7 +8377,7 @@ def _coding_run_patch(user, folder, rel, old, new):
         _coding_save_version(_safe_username(user["username"]), rel, current, folder)
         with open(full, "w", encoding="utf-8") as f:
             f.write(patched)
-        _action_log(_safe_username(user["username"]), rel, "patch", None)
+        _action_log(_safe_username(user["username"]), rel, "patch", None, folder=folder)
         _ws_log_change(folder, "patch", rel, user, user["id"])
         return {"ok": True, "path": rel}
     except Exception as e:
@@ -8347,7 +8393,7 @@ def _coding_run_delete(user, folder, rel):
         with open(full, "r", encoding="utf-8", errors="replace") as f:
             _coding_save_version(_safe_username(user["username"]), rel, f.read(), folder)
         os.remove(full)
-        _action_log(_safe_username(user["username"]), rel, "delete", None)
+        _action_log(_safe_username(user["username"]), rel, "delete", None, folder=folder)
         _ws_log_change(folder, "delete", rel, user, user["id"])
         return {"ok": True, "path": rel}
     except Exception as e:
@@ -12732,6 +12778,9 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
+    mm = _coding_folder_mismatch(req.folder, folder)
+    if mm:
+        return mm
     access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
@@ -12776,7 +12825,7 @@ async def coding_file_write(request: Request, req: CodingFileWrite):
         except Exception:
             added, removed = len(req.content.splitlines()), 0
         _action_log(_safe_username(user["username"]), req.path,
-                    "write" if vts is not None else "create", vts, added, removed)
+                    "write" if vts is not None else "create", vts, added, removed, folder=folder)
         _ws_log_change(folder, "write" if vts is not None else "create",
                        req.path, user, user["id"], {"added": added, "removed": removed})
         logger.info(f"[CODING] Wrote file: {req.path} user={user.get('username','-')}")
@@ -12889,6 +12938,9 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
+    mm = _coding_folder_mismatch(req.folder, folder)
+    if mm:
+        return mm
     access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
@@ -12944,7 +12996,7 @@ async def coding_file_patch(request: Request, req: CodingFilePatch):
             removed = sum(1 for l in dl if l.startswith("-") and not l.startswith("---"))
         except Exception:
             added, removed = 0, 0
-        _action_log(_safe_username(user["username"]), req.path, "patch", vts, added, removed)
+        _action_log(_safe_username(user["username"]), req.path, "patch", vts, added, removed, folder=folder)
         _ws_log_change(folder, "patch", req.path, user, user["id"],
                        {"added": added, "removed": removed})
         logger.info(f"[CODING] Patched file: {req.path} user={user.get('username','-')}")
@@ -13228,12 +13280,16 @@ async def coding_project_version_restore(request: Request, req: ProjectVersionId
 
 
 @app.delete("/api/coding/file-delete")
-async def coding_file_delete(request: Request, path: str):
+async def coding_file_delete(request: Request, path: str, folder: str = ""):
     user, err = _require_auth(request)
     if err:
         return err
     coding_state = _get_coding_state(_safe_username(user["username"]))
-    folder = coding_state.get("folder")
+    open_folder = coding_state.get("folder")
+    mm = _coding_folder_mismatch(folder, open_folder)
+    if mm:
+        return mm
+    folder = open_folder
     access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err
@@ -13258,7 +13314,7 @@ async def coding_file_delete(request: Request, path: str):
         except Exception:
             vts = None
         os.remove(full)
-        _action_log(owner, path, "delete", vts)
+        _action_log(owner, path, "delete", vts, folder=folder)
         _ws_log_change(folder, "delete", path, user, user["id"])
         logger.info(f"[CODING] Deleted file: {path} user={user.get('username','-')}")
         return {"status": "ok"}
@@ -13282,6 +13338,9 @@ async def coding_rename(request: Request):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     coding_state = _get_coding_state(_safe_username(user["username"]))
     folder = coding_state.get("folder")
+    mm = _coding_folder_mismatch(body.get("folder"), folder)
+    if mm:
+        return mm
     access_err = _folder_access_error(user, folder, write=True)
     if access_err:
         return access_err

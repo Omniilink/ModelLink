@@ -348,6 +348,7 @@ def init_db():
             added INTEGER DEFAULT 0,
             removed INTEGER DEFAULT 0,
             undone INTEGER DEFAULT 0,
+            folder TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_file_actions_user ON file_actions(user_id, created_at);
@@ -620,6 +621,15 @@ def init_db():
         conn.execute("ALTER TABLE public_forks ADD COLUMN listed INTEGER DEFAULT 0")
     if fcols and "note" not in fcols:
         conn.execute("ALTER TABLE public_forks ADD COLUMN note TEXT DEFAULT ''")
+    try:
+        acols = [r["name"] for r in conn.execute("PRAGMA table_info(file_actions)").fetchall()]
+    except Exception:
+        acols = []
+    # Undo used to resolve the folder from whatever project was open at undo
+    # time, so reverting an action recorded in project A could delete/restore
+    # same-named files in project B. Stamp each action with its folder.
+    if acols and "folder" not in acols:
+        conn.execute("ALTER TABLE file_actions ADD COLUMN folder TEXT DEFAULT ''")
     try:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_projects_slug ON public_projects(user_id, slug)")
     except Exception:
