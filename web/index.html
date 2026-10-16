@@ -2630,7 +2630,12 @@ async function sendMessage(){
   try{
     if(!imgs.length&&typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()&&superPromptReady()){
       showToast('Expanding your prompt with the '+(assistantBackend()==='server'?'server':'local')+' assistant…','info');
-      const _sp=await buildSuperPrompt(text);
+      const _spn=(s,d)=>{try{
+        if(s==='start')showToast('Researching the web…','info');
+        else if(s==='done')showToast('Research done'+(d?': '+String(d).slice(0,160):''),'success');
+        else if(s==='empty')showToast('Research found nothing new','info');
+      }catch(e){}};
+      const _sp=await buildSuperPrompt(text,_spn);
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==text)_modelContent=_sp;
     }
   }catch(e){}
@@ -2997,7 +3002,7 @@ function webllmFit(messages,wantMaxTokens,modelId){
     break;
   }
   const out=(sysOut?[sysOut]:[]).concat(kept);
-  const maxTokens=Math.max(64,Math.min(wantMaxTokens||512,ctx-used-64,4096));
+  const maxTokens=Math.max(64,Math.min(wantMaxTokens||512,ctx-used-64,8192));
   return {messages:out,promptTokens:used,maxTokens:maxTokens};
 }
 async function webllmChatStream(modelId,messages,opts,signal){
@@ -3348,34 +3353,43 @@ function toggleSuperPrompt(){
 }
 function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
 function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
-async function superPromptResearch(text){
+async function superPromptResearch(text,notify){
   // Research phase (only when the Research toggle is on): search + read a few
   // pages, then let the assistant extract the relevant facts. On the server
   // backend the server does the searching and reading itself.
+  // `notify(stage, detail)` reports start/done/empty so the phase is VISIBLE
+  // (it used to run silently, leaving users unsure it ever happened).
+  const _note=(s,d)=>{try{if(typeof notify==='function')notify(s,d)}catch(e){}};
   try{
+    _note('start',String(text||'').slice(0,120));
     if(assistantBackend()==='server'){
-      return String(await serverAssistantRun('You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500),300,true)).trim();
+      const sout=String(await serverAssistantRun('You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500),300,true)).trim();
+      _note(sout?'done':'empty',sout);
+      return sout;
     }
     const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(text)+'&limit=6');
     const d=await r.json().catch(()=>({}));
     const hits=(d.results||[]).slice(0,6);
+    _note('hits',hits.length);
     let corpus=hits.map((h,i)=>(i+1)+'. '+(h.title||'')+' — '+(h.url||'')+'\n'+String(h.snippet||h.body||'').slice(0,500)).join('\n\n');
     for(const h of hits.slice(0,2)){
       try{if(h.url&&/^https?:\/\//i.test(h.url)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(h.url));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- '+h.url+' ---\n'+String(fd.text).slice(0,4000)}}catch(e){}
     }
-    if(!corpus.trim())return '';
+    if(!corpus.trim()){_note('empty','');return '';}
     const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+'\n\nWeb results:\n'+corpus,300)).trim();
-    return out||corpus.slice(0,1500);
-  }catch(e){return ''}
+    const fin=(out||corpus.slice(0,1500)).trim();
+    _note(fin?'done':'empty',fin);
+    return fin;
+  }catch(e){_note('empty','');return ''}
 }
-async function buildSuperPrompt(text){
+async function buildSuperPrompt(text,notify){
   // Rewrite the user's message into a detailed prompt with the assistant
   // (browser WebGPU model when on, otherwise the server Ollama).
   try{
     if(!superPromptAvailable())return text;
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
-    if(research)researchCtx=await superPromptResearch(text);
+    if(research)researchCtx=await superPromptResearch(text,notify);
     const sys='You rewrite a user request into a detailed, precise prompt for an AI assistant. '
       +'Keep EXACTLY the user\'s intent and scope: do not change what they are asking for. '
       +(features?'You MAY add a few closely-related, genuinely useful details or features that clearly fit the request.':'Do NOT add any features, extras or scope beyond what the user asked — expand only the clarity and specificity of their request. ')
@@ -5089,7 +5103,12 @@ async function sendCodingMessage(){
   try{
     if(typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()){
       addCodingSystemMsg('Expanding your message with the '+(assistantBackend()==='server'?'server':'local')+' assistant…');
-      const _sp=await buildSuperPrompt(rawText);
+      const _spn=(s,d)=>{try{
+        if(s==='start')addCodingSystemMsg('Researching the web…');
+        else if(s==='done')addCodingSystemMsg('Research findings:\n'+String(d||'').slice(0,800));
+        else if(s==='empty')addCodingSystemMsg('Research found nothing new.');
+      }catch(e){}};
+      const _sp=await buildSuperPrompt(rawText,_spn);
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==rawText)modelText=String(_sp).trim();
     }
   }catch(e){}
@@ -5192,7 +5211,7 @@ async function sendCodingMessage(){
   let fullText='';let liveMsg=null;
   let aborted=false;
   let next={blocks:false,actionable:false};
-  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...await resolveHistoryImages(compactCodingMessages(codingHistory.slice(-20)))]})});
+  try{let actualModel=sendModel;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:sendCtrl.signal,body:JSON.stringify({model:sendModel,stream:true,temperature:0.7,max_tokens:CODING_MAX_TOKENS,...requestLevels(),websearch:codingWebSearch,messages:[{role:'system',content:sysPrompt},...await resolveHistoryImages(compactCodingMessages(codingHistory.slice(-20)))]})});
     if(!r.ok){stopWait();const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}contentEl.textContent=errMsg;maybeAttachReport(assistantEl,errMsg,selectedModel,'coding');codingStream=false;codingAbort=null;document.getElementById('coding-send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDoneCoding=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -6675,7 +6694,11 @@ const CODING_MAX_TOTAL_ROUNDS=32;
 // The cycle detector is what catches a true loop quickly.
 const CODING_STALL_ROUNDS=6;
 const CODING_MAX_SETBACKS=3;
-const CODING_MAX_CONTINUES=4;   // auto-continue an output-limited file block
+const CODING_MAX_CONTINUES=10;  // auto-continue an output-limited file block
+// Reply ceiling for coding turns: the server allows up to 40000, so ask for
+// the max — a single styles.css can be ~20k chars before the model even
+// starts, and every cut-off means another part to stitch.
+const CODING_MAX_TOKENS=40000;
 let codingPlanSteps=CODING_DEFAULT_PLAN,codingRounds=0,codingReplans=0;
 // Set only by the recount flow; cleared once consumed. Without it a model
 // could inflate the budget just by mentioning PLAN-STEPS in any reply.
@@ -7386,7 +7409,7 @@ const contentEl=assistantEl.querySelector('.coding-msg-content');
   // One streaming request, appending its deltas to fullText. Returns an error
   // string (or null), so the caller can retry as a continuation.
   const pump=async(msgs)=>{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:turnModel,stream:true,temperature:0.7,max_tokens:16000,...requestLevels(),websearch:codingWebSearch,messages:msgs})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},signal:turnCtrl.signal,body:JSON.stringify({model:turnModel,stream:true,temperature:0.7,max_tokens:CODING_MAX_TOKENS,...requestLevels(),websearch:codingWebSearch,messages:msgs})});
     if(!r.ok){const err=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(err).error||errMsg}catch(e2){}return errMsg}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -7916,7 +7939,7 @@ async function codingAutoContinue(){
       }
       // No new tool executions: recover a cut-off reply first, then verify
       // against open todos, or finish.
-      if(codingTruncRetries<3&&lastAssistantTruncated()){
+      if(codingTruncRetries<5&&lastAssistantTruncated()){
         codingTruncRetries++;
         addCodingSystemMsg('The AI’s reply was cut off while writing a file — the partial block was discarded, not saved. Asking it to re-send in smaller blocks…');
         codingHistory.push({role:'user',content:'Your previous reply was cut off while writing a file (output limit), so that partial file was NOT saved. Re-send it now in smaller pieces: at most ~150 lines per FILE_CREATE block, or start with a minimal working version and finish it with FILE_PATCH blocks. Always end every block with END_FILE_CREATE / END_FILE_PATCH. If several files are still missing, emit a TODO_LIST naming them first.'});

@@ -9281,18 +9281,19 @@ async def coding_preview(request: Request, path: str):
     """
     from fastapi.responses import Response as _Response
     user, err = _require_auth(request)
+    tok_folder = ""
     if err:
 
         # Same cookie-free path as assets: browsers may withhold Lax cookies
 
         # from sandboxed-frame navigations, so the frontend appends `t`.
-        user = _user_from_preview_token(
+        user, tok_folder = _user_from_preview_token(
             request.query_params.get("t"), request.query_params.get("path"))
         if user is None:
             return err
         request.state.user = user
     coding_state = _get_coding_state(_safe_username(user["username"]))
-    folder = coding_state.get("folder")
+    folder = tok_folder or coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
@@ -9317,12 +9318,12 @@ async def coding_preview(request: Request, path: str):
         _tab = request.query_params.get("tab") == "1"
         def _page_url(rel):
             url = "/api/coding/preview?path=" + _quote(rel, safe="/")
-            url += "&t=" + _mint_preview_token(user["id"], rel)
+            url += "&t=" + _mint_preview_token(user["id"], rel, folder)
             if _tab:
                 url += "&tab=1"
             return url
         content = _rewrite_preview_assets(content, path, user["id"],
-                                          page_url_for=_page_url)
+                                          page_url_for=_page_url, folder=folder)
         return _Response(
             content=content,
             media_type="text/html",
@@ -9333,7 +9334,7 @@ async def coding_preview(request: Request, path: str):
                 # when the browser withholds cookies (sandboxed frame) or the
 
                 # tab was opened without a session context.
-                "X-Preview-Token": _mint_preview_token(user["id"], path),
+                "X-Preview-Token": _mint_preview_token(user["id"], path, folder),
 
                 # Real-tab mode drops the sandbox entirely (see docstring);
 
@@ -9489,66 +9490,131 @@ def _preview_secret() -> bytes:
         return data
 
 
-def _mint_preview_token(user_id, path: str, ttl: int = _PREVIEW_TOKEN_TTL) -> str:
-    """Mint `exp.user_id.nonce.sig` for one asset path (read-only, 1h default).
+def _mint_preview_token(user_id, path: str, folder: str = "", ttl: int = _PREVIEW_TOKEN_TTL) -> str:
+    """Mint a token for one asset path (read-only, 1h default).
 
     The nonce makes every mint unique, so each preview click produces a
     fresh URL that cannot be correlated with (or replayed from) an older one.
+
+    The project FOLDER is bound into the signature (5-part token). Asset
+    requests then resolve against the folder the page was rendered from —
+    not the server's mutable "currently open" folder, which may have moved
+    on (project switch in another tab), leaving styles.css to 404 or serve
+    another project's file while the page itself renders. Empty folder mints
+    the legacy 4-part shape (remote previews, which carry no local folder).
     """
     exp = int(time.time()) + int(ttl)
     nonce = secrets.token_hex(8)
+    folder = str(folder or "")
+    if folder:
+        import base64 as _b64
+        fdir = _b64.urlsafe_b64encode(folder.encode("utf-8")).decode("ascii")
+        sig = hmac.new(
+            _preview_secret(),
+            f"{user_id}:{folder}:{path}:{exp}:{nonce}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:32]
+        return f"{exp}.{user_id}.{nonce}.{fdir}.{sig}"
     sig = hmac.new(
         _preview_secret(),
-        f"{user_id}:{path}:{exp}:{nonce}".encode("utf-8"),
+        f"{user_id}::{path}:{exp}:{nonce}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:32]
     return f"{exp}.{user_id}.{nonce}.{sig}"
 
 
-def _user_from_preview_token(token, path):
-    """Validate a preview token for `path`; return the user dict or None.
-
-    Binds user id + exact path + expiry; signature compared in constant time.
-    Tampering with any field (including swapping paths) invalidates it."""
-    if not token or not path or len(token) > 192:
-        return None
-    parts = token.split(".")
-    if len(parts) == 4:
-        exp_s, uid_s, nonce, sig = parts
-        msg_tail = f":{nonce}"
-    elif len(parts) == 3:
-
-        # Legacy pre-nonce tokens: still honored until they expire.
-        exp_s, uid_s, sig = parts
-        msg_tail = ""
-    else:
-        return None
-    try:
-        exp = int(exp_s)
-        uid = int(uid_s)
-    except ValueError:
-        return None
-    now = int(time.time())
-    if exp < now or exp > now + 86400:
-        return None
-    expected = hmac.new(
+def _preview_token_sig(user_id, folder, path, exp, nonce_tail: str = "") -> str:
+    return hmac.new(
         _preview_secret(),
-        f"{uid}:{path}:{exp}{msg_tail}".encode("utf-8"),
+        f"{user_id}:{folder}:{path}:{exp}{nonce_tail}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:32]
-    if not hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
-        return None
+
+
+def _user_from_preview_token(token, path, folder=""):
+    """Validate a preview token for `path`; return (user dict, bound folder).
+
+    Binds user id + project folder + exact path + expiry; signature compared
+    in constant time. Tampering with any field (including swapping paths or
+    folders) invalidates it. Pre-folder tokens (minted before the folder was
+    bound) are still honored until they expire, returning folder "".
+    """
+    if not token or not path or len(token) > 512:
+        return None, ""
+    parts = token.split(".")
     try:
-        return get_user_by_id(uid)
-    except Exception:
-        return None
+        if len(parts) == 5:
+            # Folder-bound: exp.uid.nonce.b64(folder).sig
+            exp_s, uid_s, nonce, fdir, sig = parts
+            import base64 as _b64
+            bound = _b64.urlsafe_b64decode(fdir.encode("ascii")).decode("utf-8")
+            exp, uid = int(exp_s), int(uid_s)
+            now = int(time.time())
+            if exp < now or exp > now + 86400:
+                return None, ""
+            expected = _preview_token_sig(uid, bound, path, exp, f":{nonce}")
+            if not hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
+                return None, ""
+            try:
+                return get_user_by_id(uid), bound
+            except Exception:
+                return None, ""
+        if len(parts) == 4:
+            exp_s, uid_s, nonce, sig = parts
+            msg_tail = f":{nonce}"
+        elif len(parts) == 3:
+            # Legacy pre-nonce tokens: still honored until they expire.
+            exp_s, uid_s, sig = parts
+            msg_tail = ""
+        else:
+            return None, ""
+        exp, uid = int(exp_s), int(uid_s)
+        now = int(time.time())
+        if exp < now or exp > now + 86400:
+            return None, ""
+        # New folder-bound shape first (caller-supplied, then empty), then the
+        # pre-folder shape for tokens minted before folders were bound.
+        for cand in ([str(folder or "")] if str(folder or "") else []) + [""]:
+            expected = _preview_token_sig(uid, cand, path, exp, msg_tail)
+            if hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
+                try:
+                    return get_user_by_id(uid), cand
+                except Exception:
+                    return None, ""
+        if msg_tail:
+            # Pre-folder 4-part shape: uid:path:exp:nonce (no folder field).
+            expected = hmac.new(
+                _preview_secret(),
+                f"{uid}:{path}:{exp}{msg_tail}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:32]
+            if hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
+                try:
+                    return get_user_by_id(uid), ""
+                except Exception:
+                    return None, ""
+        else:
+            # Pre-folder 3-part shape.
+            expected = hmac.new(
+                _preview_secret(),
+                f"{uid}:{path}:{exp}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:32]
+            if hmac.compare_digest(sig.encode("utf-8"), expected.encode("utf-8")):
+                try:
+                    return get_user_by_id(uid), ""
+                except Exception:
+                    return None, ""
+        return None, ""
+    except (ValueError, Exception):
+        return None, ""
 
 
-def _preview_asset_url(rel_path: str, user_id=None) -> str:
+def _preview_asset_url(rel_path: str, user_id=None, folder: str = "") -> str:
     from urllib.parse import quote
     url = "/api/coding/preview-asset?path=" + quote(rel_path, safe="/")
     if user_id is not None:
-        url += "&t=" + _mint_preview_token(user_id, rel_path)
+        url += "&t=" + _mint_preview_token(user_id, rel_path, folder)
     return url
 
 
@@ -9570,7 +9636,7 @@ _PAGE_LINK_RE = re.compile(
     re.IGNORECASE | re.DOTALL)
 
 
-def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None, page_url_for=None, base_root="") -> bytes:
+def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_for=None, page_url_for=None, base_root="", folder: str = "") -> bytes:
     """Rewrite relative asset URLs in a previewed HTML page to absolute
     preview-asset URLs (with a signed token), so linked CSS/JS/images actually
     load inside the opaque-origin iframe. Covers quoted, unquoted and srcset
@@ -9578,7 +9644,10 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
     and javascript: URLs are left untouched.
 
     Pass url_for(rel_path)->url to route assets elsewhere (e.g. shared
-    preview links, which stay valid as long as the share does)."""
+    preview links, which stay valid as long as the share does). `folder` is
+    the project folder the page was read from; it is bound into each asset
+    token so styles.css always resolves against THIS project even if the
+    server's open folder changes before the subrequests arrive."""
     try:
         text = content.decode("utf-8")
     except Exception:
@@ -9615,7 +9684,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
             return None
         if url_for is not None:
             return url_for(norm)
-        return _preview_asset_url(norm, user_id)
+        return _preview_asset_url(norm, user_id, folder)
 
     def repl_quoted(m):
         target = resolve(m.group(3))
@@ -9647,7 +9716,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
 
     def repl_style(m):
         return (m.group(1)
-                + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for, base_root)
+                + _rewrite_css_urls(m.group(2), page_dir, user_id, url_for, base_root, folder)
                 + m.group(3))
 
     def repl_page(m):
@@ -9683,7 +9752,7 @@ def _rewrite_preview_assets(content: bytes, page_path: str, user_id=None, url_fo
     return text.encode("utf-8")
 
 
-def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None, base_root="") -> str:
+def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None, base_root="", folder: str = "") -> str:
     """Rewrite relative url(...) and @import "..." in a served stylesheet to
     preview-asset URLs so fonts/backgrounds resolve (external/data untouched)."""
     import posixpath
@@ -9705,7 +9774,7 @@ def _rewrite_css_urls(css_text: str, css_dir: str, user_id=None, url_for=None, b
             return None
         if url_for is not None:
             return url_for(norm)
-        return _preview_asset_url(norm, user_id)
+        return _preview_asset_url(norm, user_id, folder)
 
     def repl_url(m):
         target = resolve(m.group(2))
@@ -9731,21 +9800,25 @@ async def coding_preview_asset(request: Request, path: str):
     """Serve a project file referenced by a previewed page (CSS/JS/images).
     Auth via session cookie/header OR a signed `t` token: the sandboxed
     preview iframe has an opaque origin, so browsers withhold SameSite=Lax
-    cookies from its subrequests. Same containment; correct MIME types
-    (required under nosniff); size-capped."""
+    cookies from its subrequests. The token binds the project folder the
+    page was rendered from, so styles.css resolves against THAT project even
+    when the server's open folder has since moved on (project switch in
+    another tab) — the intermittent unstyled-preview bug. Same containment;
+    correct MIME types (required under nosniff); size-capped."""
     from fastapi.responses import Response as _Response
     import mimetypes
     user, err = _require_auth(request)
+    tok_folder = ""
     if err:
 
         # Cookie-free path: short-lived token minted during HTML rewriting.
-        user = _user_from_preview_token(
+        user, tok_folder = _user_from_preview_token(
             request.query_params.get("t"), request.query_params.get("path"))
         if user is None:
             return err
         request.state.user = user
     coding_state = _get_coding_state(_safe_username(user["username"]))
-    folder = coding_state.get("folder")
+    folder = tok_folder or coding_state.get("folder")
     access_err = _folder_access_error(user, folder)
     if access_err:
         return access_err
@@ -9770,7 +9843,7 @@ async def coding_preview_asset(request: Request, path: str):
             css_dir = posixpath.dirname(path.replace("\\", "/"))
             try:
                 content = _rewrite_css_urls(content.decode("utf-8"), css_dir,
-                                            user.get("id")).encode("utf-8")
+                                            user.get("id"), folder=folder).encode("utf-8")
             except Exception:
                 pass
         return _Response(
@@ -10055,7 +10128,7 @@ async def coding_remote_preview(request: Request, agent: str = "", path: str = "
     tokkey = _remote_tokkey(agent, path)
     user, err = _require_auth(request)
     if err:
-        user = _user_from_preview_token(request.query_params.get("t"), tokkey)
+        user, _ = _user_from_preview_token(request.query_params.get("t"), tokkey)
         if user is None:
             return err
         request.state.user = user
@@ -10108,7 +10181,7 @@ async def coding_remote_asset(request: Request, agent: str = "", path: str = "")
     tokkey = _remote_tokkey(agent, path)
     user, err = _require_auth(request)
     if err:
-        user = _user_from_preview_token(request.query_params.get("t"), tokkey)
+        user, _ = _user_from_preview_token(request.query_params.get("t"), tokkey)
         if user is None:
             return err
     if not agent or _bad_path(path):
