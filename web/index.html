@@ -4068,7 +4068,24 @@ function openFileActionModal(path,execCmd){
   const runners={py:'python',js:'node',ts:'npx ts-node',sh:'bash',rb:'ruby',php:'php',go:'go run',ps1:'powershell -File'};
   if(execCmd||runners[ext])mk('Run','btn btn-primary',()=>{closeFileActionModal();runFileScanned(path,execCmd||runners[ext])});
   if(ext==='html'||ext==='htm')mk('Preview','btn btn-primary',()=>{closeFileActionModal();previewFileScanned(path)});
-  if(typeof isGodotProject==='function'&&isGodotProject())mk('▶ Play','btn btn-primary',()=>{closeFileActionModal();playGodotGame()});
+  if(typeof isGodotProject==='function'){
+    if(isGodotProject())mk('▶ Play','btn btn-primary',()=>{closeFileActionModal();playGodotGame()});
+    else if(typeof loadAllCodingFiles==='function'){
+      // The list may simply not be loaded yet — re-check when it is and add
+      // Play without making the user close and reopen this menu.
+      loadAllCodingFiles(true).then(()=>{try{
+        if(!isGodotProject())return;
+        try{updateGodotPlayUI()}catch(e){}
+        if(!document.getElementById('file-action-modal').classList.contains('open'))return;
+        const actions=document.getElementById('file-action-actions');
+        if(!actions||actions.querySelector('[data-godot-play]'))return;
+        const b=document.createElement('button');b.className='btn btn-primary';b.textContent='▶ Play';
+        b.setAttribute('data-godot-play','1');
+        b.onclick=()=>{closeFileActionModal();playGodotGame()};
+        actions.appendChild(b);
+      }catch(e){}}).catch(()=>{});
+    }
+  }
   document.getElementById('file-action-modal').classList.add('open');
 }
 function closeFileActionModal(){document.getElementById('file-action-modal').classList.remove('open')}
@@ -4309,8 +4326,11 @@ function isGodotProject(){
     return h.some(p=>String(p||'').toLowerCase().split('/').pop()==='project.godot');
   }catch(e){return false}
 }
-function updateGodotPlayUI(){
-  // The toolbar Play button only exists for Godot projects.
+async function updateGodotPlayUI(){
+  // The toolbar Play button only exists for Godot projects. The file list it
+  // checks is only filled on demand, so ensure it is loaded first — otherwise
+  // the button never appears even with project.godot sitting in the tree.
+  try{if(typeof loadAllCodingFiles==='function')await loadAllCodingFiles(true)}catch(e){}
   try{
     const b=document.getElementById('coding-godot-play-btn');
     if(b)b.style.display=(isGodotProject()&&codingFolder&&!isRemote())?'':'none';
@@ -4492,7 +4512,7 @@ function autoAttachProjectFiles(){
   // re-reading files via shell (whose output the harness truncates).
   try{
     const tree=(typeof window!=='undefined'&&window.lastCodingTree)||[];
-    const exts=/\.(html?|css|js|mjs|cjs|jsx|tsx?|json|py|md|txt|yml|yaml|toml|sh|ps1|sql|java|c|cpp|go|rs|rb|php)$/i;
+    const exts=/\.(html?|css|js|mjs|cjs|jsx|tsx?|json|py|md|txt|yml|yaml|toml|sh|ps1|sql|java|c|cpp|go|rs|rb|php|gd|tscn|tres|godot|cfg)$/i;
     const files=[];
     (function walk(ns){for(const n of (ns||[])){if(!n)continue;if(n.type==='dir')walk(n.children);else if(n.name&&n.path&&exts.test(n.name))files.push(n)}})(tree);
     files.sort((a,b)=>a.path.split('/').length-b.path.split('/').length);
