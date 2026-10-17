@@ -4920,6 +4920,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('INTERACTIVE COMPLETENESS')<0)sysPrompt+='\nINTERACTIVE COMPLETENESS: every control the user asked for (keyboard, mouse look via pointer lock on canvas click, touch, START/PLAY button) must exist and be wired on first delivery — a button that does nothing is a failed delivery. Prefer <canvas> + requestAnimationFrame (three.js pinned CDN for 3D); generate textures/models procedurally in code rather than hotlinking. index.html must run standalone; re-read the file and trace every control end to end before claiming done.\n';
   if(sysPrompt.indexOf('WEBSITE / HTML TRIO')<0)sysPrompt+='\nWEBSITE / HTML TRIO (mandatory): whenever the user asks for a website, web app, landing page, or anything in HTML, ALWAYS create all three files — `index.html`, `styles.css`, and `app.js` (or `script.js`) — and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus `<script src="app.js"><'+'/script>` in `<body>` (unless the user explicitly asked for a single self-contained file). List all three in your TODO_LIST as separate items and never ship an HTML page without a real CSS stylesheet and JS script. This rule does NOT apply to Godot engine projects — those ship project.godot, scenes and scripts instead, never index.html/styles.css/app.js.\n';
   if(sysPrompt.indexOf('GODOT-FIRST')<0)sysPrompt+='\nGODOT-FIRST (mandatory): whenever the user asks for a GAME, build it as a GODOT 4 project, never as hand-rolled HTML5/JS: `project.godot` (config_version=5, name set, run/main_scene pointing at a scene that exists), text `.tscn` scenes, `.gd` GDScript, Compatibility renderer (`rendering_method` and `.web` = "gl_compatibility" — Forward+/Mobile cannot run in a browser). NO C#, NO GDExtension, NO binary scenes. Never write export_presets.cfg custom shells or exported index.html/.wasm/.pck yourself — the server exports and the user plays via the Play button.\n';
+  if(sysPrompt.indexOf('GODOT 4 API ONLY')<0)sysPrompt+='\nGODOT 4 API ONLY (never emit Godot 3 APIs): `@onready`/`@export`/`@tool` annotations, never bare onready/export/tool; `await` not yield(); `.instantiate()` not `.instance()`; randf_range/deg_to_rad/str_to_var not the old short names; Packed*Array not Pool*Array; CharacterBody2D/3D with velocity property and a no-arg move_and_slide(); signal_name.connect(callable) not connect("name", obj, "method"); RefCounted not Reference; Node3D not Spatial; Sprite2D not Sprite; suffixed body/area classes (RigidBody2D/3D, StaticBody2D/3D, Area2D/3D); change_scene_to_file() not get_tree().change_scene(); Engine.is_editor_hint(); RenderingServer not VisualServer; DisplayServer not OS.window_*; TYPE_FLOAT not TYPE_REAL; # comments; never setget. The server lints every .gd you write (3-ism scan + headless parse) and returns errors — fix them with small FILE_PATCH blocks.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -8393,6 +8394,75 @@ async function codingWriteFile(path,content){
     return{ok:false,error:data.error};
   }catch(e){return{ok:false,error:e.message}}
 }
+// ---- GDScript lint (client half) ----------------------------------------
+// Small coding models keep emitting Godot 3 APIs. The server lints every
+// written .gd with a real headless parse when the Godot binary is installed;
+// this mirror catches the API-isms instantly on every project (including
+// local folders the server cannot see) and feeds them into the same
+// validation-retry loop. Keep the rule list in sync with the server's
+// _GODOT_3ISMS in api_server.py.
+function gdStripNoise(code){
+  // Blank string literals and # comments (line count preserved) so the rules
+  // never fire on docs or example text inside a script.
+  let out='',i=0,inS=null;
+  const s=String(code==null?'':code);
+  while(i<s.length){const c=s[i];
+    if(inS){if(c==='\\'){out+='  ';i+=2;continue}if(c===inS)inS=null;out+=(c==='\n'?'\n':' ');i++;continue}
+    if(c==='#'){while(i<s.length&&s[i]!=='\n'){out+=' ';i++}continue}
+    if(c==='"'||c==="'"){inS=c;out+=' ';i++;continue}
+    out+=c;i++
+  }
+  return out
+}
+const GD_3ISMS=[
+  [/^[ \t]*onready[ \t]+var\b/m,"Godot 3 syntax: use '@onready var', not 'onready var'"],
+  [/^[ \t]*export[ \t]/m,"Godot 3 syntax: use '@export var', not 'export var'"],
+  [/^[ \t]*tool[ \t]*$/m,"Godot 3 syntax: put '@tool' on its own line, not 'tool'"],
+  [/\byield[ \t]*\(/,"Godot 3 API: use 'await' (or connect a signal), not yield()"],
+  [/\.instance[ \t]*\([ \t]*\)/,"Godot 3 API: use .instantiate(), not .instance()"],
+  [/\brand_range[ \t]*\(/,"Godot 3 API: use randf_range(a, b), not rand_range"],
+  [/\bstepify[ \t]*\(/,"Godot 3 API: use snappedf()/snapped(), not stepify"],
+  [/\bdeg2rad[ \t]*\(/,"Godot 3 API: use deg_to_rad(), not deg2rad"],
+  [/\brad2deg[ \t]*\(/,"Godot 3 API: use rad_to_deg(), not rad2deg"],
+  [/\bstr2var[ \t]*\(/,"Godot 3 API: use str_to_var(), not str2var"],
+  [/\bvar2str[ \t]*\(/,"Godot 3 API: use var_to_str(), not var2str"],
+  [/\bPool(?:Byte|Int|Real|String|Vector2|Vector3|Color)Array\b/,"Godot 3 API: use Packed*Array (PackedByteArray etc), not Pool*Array"],
+  [/\bextends[ \t]+KinematicBody2D\b/,"Godot 3 class: KinematicBody2D is CharacterBody2D in Godot 4 (set the velocity property, then call move_and_slide() with no arguments)"],
+  [/\bextends[ \t]+KinematicBody\b/,"Godot 3 class: KinematicBody is CharacterBody3D in Godot 4"],
+  [/\bextends[ \t]+RigidBody\b/,"Godot 3 class: RigidBody is RigidBody3D in Godot 4 (2D is RigidBody2D)"],
+  [/\bextends[ \t]+StaticBody\b/,"Godot 3 class: StaticBody is StaticBody3D in Godot 4 (2D is StaticBody2D)"],
+  [/\bextends[ \t]+Area\b/,"Godot 3 class: Area is Area3D in Godot 4 (2D is Area2D)"],
+  [/\bextends[ \t]+Spatial\b/,"Godot 3 class: Spatial is Node3D in Godot 4"],
+  [/\bextends[ \t]+Reference\b/,"Godot 3 class: Reference is RefCounted in Godot 4"],
+  [/\bextends[ \t]+Light\b/,"Godot 3 class: Light is Light3D in Godot 4"],
+  [/\bextends[ \t]+Sprite\b/,"Godot 3 class: Sprite is Sprite2D in Godot 4"],
+  [/\bextends[ \t]+Camera\b/,"Godot 3 class: Camera is Camera3D in Godot 4"],
+  [/\bextends[ \t]+Particles2D\b/,"Godot 3 class: Particles2D is GPUParticles2D in Godot 4"],
+  [/\bextends[ \t]+Particles3D\b/,"Godot 3 class: Particles3D is GPUParticles3D in Godot 4"],
+  [/^[ \t]*(?:master|puppet|remote)[ \t]+func\b/m,"Godot 3 networking: use @rpc annotations, not master/puppet/remote func"],
+  [/^[ \t]*setget\b/m,"Godot 3 syntax: use get:/set: property accessors, not setget"],
+  [/\bmove_and_slide_with_collision[ \t]*\(/,"Godot 3 API: move_and_slide_with_collision was removed; use move_and_slide()"],
+  [/\bmove_and_slide[ \t]*\([ \t]*(?:velocity|Vector2|[A-Za-z_])/,"Godot 4 move_and_slide() takes NO arguments — set the velocity property first"],
+  [/\bconnect[ \t]*\([ \t]+,/,"Godot 3 connect style: use signal_name.connect(callable), not connect(\"name\", obj, \"method\")"],
+  [/\bdisconnect[ \t]*\([ \t]+,/,"Godot 3 disconnect style: use signal_name.disconnect(callable), not disconnect(\"name\", ...)"],
+  [/\bis_connected[ \t]*\([ \t]+,/,"Godot 3 is_connected style: use signal_name.is_connected(callable)"],
+  [/\bEngine\.editor_hint\b/,"Godot 3 API: use Engine.is_editor_hint(), not Engine.editor_hint"],
+  [/\bOS\.window_/,"Godot 3 API: window/display settings moved to DisplayServer, not OS.window_*"],
+  [/\bOS\.get_screen_/,"Godot 3 API: screen functions moved to DisplayServer, not OS.get_screen_*"],
+  [/\bVisualServer\b/,"Godot 3 class: VisualServer is RenderingServer in Godot 4"],
+  [/\bget_tree[ \t]*\([ \t]*\)[ \t]*\.[ \t]*change_scene[ \t]*\(/,"Godot 3 API: use get_tree().change_scene_to_file(\"res://scene.tscn\")"],
+  [/\bpause_mode\b/,"Godot 3 property: use process_mode (Node.PROCESS_MODE_*), not pause_mode"],
+  [/\bTYPE_REAL\b/,"Godot 3 constant: TYPE_REAL is TYPE_FLOAT in Godot 4"],
+  [/^[ \t]*\._(?:ready|process|physics_process|enter_tree|exit_tree|init|input|unhandled_input)[ \t]*\(/m,"Godot 3 super-call style: use super._ready() / super.method(), not ._ready()"]
+];
+function gdGodot3isms(code){
+  const s=gdStripNoise(code);
+  for(let i=0;i<GD_3ISMS.length;i++){
+    const m=GD_3ISMS[i][0].exec(s);
+    if(m)return'line '+(s.slice(0,m.index).split('\n').length)+': '+GD_3ISMS[i][1];
+  }
+  return null
+}
 function checkSyntax(ext,code){
   // Client-side syntax tripwire for just-written files. Conservative by
   // design: unknown languages and ambiguous cases pass (null). Only
@@ -8405,13 +8475,18 @@ function checkSyntax(ext,code){
       if(doc.querySelector('parsererror'))return'HTML parse error';
       return null;
     }
+    if(ext==='gd'){
+      // Godot 3-isms first (most actionable), then bracket balance.
+      const gerr=gdGodot3isms(code);
+      if(gerr)return gerr;
+    }
     if(ext==='js'||ext==='mjs'||ext==='cjs'||ext==='jsx'||ext==='ts'||ext==='tsx'
-      ||ext==='css'||ext==='py'||ext==='sh'||ext==='ps1'){
+      ||ext==='css'||ext==='py'||ext==='sh'||ext==='ps1'||ext==='gd'){
       // Balanced brackets/parens/braces with string+comment awareness.
       // Catches the dominant real failure: truncated output.
-      // NOTE: CSS has no // comments — remote font urls (https://…)
+      // NOTE: CSS has no // comments � remote font urls (https://�)
       // would otherwise eat the rest of the line and fake an imbalance.
-      const lineComment=(ext==='py'||ext==='sh')?'#':null;
+      const lineComment=(ext==='py'||ext==='sh'||ext==='gd')?'#':null;
       const slashLine=(ext==='js'||ext==='mjs'||ext==='cjs'||ext==='jsx'||ext==='ts'||ext==='tsx');
       let b=0,p=0,q=0,inS=null,inC=false,inL=false;
       for(let i=0;i<code.length;i++){const c=code[i];
@@ -8455,6 +8530,23 @@ async function validateWrittenFiles(){
     const ext=(path.split('.').pop()||'').toLowerCase();
     const err=checkSyntax(ext,content);
     if(err)errors.push(path+': '+err);
+  }
+  // Real Godot validation: when a server project just gained .gd files, ask
+  // the server to lint them (headless parse + short smoke run when the Godot
+  // binary is installed; regex 3-ism scan otherwise). Errors land in the
+  // same validation-retry path as syntax failures, so the loop fixes them
+  // without the user ever seeing a black screen. Local folders the server
+  // cannot read already got the client-side 3-ism pass above.
+  const gdNow=paths.filter(p=>/\.(gd)$/i.test(p));
+  if(gdNow.length&&typeof codingIsServerProject==='function'&&codingIsServerProject()&&codingFolder){
+    try{
+      const lr=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gdNow,smoke:true})});
+      if(lr&&lr.ok){
+        const ld=await lr.json().catch(()=>null);
+        const le=(ld&&Array.isArray(ld.errors))?ld.errors:[];
+        for(const e of le)if(e)errors.push('Godot: '+String(e).slice(0,300));
+      }
+    }catch(e){}
   }
   return{ok:errors.length===0,errors,files:paths};
 }

@@ -6290,6 +6290,24 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   touch; the game must reach playable gameplay from launch with a working
   start/play flow. Keep scenes and scripts small, readable, and consistent
   with each other (node names and signal connections must match the code).
+- GODOT 4 API ONLY (small models keep hallucinating Godot 3 — none of these
+  exist in Godot 4): `@onready`/`@export`/`@tool` annotations, never bare
+  `onready`/`export`/`tool`; `await`, never `yield()`; `.instantiate()`,
+  never `.instance()`; `randf_range()`/`deg_to_rad()`/`str_to_var()`, never
+  the old short names; `Packed*Array`, never `Pool*Array`;
+  CharacterBody2D/3D with a `velocity` property and a NO-argument
+  `move_and_slide()`; `signal_name.connect(callable)`, never
+  `connect("name", obj, "method")`; `RefCounted` not Reference, Node3D not
+  Spatial, Sprite2D not Sprite, RigidBody2D/3D / StaticBody2D/3D /
+  Area2D/Area3D with the suffix always; `change_scene_to_file()` not
+  `get_tree().change_scene()`; `Engine.is_editor_hint()` not
+  `Engine.editor_hint`; RenderingServer not VisualServer; DisplayServer not
+  `OS.window_*`; TYPE_FLOAT not TYPE_REAL; `#` comments; never `setget`.
+  Every `.gd` file must PARSE: consistent tab indentation, matching
+  blocks, and signal connections only to signals that actually exist. The
+  server lints every script you write (Godot-3-ism scan + real headless
+  parse) and sends errors back — fix them with small FILE_PATCH blocks,
+  never re-emit a whole file to fix a lint error.
 - GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
   `export_presets.cfg` alone unless it is missing; never write a custom
   HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
@@ -10129,6 +10147,282 @@ def _godot_project_problems(folder: str):
     return problems
 
 
+# ---- GDScript lint (the "AI writes broken Godot" fix) ---------------------
+# Small coding models fluent in Python/JS consistently emit Godot 3 APIs
+# (onready/yield/.instance()/Pool*Array/...) that parse-or-crash in Godot 4.
+# Two layers catch it BEFORE the user sees a black screen:
+#   1 a regex pass over each written .gd (works everywhere, no binary),
+#   2 when the Godot binary is installed (Docker), a real headless parse of
+#     every script plus a short headless RUN of the game that surfaces
+#     runtime script errors (bad node paths, nonexistent methods, etc).
+# The client loop feeds any errors back into the existing validation retry.
+
+_GODOT_3ISMS = [
+    (r"(?m)^[ \t]*onready[ \t]+var\b",
+     "Godot 3 syntax: use '@onready var', not 'onready var'"),
+    (r"(?m)^[ \t]*export[ \t]",
+     "Godot 3 syntax: use '@export var', not 'export var'"),
+    (r"(?m)^[ \t]*tool[ \t]*$",
+     "Godot 3 syntax: put '@tool' on its own line, not 'tool'"),
+    (r"\byield[ \t]*\(",
+     "Godot 3 API: use 'await' (or connect a signal), not yield()"),
+    (r"\.instance[ \t]*\([ \t]*\)",
+     "Godot 3 API: use .instantiate(), not .instance()"),
+    (r"\brand_range[ \t]*\(",
+     "Godot 3 API: use randf_range(a, b), not rand_range"),
+    (r"\bstepify[ \t]*\(",
+     "Godot 3 API: use snappedf()/snapped(), not stepify"),
+    (r"\bdeg2rad[ \t]*\(",
+     "Godot 3 API: use deg_to_rad(), not deg2rad"),
+    (r"\brad2deg[ \t]*\(",
+     "Godot 3 API: use rad_to_deg(), not rad2deg"),
+    (r"\bstr2var[ \t]*\(",
+     "Godot 3 API: use str_to_var(), not str2var"),
+    (r"\bvar2str[ \t]*\(",
+     "Godot 3 API: use var_to_str(), not var2str"),
+    (r"\bPool(?:Byte|Int|Real|String|Vector2|Vector3|Color)Array\b",
+     "Godot 3 API: use Packed*Array (PackedByteArray etc), not Pool*Array"),
+    (r"\bextends[ \t]+KinematicBody2D\b",
+     "Godot 3 class: KinematicBody2D is CharacterBody2D in Godot 4 "
+     "(set the velocity property, then call move_and_slide() with no arguments)"),
+    (r"\bextends[ \t]+KinematicBody\b",
+     "Godot 3 class: KinematicBody is CharacterBody3D in Godot 4"),
+    (r"\bextends[ \t]+RigidBody\b",
+     "Godot 3 class: RigidBody is RigidBody3D in Godot 4 (2D is RigidBody2D)"),
+    (r"\bextends[ \t]+StaticBody\b",
+     "Godot 3 class: StaticBody is StaticBody3D in Godot 4 (2D is StaticBody2D)"),
+    (r"\bextends[ \t]+Area\b",
+     "Godot 3 class: Area is Area3D in Godot 4 (2D is Area2D)"),
+    (r"\bextends[ \t]+Spatial\b",
+     "Godot 3 class: Spatial is Node3D in Godot 4"),
+    (r"\bextends[ \t]+Reference\b",
+     "Godot 3 class: Reference is RefCounted in Godot 4"),
+    (r"\bextends[ \t]+Light\b",
+     "Godot 3 class: Light is Light3D in Godot 4"),
+    (r"\bextends[ \t]+Sprite\b",
+     "Godot 3 class: Sprite is Sprite2D in Godot 4"),
+    (r"\bextends[ \t]+Camera\b",
+     "Godot 3 class: Camera is Camera3D in Godot 4"),
+    (r"\bextends[ \t]+Particles2D\b",
+     "Godot 3 class: Particles2D is GPUParticles2D in Godot 4"),
+    (r"\bextends[ \t]+Particles3D\b",
+     "Godot 3 class: Particles3D is GPUParticles3D in Godot 4"),
+    (r"(?m)^[ \t]*(?:master|puppet|remote)[ \t]+func\b",
+     "Godot 3 networking: use @rpc annotations, not master/puppet/remote func"),
+    (r"(?m)^[ \t]*setget\b",
+     "Godot 3 syntax: use get:/set: property accessors, not setget"),
+    (r"\bmove_and_slide_with_collision[ \t]*\(",
+     "Godot 3 API: move_and_slide_with_collision was removed; use move_and_slide()"),
+    (r"\bmove_and_slide[ \t]*\([ \t]*(?:velocity|Vector2|[A-Za-z_])",
+     "Godot 4 move_and_slide() takes NO arguments — set the velocity property first"),
+    # After _godot_strip_noise a leading string arg reads as spaces then a
+    # comma: connect("hit", self) -> connect(     , self). The dot-less form
+    # is the common Godot 3 self-connect; \bconnect covers obj.connect too.
+    (r"\bconnect[ \t]*\([ \t]+,",
+     "Godot 3 connect style: use signal_name.connect(callable), not connect(\"name\", obj, \"method\")"),
+    (r"\bdisconnect[ \t]*\([ \t]+,",
+     "Godot 3 disconnect style: use signal_name.disconnect(callable), not disconnect(\"name\", ...)"),
+    (r"\bis_connected[ \t]*\([ \t]+,",
+     "Godot 3 is_connected style: use signal_name.is_connected(callable)"),
+    (r"\bEngine\.editor_hint\b",
+     "Godot 3 API: use Engine.is_editor_hint(), not Engine.editor_hint"),
+    (r"\bOS\.window_",
+     "Godot 3 API: window/display settings moved to DisplayServer, not OS.window_*"),
+    (r"\bOS\.get_screen_",
+     "Godot 3 API: screen functions moved to DisplayServer, not OS.get_screen_*"),
+    (r"\bVisualServer\b",
+     "Godot 3 class: VisualServer is RenderingServer in Godot 4"),
+    (r"\bget_tree[ \t]*\([ \t]*\)[ \t]*\.[ \t]*change_scene[ \t]*\(",
+     "Godot 3 API: use get_tree().change_scene_to_file(\"res://scene.tscn\")"),
+    (r"\bpause_mode\b",
+     "Godot 3 property: use process_mode (Node.PROCESS_MODE_*), not pause_mode"),
+    (r"\bTYPE_REAL\b",
+     "Godot 3 constant: TYPE_REAL is TYPE_FLOAT in Godot 4"),
+    (r"(?m)^[ \t]*\._(?:ready|process|physics_process|enter_tree|exit_tree|init|input|unhandled_input)[ \t]*\(",
+     "Godot 3 super-call style: use super._ready() / super.method(), not ._ready()"),
+]
+
+
+def _godot_strip_noise(text: str) -> str:
+    """Blank out string literals and # comments (same length per line) so the
+    3-ism rules never fire on documentation or example text inside a script."""
+    out = []
+    i, n = 0, len(text or "")
+    in_s = None
+    while i < n:
+        c = text[i]
+        if in_s:
+            if c == "\\":
+                out.append("  ")
+                i += 2
+                continue
+            if c == in_s:
+                in_s = None
+            out.append("\n" if c == "\n" else " ")
+            i += 1
+            continue
+        if c == "#":
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if c == '"' or c == "'":
+            in_s = c
+            out.append(" ")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _godot_regex_lint_text(rel: str, text: str):
+    """First hit per 3-ism rule, as 'rel:line: message' strings."""
+    errs = []
+    stripped = _godot_strip_noise(text)
+    for pat, msg in _GODOT_3ISMS:
+        m = re.search(pat, stripped)
+        if m:
+            line = stripped[:m.start()].count("\n") + 1
+            errs.append("%s:%d: %s" % (rel, line, msg))
+    return errs
+
+
+# SceneTree CLI tool: load() compiles each script; parse failures return null
+# and godot prints the parser error (with file:line) to stdout/stderr.
+_GODOT_LINT_TOOL = (
+    "extends SceneTree\n"
+    "func _init():\n"
+    "	var failed = false\n"
+    "	for rel in OS.get_cmdline_user_args():\n"
+    "		var s = load(\"res://\" + rel)\n"
+    "		if s == null:\n"
+    "			print(\"LINT_FAIL|\" + rel)\n"
+    "			failed = true\n"
+    "	quit(1 if failed else 0)\n"
+)
+
+
+def _godot_lint_run(editor: str, args, cwd: str, timeout: int):
+    """Run godot headless and return (rc, combined output). Unlike _godot_run
+    this never logs into the export job records, and the timeout KILLS the
+    process (a game run never exits on its own)."""
+    import subprocess as _sp
+    env = dict(os.environ)
+    env["HOME"] = _godot_home()
+    env.pop("DISPLAY", None)
+    try:
+        p = _sp.Popen([editor] + list(args), cwd=cwd, env=env,
+                      stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
+                      errors="replace")
+    except Exception as e:
+        return 127, str(e)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or ""
+    except _sp.TimeoutExpired:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        try:
+            out, _ = p.communicate(timeout=10)
+        except Exception:
+            out = ""
+        return 124, out or ""
+
+
+def _godot_parse_errors_from(out: str, rels):
+    """Pull SCRIPT ERROR / Parse Error lines out of a lint-tool run."""
+    errs = []
+    for line in (out or "").splitlines():
+        if "SCRIPT ERROR" not in line and "Parse Error" not in line \
+                and "parse error" not in line.lower():
+            continue
+        fm = re.search(r"res://([\w./-]+\.gd)", line)
+        lm = re.search(r"line (\d+)", line)
+        msg = re.sub(r"^SCRIPT ERROR:\s*", "", line).strip()
+        prefix = ""
+        if fm:
+            prefix = fm.group(1) + (":" + lm.group(1) if lm else "") + ": "
+        errs.append((prefix + msg)[:300])
+    return errs[:20]
+
+
+def _godot_smoke_errors_from(out: str):
+    """Runtime script errors from a short headless game run. Engine noise
+    without a res:// script reference is ignored."""
+    errs, seen = [], set()
+    for line in (out or "").splitlines():
+        if "SCRIPT ERROR" not in line and not (
+                "ERROR" in line and "res://" in line and ".gd" in line):
+            continue
+        msg = re.sub(r"^SCRIPT ERROR:\s*", "", line).strip()[:300]
+        if msg and msg not in seen:
+            seen.add(msg)
+            errs.append(msg)
+    return errs[:12]
+
+
+def _godot_lint_project(folder: str, files, smoke: bool = True):
+    """Lint Godot scripts in a project. Returns (errors, mode):
+    mode 'godot' = real headless parse (+ smoke run), 'regex' = API-ism scan
+    only (no binary / not Linux). NEVER writes into the project — the godot
+    runs happen on a throwaway snapshot, exactly like export."""
+    errors = []
+    rels = []
+    for rel in files:
+        rel = str(rel).replace("\\", "/").strip().lstrip("/")
+        if not rel or not rel.endswith(".gd") or _bad_path(rel):
+            continue
+        p = os.path.join(folder, rel.replace("/", os.sep))
+        try:
+            text = open(p, "r", encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        rels.append(rel)
+        errors.extend(_godot_regex_lint_text(rel, text))
+    if not rels:
+        return [], "noop"
+    if not (_godot_editor_ok() and sys.platform.startswith("linux")):
+        return errors, "regex"
+    import shutil as _sh
+    import tempfile as _tf
+    tmp = _tf.mkdtemp(prefix="gd-lint-")
+    try:
+        src = os.path.join(tmp, "proj")
+        _godot_snapshot(folder, src)
+        with open(os.path.join(src, "lint_tool.gd"), "w", encoding="utf-8") as f:
+            f.write(_GODOT_LINT_TOOL)
+        editor = _godot_editor_path()
+        rc, out = _godot_lint_run(
+            editor, ["--headless", "--path", src, "-s", "lint_tool.gd", "--"] + rels,
+            src, 120)
+        parse_errs = _godot_parse_errors_from(out, rels)
+        errors.extend(parse_errs)
+        failed = set()
+        for line in (out or "").splitlines():
+            if line.startswith("LINT_FAIL|"):
+                failed.add(line.split("|", 1)[1].strip())
+        for rel in rels:
+            if rel in failed and not any(e.startswith(rel + ":") for e in parse_errs):
+                errors.append(rel + ": failed to parse (no detail captured)")
+        if smoke and not failed and not parse_errs:
+            _godot_lint_run(editor, ["--headless", "--path", src, "--import"], src, 180)
+            _, out2 = _godot_lint_run(editor, ["--headless", "--path", src], src, 10)
+            errors.extend(_godot_smoke_errors_from(out2))
+        deduped = []
+        for e in errors:
+            if e not in deduped:
+                deduped.append(e)
+        return deduped[:20], "godot"
+    finally:
+        try:
+            _sh.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def _godot_builds_root(owner: str) -> str:
     """Every build artifact lives here — never in the project. Per user, on
     the user_data volume, so exports never pollute game folders and stale
@@ -10572,6 +10866,50 @@ async def godot_export(request: Request, req: GodotExportBody):
     t = threading.Thread(target=_godot_export_thread, args=(folder, user["id"], owner), daemon=True)
     t.start()
     return {"status": "ok", "started": True}
+
+
+class GodotLintBody(BaseModel):
+    folder: str = ""
+    files: list = []
+    smoke: bool = True
+
+
+# One lint at a time (godot boot is heavy); a busy lint returns ok/busy so the
+# coding loop simply lints again next round instead of queueing behind itself.
+_godot_lint_lock = threading.Lock()
+
+
+@app.post("/api/coding/godot/lint")
+def godot_lint(request: Request, req: GodotLintBody):
+    """Validate written GDScript: regex Godot-3-ism scan everywhere, plus a
+    real headless parse + short smoke run when the Godot binary is installed.
+    Sync on purpose — FastAPI runs it in the threadpool, so the event loop
+    keeps serving while godot boots."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    coding_state = _get_coding_state(owner)
+    open_folder = coding_state.get("folder") or ""
+    mm = _coding_folder_mismatch(req.folder, open_folder)
+    if mm:
+        return mm
+    folder = open_folder
+    access_err = _folder_access_error(user, folder, write=False)
+    if access_err:
+        return access_err
+    files = [str(f) for f in (req.files or []) if str(f).strip().lower().endswith(".gd")]
+    if not files:
+        return {"status": "ok", "errors": [], "mode": "noop"}
+    if not _godot_lint_lock.acquire(timeout=20):
+        return {"status": "ok", "errors": [], "mode": "busy"}
+    try:
+        errors, mode = _godot_lint_project(folder, files, smoke=bool(req.smoke))
+        return {"status": "ok", "errors": errors, "mode": mode}
+    except Exception as e:
+        return {"status": "ok", "errors": ["lint failed: %s" % e], "mode": "error"}
+    finally:
+        _godot_lint_lock.release()
 
 
 # Visible load diagnostics injected into the served game page: failed engine
