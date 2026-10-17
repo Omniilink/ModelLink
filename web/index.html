@@ -323,7 +323,8 @@ a:hover{text-decoration:underline}
 .coding-input-box:focus-within{border-color:var(--accent)}
 .coding-msg-tool.tool-cmd.running{border-color:var(--accent)}
 .coding-todo-bar{margin:0 0 6px;padding:8px 10px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px}
-.coding-todo-head{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:4px}
+.coding-todo-head{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:4px;cursor:pointer;user-select:none}
+.coding-todo-head:hover{color:var(--text-secondary)}
 .coding-todo-item{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text-secondary);padding:1px 0;font-family:var(--font)}
 .coding-todo-item .todo-box{width:14px;height:14px;border-radius:3px;border:1px solid var(--border-light);display:inline-flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;color:#fff}
 .coding-todo-item.done .todo-box{background:var(--success);border-color:var(--success)}
@@ -5321,7 +5322,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
@@ -6035,11 +6036,18 @@ function renderCodingStats(saved,host){
   if(!box||!box.isConnected){box=document.createElement('div');box.className='coding-live coding-live-done';host.appendChild(box);host._liveBox=box}
   box.innerHTML=codingLiveHtml(added,removed,files,tps)+'<span class="coding-live-time">'+(saved.when?escapeHtml(saved.when):'')+'</span>';
 }
+// Collapse state for the todo bar: big lists (over 10) start collapsed so a
+// 21-item plan does not eat the whole chat. Once the user clicks the header,
+// their choice sticks for the rest of the run.
+let codingTodosCollapsed=false;
+let codingTodosUserToggled=false;
 function renderCodingTodos(){
   const bar=document.getElementById('coding-todo-bar'),list=document.getElementById('coding-todo-list');
   if(!bar||!list)return;
   if(!codingTodos||codingTodos.length===0){bar.style.display='none';list.innerHTML='';return}
   bar.style.display='';bar.style.opacity='';list.innerHTML='';
+  if(!codingTodosUserToggled)codingTodosCollapsed=codingTodos.length>10;
+  try{list.style.display=codingTodosCollapsed?'none':''}catch(e){}
   try{
     const now=Date.now();
     const done=(codingTodos||[]).filter(t=>t.done),open=(codingTodos||[]).filter(t=>!t.done);
@@ -6050,7 +6058,12 @@ function renderCodingTodos(){
     let head='Todos '+done.length+'/'+codingTodos.length;
     if(elapsed>0)head+=' · '+fmtDur(elapsed);
     if(avg>0&&open.length)head+=' · ~'+fmtDur(avg*open.length)+' left';
-    const hd=bar.querySelector('.coding-todo-head');if(hd)hd.textContent=head;
+    const hd=bar.querySelector('.coding-todo-head');
+    if(hd){
+      hd.textContent=head+(codingTodosCollapsed?' ▸ ('+codingTodos.length+' todos)':' ▾');
+      hd.title=codingTodosCollapsed?'Show todos':'Hide todos';
+      hd.onclick=()=>{codingTodosCollapsed=!codingTodosCollapsed;codingTodosUserToggled=true;renderCodingTodos()};
+    }
     for(const t of codingTodos){
       const item=document.createElement('div');item.className='coding-todo-item'+(t.done?' done':'');
       const box=document.createElement('span');box.className='todo-box';box.textContent=t.done?'✓':'';
@@ -6796,6 +6809,10 @@ async function processCodingActions(text,msgEl){
 let codingAutoLoop=false,codingStopRequested=false;
 let codingAbort=null;
 let codingWrittenPaths=[];
+// Files whose last validation FAILED. They stay in the validation set until
+// they pass again — otherwise fixing one file lets the rest drift out of the
+// check and the loop declares "all clean" while siblings are still broken.
+let codingFailedPaths=[];
 let codingTodosWrote=[];
 // Counts file blocks that matched the file on disk exactly (+0 -0). Reset each
 // turn; a turn that only produces these has made no progress at all.
@@ -7259,6 +7276,7 @@ async function restoreCodingChat(){
   // empty new project keeps the old history in memory, which then leaks
   // into the model context AND gets persisted under the new project key.
   codingHistory=[];codingTodosWrote=[];codingSplitPending=false;
+  codingFailedPaths=[];codingTodosUserToggled=false;codingTodosCollapsed=false;
   let saved=null;
   // Cloud project: the conversation lives inside the project on the server.
   if(codingIsServerProject()){
@@ -8153,7 +8171,11 @@ async function codingAutoContinue(){
       }
       const open=openTodoTexts();
       if(open.length===0){
-        const vfin=await validateWrittenFiles();
+        // Finish gate: validate EVERY file this run touched (plus pending +
+        // failed), not just this round's writes — a model that echoes an
+        // all-checked TODO_LIST to open this gate must still face the real
+        // files. Only when the run wrote nothing is there nothing to check.
+        const vfin=await validateWrittenFiles(runTouchedPaths.size?[...runTouchedPaths]:[]);
         (vfin.files||[]).forEach(p=>runTouchedPaths.add(p));
         if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
           const missTrio=await detectMissingWebTrio([...runTouchedPaths]);
@@ -8515,12 +8537,16 @@ function checkSyntax(ext,code){
     return null;
   }catch(e){return e&&e.message?String(e.message).split('\n')[0].slice(0,160):'syntax error'}
 }
-async function validateWrittenFiles(){
-  // Validate files written since the last check (consumes the list).
-  // Returns {ok, errors, files}. Only REAL structural breakage fails.
-  const paths=[...new Set(codingWrittenPaths)];
+async function validateWrittenFiles(extraPaths){
+  // Validate files written since the last check (consumes the list) PLUS any
+  // file that FAILED the last check — a failure stays in the set until it
+  // passes again, so fixing one file can never let its broken siblings drift
+  // out of validation and open the "all clean" finish gate. extraPaths (the
+  // finish gate) validates an explicit set on top of both.
+  const paths=[...new Set([...(codingWrittenPaths||[]),...(codingFailedPaths||[]),...(extraPaths||[])])];
   codingWrittenPaths=[];
   const errors=[];
+  const failedNow=new Set();
   for(const path of paths){
     let content=null;
     try{
@@ -8529,7 +8555,7 @@ async function validateWrittenFiles(){
     if(content==null)continue;
     const ext=(path.split('.').pop()||'').toLowerCase();
     const err=checkSyntax(ext,content);
-    if(err)errors.push(path+': '+err);
+    if(err){errors.push(path+': '+err);failedNow.add(path)}
   }
   // Real Godot validation: when a server project just gained .gd files, ask
   // the server to lint them (headless parse + short smoke run when the Godot
@@ -8537,17 +8563,29 @@ async function validateWrittenFiles(){
   // same validation-retry path as syntax failures, so the loop fixes them
   // without the user ever seeing a black screen. Local folders the server
   // cannot read already got the client-side 3-ism pass above.
-  const gdNow=paths.filter(p=>/\.(gd)$/i.test(p));
-  if(gdNow.length&&typeof codingIsServerProject==='function'&&codingIsServerProject()&&codingFolder){
+  const gdPaths=paths.filter(p=>/\.(gd)$/i.test(p));
+  if(gdPaths.length&&typeof codingIsServerProject==='function'&&codingIsServerProject()&&codingFolder){
     try{
-      const lr=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gdNow,smoke:true})});
+      const lr=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gdPaths,smoke:true})});
       if(lr&&lr.ok){
         const ld=await lr.json().catch(()=>null);
         const le=(ld&&Array.isArray(ld.errors))?ld.errors:[];
-        for(const e of le)if(e)errors.push('Godot: '+String(e).slice(0,300));
+        if(le.length){
+          let unattributed=false;
+          for(const e of le)if(e){
+            errors.push('Godot: '+String(e).slice(0,300));
+            const mm=String(e).match(/^([\w./-]+\.gd):/);
+            if(mm)failedNow.add(mm[1]);else unattributed=true;
+          }
+          // Unattributed lint errors (e.g. runtime smoke errors) can belong
+          // to any written script — keep every .gd in the failed set so they
+          // all get re-linted until the report comes back clean.
+          if(unattributed)for(const p of gdPaths)failedNow.add(p);
+        }
       }
     }catch(e){}
   }
+  codingFailedPaths=[...failedNow];
   return{ok:errors.length===0,errors,files:paths};
 }
 // ---- FILE_PATCH target location ---------------------------------------

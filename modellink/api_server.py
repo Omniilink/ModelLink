@@ -10333,19 +10333,35 @@ def _godot_lint_run(editor: str, args, cwd: str, timeout: int):
 
 
 def _godot_parse_errors_from(out: str, rels):
-    """Pull SCRIPT ERROR / Parse Error lines out of a lint-tool run."""
-    errs = []
+    """Pull SCRIPT ERROR / Parse Error lines out of a lint-tool run.
+
+    Godot usually prints the file:line on the error line itself; when it does
+    not (resolution errors like 'Could not find type'), the error is buffered
+    and attributed to the file whose LINT_FAIL/LINT_OK marker follows — the
+    lint tool prints each marker right after loading that file."""
+    errs, buf = [], []
+
+    def flush(rel):
+        for m in buf:
+            errs.append((rel + ": " + m)[:300])
+        del buf[:]
+
     for line in (out or "").splitlines():
+        if line.startswith("LINT_FAIL|") or line.startswith("LINT_OK|"):
+            flush(line.split("|", 1)[1].strip())
+            continue
         if "SCRIPT ERROR" not in line and "Parse Error" not in line \
                 and "parse error" not in line.lower():
             continue
-        fm = re.search(r"res://([\w./-]+\.gd)", line)
-        lm = re.search(r"line (\d+)", line)
         msg = re.sub(r"^SCRIPT ERROR:\s*", "", line).strip()
-        prefix = ""
+        fm = re.search(r"res://([\w./-]+\.gd)", line)
         if fm:
+            lm = re.search(r"line (\d+)", line)
             prefix = fm.group(1) + (":" + lm.group(1) if lm else "") + ": "
-        errs.append((prefix + msg)[:300])
+            errs.append((prefix + msg)[:300])
+        else:
+            buf.append(msg)
+    flush("(script)")  # trailing errors with no marker after them
     return errs[:20]
 
 
@@ -10395,6 +10411,13 @@ def _godot_lint_project(folder: str, files, smoke: bool = True):
         with open(os.path.join(src, "lint_tool.gd"), "w", encoding="utf-8") as f:
             f.write(_GODOT_LINT_TOOL)
         editor = _godot_editor_path()
+        # Import FIRST: it populates .godot/global_script_class_cache.cfg so
+        # cross-file class_name types (var p: Player) resolve. On a fresh
+        # snapshot without it EVERY typed script falsely reports "Could not
+        # find type X in the current scope" — the model then "fixes" healthy
+        # code. A broken script only skips itself during the scan; the lint
+        # tool below still reports it per file.
+        _godot_lint_run(editor, ["--headless", "--path", src, "--import"], src, 300)
         rc, out = _godot_lint_run(
             editor, ["--headless", "--path", src, "-s", "lint_tool.gd", "--"] + rels,
             src, 120)
@@ -10408,7 +10431,9 @@ def _godot_lint_project(folder: str, files, smoke: bool = True):
             if rel in failed and not any(e.startswith(rel + ":") for e in parse_errs):
                 errors.append(rel + ": failed to parse (no detail captured)")
         if smoke and not failed and not parse_errs:
-            _godot_lint_run(editor, ["--headless", "--path", src, "--import"], src, 180)
+            # The class cache from the import above is already in place — the
+            # game run only needs to boot the main scene and surface runtime
+            # script errors; a timeout means it stayed alive, not a failure.
             _, out2 = _godot_lint_run(editor, ["--headless", "--path", src], src, 10)
             errors.extend(_godot_smoke_errors_from(out2))
         deduped = []
