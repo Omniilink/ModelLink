@@ -7936,7 +7936,7 @@ async function codingAutoContinue(){
       const results=harvestCodingResults();
       if(results.hasExecuted){
         codingRounds++;
-        if(results.wrote)troubledProgress=true;
+        if(results.wrote){troubledProgress=true;codingNoWorkPushed=false;}
         // A wrong command (or other recognizable failure) this round means the
         // run learned something worth logging — arm the learning log.
         if(typeof resultsTroubled==='function'&&resultsTroubled(results.text))troubledRun=true;
@@ -8214,12 +8214,13 @@ async function codingAutoContinue(){
           postCodingAssistant('Done — verified: '+vfin.files.join(', ')+' ('+vfin.files.length+' file'+(vfin.files.length!==1?'s':'')+', syntax OK).');
         }else if(vfin.files.length){
           postCodingAssistant('Finished writing files, but validation reported problems:\n'+vfin.errors.join('\n')+'\n\nSay "continue" and I will fix them.');
-        }else if(todoListEverDeclared()){
-          // No file written in the final round (the todos were simply closed):
-          // reality was already checked above, so still confirm completion
-          // instead of ending the run silently.
-          completeAllTodos();
-          postCodingAssistant('Done — verified: every listed file exists and passes syntax checks.');
+        }else{
+          // No file was written all run (runTouchedPaths is empty — otherwise
+          // vfin would have re-validated it above) and no todos are open. This
+          // is NOT a verified finish: it is a model that answered in prose and
+          // never emitted a single tool block. Never claim "Done — verified"
+          // here — that reads as success when nothing happened at all.
+          postCodingAssistant('Stopped — no files were written in this session and no todos are open. If something is still broken, describe the exact symptom (for example: "the player does not move when I press the arrow keys") and I will open the relevant code and fix it.');
         }
         break;
       }
