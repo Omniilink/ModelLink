@@ -2627,8 +2627,12 @@ async function sendMessage(){
   }catch(e){}
   // Local chat title on the first message (basic-tier job).
   try{const _f=!chatHistory.some(m=>m.role==='user');if(_f&&typeof localChatTitle==='function'){localChatTitle(text).then(t=>{if(t){chatTitleOverrides[currentChatId]=t;saveChatTitleOverrides();try{saveCurrentChat()}catch(e){}}}).catch(()=>{})}}catch(e){}
+  // The prompt lands FIRST; the expansion/research toasts that follow report on
+  // this message, so they must never appear before it does.
+  appendMessage('user',histContent||content);
   // Auto super-prompt: the local assistant expands the message before the AI sees it.
   let _modelContent=content;
+  superPromptScope='chat';
   try{
     if(!imgs.length&&typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()&&superPromptReady()){
       showToast('Expanding your prompt with the '+(assistantBackend()==='server'?'server':'local')+' assistant…','info');
@@ -2641,7 +2645,7 @@ async function sendMessage(){
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==text)_modelContent=_sp;
     }
   }catch(e){}
-  appendMessage('user',histContent||content);chatHistory.push({role:'user',content:histContent||_modelContent});
+  chatHistory.push({role:'user',content:histContent||_modelContent});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
   if(isOllamaModel(model))try{assistantEl.innerHTML=loadingModelHtml()}catch(e){}
@@ -3308,6 +3312,44 @@ async function assistantRunJob(job,system,user,maxTokens){
     return await serverAssistantRun(system,user,maxTokens,job==='super_research');
   }catch(e){return ''}
 }
+let superPromptScope='chat';
+function superPromptContext(){
+  // What the expander and the researcher need so they stop guessing blind: the
+  // recent conversation for the current view plus the open project (label,
+  // engine, file list). Text only - never file contents - and capped small
+  // enough for the 0.5B browser model.
+  const parts=[];let engine='';
+  try{
+    try{
+      const hist=(superPromptScope==='coding')?(typeof codingHistory!=='undefined'?codingHistory:[]):(typeof chatHistory!=='undefined'?chatHistory:[]);
+      const lines=[];
+      for(const m of (hist||[]).slice(-6)){
+        if(!m||!m.content)continue;
+        let t='';try{t=(typeof msgTextContent==='function')?msgTextContent(m.content):String(m.content)}catch(e){t=String(m.content||'')}
+        t=String(t||'').replace(/\s+/g,' ').trim();
+        if(!t)continue;
+        lines.push((m.role==='user'?'User: ':m.role==='assistant'?'Assistant: ':'')+t.slice(0,240));
+      }
+      if(lines.length)parts.push('Recent conversation:\n'+lines.join('\n').slice(0,1200));
+    }catch(e){}
+    try{
+      const open=!!((typeof codingFolder!=='undefined'&&codingFolder)||(typeof fsHandle!=='undefined'&&fsHandle)||(typeof allCodingFiles!=='undefined'&&allCodingFiles&&allCodingFiles.length));
+      if(open){
+        const proj=(typeof codingProjectLabel==='function')?codingProjectLabel():'';
+        const files=[];
+        try{const all=(typeof allCodingFiles!=='undefined'&&allCodingFiles)?allCodingFiles:[];for(const f of all){if(typeof f==='string'&&f)files.push(f);if(files.length>=40)break}}catch(e){}
+        if(files.some(f=>/(^|\/)project\.godot$/i.test(f)))engine='Godot 4 (GDScript)';
+        else if(files.some(f=>/(^|\/)package\.json$/i.test(f)))engine='a JavaScript web game';
+        const bits=[];
+        if(proj)bits.push('Open project: '+String(proj).slice(0,120));
+        if(engine)bits.push('Engine: '+engine);
+        if(files.length)bits.push('Project files: '+files.join(', ').slice(0,600));
+        if(bits.length)parts.push(bits.join('\n'));
+      }
+    }catch(e){}
+  }catch(e){}
+  return {text:parts.join('\n\n').slice(0,2200),engine:engine};
+}
 function superPromptAvailable(){try{return ((typeof localAssistantEnabled==='function')&&localAssistantEnabled())||serverAssistantAvailable()}catch(e){return false}}
 function superPromptReady(){
   try{
@@ -3363,13 +3405,19 @@ async function superPromptResearch(text,notify){
   // (it used to run silently, leaving users unsure it ever happened).
   const _note=(s,d)=>{try{if(typeof notify==='function')notify(s,d)}catch(e){}};
   try{
+    // Context: what the conversation is about and which game/project is open,
+    // so the search query and the extraction are about THIS project instead of
+    // whatever the bare sentence happens to match on the open web.
+    const ctx=superPromptContext();
+    const ctxBlock=ctx.text?('\n\nContext (recent conversation + open project - use it to judge what is relevant):\n'+ctx.text.slice(0,1400)):'';
     _note('start',String(text||'').slice(0,120));
     if(assistantBackend()==='server'){
-      const sout=String(await serverAssistantRun('You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500),300,true)).trim();
+      const sout=String(await serverAssistantRun('You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+ctxBlock,300,true)).trim();
       _note(sout?'done':'empty',sout);
       return sout;
     }
-    const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(text)+'&limit=6');
+    const q=String(text||'').slice(0,300)+(ctx.engine?(' '+ctx.engine):'');
+    const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(q)+'&limit=6');
     const d=await r.json().catch(()=>({}));
     const hits=(d.results||[]).slice(0,6);
     _note('hits',hits.length);
@@ -3378,7 +3426,7 @@ async function superPromptResearch(text,notify){
       try{if(h.url&&/^https?:\/\//i.test(h.url)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(h.url));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- '+h.url+' ---\n'+String(fd.text).slice(0,4000)}}catch(e){}
     }
     if(!corpus.trim()){_note('empty','');return '';}
-    const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+'\n\nWeb results:\n'+corpus,300)).trim();
+    const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+ctxBlock+'\n\nWeb results:\n'+corpus,300)).trim();
     const fin=(out||corpus.slice(0,1500)).trim();
     _note(fin?'done':'empty',fin);
     return fin;
@@ -3396,7 +3444,9 @@ async function buildSuperPrompt(text,notify){
       +'Keep EXACTLY the user\'s intent and scope: do not change what they are asking for. '
       +(features?'You MAY add a few closely-related, genuinely useful details or features that clearly fit the request.':'Do NOT add any features, extras or scope beyond what the user asked — expand only the clarity and specificity of their request. ')
       +'Make it specific and unambiguous (inputs, outputs, constraints, edge cases, format) but never invent unrelated requirements. Output ONLY the improved prompt, no preamble or commentary.';
-    const usr='User request:\n'+String(text||'').slice(0,2000)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
+    const ctx=superPromptContext();
+    const ctxBlock=ctx.text?('\n\nContext (the conversation and project this request belongs to - keep the prompt consistent with it):\n'+ctx.text):'';
+    const usr='User request:\n'+String(text||'').slice(0,2000)+(ctxBlock)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
     const out=String(await assistantRunJob('super_prompt',sys,usr,900)).trim();
     return out||text;
   }catch(e){return text}
@@ -5256,9 +5306,13 @@ async function sendCodingMessage(){
   if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
+  // The prompt is rendered FIRST: the expansion/research notes below describe
+  // this message, so they must follow it in the run log, never lead it.
+  const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   // Super prompt (coding + workspace): expand the message with the local
   // assistant before it is sent — or before it is queued for the team batch.
   let modelText=rawText;
+  superPromptScope='coding';
   try{
     if(typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()){
       addCodingSystemMsg('Expanding your message with the '+(assistantBackend()==='server'?'server':'local')+' assistant…');
@@ -5323,13 +5377,12 @@ async function sendCodingMessage(){
     updateAtIndicator();
   }
   codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
-  const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
   let sendModel=selectedModel;
   let userContent=cleanText;
   let histContent=null;
   if(cimgs.length){
     sendModel=resolveVisionModel();
-    if(!sendModel){codingPendingImages=cimgs;renderCodingImgStrip();input.value=rawText;input.style.height='auto';return}
+    if(!sendModel){codingPendingImages=cimgs;renderCodingImgStrip();input.value=rawText;input.style.height='auto';try{userMsg.remove()}catch(e){}return}
     userContent=[{type:'text',text:cleanText||'Describe these images'}].concat(cimgs.map(u=>({type:'image_url',image_url:{url:u}})));
     // History + bubble reference persisted asset URLs (reload-safe, tiny);
     // the model request above keeps the in-memory bytes.
