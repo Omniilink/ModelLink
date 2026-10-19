@@ -1690,6 +1690,12 @@ def _get_coding_state(user_id: str) -> dict:
             "plan_mode": False,
             "versions_to_keep": 5,
             "max_file_size": 100000,
+            # Engine strategy: 'custom' (the built-in agentic loop) or 'opencode'
+            # (a local OpenCode server the browser talks to directly).
+            "engine": "custom",
+            "opencode_url": "http://127.0.0.1:4096",
+            "opencode_password": "",
+            "opencode_model": "",
             "system_prompt": DEFAULT_CODING_PROMPT
         })
         _coding_states[user_id] = {
@@ -17075,6 +17081,14 @@ async def coding_update_settings(request: Request):
                 v = max(1, min(_PROJECT_VERSION_MAX_KEEP, int(v)))
             except (TypeError, ValueError):
                 continue
+        if k == "engine":
+            v = "opencode" if str(v or "").strip().lower() == "opencode" else "custom"
+        if k == "opencode_url":
+            v = str(v or "").strip().rstrip("/")[:400]
+            if v and not re.match(r"^https?://", v):
+                continue
+        if k in ("opencode_password", "opencode_model"):
+            v = str(v or "").strip()[:200]
         coding_state["settings"][k] = v
     _save_coding_settings(_safe_username(user["username"]), coding_state["settings"])
     return {"status": "ok", "settings": coding_state["settings"]}
@@ -17103,6 +17117,102 @@ async def coding_project_context(request: Request):
                 context_lines.append(f"{prefix}{e['name']} ({size} bytes)")
     _render_tree(tree)
     return {"context": "\n".join(context_lines), "folder": folder}
+
+
+# ---- OpenCode project handoff: export for a local copy, sync edits back ------
+_CODING_SYNC_CAP = 100 * 1024 * 1024
+_SYNC_SKIP_DIRS = {".git", ".godot", "__pycache__", ".omniilink", "node_modules",
+                   ".venv", "venv", ".next", "dist", "build"}
+
+
+class CodingProjectSyncBody(BaseModel):
+    files: list = []
+
+
+@app.get("/api/coding/project-export")
+async def coding_project_export(request: Request):
+    """Every file of the open project as [{path, b64}] so the browser can write a
+    local copy for a local OpenCode server to work on."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    folder = _get_coding_state(owner).get("folder") or ""
+    if not folder or not os.path.isdir(folder):
+        return {"files": [], "folder": ""}
+    import base64 as _b64
+    files = []
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if d not in _SYNC_SKIP_DIRS]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            if _bad_path(rel):
+                continue
+            try:
+                size = os.path.getsize(full)
+                if size > 2 * 1024 * 1024:
+                    continue
+                total += size
+                if total > _CODING_SYNC_CAP:
+                    return JSONResponse(status_code=413, content={"error": "Project too large to export (>100MB)"})
+                with open(full, "rb") as f:
+                    raw = f.read()
+                files.append({"path": rel, "b64": _b64.b64encode(raw).decode("ascii")})
+            except Exception:
+                continue
+    return {"files": files, "folder": os.path.basename(folder)}
+
+
+@app.post("/api/coding/project-sync")
+async def coding_project_sync(request: Request, req: CodingProjectSyncBody):
+    """Write files (base64) back into the open project folder after a local
+    OpenCode session edited the exported copy. Snapshots a version first."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    folder = _get_coding_state(owner).get("folder") or ""
+    if not folder or not os.path.isdir(folder):
+        return JSONResponse(status_code=400, content={"error": "No project folder is open"})
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    try:
+        _project_version_save(owner, folder, "Before OpenCode sync",
+                              "Automatic snapshot taken before syncing local OpenCode changes.", [])
+    except Exception:
+        pass
+    import base64 as _b64
+    written = 0
+    total = 0
+    for item in (req.files or [])[:8000]:
+        try:
+            rel = str((item or {}).get("path", "")).replace("\\", "/").lstrip("/")
+        except Exception:
+            continue
+        if not rel or _bad_path(rel):
+            continue
+        data = str((item or {}).get("b64", "") or "")
+        try:
+            raw = _b64.b64decode(data) if data else b""
+        except Exception:
+            continue
+        total += len(raw)
+        if total > _CODING_SYNC_CAP:
+            return JSONResponse(status_code=413, content={"error": "Sync too large (>100MB)"})
+        dest = os.path.join(folder, rel.replace("/", os.sep))
+        if not _is_within(folder, dest):
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(raw)
+            written += 1
+        except Exception:
+            continue
+    return {"status": "ok", "written": written}
 
 
 @app.get("/api/bandwidth")
