@@ -3529,30 +3529,61 @@ async function superPromptResearch(text,notify){
     return fin;
   }catch(e){_note('empty','');return ''}
 }
+function _spSections(out){
+  // Parse the expander's section output and drop "None"/empty noise, so the
+  // final prompt can never contain "IMPROVE / FIX: None".
+  try{
+    const LABELS=['NEW FEATURES','IMPROVE / FIX','REQUIREMENTS','DONE WHEN'];
+    const junk=v=>{v=String(v||'').replace(/^[-•*\s]+/,'').trim();return !v||/^(none|n\/?a|nothing|no changes?|nil|null|—|–|-)$/i.test(v)};
+    const res={};let cur=null;
+    for(const raw of String(out||'').split('\n')){
+      const l=raw.trim();if(!l)continue;
+      if(/^GOAL\b/i.test(l))continue;
+      const m=l.match(/^([A-Za-z][A-Za-z \/]+?)\s*:\s*(.*)$/);
+      if(m){
+        const lab=m[1].trim().toUpperCase().replace(/\s+/g,' ');
+        if(LABELS.includes(lab)){
+          cur=lab;if(!res[cur])res[cur]=[];
+          const body=m[2].trim();
+          if(!junk(body))res[cur].push(body.replace(/^[-•*]\s*/,'').trim());
+          continue;
+        }
+      }
+      if(cur){if(junk(l))continue;res[cur].push(l.replace(/^[-•*]\s*/,'').trim())}
+    }
+    const lines=[];
+    for(const k of LABELS){const b=res[k];if(b&&b.length)lines.push(k+':\n'+b.map(x=>'- '+x).join('\n'))}
+    return lines.join('\n');
+  }catch(e){return ''}
+}
 async function buildSuperPrompt(text,notify){
-  // Rewrite the user's message into a detailed prompt with the assistant
-  // (browser WebGPU model when on, otherwise the server Ollama).
+  // Expand the user's message into a STRUCTURED prompt — but the GOAL is the
+  // user's own words, verbatim, so the model can never change the task ("fix"
+  // can never become "create"). The model only fills the detail sections, which
+  // are sanitized (no "None", no empty sections). Falls back to the raw text.
   try{
     if(!superPromptAvailable())return text;
+    const raw=String(text==null?'':text).trim();
+    if(!raw)return text;
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
     if(research)researchCtx=await superPromptResearch(text,notify);
-    const sys='You turn a user request into a detailed, well-STRUCTURED prompt for an AI assistant. You do NOT decide what the task is. '
-      +'HARD RULE — keep the user\'s exact goal, action and deliverable: if they ask to create, build, make, add, change, move, replace or fix something, the rewritten prompt MUST still ask to do exactly that thing. '
-      +'NEVER turn a create/build/make request into a review, audit, verification, syntax-check, debug, or "assess what exists" request, and never swap in a different task. '
-      +'Write the expanded prompt as short labelled sections. Rules: omit a section ENTIRELY when it does not apply — NEVER output a section whose value is "None", "N/A", "nothing" or empty. GOAL is ONE line restating the request. If the user asks to fix, repair, change, tweak, improve, update or remove something that ALREADY EXISTS, those items MUST go under IMPROVE / FIX. If they ask to build or add something NEW, those items go under NEW FEATURES. Sections:\n'
-      +'GOAL: one line restating exactly what the user wants.\n'
-      +'NEW FEATURES: bullets for anything NEW to build or add.\n'
-      +'IMPROVE / FIX: bullets for changes or fixes to features that already exist.\n'
-      +'REQUIREMENTS: bullets with the concrete specifics the request implies — inputs, outputs, files/formats, constraints, edge cases.\n'
-      +'DONE WHEN: a short checklist of verifiable results.\n'
-      +(features?'You MAY add a few closely-related details or features that clearly fit the request — still the same goal, never a new task. ':'Do NOT add any features, extras or scope beyond what the user asked. ')
-      +'Be specific and unambiguous and stay consistent with the provided context, but never invent unrelated requirements. If the request is a simple question or a tiny change, keep it short and do not force sections. Output ONLY the prompt — no preamble, no commentary, no questions.';
+    const sys='You EXPAND a user request into a clearer prompt WITHOUT changing it. You do NOT decide what the task is. '
+      +'HARD RULES:\n'
+      +'- Keep the user\'s exact goal, action and deliverable. If they ask to FIX, repair, change, move, replace, stop, undo or remove something, it STAYS that — NEVER turn a fix/change request into a create/build/add request, and never swap in a different task.\n'
+      +'- NEVER invent specifics the user did not state: no invented key bindings, file names, systems, numbers or features. Use ONLY what the user wrote.\n'
+      +'- Output ONLY the section bodies below, each labelled exactly, in this order. OMIT any section that does not apply. NEVER write "None", "N/A", "nothing", "-" or an empty bullet.\n'
+      +(features?'- You MAY add a few closely-related details that clearly fit the request — still the same goal, never a new task.\n':'- Do NOT add any features, extras or scope beyond what the user asked.\n')
+      +'NEW FEATURES: (only things NEW to build or add)\n'
+      +'IMPROVE / FIX: (changes or fixes to something that ALREADY exists)\n'
+      +'REQUIREMENTS: (concrete specifics the request implies)\n'
+      +'DONE WHEN: (a short verifiable checklist)\n'
+      +'Do NOT output a GOAL line (it is added for you). Output nothing else — no preamble, no commentary, no questions.';
     const ctx=superPromptContext();
     const ctxBlock=ctx.text?('\n\nContext (the conversation and project this request belongs to - keep the prompt consistent with it):\n'+ctx.text):'';
-    const usr='User request:\n'+String(text||'').slice(0,2000)+(ctxBlock)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
-    const out=String(await assistantRunJob('super_prompt',sys,usr,900)).trim();
-    return out||text;
+    const usr='User request (verbatim — this is the GOAL; do not restate or change it):\n'+raw.slice(0,2000)+(ctxBlock)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
+    const out=_spSections(String(await assistantRunJob('super_prompt',sys,usr,900)).trim());
+    return out?('GOAL: '+raw+'\n'+out):raw;
   }catch(e){return text}
 }
 async function reportSuperPrompt(scope,original,expanded,rating,model,backend){
@@ -8439,6 +8470,21 @@ async function codingAutoContinue(){
     while(!codingStopRequested){
       await waitForCodingApprovals();
       if(codingStopRequested)break;
+      // If the latest history turn is OURS (a user/harness message the model has
+      // not answered yet — the loop was entered from a retry/nudge, not right
+      // after a stream), ask the model NOW. Without this the loop harvests
+      // nothing and reports "no files were written". This is the single choke
+      // point that makes every "push a message then enter the loop" path safe.
+      try{
+        const _last=codingHistory.length?codingHistory[codingHistory.length-1]:null;
+        if(_last&&_last.role==='user'&&!codingStopRequested){
+          codingStream=true;
+          const _t0turn=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+          codingStream=false;
+          persistCodingChat();
+          if(_t0turn.error)break;
+        }
+      }catch(e){}
       const results=harvestCodingResults();
       if(results.hasExecuted){
         codingRounds++;
