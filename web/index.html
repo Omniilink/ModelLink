@@ -5151,6 +5151,8 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('AI TEXTURE GENERATION')<0)sysPrompt+='\nAI TEXTURE GENERATION (Godot, when the user wants AI-generated game textures): emit a self-contained GDScript component with NO node-tree assumptions so it can be triggered from any UI or gameplay event — it accepts a prompt, aspect ratio and API key as properties/methods; POSTs to the Google Imagen 3 endpoint `imagen-3.0-generate-002:generateImages`; awaits the response via HTTPRequest without blocking the main loop; parses the nested JSON to the base64 image string; decodes base64 into an Image/ImageTexture and applies it to a StandardMaterial3D or Sprite2D; and handles missing key, non-200 status, JSON parse failure and empty payloads with clear push_error/printerr logging.\n';
   if(sysPrompt.indexOf('GDScript PARSE SAFETY')<0)sysPrompt+='\nGDScript PARSE SAFETY (the server rejects any script that does not PARSE): never name a variable/property/parameter the same as a built-in Node/Node2D/Node3D/Control member — `position`, `name`, `scale`, `rotation`, `visible`, `owner`, `texture`, `modulate`, `z_index`, `material`, `offset`, `frame` are all taken (use pos, label, body_scale, facing); "Member X redefined" is a hard parse error. AVOID inner `class` blocks (put each class in its own .gd file, or use a Dictionary for plain data) — they break constantly. Indent with TABS only, consistently. One declaration per line, and never a trailing `.`. The server runs a real headless parse after you write; fix the EXACT file:line it names.\n';
   if(sysPrompt.indexOf('VISIBLE PLAYER')<0)sysPrompt+='\nVISIBLE PLAYER (2D/3D games): the player character must actually be DRAWN — a Sprite2D/AnimatedSprite2D/ColorRect/Polygon2D child (or a _draw() shape) with a real size and color — and a Camera2D/Camera3D must follow it (make it current). A CharacterBody2D with no visible sprite and no camera reads as "my character does not exist". Verify on first delivery.\n';
+  if(sysPrompt.indexOf('GODOT WEB INPUT')<0)sysPrompt+='\nGODOT WEB INPUT / MOUSE LOOK: for mouse-look in a web export, capture the mouse only from a REAL user gesture — set Input.mouse_mode = Input.MOUSE_MODE_CAPTURED inside a click handler, NEVER at _ready(). Browsers reject pointer lock outside a gesture ("the root document for this element is not valid for pointer lock"); re-request it on each click and guard against refusal.\n';
+  if(sysPrompt.indexOf('GODOT FLOOR / COLLISION')<0)sysPrompt+='\nGODOT FLOOR / COLLISION (3D especially): the player must NEVER fall through the world. Always add a real floor — a StaticBody3D with a CollisionShape3D (BoxShape3D/WorldBoundaryShape3D) or a CSGBox3D with use_collision=true sized to the whole area, plus a WorldBoundaryShape3D backstop — and give the player a CharacterBody3D with a CollisionShape3D and gravity-driven velocity then move_and_slide(). A player or floor with no collision shape is exactly why players fall straight through.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -7613,7 +7615,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Your HTML project is missing ','Validation FAILED on files you just wrote','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Your HTML project is missing ','Validation FAILED on files you just wrote','The Godot engine check FAILED','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -8403,7 +8405,7 @@ async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
   codingRounds=0;codingReplans=0;codingRunWrote=false;
   let codingTruncRetries=0;
-  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false;
+  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false,lastGodotErrKey='';
   const runTouchedPaths=new Set();
   // Stop tracking: the ONLY early stop is the EXACT same command set with
   // no writes, 5 rounds running. Near-misses and read-only stretches keep
@@ -8697,6 +8699,30 @@ async function codingAutoContinue(){
         // files. Only when the run wrote nothing is there nothing to check.
         const vfin=await validateWrittenFiles(runTouchedPaths.size?[...runTouchedPaths]:[]);
         (vfin.files||[]).forEach(p=>runTouchedPaths.add(p));
+        // Godot finish check: parse EVERY project script and boot the main scene
+        // headlessly BEFORE we claim Done. A scene-only edit otherwise skips the
+        // .gd lint and ships a game that does not actually run.
+        if(typeof godotProjectCheck==='function'){
+          const gerr=await godotProjectCheck();
+          if(gerr.length){
+            const gkey=gerr.slice().sort().join('|');
+            if(gkey!==lastGodotErrKey){
+              lastGodotErrKey=gkey;
+              setbacks++;
+              lastReason='the Godot engine check failed: '+gerr.slice(0,4).join('; ');
+              if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+              addCodingSystemMsg('Godot check failed — fixing:\n'+gerr.slice(0,6).join('\n'));
+              codingHistory.push({role:'user',content:'The Godot engine check FAILED on your project (headless parse of every script + a real boot of the main scene). Fix these errors now with small FILE_PATCH/FILE_EDIT blocks. Do NOT claim the game works until this check passes:\n- '+gerr.slice(0,10).join('\n- ')});
+              persistCodingChat();
+              codingStream=true;
+              const gt=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+              codingStream=false;
+              persistCodingChat();
+              if(gt.error)break;
+              continue;
+            }
+          }
+        }
         if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
           const missTrio=await detectMissingWebTrio([...runTouchedPaths]);
           if(missTrio.length){
@@ -9068,6 +9094,25 @@ function checkSyntax(ext,code){
     }
     return null;
   }catch(e){return e&&e.message?String(e.message).split('\n')[0].slice(0,160):'syntax error'}
+}
+async function godotProjectCheck(){
+  // Lint + smoke-test the WHOLE Godot project: headless-parse every .gd AND
+  // boot the main scene, so runtime errors surface BEFORE the run claims Done.
+  // (A scene-only edit used to skip the .gd lint entirely and ship a game that
+  // does not run.) Returns [] when this is not a server Godot project.
+  try{
+    if(!codingFolder)return [];
+    if(typeof codingIsServerProject==='function'&&!codingIsServerProject())return [];
+    try{await loadAllCodingFiles(true)}catch(e){}
+    const files=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
+    if(!files.some(f=>typeof f==='string'&&/(^|\/)project\.godot$/i.test(f)))return [];
+    const gd=files.filter(f=>typeof f==='string'&&/\.gd$/i.test(f)).slice(0,200);
+    if(!gd.length)return [];
+    const r=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gd,smoke:true})});
+    if(!r||!r.ok)return [];
+    const d=await r.json().catch(()=>null);
+    return (d&&Array.isArray(d.errors))?d.errors.filter(Boolean).map(e=>String(e).slice(0,300)):[];
+  }catch(e){return []}
 }
 async function validateWrittenFiles(extraPaths){
   // Validate files written since the last check (consumes the list) PLUS any

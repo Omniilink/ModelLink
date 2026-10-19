@@ -6699,6 +6699,21 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   follow it (make it current). A CharacterBody2D with no visible sprite and no
   camera reads to the user as "my character doesn't exist". Verify this on
   first delivery.
+- GODOT WEB INPUT / MOUSE LOOK: for mouse-look in a WEB export, capture the
+  mouse only from a REAL user gesture — set `Input.mouse_mode =
+  Input.MOUSE_MODE_CAPTURED` inside an input handler (a click on the canvas or
+  a Play button), NEVER at `_ready()`. Browsers reject pointer lock requested
+  outside a gesture ("the root document for this element is not valid for
+  pointer lock"), and a web export must re-request it on each click. Guard the
+  capture so a refusal cannot crash the game.
+- GODOT FLOOR / COLLISION (3D games especially): the player must NEVER fall
+  through the world. Always add a real floor — a StaticBody3D with a
+  CollisionShape3D (BoxShape3D/WorldBoundaryShape3D) or a CSGBox3D with
+  `use_collision = true` — sized to the whole play area, plus a
+  WorldBoundaryShape3D at the bottom as a backstop. Give the player a
+  CharacterBody3D with a CollisionShape3D and a gravity-driven `velocity` then
+  `move_and_slide()`. A CharacterBody with no collision shape, or a floor with
+  no collision shape, is exactly why players fall straight through.
 - GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
   `export_presets.cfg` alone unless it is missing; never write a custom
   HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
@@ -11508,7 +11523,17 @@ def _godot_serve_rel(base: str, rel: str):
                 content = new_content if n else content + _GODOT_DIAG_OVERLAY
             except Exception:
                 pass
-        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+                   # Explicit, game-friendly CSP so the app-wide policy never
+                   # lands on the exported game: the engine needs wasm-eval,
+                   # blob: workers and inline bootstrap, and pointer lock/mouse
+                   # capture need a normal (non-sandboxed) top-level document.
+                   "Content-Security-Policy":
+                       "default-src 'self' 'wasm-unsafe-eval' blob: data:; "
+                       "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
+                       "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                       "connect-src 'self' blob: data:; worker-src 'self' blob:; "
+                       "object-src 'none'; base-uri 'self'; frame-ancestors 'self'"}
         try:
             marker = os.path.join(base, ".threads")
             if os.path.isfile(marker) and open(marker, "r", encoding="utf-8").read().strip() == "1":
