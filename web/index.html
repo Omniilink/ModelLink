@@ -3540,7 +3540,7 @@ async function buildSuperPrompt(text,notify){
     const sys='You turn a user request into a detailed, well-STRUCTURED prompt for an AI assistant. You do NOT decide what the task is. '
       +'HARD RULE — keep the user\'s exact goal, action and deliverable: if they ask to create, build, make, add, change, move, replace or fix something, the rewritten prompt MUST still ask to do exactly that thing. '
       +'NEVER turn a create/build/make request into a review, audit, verification, syntax-check, debug, or "assess what exists" request, and never swap in a different task. '
-      +'Write the expanded prompt as short labelled sections, including ONLY the ones that apply (omit the rest — never leave an empty section):\n'
+      +'Write the expanded prompt as short labelled sections. Rules: omit a section ENTIRELY when it does not apply — NEVER output a section whose value is "None", "N/A", "nothing" or empty. GOAL is ONE line restating the request. If the user asks to fix, repair, change, tweak, improve, update or remove something that ALREADY EXISTS, those items MUST go under IMPROVE / FIX. If they ask to build or add something NEW, those items go under NEW FEATURES. Sections:\n'
       +'GOAL: one line restating exactly what the user wants.\n'
       +'NEW FEATURES: bullets for anything NEW to build or add.\n'
       +'IMPROVE / FIX: bullets for changes or fixes to features that already exist.\n'
@@ -6606,7 +6606,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null;
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false;
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -6617,6 +6617,10 @@ async function startCodingLoopWith(text){
   if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('A run is already in progress','info');return}
   if(typeof codingStream!=='undefined'&&codingStream){showToast('Wait for the current reply to finish','info');return}
   if(!codingFolder){showToast('Open a folder first','info');return}
+  // Fresh run state (this path skips sendCodingMessage, so reset here too).
+  codingRunTouched={};codingRunTask=String(text||'').slice(0,200);codingRunWrote=false;
+  try{codingNotifyRequest=String(text||'')}catch(e){}
+  codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
   try{const chat=document.getElementById('coding-chat');const um=document.createElement('div');um.className='coding-msg user';um.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(um);chat.scrollTop=chat.scrollHeight}catch(e){}
   try{codingPlanSteps=CODING_DEFAULT_PLAN}catch(e){}
   codingHistory.push({role:'user',content:text});persistCodingChat();
@@ -8397,7 +8401,7 @@ async function requestFindingLog(){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  codingRounds=0;codingReplans=0;
+  codingRounds=0;codingReplans=0;codingRunWrote=false;
   let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false;
   const runTouchedPaths=new Set();
@@ -8429,7 +8433,7 @@ async function codingAutoContinue(){
       const results=harvestCodingResults();
       if(results.hasExecuted){
         codingRounds++;
-        if(results.wrote){troubledProgress=true;codingNoWorkPushed=false;}
+        if(results.wrote){troubledProgress=true;codingNoWorkPushed=false;codingRunWrote=true;}
         // A wrong command (or other recognizable failure) this round means the
         // run learned something worth logging — arm the learning log.
         if(typeof resultsTroubled==='function'&&resultsTroubled(results.text))troubledRun=true;
@@ -8830,7 +8834,7 @@ async function codingAutoContinue(){
   // when files changed and nothing else is queued to run next).
   if(!codingStopRequested&&typeof addFixConfirmation==='function'){
     try{
-      const wrote=Object.keys(codingRunTouched||{}).length>0;
+      const wrote=!!codingRunWrote;
       const req=String((typeof codingNotifyRequest!=='undefined'&&codingNotifyRequest)||codingRunTask||'');
       const queued=(typeof codingPromptQueue!=='undefined'&&codingPromptQueue&&codingPromptQueue.length);
       if(wrote&&!queued&&codingTaskIsFix(req))addFixConfirmation(req);
