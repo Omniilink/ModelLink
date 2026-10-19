@@ -8764,7 +8764,9 @@ async function codingAutoContinue(){
         }
         if(vfin.files.length&&vfin.ok){
           completeAllTodos();
-          postCodingAssistant('Done — verified: '+vfin.files.join(', ')+' ('+vfin.files.length+' file'+(vfin.files.length!==1?'s':'')+', syntax OK).');
+          let _built=false;
+          if(typeof godotPrewarmBuild==='function'){try{_built=await godotPrewarmBuild()}catch(e){}}
+          postCodingAssistant('Done — verified: '+vfin.files.join(', ')+' ('+vfin.files.length+' file'+(vfin.files.length!==1?'s':'')+', syntax OK).'+(_built?' The web build is compiled — press Play to run it instantly.':''));
         }else if(vfin.files.length){
           postCodingAssistant('Finished writing files, but validation reported problems:\n'+vfin.errors.join('\n')+'\n\nSay "continue" and I will fix them.');
         }else{
@@ -9101,6 +9103,40 @@ function checkSyntax(ext,code){
     }
     return null;
   }catch(e){return e&&e.message?String(e.message).split('\n')[0].slice(0,160):'syntax error'}
+}
+async function godotPrewarmBuild(){
+  // At "Done", compile the web build so pressing Play is instant. The build is
+  // cached by source manifest, so this is a no-op when the finish check already
+  // built it. Shows a collapsed row and returns true once the build is ready.
+  try{
+    if(!codingFolder)return false;
+    if(typeof codingIsServerProject==='function'&&!codingIsServerProject())return false;
+    try{await loadAllCodingFiles(true)}catch(e){}
+    const files=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
+    if(!files.some(f=>typeof f==='string'&&/(^|\/)project\.godot$/i.test(f)))return false;
+    const folderKey=String(codingFolder||'');
+    const det=addCodingSystemDetails('Godot web build — compiling so Play is instant');
+    try{
+      const r=await authFetch(API+'/api/coding/godot/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:folderKey})});
+      if(!r||!r.ok)return false;
+    }catch(e){return false}
+    const t0=Date.now();
+    while(Date.now()-t0<240000){
+      await new Promise(r=>setTimeout(r,2500));
+      let st=null;try{st=await godotStatusPost(folderKey)}catch(e){continue}
+      const j=st&&st.jobs?st.jobs[folderKey]:null;
+      if(!j){if(det&&!det.textContent)det.textContent='Waiting for the build to start…';continue}
+      const pct=(typeof j.progress==='number'&&j.progress>0&&j.progress<1)?' ('+Math.round(j.progress*100)+'%)':'';
+      if(det&&j.phase)det.textContent='Godot build: '+j.phase+pct;
+      if(j.done){
+        if(j.status==='ok'){if(det)det.textContent='Web build ready — press Play to run it instantly.';return true}
+        if(det)det.textContent='Build failed: '+String(j.error||'unknown error').slice(0,200);
+        return false;
+      }
+    }
+    if(det)det.textContent='Build is taking a while — it will finish in the background.';
+    return false;
+  }catch(e){return false}
 }
 async function godotProjectCheck(){
   // Native headless parse of every script + a boot of the main scene, THEN a
