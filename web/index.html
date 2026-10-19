@@ -3844,6 +3844,21 @@ function renderSettings(){
     const vw=document.createElement('div');vw.style.cssText='display:flex;align-items:center;gap:8px;flex-shrink:0';vw.appendChild(vwi);
     vwi.onchange=()=>{let n=parseInt(vwi.value,10);if(isNaN(n))n=5;n=Math.max(1,Math.min(50,n));vwi.value=n;authFetch(API+'/api/coding/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({versions_to_keep:n})}).then(()=>showToast('Saved — keeping '+n+' version'+(n===1?'':'s'),'success'))};
     vr.appendChild(vw);cs.appendChild(vr);
+    // Godot game template: upload once; offered before any game request.
+    const tplsec=document.createElement('div');tplsec.style.marginTop='16px';
+    tplsec.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">Godot game template</div>'
+      +'<div class="toggle-desc" style="margin-bottom:8px">Upload your Godot game template folder once. When you ask the AI to make a game, it offers to load this template into the project first.</div>';
+    const tplrow=document.createElement('div');tplrow.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+    const tplup=document.createElement('button');tplup.className='btn btn-ghost btn-sm';tplup.textContent='Upload template folder';
+    tplup.onclick=()=>{const inp=document.getElementById('godot-tpl-dir');if(inp)inp.click()};
+    const tpldel=document.createElement('button');tpldel.className='btn btn-ghost btn-sm';tpldel.textContent='Remove';
+    tpldel.onclick=async()=>{if(!(await appConfirm('Remove the uploaded game template?')))return;try{await authFetch(API+'/api/coding/godot/template',{method:'DELETE'})}catch(e){}showToast('Template removed','info');loadGodotTemplateStatus()};
+    const tplstat=document.createElement('span');tplstat.id='godot-tpl-status';tplstat.className='tool-result-sub';tplstat.textContent='Checking…';
+    let tplinp=document.getElementById('godot-tpl-dir');
+    if(!tplinp){tplinp=document.createElement('input');tplinp.type='file';tplinp.id='godot-tpl-dir';tplinp.webkitdirectory=true;tplinp.multiple=true;tplinp.style.display='none';tplinp.onchange=()=>{uploadGodotTemplate(tplinp.files);tplinp.value=''}}
+    tplrow.appendChild(tplup);tplrow.appendChild(tpldel);tplrow.appendChild(tplstat);
+    tplsec.appendChild(tplrow);tplsec.appendChild(tplinp);cs.appendChild(tplsec);
+    loadGodotTemplateStatus();
     const pr=document.createElement('div');pr.style.marginTop='16px';pr.innerHTML='<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.8px">System Prompt</div>';
     // Read-only: the prompt is server-owned and selected automatically from
     // the hosting mode (Windows server vs Docker cloud), so it can never
@@ -5632,6 +5647,8 @@ async function sendCodingMessage(){
   }
   const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length){if(typeof codingPromptQueue!=='undefined'&&codingPromptQueue.length)sendNextQueuedPrompt();return}input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
+  // Before coding a game, offer the uploaded Godot template (once per project).
+  try{if(typeof maybeOfferGameTemplate==='function')await maybeOfferGameTemplate(rawText)}catch(e){}
   // The prompt is rendered FIRST: the expansion/research notes below describe
   // this message, so they must follow it in the run log, never lead it.
   const chat=document.getElementById('coding-chat');const userMsg=document.createElement('div');userMsg.className='coding-msg user';userMsg.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(rawText)+'</div></div>';chat.appendChild(userMsg);
@@ -7970,6 +7987,79 @@ function codingProblemSignature(text){
 function codingTaskIsFix(text){
   const t=String(text||'').toLowerCase();
   return /\b(fix|broken|broke|not work|doesn'?t work|does not work|isn'?t working|won'?t|crash|error|bug|wrong|stuck|falls? through|fall through|falling through|glitch|fails?|failed|problem with|issue with|bad)\b/.test(t);
+}
+// ---- Godot game template: offer it before coding a game ----
+function codingTaskIsGame(text){
+  const t=String(text||'').toLowerCase();
+  if(!/\b(game|godot|platformer|shooter|fps|rpg|roguelike|arcade|survival|tower defense|sandbox|3d game|2d game)\b/.test(t))return false;
+  // A fix/repair of an existing project is not "making a game".
+  if(codingTaskIsFix(t))return false;
+  return true;
+}
+function _bufToB64(buf){
+  try{
+    const bytes=new Uint8Array(buf);let s='';const CH=0x8000;
+    for(let i=0;i<bytes.length;i+=CH)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));
+    return btoa(s);
+  }catch(e){return ''}
+}
+async function loadGodotTemplateStatus(){
+  const el=document.getElementById('godot-tpl-status');if(!el)return;
+  try{
+    const r=await authFetch(API+'/api/coding/godot/template/status');
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+    el.textContent=d.available?('Uploaded — '+d.files+' files'+(d.has_project?' · project.godot ✓':' · no project.godot at root')):'Not uploaded';
+  }catch(e){el.textContent='Could not check'}
+}
+async function uploadGodotTemplate(files){
+  try{
+    const list=Array.from(files||[]);
+    if(!list.length)return;
+    showToast('Reading '+list.length+' template files…','info');
+    const payload=[];let total=0;
+    for(const f of list){
+      const rel=String(f.webkitRelativePath||f.name||'').replace(/\\/g,'/');
+      const bi=rel.indexOf('/');
+      const path=bi>0?rel.slice(bi+1):rel;   // strip the selected top folder
+      if(!path)continue;
+      const buf=await f.arrayBuffer();
+      total+=buf.byteLength;
+      if(total>200*1024*1024){showToast('Template is too large (>200MB)','error');return}
+      payload.push({path:path,b64:_bufToB64(buf)});
+    }
+    showToast('Uploading template…','info');
+    const r=await authFetch(API+'/api/coding/godot/template/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payload})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast('Upload failed: '+(d.error||('HTTP '+r.status)),'error');return}
+    showToast('Template uploaded: '+(d.written||0)+' files','success');
+    loadGodotTemplateStatus();
+  }catch(e){showToast('Upload failed: '+e.message,'error')}
+}
+async function maybeOfferGameTemplate(text){
+  // Once per project: when the request is to make a game and a template is
+  // uploaded, offer to load it into the project before the AI starts coding.
+  try{
+    if(!codingFolder)return;
+    if(!codingTaskIsGame(text))return;
+    const key='omnilink_tpl_'+codingProjectKey();
+    try{if(localStorage.getItem(key))return}catch(e){}
+    let st=null;
+    try{const r=await authFetch(API+'/api/coding/godot/template/status');st=r.ok?await r.json().catch(()=>null):null}catch(e){}
+    if(!st||!st.available)return;
+    const ok=await appConfirm('Use the Godot game template?\n\nThis looks like a game project. Load "Godot Game Template 1.7.0" into this project folder as the starting point?\n\nIts files (including project.godot and the main scene) will be copied in and will replace existing ones. You can undo from the Versions button.');
+    try{localStorage.setItem(key, ok?'yes':'no')}catch(e){}
+    if(!ok)return;
+    addCodingSystemMsg('Loading the Godot game template into the project…');
+    const r=await authFetch(API+'/api/coding/godot/template/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast('Template failed: '+(d.error||('HTTP '+r.status)),'error');return}
+    showToast('Template loaded: '+(d.written||0)+' files','success');
+    try{codingProjectTypeCache=''}catch(e){}
+    try{await refreshCodingTree()}catch(e){}
+    try{await loadAllCodingFiles(true)}catch(e){}
+    try{await captureRunBaseVersion()}catch(e){}
+  }catch(e){}
 }
 function addFixConfirmation(promptText){
   // After a fix-type run finishes, ask the user whether it actually worked.

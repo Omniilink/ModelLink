@@ -11538,6 +11538,167 @@ async def godot_check(request: Request, req: GodotCheckBody):
         return {"status": "ok", "errors": [], "error": str(e)[:200]}
 
 
+# ---- Godot game template (one-time server-side upload, applied per project) --
+def _godot_template_root() -> str:
+    return os.path.join(APP_DIR, "user_data", ".godot-template")
+
+
+def _godot_template_info():
+    root = _godot_template_root()
+    if not os.path.isdir(root):
+        return {"available": False, "files": 0, "bytes": 0, "has_project": False}
+    files = 0
+    total = 0
+    has_project = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".godot", "__pycache__")]
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            try:
+                total += os.path.getsize(p)
+                files += 1
+            except Exception:
+                pass
+            if fn == "project.godot" and os.path.normcase(dirpath) == os.path.normcase(root):
+                has_project = True
+    return {"available": files > 0, "files": files, "bytes": total, "has_project": has_project}
+
+
+@app.get("/api/coding/godot/template/status")
+async def godot_template_status(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    return _godot_template_info()
+
+
+class GodotTemplateUploadBody(BaseModel):
+    files: list = []
+
+
+@app.post("/api/coding/godot/template/upload")
+async def godot_template_upload(request: Request, req: GodotTemplateUploadBody):
+    """Store the shared game template server-side from the browser's folder
+    picker. Accepts [{path, b64}] and replaces any previous copy."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    import base64 as _b64
+    import shutil as _sh
+    root = _godot_template_root()
+    try:
+        if os.path.isdir(root):
+            _sh.rmtree(root, ignore_errors=True)
+        os.makedirs(root, exist_ok=True)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)[:200]})
+    written = 0
+    total = 0
+    for item in (req.files or [])[:8000]:
+        try:
+            rel = str((item or {}).get("path", "")).replace("\\", "/").lstrip("/")
+        except Exception:
+            continue
+        # Strip the single wrapping folder the picker includes (e.g. "Template/…").
+        parts = rel.split("/")
+        if len(parts) > 1:
+            rel = "/".join(parts[1:])
+        if not rel or _bad_path(rel):
+            continue
+        data = str((item or {}).get("b64", "") or "")
+        try:
+            raw = _b64.b64decode(data) if data else b""
+        except Exception:
+            continue
+        total += len(raw)
+        if total > 200 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"error": "Template too large (>200MB)"})
+        full = os.path.join(root, rel.replace("/", os.sep))
+        if not _is_within(root, full):
+            continue
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as f:
+                f.write(raw)
+            written += 1
+        except Exception:
+            continue
+    # If the project.godot landed one folder down, flatten that single folder.
+    try:
+        if not os.path.isfile(os.path.join(root, "project.godot")):
+            subs = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+            if len(subs) == 1:
+                sub = os.path.join(root, subs[0])
+                if os.path.isfile(os.path.join(sub, "project.godot")):
+                    tmp = os.path.join(root, "__flatten__")
+                    _sh.move(sub, tmp)
+                    for name in os.listdir(tmp):
+                        _sh.move(os.path.join(tmp, name), os.path.join(root, name))
+                    _sh.rmtree(tmp, ignore_errors=True)
+    except Exception:
+        pass
+    info = _godot_template_info()
+    return {"status": "ok", "written": written, **info}
+
+
+class GodotTemplateApplyBody(BaseModel):
+    folder: str = ""
+
+
+@app.post("/api/coding/godot/template/apply")
+async def godot_template_apply(request: Request, req: GodotTemplateApplyBody):
+    """Copy the stored template's files INTO the open project folder, overwriting
+    project.godot / main scene (the template is meant as the project base)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    coding_state = _get_coding_state(owner)
+    open_folder = coding_state.get("folder") or ""
+    mm = _coding_folder_mismatch(req.folder, open_folder)
+    if mm:
+        return mm
+    folder = open_folder
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not _godot_template_info().get("available"):
+        return JSONResponse(status_code=404, content={"error": "No game template uploaded yet"})
+    root = _godot_template_root()
+    import shutil as _sh
+    written = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".godot", "__pycache__")]
+        for fn in filenames:
+            src = os.path.join(dirpath, fn)
+            rel = os.path.relpath(src, root).replace(os.sep, "/")
+            if _bad_path(rel):
+                continue
+            dest = os.path.join(folder, rel.replace("/", os.sep))
+            if not _is_within(folder, dest):
+                continue
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                _sh.copy2(src, dest)
+                written += 1
+            except Exception:
+                continue
+    return {"status": "ok", "written": written, "files": written}
+
+
+@app.delete("/api/coding/godot/template")
+async def godot_template_delete(request: Request):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    try:
+        import shutil as _sh
+        _sh.rmtree(_godot_template_root(), ignore_errors=True)
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
 class GodotLintBody(BaseModel):
     folder: str = ""
     files: list = []
