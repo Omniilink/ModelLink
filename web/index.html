@@ -5609,7 +5609,7 @@ async function sendCodingMessage(){
   let modelText=rawText;
   superPromptScope='coding';
   try{
-    if(typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()){
+    if(!(typeof codingInternalSend!=='undefined'&&codingInternalSend)&&typeof superPromptOn==='function'&&superPromptOn()&&typeof superPromptAvailable==='function'&&superPromptAvailable()){
       addCodingSystemMsg('Expanding your message with the '+(assistantBackend()==='server'?'server':'local')+' assistant…');
       const _spn=(s,d)=>{try{
         if(s==='start')addCodingSystemMsg('Researching the web…');
@@ -6608,7 +6608,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false;
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingInternalSend=false;
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -6616,17 +6616,24 @@ function setParallelMode(on){try{localStorage.setItem('omnilink_parallel_todos',
 function fmtDur(ms){ms=Math.max(0,Number(ms)||0);const m=Math.floor(ms/60000);if(m<1)return Math.max(1,Math.round(ms/1000))+'s';if(m<60)return m+'m';const h=Math.floor(m/60);return h+'h '+(m%60)+'m'}
 async function captureRunBaseVersion(){try{if(codingRunBaseVer||!codingFolder)return;const r=await authFetch(API+'/api/coding/project-versions');const d=await r.json().catch(()=>({}));if(r.ok&&d&&d.available&&(d.versions||[]).length)codingRunBaseVer=d.versions[0].id||null}catch(e){}}
 async function startCodingLoopWith(text){
+  // Route through the NORMAL send path: it renders the user bubble, streams a
+  // REAL model turn, then enters the loop. The old version pushed a message and
+  // called codingAutoContinue() directly — but that loop only harvests pending
+  // tool results, so a retry had nothing to run and fell straight through to
+  // "no files were written". Every retry / redo / re-run button goes here.
   if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('A run is already in progress','info');return}
   if(typeof codingStream!=='undefined'&&codingStream){showToast('Wait for the current reply to finish','info');return}
   if(!codingFolder){showToast('Open a folder first','info');return}
-  // Fresh run state (this path skips sendCodingMessage, so reset here too).
-  codingRunTouched={};codingRunTask=String(text||'').slice(0,200);codingRunWrote=false;
-  try{codingNotifyRequest=String(text||'')}catch(e){}
-  codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
-  try{const chat=document.getElementById('coding-chat');const um=document.createElement('div');um.className='coding-msg user';um.innerHTML='<div class="coding-msg-avatar">You</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(um);chat.scrollTop=chat.scrollHeight}catch(e){}
-  try{codingPlanSteps=CODING_DEFAULT_PLAN}catch(e){}
-  codingHistory.push({role:'user',content:text});persistCodingChat();
-  codingAutoContinue().catch(reportCodingLoopCrash);
+  const inp=document.getElementById('coding-input');
+  if(!inp){showToast('The coding composer is not ready','error');return}
+  inp.value=String(text||'');
+  inp.style.height='auto';
+  try{autoResize(inp)}catch(e){}
+  try{if(typeof syncCodingSendBtn==='function')syncCodingSendBtn()}catch(e){}
+  // Internal corrective turn: skip the super-prompt expansion (it is already a
+  // precise instruction) but still stream a real model turn through the send path.
+  codingInternalSend=true;
+  try{await sendCodingMessage()}finally{codingInternalSend=false}
 }
 async function retryCodingTodo(text){
   text=String(text||'').trim();
