@@ -9096,22 +9096,35 @@ function checkSyntax(ext,code){
   }catch(e){return e&&e.message?String(e.message).split('\n')[0].slice(0,160):'syntax error'}
 }
 async function godotProjectCheck(){
-  // Lint + smoke-test the WHOLE Godot project: headless-parse every .gd AND
-  // boot the main scene, so runtime errors surface BEFORE the run claims Done.
-  // (A scene-only edit used to skip the .gd lint entirely and ship a game that
-  // does not run.) Returns [] when this is not a server Godot project.
+  // Native headless parse of every script + a boot of the main scene, THEN a
+  // real web export booted in a HEADLESS BROWSER (the only way to catch errors
+  // that exist in the wasm/web build but not in a native run). Returns [] when
+  // this is not a server Godot project.
   try{
     if(!codingFolder)return [];
     if(typeof codingIsServerProject==='function'&&!codingIsServerProject())return [];
     try{await loadAllCodingFiles(true)}catch(e){}
     const files=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
     if(!files.some(f=>typeof f==='string'&&/(^|\/)project\.godot$/i.test(f)))return [];
+    let errs=[];
     const gd=files.filter(f=>typeof f==='string'&&/\.gd$/i.test(f)).slice(0,200);
-    if(!gd.length)return [];
-    const r=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gd,smoke:true})});
-    if(!r||!r.ok)return [];
-    const d=await r.json().catch(()=>null);
-    return (d&&Array.isArray(d.errors))?d.errors.filter(Boolean).map(e=>String(e).slice(0,300)):[];
+    if(gd.length){
+      try{
+        const r=await authFetch(API+'/api/coding/godot/lint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder,files:gd,smoke:true})});
+        if(r&&r.ok){const d=await r.json().catch(()=>null);if(d&&Array.isArray(d.errors))errs=errs.concat(d.errors.filter(Boolean).map(e=>String(e).slice(0,300)))}
+      }catch(e){}
+    }
+    if(errs.length)return errs;
+    try{
+      try{if(typeof addCodingSystemMsg==='function')addCodingSystemMsg('Building the web export and booting it in a headless browser to catch runtime errors…')}catch(e){}
+      const br=await authFetch(API+'/api/coding/godot/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:codingFolder})});
+      if(br&&br.ok){
+        const d=await br.json().catch(()=>null);
+        if(d&&Array.isArray(d.errors))errs=errs.concat(d.errors.filter(Boolean).map(e=>String(e).slice(0,300)));
+        if(d&&d.build_error)errs.push('Build failed: '+String(d.build_error).slice(0,300));
+      }
+    }catch(e){}
+    return errs;
   }catch(e){return []}
 }
 async function validateWrittenFiles(extraPaths){

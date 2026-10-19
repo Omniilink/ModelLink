@@ -11411,6 +11411,140 @@ async def godot_export(request: Request, req: GodotExportBody):
     return {"status": "ok", "started": True}
 
 
+# Console/network noise that is NOT the game's fault and must never be fed to
+# the AI as an error to fix (Cloudflare's analytics beacon, etc.).
+_GODOT_CHECK_IGNORE = ("cloudflareinsights", "beacon.min.js", "static.cloudflareinsights")
+# Headless-environment failures (no GPU/WebGL) are not the game's fault either.
+_GODOT_CHECK_ENV_IGNORE = ("webgl not supported", "failed to create webgl",
+                           "could not create webgl", "error creating webgl context",
+                           "swiftshader")
+
+
+def _godot_filter_check_errors(errs):
+    out = []
+    for e in errs or []:
+        low = (e or "").lower()
+        if any(x in low for x in _GODOT_CHECK_IGNORE):
+            continue
+        if any(x in low for x in _GODOT_CHECK_ENV_IGNORE):
+            continue
+        if low.startswith("console: failed to load resource"):
+            continue
+        if e not in out:
+            out.append(e[:300])
+    return out[:12]
+
+
+def _godot_browser_errors(outdir: str, wait_ms: int = 9000):
+    """Build already done: load the exported web build in headless Chromium and
+    return the runtime errors it produces (console errors + uncaught
+    exceptions). [] when Playwright is unavailable or the game boots clean."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return []
+    import http.server as _http
+    import socketserver as _sock
+    import functools as _ft
+    import threading as _th
+    import mimetypes as _mt
+    _mt.add_type("application/wasm", ".wasm")
+
+    class _Handler(_http.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    try:
+        httpd = _sock.TCPServer(("127.0.0.1", 0), _ft.partial(_Handler, directory=outdir))
+    except Exception:
+        return []
+    port = httpd.server_address[1]
+    _th.Thread(target=httpd.serve_forever, daemon=True).start()
+    errs = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage",
+                      "--use-gl=swiftshader", "--enable-unsafe-swiftshader",
+                      "--ignore-gpu-blocklist"])
+            page = browser.new_page(viewport={"width": 960, "height": 600})
+            page.on("pageerror", lambda e: errs.append("JS ERROR: " + str(e)))
+            page.on("console", lambda m: errs.append("CONSOLE: " + (m.text or ""))
+                    if m.type == "error" else None)
+            try:
+                page.goto("http://127.0.0.1:%d/index.html" % port,
+                          wait_until="load", timeout=45000)
+            except Exception:
+                pass
+            try:
+                page.wait_for_timeout(wait_ms)
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+    return _godot_filter_check_errors(errs)
+
+
+class GodotCheckBody(BaseModel):
+    folder: str = ""
+
+
+@app.post("/api/coding/godot/check")
+async def godot_check(request: Request, req: GodotCheckBody):
+    """Build the project's web export and boot it in a HEADLESS BROWSER,
+    returning the runtime errors (console + uncaught exceptions) so the coding
+    loop can fix them before claiming the game works. The native headless boot
+    misses web-export-only errors (e.g. 'RuntimeError: null function'), which
+    only appear in the wasm build. Export + browser run off the event loop."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    owner = _safe_username(user["username"])
+    coding_state = _get_coding_state(owner)
+    open_folder = coding_state.get("folder") or ""
+    mm = _coding_folder_mismatch(req.folder, open_folder)
+    if mm:
+        return mm
+    folder = open_folder
+    access_err = _folder_access_error(user, folder, write=True)
+    if access_err:
+        return access_err
+    if not (sys.platform.startswith("linux") and _godot_editor_ok()):
+        return {"status": "ok", "skipped": "godot unavailable", "errors": []}
+
+    def _work():
+        _godot_export_thread(folder, user["id"], owner)
+        job = _godot_job(folder)
+        if job.get("status") != "ok":
+            return {"status": "ok", "errors": [],
+                    "build_error": str(job.get("error") or "build failed")[:300]}
+        bid = _godot_build_id(folder)
+        row = _godot_registry_load(owner).get(bid) or {}
+        outdir = row.get("outdir") or ""
+        if not outdir or not os.path.isdir(outdir):
+            return {"status": "ok", "errors": [], "build_error": "build output missing"}
+        return {"status": "ok", "errors": _godot_browser_errors(outdir)}
+
+    try:
+        return await asyncio.to_thread(_work)
+    except Exception as e:
+        return {"status": "ok", "errors": [], "error": str(e)[:200]}
+
+
 class GodotLintBody(BaseModel):
     folder: str = ""
     files: list = []
