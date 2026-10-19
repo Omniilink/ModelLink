@@ -78,6 +78,12 @@ a:hover{text-decoration:underline}
 .chat-item:hover .chat-item-del{opacity:1}
 .chat-item-del:hover{background:var(--error);color:#fff}
 .chat-list{overflow-y:visible;padding:1px 0 2px}
+.chat-search{padding:2px 6px 5px}
+.chat-search input{width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:5px 9px;color:var(--text-primary);font-size:12px;font-family:var(--font);outline:none;box-sizing:border-box}
+.chat-search input:focus{border-color:var(--accent)}
+.chat-item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.chat-item-snippet{font-size:10.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-item-empty{padding:8px 10px;font-size:11.5px;color:var(--text-muted)}
 #bw-indicator{white-space:nowrap;font-variant-numeric:tabular-nums}
 .status-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .status-dot.online{background:var(--success)}
@@ -287,6 +293,8 @@ a:hover{text-decoration:underline}
 .coding-queue{display:flex;flex-direction:column;gap:6px;margin:0 0 8px;max-height:190px;overflow:auto}
 .coding-queue-item{display:flex;gap:8px;align-items:flex-start;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 9px}
 .coding-queue-text{flex:1;font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;max-height:54px;overflow:hidden}
+.coding-queue-grip{cursor:grab;color:var(--text-muted);font-size:14px;line-height:1;user-select:none;flex-shrink:0}
+.coding-queue-item.dragging{opacity:.4}
 .coding-queue-actions{display:flex;gap:4px;flex-shrink:0}
 .coding-queue-actions button{background:transparent;border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
 .coding-queue-actions button:hover{background:var(--bg-hover);color:var(--text-primary)}
@@ -982,6 +990,7 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span>Chat</span>
       </div>
+      <div class="chat-search"><input type="text" id="chat-search" placeholder="Search chats…" oninput="onChatSearch(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onChatSearch('')}" /></div>
       <div class="chat-list" id="chat-list"></div>
       <div class="nav-item" data-view="coding">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
@@ -2066,15 +2075,33 @@ function showToast(msg,type='info'){
   setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(40px)';setTimeout(()=>t.remove(),350)},3000);
 }
 
+let chatSearchQuery='';
+function chatSearchText(chat){
+  try{return ((chat&&chat.history)||[]).map(m=>msgTextContent(m&&m.content)).join('\n')}catch(e){return ''}
+}
+function onChatSearch(v){chatSearchQuery=String(v||'').trim().toLowerCase();renderChatList()}
 function renderChatList(){
-  const list=document.getElementById('chat-list');list.innerHTML='';
-  const chats=getChats();const sorted=Object.entries(chats).sort((a,b)=>(b[1].updated||0)-(a[1].updated||0));
+  const list=document.getElementById('chat-list');if(!list)return;list.innerHTML='';
+  const chats=getChats();const q=chatSearchQuery;
+  let sorted=Object.entries(chats).sort((a,b)=>(b[1].updated||0)-(a[1].updated||0));
+  if(q)sorted=sorted.filter(([id,c])=>String(c.title||'').toLowerCase().indexOf(q)>-1||chatSearchText(c).toLowerCase().indexOf(q)>-1);
+  if(q&&!sorted.length){const empty=document.createElement('div');empty.className='chat-item-empty';empty.textContent='No chats match “'+q+'”';list.appendChild(empty);return}
   for(const[id,chat]of sorted){
     const item=document.createElement('div');item.className='chat-item'+(id===currentChatId?' active':'');
+    const main=document.createElement('div');main.className='chat-item-main';
     const text=document.createElement('span');text.className='chat-item-text';text.textContent=chat.title||'New Chat';
+    main.appendChild(text);
+    if(q){
+      const body=chatSearchText(chat);const at=body.toLowerCase().indexOf(q);
+      if(at>-1&&String(chat.title||'').toLowerCase().indexOf(q)<0){
+        const snip=document.createElement('div');snip.className='chat-item-snippet';
+        snip.textContent='…'+body.slice(Math.max(0,at-30),at+70).replace(/\s+/g,' ').trim()+'…';
+        main.appendChild(snip);
+      }
+    }
     const del=document.createElement('button');del.className='chat-item-del';del.innerHTML='&times;';del.title='Delete chat';
     del.onclick=e=>{e.stopPropagation();deleteChat(id)};
-    item.appendChild(text);item.appendChild(del);item.onclick=()=>loadChat(id);list.appendChild(item);
+    item.appendChild(main);item.appendChild(del);item.onclick=()=>loadChat(id);list.appendChild(item);
   }
 }
 function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const kept=m.content.filter(p=>!(p&&p.type==='image_url')||String((p.image_url||{}).url||'').indexOf('data:')!==0);if(kept.some(p=>p&&p.type==='image_url'))return Object.assign({},m,{content:kept});const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
@@ -2121,6 +2148,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
   try{if(typeof checkBuildVersion==='function')checkBuildVersion()}catch(e){}
   try{if(typeof updateSuperPromptUI==='function')updateSuperPromptUI()}catch(e){}
+  try{if(typeof loadCodingQueue==='function'){loadCodingQueue();renderCodingPromptQueue()}}catch(e){}
   try{if(typeof refreshServerAssistant==='function')refreshServerAssistant()}catch(e){}
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
@@ -3423,6 +3451,26 @@ function toggleSuperPrompt(){
 }
 function toggleSuperResearch(){superSet(SUPER_RESEARCH_KEY,!superResearchOn());updateSuperPromptUI();showToast('Super research '+(superResearchOn()?'ON':'OFF'),'info')}
 function toggleSuperFeatures(){superSet(SUPER_FEATURES_KEY,!superFeaturesOn());updateSuperPromptUI();showToast('Add features '+(superFeaturesOn()?'ON':'OFF'),'info')}
+// ---- Research cache: repeat queries within an hour reuse the last result ----
+const RESEARCH_CACHE_KEY='omnilink_research_cache',RESEARCH_CACHE_TTL=3600000;
+function researchCacheGet(q){
+  try{
+    const c=JSON.parse(localStorage.getItem(RESEARCH_CACHE_KEY)||'{}');
+    const e=c[q];
+    if(e&&Date.now()-e.t<RESEARCH_CACHE_TTL)return e.v;
+    if(e){delete c[q];localStorage.setItem(RESEARCH_CACHE_KEY,JSON.stringify(c))}
+  }catch(e){}
+  return null;
+}
+function researchCacheSet(q,v){
+  try{
+    const c=JSON.parse(localStorage.getItem(RESEARCH_CACHE_KEY)||'{}');
+    c[q]={t:Date.now(),v:v};
+    const keys=Object.keys(c);
+    if(keys.length>40)keys.slice(0,keys.length-40).forEach(k=>delete c[k]);
+    localStorage.setItem(RESEARCH_CACHE_KEY,JSON.stringify(c));
+  }catch(e){}
+}
 async function superPromptResearch(text,notify){
   // Research phase (only when the Research toggle is on): search + read a few
   // pages, then let the assistant extract the relevant facts. On the server
@@ -3447,14 +3495,19 @@ async function superPromptResearch(text,notify){
     // at least 5 hits) inside a ~20s budget; the client also hard-caps the wait
     // at 20s so the expansion never hangs — whatever was found is used as-is.
     let hits=[],corpus='';
-    try{
-      const ctrl=(typeof AbortController!=='undefined')?new AbortController():null;
-      const to=ctrl?setTimeout(()=>{try{ctrl.abort()}catch(e){}},20000):null;
+    const cached=researchCacheGet(q);
+    if(cached){hits=cached.hits||[];corpus=String(cached.corpus||'');}
+    else{
       try{
-        const r=await authFetch(API+'/api/research?q='+encodeURIComponent(q)+'&limit=8',ctrl?{signal:ctrl.signal}:{});
-        if(r&&r.ok){const d=await r.json().catch(()=>({}));hits=(d.results||[]);corpus=String(d.corpus||'');}
-      }finally{if(to)clearTimeout(to)}
-    }catch(e){}
+        const ctrl=(typeof AbortController!=='undefined')?new AbortController():null;
+        const to=ctrl?setTimeout(()=>{try{ctrl.abort()}catch(e){}},20000):null;
+        try{
+          const r=await authFetch(API+'/api/research?q='+encodeURIComponent(q)+'&limit=8',ctrl?{signal:ctrl.signal}:{});
+          if(r&&r.ok){const d=await r.json().catch(()=>({}));hits=(d.results||[]);corpus=String(d.corpus||'');}
+        }finally{if(to)clearTimeout(to)}
+      }catch(e){}
+      if(corpus.trim())researchCacheSet(q,{hits:hits,corpus:corpus});
+    }
     _note('hits',hits.length);
     if(!corpus.trim()){_note('empty','');return '';}
     const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+ctxBlock+'\n\nWeb results:\n'+corpus,300)).trim();
@@ -3513,16 +3566,32 @@ function attachSuperPromptReview(msgEl,original,expanded,scope){
     up.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M7 10v11H4a1 1 0 01-1-1v-9a1 1 0 011-1h3z"/><path d="M7 10l4-7a2 2 0 013 2v4h4a2 2 0 012 2.3l-1.2 6A2 2 0 0116.8 21H7"/></svg><span>Good</span>';
     const down=document.createElement('button');down.type='button';down.title='Bad — this expansion got it wrong';
     down.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17 14V3h3a1 1 0 011 1v9a1 1 0 01-1 1h-3z"/><path d="M17 14l-4 7a2 2 0 01-3-2v-4H6a2 2 0 01-2-2.3l1.2-6A2 2 0 017.2 3H17"/></svg><span>Bad</span>';
+    const re=document.createElement('button');re.type='button';re.title='Re-expand this prompt with more detail and load it into the composer';re.style.display='none';
+    re.innerHTML='<span>Re-expand</span>';
     const note=document.createElement('span');note.className='sp-review-note';
+    re.onclick=async()=>{
+      re.disabled=true;re.textContent='Expanding…';
+      try{
+        if(typeof superPromptScope!=='undefined')superPromptScope=scope;
+        const better=String(await buildSuperPrompt(o+'\n\n(Expand this much more thoroughly — cover every relevant section in detail.)',null)||'').trim();
+        if(better&&better!==e){
+          bd.textContent=better;
+          const target=document.getElementById(scope==='coding'?'coding-input':'chat-input');
+          if(target){target.value=better;target.style.height='auto';try{autoResize(target)}catch(err){}try{target.focus()}catch(err){}}
+          note.textContent='Re-expanded — loaded into the composer.';
+        }else{note.textContent='Could not re-expand — try again.'}
+      }catch(err){note.textContent='Could not re-expand — try again.'}
+      re.disabled=false;re.textContent='Re-expand';
+    };
     const send=async(rating,btn)=>{
       if(btn.dataset.done)return;
       btn.disabled=true;
       const ok=await reportSuperPrompt(scope,o,e,rating,(typeof selectedModel!=='undefined'?selectedModel:''),(typeof assistantBackend==='function'?assistantBackend():''));
-      if(ok){btn.dataset.done='1';btn.classList.add(rating==='up'?'active-up':'active-down');note.textContent='Thanks — recorded for review.'}
+      if(ok){btn.dataset.done='1';btn.classList.add(rating==='up'?'active-up':'active-down');note.textContent='Thanks — recorded for review.';if(rating==='down')re.style.display=''}
       else{btn.disabled=false;note.textContent='Could not send that — try again.'}
     };
     up.onclick=()=>send('up',up);down.onclick=()=>send('down',down);
-    act.appendChild(up);act.appendChild(down);act.appendChild(note);
+    act.appendChild(up);act.appendChild(down);act.appendChild(re);act.appendChild(note);
     det.appendChild(act);body.appendChild(det);
   }catch(e){}
 }
@@ -5384,7 +5453,19 @@ function syncCodingNotifyBtn(){
 // ---- Prompt queue: type the next idea while a task is still running ----
 // Send while busy ENQUEUES instead of stopping. Each item keeps its attached
 // images; edit loads it back into the composer (and out of the queue).
-let codingPromptQueue=[],codingPromptQueueSeq=1;
+let codingPromptQueue=[],codingPromptQueueSeq=1,codingQueueDragId=null;
+const CODING_QUEUE_KEY='omnilink_coding_queue';
+function saveCodingQueue(){try{localStorage.setItem(CODING_QUEUE_KEY,JSON.stringify(codingPromptQueue||[]))}catch(e){}}
+function loadCodingQueue(){
+  try{
+    const q=JSON.parse(localStorage.getItem(CODING_QUEUE_KEY)||'[]');
+    if(Array.isArray(q)){
+      codingPromptQueue=q.filter(x=>x&&typeof x.text==='string');
+      let mx=0;for(const x of codingPromptQueue)mx=Math.max(mx,Number(x.id)||0);
+      codingPromptQueueSeq=Math.max(codingPromptQueueSeq,mx+1);
+    }
+  }catch(e){}
+}
 function renderCodingPromptQueue(){
   try{
     const box=document.getElementById('coding-queue');
@@ -5392,8 +5473,21 @@ function renderCodingPromptQueue(){
     const q=codingPromptQueue||[];
     if(!q.length){box.innerHTML='';box.style.display='none';return}
     box.style.display='';
-    box.innerHTML=q.map(it=>'<div class="coding-queue-item"><div class="coding-queue-text">'+escapeHtml(String(it.text||'(images only)').slice(0,300))+'</div><div class="coding-queue-actions"><button title="Edit this prompt" onclick="editCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z"/></svg></button><button title="Remove from queue" onclick="removeCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div></div>').join('');
+    box.innerHTML=q.map(it=>'<div class="coding-queue-item" draggable="true" data-qid="'+it.id+'" ondragstart="cqDragStart(event,'+it.id+')" ondragover="cqDragOver(event)" ondrop="cqDrop(event,'+it.id+')" ondragend="cqDragEnd(event)"><span class="coding-queue-grip" title="Drag to reorder">≡</span><div class="coding-queue-text">'+escapeHtml(String(it.text||'(images only)').slice(0,300))+'</div><div class="coding-queue-actions"><button title="Edit this prompt" onclick="editCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z"/></svg></button><button title="Remove from queue" onclick="removeCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div></div>').join('');
   }catch(e){}
+}
+function cqDragStart(e,id){codingQueueDragId=id;try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(id))}catch(err){}try{e.currentTarget.style.opacity='0.4'}catch(err){}}
+function cqDragOver(e){try{e.preventDefault();e.dataTransfer.dropEffect='move'}catch(err){}}
+function cqDragEnd(e){try{e.currentTarget.style.opacity=''}catch(err){}codingQueueDragId=null}
+function cqDrop(e,id){
+  try{e.preventDefault()}catch(err){}
+  const from=codingQueueDragId;codingQueueDragId=null;
+  if(from==null||from===id)return;
+  const a=codingPromptQueue.findIndex(x=>x.id===from),b=codingPromptQueue.findIndex(x=>x.id===id);
+  if(a<0||b<0)return;
+  const moved=codingPromptQueue.splice(a,1)[0];
+  codingPromptQueue.splice(b,0,moved);
+  renderCodingPromptQueue();saveCodingQueue();
 }
 function queueCodingPrompt(text,images){
   try{
@@ -5401,14 +5495,14 @@ function queueCodingPrompt(text,images){
     const imgs=(images||[]).slice();
     if(!t&&!imgs.length)return;
     codingPromptQueue.push({id:codingPromptQueueSeq++,text:t,images:imgs});
-    renderCodingPromptQueue();
+    renderCodingPromptQueue();saveCodingQueue();
     showToast('Queued — it will run after the current task ('+codingPromptQueue.length+' queued)','info');
   }catch(e){}
 }
 function removeCodingQueuedPrompt(id){
   try{
     codingPromptQueue=codingPromptQueue.filter(x=>x.id!==id);
-    renderCodingPromptQueue();
+    renderCodingPromptQueue();saveCodingQueue();
   }catch(e){}
 }
 function editCodingQueuedPrompt(id){
@@ -5416,7 +5510,7 @@ function editCodingQueuedPrompt(id){
     const i=codingPromptQueue.findIndex(x=>x.id===id);
     if(i<0)return;
     const it=codingPromptQueue.splice(i,1)[0];
-    renderCodingPromptQueue();
+    renderCodingPromptQueue();saveCodingQueue();
     const inp=document.getElementById('coding-input');
     if(inp){inp.value=it.text||'';inp.style.height='auto';try{autoResize(inp)}catch(e){}inp.focus()}
     if(it.images&&it.images.length){codingPendingImages=it.images.slice();renderCodingImgStrip()}
@@ -5427,7 +5521,7 @@ async function sendNextQueuedPrompt(){
   try{
     if(!codingPromptQueue.length)return;
     const it=codingPromptQueue.shift();
-    renderCodingPromptQueue();
+    renderCodingPromptQueue();saveCodingQueue();
     codingStopRequested=false;
     const inp=document.getElementById('coding-input');
     if(inp){inp.value=it.text||'';inp.style.height='auto'}
@@ -6508,6 +6602,7 @@ async function openRunToolsModal(){
   const rows=[
     ['Retry current todo','Re-run the first open todo on its own.',()=>retryCurrentTodo()],
     ['Diff this run','Unified diff of everything changed since this run started.',()=>openRunDiffModal()],
+    ['Undo this run','Revert every file AND the chat to before this run started (undoable).',()=>revertRun()],
     ['Explain this run','Plain-language summary: what changed, why, how to verify.',()=>explainCodingRun()],
     ['Save run as recipe','Keep this task plus touched files as a reusable template.',()=>saveRunRecipe()],
     ['Recipes','Browse, reuse or delete saved run templates.',()=>openRecipesModal()],
@@ -6549,6 +6644,26 @@ async function openRunDiffModal(){
     if(!files.length){body.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:12.5px">No differences since this run started.</div>';return}
     body.innerHTML=files.map(f=>'<div style="font-size:11.5px;color:var(--accent-light);margin:10px 0 3px;font-family:var(--mono)">'+vEsc(f.path)+'</div>'+vDiffHtml(f.diff||'')).join('')+'<div style="font-size:11px;color:var(--text-muted);margin-top:10px">Restore or inspect any version from the Versions tab.</div>';
   }catch(e){body.innerHTML='<div style="padding:16px;color:var(--error);font-size:12.5px">'+vEsc(e.message)+'</div>'}
+}
+async function revertRun(){
+  // Undo a whole run: restore the project files AND the coding chat to the
+  // baseline captured when the run started. The restore snapshots the current
+  // state first, so this is itself undoable.
+  if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('Wait for the run to finish first','info');return}
+  if(!codingFolder){showToast('Open a folder first','info');return}
+  try{if(!codingRunBaseVer)await captureRunBaseVersion()}catch(e){}
+  if(!codingRunBaseVer){showToast('No baseline version for this run yet — make a change first','info');return}
+  if(!(await appConfirm('Undo everything this run changed? The project files and the coding chat revert to the state before the run started. Your current state is saved as a new version first, so this is itself undoable.')))return;
+  try{
+    const r=await authFetch(API+'/api/coding/project-versions/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:codingRunBaseVer})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){showToast((d&&d.error)||'Revert failed','error');return}
+    codingRunBaseVer=null;
+    showToast('Run undone: '+(d.written||0)+' file(s) restored, chat reverted','success');
+    try{await restoreCodingChat()}catch(e){}
+    try{await refreshCodingTree()}catch(e){}
+    try{await loadAllCodingFiles(true)}catch(e){}
+  }catch(e){showToast('Revert failed: '+e.message,'error')}
 }
 async function explainCodingRun(){
   if(typeof codingAutoLoop!=='undefined'&&codingAutoLoop){showToast('Wait for the run to finish first','info');return}
@@ -7063,7 +7178,7 @@ function hardStopCodingLoop(){
     try{document.querySelectorAll('#coding-chat .qopt:not([data-picked])').forEach(b=>b.remove())}catch(e){}
     pendingFilesOffered='';
     // Queued prompts belong to the project that was open when they were typed.
-    try{codingPromptQueue=[];renderCodingPromptQueue()}catch(e){}
+    try{codingPromptQueue=[];renderCodingPromptQueue();saveCodingQueue()}catch(e){}
     codingStream=false;
     if(typeof setCodingLoopUI==='function'){try{setCodingLoopUI(false)}catch(e){}}
   }catch(e){}
