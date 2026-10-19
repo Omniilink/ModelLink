@@ -5039,6 +5039,8 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('GODOT 4 API ONLY')<0)sysPrompt+='\nGODOT 4 API ONLY (never emit Godot 3 APIs): `@onready`/`@export`/`@tool` annotations, never bare onready/export/tool; `await` not yield(); `.instantiate()` not `.instance()`; randf_range/deg_to_rad/str_to_var not the old short names; Packed*Array not Pool*Array; CharacterBody2D/3D with velocity property and a no-arg move_and_slide(); signal_name.connect(callable) not connect("name", obj, "method"); RefCounted not Reference; Node3D not Spatial; Sprite2D not Sprite; suffixed body/area classes (RigidBody2D/3D, StaticBody2D/3D, Area2D/3D); change_scene_to_file() not get_tree().change_scene(); Engine.is_editor_hint(); RenderingServer not VisualServer; DisplayServer not OS.window_*; TYPE_FLOAT not TYPE_REAL; # comments; never setget. The server lints every .gd you write (3-ism scan + headless parse) and returns errors — fix them with small FILE_PATCH blocks.\n';
   if(sysPrompt.indexOf('GODOT GAME ARCHITECT')<0)sysPrompt+='\nGODOT GAME ARCHITECT (how to structure a Godot game): act as a systems engineer, not a script typer. Design modular, single-responsibility scenes/scripts and expose tunables as `@export` at the top. Worlds/terrain: generate world DATA first (FastNoiseLite/Image/typed arrays) then build from it — 2D into a TileMapLayer, 3D via MeshInstance3D/ArrayMesh/HeightMapShape3D — separating biomes, elevation and continuous paths (rivers/roads) with noise thresholds or height maps. UI/HUD/inventory: strict container hierarchy (VBoxContainer/HBoxContainer/GridContainer/MarginContainer); NEVER hardcode position.x/position.y — use anchors and size flags (Fill/Expand) and build elements in code with add_child() from data/signals. Procedural textures/effects/materials: solve them in shaders (CanvasItem for 2D/UI, Spatial ShaderMaterial for 3D) with math (TIME, sine, UV, noise lookups) for motion/depth/tiling/gradients; blend terrain by slope or height. Strict static typing everywhere and a clean state machine instead of nested if/else in _process.\n';
   if(sysPrompt.indexOf('AI TEXTURE GENERATION')<0)sysPrompt+='\nAI TEXTURE GENERATION (Godot, when the user wants AI-generated game textures): emit a self-contained GDScript component with NO node-tree assumptions so it can be triggered from any UI or gameplay event — it accepts a prompt, aspect ratio and API key as properties/methods; POSTs to the Google Imagen 3 endpoint `imagen-3.0-generate-002:generateImages`; awaits the response via HTTPRequest without blocking the main loop; parses the nested JSON to the base64 image string; decodes base64 into an Image/ImageTexture and applies it to a StandardMaterial3D or Sprite2D; and handles missing key, non-200 status, JSON parse failure and empty payloads with clear push_error/printerr logging.\n';
+  if(sysPrompt.indexOf('GDScript PARSE SAFETY')<0)sysPrompt+='\nGDScript PARSE SAFETY (the server rejects any script that does not PARSE): never name a variable/property/parameter the same as a built-in Node/Node2D/Node3D/Control member — `position`, `name`, `scale`, `rotation`, `visible`, `owner`, `texture`, `modulate`, `z_index`, `material`, `offset`, `frame` are all taken (use pos, label, body_scale, facing); "Member X redefined" is a hard parse error. AVOID inner `class` blocks (put each class in its own .gd file, or use a Dictionary for plain data) — they break constantly. Indent with TABS only, consistently. One declaration per line, and never a trailing `.`. The server runs a real headless parse after you write; fix the EXACT file:line it names.\n';
+  if(sysPrompt.indexOf('VISIBLE PLAYER')<0)sysPrompt+='\nVISIBLE PLAYER (2D/3D games): the player character must actually be DRAWN — a Sprite2D/AnimatedSprite2D/ColorRect/Polygon2D child (or a _draw() shape) with a real size and color — and a Camera2D/Camera3D must follow it (make it current). A CharacterBody2D with no visible sprite and no camera reads as "my character does not exist". Verify on first delivery.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -8209,7 +8211,30 @@ async function codingAutoContinue(){
           lastReason='syntax/content problems in written files: '+validation.errors.join('; ');
           if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
           addCodingSystemMsg('Validation failed — '+lastReason);
-          const iturnV=await sendCodingImprove('Validation FAILED on files you just wrote: '+lastReason+'. Fix ONLY these issues with small FILE_PATCH blocks (OLD: exact lines, NEW: fixed lines) — do NOT rewrite the whole file.',setbacks+1);
+          // A structural PARSE error cannot be fixed by a small patch — telling
+          // the model to patch it is what made it loop forever on a broken
+          // script. Detect that case and instruct a clean rewrite of the file.
+          const _parseErr=/parse error|failed to parse|redefined|expected indented|expected end of statement|unexpected \.|unterminated string|unclosed (braces|parens|brackets)/i.test(validation.errors.join(' | '));
+          // Ground the rewrite: hand the model the EXACT current content of the
+          // broken file (once per file per run) so it fixes the real code instead
+          // of re-emitting the same broken structure from memory.
+          if(_parseErr){
+            try{
+              const named=[...new Set((validation.errors||[]).map(e=>{const m=String(e).match(/([\w./-]+\.gd):\d+/);return m?m[1]:null}).filter(Boolean))];
+              for(const f of named.slice(0,2)){
+                const injKey='parse:'+f;
+                if(typeof patchInjected!=='undefined'&&!patchInjected[injKey]){
+                  patchInjected[injKey]=1;
+                  let exact=null;try{exact=await codingReadFile(f)}catch(e){}
+                  if(exact&&String(exact).length>0){
+                    codingHistory.push({role:'user',content:'File snapshot: the EXACT current content of '+f+' is below — it currently FAILS to parse. Rewrite THIS file cleanly so it parses: keep what works, fix the structural error named in the validation error above, and re-emit the WHOLE corrected file with FILE_EDIT. Do not send another patch to a file that does not parse.\n--- FILE START ('+f+') ---\n'+String(exact).slice(0,14000)+'\n--- FILE END ---'});
+                    persistCodingChat();
+                  }
+                }
+              }
+            }catch(e){}
+          }
+          const iturnV=await sendCodingImprove('Validation FAILED on files you just wrote: '+lastReason+'. '+(_parseErr?'These are PARSE errors — the file is structurally broken and a small patch usually CANNOT fix it. Read the exact file:line named above, then replace the WHOLE broken file with a clean, correctly-indented version using FILE_EDIT (or FILE_CREATE for a new path) that removes the cause: a member that shadows a built-in Node property (position/name/scale/rotation/visible/owner), an inner class with a bad body, mixed tabs and spaces, or a stray trailing dot. Do NOT re-send the same broken structure.':'Fix ONLY these issues with small FILE_PATCH blocks (OLD: exact lines, NEW: fixed lines) — do NOT rewrite the whole file.'),setbacks+1);
           if(iturnV.error)break;
           continue;
         }

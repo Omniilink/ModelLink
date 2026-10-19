@@ -6381,6 +6381,32 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   `Image`/`ImageTexture`, and apply it to a StandardMaterial3D or Sprite2D; and
   handle missing API key, non-200 HTTP status, JSON parse failure and
   empty/invalid payload with clear push_error/printerr logging.
+- GDScript PARSE SAFETY (these exact mistakes have broken real builds — the
+  server rejects any script that does not PARSE, so follow all of them):
+  * NEVER name a variable, property or parameter the same as a built-in
+    Node/Node2D/Node3D/Control member. `position`, `name`, `scale`,
+    `rotation`, `visible`, `owner`, `texture`, `modulate`, `z_index`,
+    `material`, `offset`, `frame` are ALL taken — use `pos`, `label`,
+    `body_scale`, `facing`, etc. "Member X redefined (original in native class)"
+    is a hard parse error.
+  * AVOID inner `class` blocks. They must sit at the TOP LEVEL of the file with
+    a properly indented body, and they break constantly ("Expected indented
+    block after class declaration"). Put each class in its OWN .gd file, or use
+    a Dictionary / typed Array for plain data.
+  * Indent with TABS only, consistently, one level per block — never mix tabs
+    and spaces (GDScript is indentation-significant).
+  * One declaration per line: `var x: int = 0`. Never two statements on one
+    line, and never leave a trailing `.` (an operator needs a right operand —
+    "Unexpected '.' in class body" comes from exactly that).
+  * After you write any .gd file the server runs a REAL headless parse. If it
+    reports a Parse Error, fix the EXACT line named (the error now carries the
+    file, line and the offending source line) before continuing — do not guess.
+- VISIBLE PLAYER (2D/3D games): a game with a player character must actually
+  DRAW it — a Sprite2D/AnimatedSprite2D/ColorRect/Polygon2D child (or a
+  _draw() shape) with a real size and color — and a Camera2D/Camera3D must
+  follow it (make it current). A CharacterBody2D with no visible sprite and no
+  camera reads to the user as "my character doesn't exist". Verify this on
+  first delivery.
 - GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
   `export_presets.cfg` alone unless it is missing; never write a custom
   HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
@@ -10405,37 +10431,84 @@ def _godot_lint_run(editor: str, args, cwd: str, timeout: int):
         return 124, out or ""
 
 
+def _godot_loc(text: str):
+    """(rel, line) from a Godot error/location string; either may be None."""
+    m = re.search(r"res://([\w./-]+\.gd):(\d+)", text or "")
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(r'line (\d+) in file "res://([\w./-]+\.gd)"', text or "")
+    if m:
+        return m.group(2), m.group(1)
+    m = re.search(r"res://([\w./-]+\.gd)", text or "")
+    if m:
+        return m.group(1), None
+    return None, None
+
+
+def _godot_error_source(folder: str, err: str) -> str:
+    """Append the offending source line to a 'rel:line: message' error so the
+    fix loop can see exactly what is wrong without re-reading the whole file."""
+    m = re.match(r"^([\w./-]+\.gd):(\d+):", err or "")
+    if not m:
+        return err
+    rel, ln = m.group(1), int(m.group(2))
+    try:
+        src = open(os.path.join(folder, rel.replace("/", os.sep)), "r",
+                   encoding="utf-8", errors="replace").read().splitlines()
+        if 1 <= ln <= len(src):
+            snippet = src[ln - 1].strip()[:160]
+            if snippet:
+                return err + "  [source: " + snippet + "]"
+    except Exception:
+        pass
+    return err
+
+
 def _godot_parse_errors_from(out: str, rels):
     """Pull SCRIPT ERROR / Parse Error lines out of a lint-tool run.
 
-    Godot usually prints the file:line on the error line itself; when it does
-    not (resolution errors like 'Could not find type'), the error is buffered
-    and attributed to the file whose LINT_FAIL/LINT_OK marker follows — the
-    lint tool prints each marker right after loading that file."""
+    Godot prints a parse error and its location on SEPARATE lines:
+        SCRIPT ERROR: Parse Error: <msg>
+                  at: GDScript::reload (res://<file>.gd:<line>)
+    so the location is read from the following 'at:' line (the old code only
+    looked at the error line, so real parse errors came back as '(script): ...'
+    with NO file and NO line — impossible for the model to fix). Errors with no
+    location (resolution failures like 'Could not find type') are buffered and
+    attributed to the file whose LINT_FAIL/LINT_OK marker follows — the lint
+    tool prints each marker right after loading that file."""
     errs, buf = [], []
 
     def flush(rel):
         for m in buf:
-            errs.append((rel + ": " + m)[:300])
+            errs.append((rel + ": " + m)[:400])
         del buf[:]
 
     for line in (out or "").splitlines():
         if line.startswith("LINT_FAIL|") or line.startswith("LINT_OK|"):
             flush(line.split("|", 1)[1].strip())
             continue
-        if "SCRIPT ERROR" not in line and "Parse Error" not in line \
-                and "parse error" not in line.lower():
+        low = line.lower()
+        is_err = ("SCRIPT ERROR" in line) or ("Parse Error" in line) \
+            or ("parse error" in low)
+        if is_err and "Failed to load script" not in line:
+            msg = re.sub(r"^SCRIPT ERROR:\s*", "", line).strip()
+            rel, ln = _godot_loc(line)
+            if rel:
+                errs.append((rel + ((":" + ln) if ln else "") + ": " + msg)[:400])
+            else:
+                buf.append(msg)          # location may arrive on the next at: line
             continue
-        msg = re.sub(r"^SCRIPT ERROR:\s*", "", line).strip()
-        fm = re.search(r"res://([\w./-]+\.gd)", line)
-        if fm:
-            lm = re.search(r"line (\d+)", line)
-            prefix = fm.group(1) + (":" + lm.group(1) if lm else "") + ": "
-            errs.append((prefix + msg)[:300])
-        else:
-            buf.append(msg)
+        if "at:" in low and buf:
+            rel, ln = _godot_loc(line)
+            if rel:
+                msg = buf.pop()
+                errs.append((rel + ((":" + ln) if ln else "") + ": " + msg)[:400])
     flush("(script)")  # trailing errors with no marker after them
-    return errs[:20]
+    deduped = []
+    for e in errs:
+        if e not in deduped:
+            deduped.append(e)
+    return deduped[:20]
 
 
 def _godot_smoke_errors_from(out: str):
@@ -10470,7 +10543,8 @@ def _godot_lint_project(folder: str, files, smoke: bool = True):
         except Exception:
             continue
         rels.append(rel)
-        errors.extend(_godot_regex_lint_text(rel, text))
+        errors.extend(_godot_error_source(folder, e)
+                      for e in _godot_regex_lint_text(rel, text))
     if not rels:
         return [], "noop"
     if not (_godot_editor_ok() and sys.platform.startswith("linux")):
@@ -10495,6 +10569,7 @@ def _godot_lint_project(folder: str, files, smoke: bool = True):
             editor, ["--headless", "--path", src, "-s", "lint_tool.gd", "--"] + rels,
             src, 120)
         parse_errs = _godot_parse_errors_from(out, rels)
+        parse_errs = [_godot_error_source(folder, e) for e in parse_errs]
         errors.extend(parse_errs)
         failed = set()
         for line in (out or "").splitlines():
