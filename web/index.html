@@ -5703,7 +5703,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){};try{if(typeof reportProjectSeen==='function')reportProjectSeen()}catch(e){}
+  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){};try{if(typeof reportProjectSeen==='function')reportProjectSeen()}catch(e){};if(!(typeof codingInternalSend!=='undefined'&&codingInternalSend))codingFixOrigin='';
   let sendModel=selectedModel;
   let userContent=cleanText;
   let histContent=null;
@@ -6639,7 +6639,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingInternalSend=false;
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingInternalSend=false,codingFixOrigin='';
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -7999,7 +7999,12 @@ function reportFixFailed(promptText){
 }
 function retryFixDifferent(promptText){
   try{
-    const msg='The previous fix did NOT work — the user confirmed it is still broken. Do NOT repeat the same approach; the root cause is different. Re-read the relevant files, find the ACTUAL cause, and fix it a different way. Original problem: '+String(promptText||'').slice(0,300);
+    // Never wrap a wrapper: if this is already a retry message, unwrap back to
+    // the original problem first (otherwise "Original problem:" nests forever).
+    let p=String(promptText||'');
+    const m=p.match(/Original problem:\s*([\s\S]*)$/i);
+    if(/^The previous fix did NOT work/.test(p)&&m)p=m[1].trim();
+    const msg='The previous fix did NOT work — the user confirmed it is still broken. Do NOT repeat the same approach; the root cause is different. Re-read the relevant files, find the ACTUAL cause, and fix it a different way. Original problem: '+p.slice(0,300);
     if(typeof codingAutoLoop!=='undefined'&&(codingAutoLoop||codingStream)){queueCodingPrompt(msg);return}
     if(typeof startCodingLoopWith==='function')startCodingLoopWith(msg);
   }catch(e){}
@@ -8918,7 +8923,12 @@ async function codingAutoContinue(){
       const wrote=!!codingRunWrote;
       const req=String((typeof codingNotifyRequest!=='undefined'&&codingNotifyRequest)||codingRunTask||'');
       const queued=(typeof codingPromptQueue!=='undefined'&&codingPromptQueue&&codingPromptQueue.length);
-      if(wrote&&!queued&&codingTaskIsFix(req))addFixConfirmation(req);
+      // Always reference the ORIGINAL problem, never a previous retry wrapper —
+      // otherwise each "No" wraps the last wrapper and the text nests forever.
+      const isRetry=/^The previous fix did NOT work/.test(req);
+      if(!isRetry)codingFixOrigin=req;
+      const origin=String(codingFixOrigin||req||'');
+      if(wrote&&!queued&&codingTaskIsFix(origin))addFixConfirmation(origin);
     }catch(e){}
   }
   if(!codingStopRequested&&typeof maybeSendNextQueuedPrompt==='function')maybeSendNextQueuedPrompt();
