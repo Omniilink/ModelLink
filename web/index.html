@@ -265,6 +265,18 @@ a:hover{text-decoration:underline}
 .coding-msg-tool{margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);font-family:var(--mono);font-size:11px;color:var(--text-muted);overflow:hidden}
 .coding-msg-tool .tool-label{color:var(--accent-light);font-weight:650;margin-bottom:4px}
 .coding-input-area{padding:10px 14px 12px;border-top:1px solid var(--border);background:var(--bg-secondary)}
+.sp-review{margin-top:8px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-tertiary);overflow:hidden;max-width:100%}
+.sp-review>summary{cursor:pointer;font-size:11px;font-family:var(--mono);color:var(--text-secondary);padding:6px 10px;list-style:none}
+.sp-review>summary::-webkit-details-marker{display:none}
+.sp-review>summary::before{content:'\25B8 ';color:var(--text-muted)}
+.sp-review[open]>summary::before{content:'\25BE '}
+.sp-review-body{padding:0 10px 10px;font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-family:var(--font)}
+.sp-review-actions{display:flex;gap:8px;align-items:center;padding:8px 10px;border-top:1px solid var(--border)}
+.sp-review-actions button{background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);cursor:pointer;padding:4px 10px;font-size:12px;display:inline-flex;gap:5px;align-items:center;font-family:var(--font)}
+.sp-review-actions button:hover{background:var(--bg-hover);color:var(--text-primary)}
+.sp-review-actions button.active-up{color:var(--success);border-color:var(--success)}
+.sp-review-actions button.active-down{color:var(--error);border-color:var(--error)}
+.sp-review-note{font-size:11px;color:var(--text-muted);margin-left:auto}
 .coding-controls{display:flex;gap:6px;padding:0 0 8px;flex-wrap:wrap}
 .coding-controls select{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);font-size:11px;padding:5px 6px;cursor:pointer;font-family:var(--font);outline:none;max-width:200px}
 .coding-controls select:hover{background:var(--bg-hover);color:var(--text-primary)}
@@ -1409,6 +1421,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <button class="modal-tab" data-atab="review" onclick="admShow('review',this)">Review <span id="adm-rev-count"></span></button>
 <button class="modal-tab" data-atab="findings" onclick="admShow('findings',this)">Findings</button>
               <button class="modal-tab" data-atab="problems" onclick="admShow('problems',this)">Common problems</button>
+              <button class="modal-tab" data-atab="superprompt" onclick="admShow('superprompt',this)">Superprompt</button>
             </div>
             <div data-apane="overview">
               <div id="adm-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -1476,6 +1489,11 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             <div data-apane="problems" style="display:none">
               <div class="tool-row"><span class="tool-result-sub">Recurring problems detected in the coding loop — wrong commands, wasted rewrites, patch misses, plus the lessons the AI logged. Grouped into patterns by how often they happen.</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admLoadCommonProblems()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admClearCommonProblems()">Clear</button><span class="tool-result-sub" id="adm-prob-meta"></span></div>
               <div id="adm-problems"></div>
+            </div>
+            <div data-apane="superprompt" style="display:none">
+              <div class="tool-row"><label class="tool-result-sub">Rating <select id="adm-sp-filter" onchange="admLoadSuperprompt()"><option value="all" selected>All</option><option value="up">Good</option><option value="down">Bad</option></select></label><button class="btn btn-ghost btn-sm" onclick="admLoadSuperprompt()">Refresh</button><span class="tool-result-sub" id="adm-sp-meta"></span></div>
+              <div class="tool-result-sub" style="margin-bottom:10px">Every super-prompt a user rated with the thumbs buttons — the original prompt they typed, the expanded prompt that was actually sent to the AI, and their rating.</div>
+              <div id="adm-superprompt"></div>
             </div>
           </div>
         </div>
@@ -2636,7 +2654,7 @@ async function sendMessage(){
   try{const _f=!chatHistory.some(m=>m.role==='user');if(_f&&typeof localChatTitle==='function'){localChatTitle(text).then(t=>{if(t){chatTitleOverrides[currentChatId]=t;saveChatTitleOverrides();try{saveCurrentChat()}catch(e){}}}).catch(()=>{})}}catch(e){}
   // The prompt lands FIRST; the expansion/research toasts that follow report on
   // this message, so they must never appear before it does.
-  appendMessage('user',histContent||content);
+  const _userEl=appendMessage('user',histContent||content);
   // Auto super-prompt: the local assistant expands the message before the AI sees it.
   let _modelContent=content;
   superPromptScope='chat';
@@ -2652,6 +2670,7 @@ async function sendMessage(){
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==text)_modelContent=_sp;
     }
   }catch(e){}
+  if(_modelContent!==content&&typeof attachSuperPromptReview==='function'){try{attachSuperPromptReview((_userEl&&_userEl.closest)?(_userEl.closest('.message')||_userEl):_userEl,text,_modelContent,'chat')}catch(e){}}
   chatHistory.push({role:'user',content:histContent||_modelContent});
   if(compareMode)sendCompareRequest(text);
   const assistantEl=appendMessage('assistant','',true);isStreaming=true;document.getElementById('send-btn').disabled=true;
@@ -3447,16 +3466,55 @@ async function buildSuperPrompt(text,notify){
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
     if(research)researchCtx=await superPromptResearch(text,notify);
-    const sys='You rewrite a user request into a detailed, precise prompt for an AI assistant. '
-      +'Keep EXACTLY the user\'s intent and scope: do not change what they are asking for. '
-      +(features?'You MAY add a few closely-related, genuinely useful details or features that clearly fit the request.':'Do NOT add any features, extras or scope beyond what the user asked — expand only the clarity and specificity of their request. ')
-      +'Make it specific and unambiguous (inputs, outputs, constraints, edge cases, format) but never invent unrelated requirements. Output ONLY the improved prompt, no preamble or commentary.';
+    const sys='You rewrite a user request into a clearer, more specific prompt for an AI assistant. You do NOT decide what the task is. '
+      +'HARD RULE — keep the user\'s exact goal, action and deliverable: if they ask to create, build, make, add, change, move, replace or fix something, the rewritten prompt MUST still ask to do exactly that thing. '
+      +'NEVER turn a create/build/make request into a review, audit, verification, syntax-check, debug, or "assess what exists" request, and never swap in a different task. '
+      +'Expand ONLY by making their existing request more specific and unambiguous — the concrete inputs, outputs, file names/formats, constraints and edge cases their request already implies. '
+      +(features?'You MAY add a few closely-related details or features that clearly fit the request — still the same goal, never a new task.':'Do NOT add any features, extras or scope beyond what the user asked.')
+      +' If the request is already specific, return it almost unchanged. Output ONLY the improved prompt — no preamble, no commentary, no questions.';
     const ctx=superPromptContext();
     const ctxBlock=ctx.text?('\n\nContext (the conversation and project this request belongs to - keep the prompt consistent with it):\n'+ctx.text):'';
     const usr='User request:\n'+String(text||'').slice(0,2000)+(ctxBlock)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');
     const out=String(await assistantRunJob('super_prompt',sys,usr,900)).trim();
     return out||text;
   }catch(e){return text}
+}
+async function reportSuperPrompt(scope,original,expanded,rating,model,backend){
+  try{
+    const r=await authFetch(API+'/api/superprompt/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:scope,original:original,expanded:expanded,rating:rating,model:model||'',backend:backend||''})});
+    return !!r.ok;
+  }catch(e){return false}
+}
+function attachSuperPromptReview(msgEl,original,expanded,scope){
+  // Show the user their original prompt, a dropdown with what was ACTUALLY
+  // sent to the model, and thumbs up/down that file a report for admins.
+  try{
+    if(!msgEl)return;
+    const o=String(original==null?'':original),e=String(expanded==null?'':expanded);
+    if(!e.trim()||e.trim()===o.trim())return;
+    let body=null;
+    try{const c=msgEl.querySelector('.coding-msg-content')||msgEl.querySelector('.message-content');body=c?c.parentElement:null}catch(err){}
+    if(!body)body=msgEl.querySelector('.message-body')||msgEl;
+    const det=document.createElement('details');det.className='sp-review';
+    const sum=document.createElement('summary');sum.textContent='Super prompt sent to the AI';det.appendChild(sum);
+    const bd=document.createElement('div');bd.className='sp-review-body';bd.textContent=e;det.appendChild(bd);
+    const act=document.createElement('div');act.className='sp-review-actions';
+    const up=document.createElement('button');up.type='button';up.title='Good — this expansion helped';
+    up.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M7 10v11H4a1 1 0 01-1-1v-9a1 1 0 011-1h3z"/><path d="M7 10l4-7a2 2 0 013 2v4h4a2 2 0 012 2.3l-1.2 6A2 2 0 0116.8 21H7"/></svg><span>Good</span>';
+    const down=document.createElement('button');down.type='button';down.title='Bad — this expansion got it wrong';
+    down.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17 14V3h3a1 1 0 011 1v9a1 1 0 01-1 1h-3z"/><path d="M17 14l-4 7a2 2 0 01-3-2v-4H6a2 2 0 01-2-2.3l1.2-6A2 2 0 017.2 3H17"/></svg><span>Bad</span>';
+    const note=document.createElement('span');note.className='sp-review-note';
+    const send=async(rating,btn)=>{
+      if(btn.dataset.done)return;
+      btn.disabled=true;
+      const ok=await reportSuperPrompt(scope,o,e,rating,(typeof selectedModel!=='undefined'?selectedModel:''),(typeof assistantBackend==='function'?assistantBackend():''));
+      if(ok){btn.dataset.done='1';btn.classList.add(rating==='up'?'active-up':'active-down');note.textContent='Thanks — recorded for review.'}
+      else{btn.disabled=false;note.textContent='Could not send that — try again.'}
+    };
+    up.onclick=()=>send('up',up);down.onclick=()=>send('down',down);
+    act.appendChild(up);act.appendChild(down);act.appendChild(note);
+    det.appendChild(act);body.appendChild(det);
+  }catch(e){}
 }
 async function localAssistantRoute(text){
   // Ask the 0.5B which available model best fits the request. Returns a model
@@ -4979,6 +5037,8 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(sysPrompt.indexOf('WEBSITE / HTML TRIO')<0)sysPrompt+='\nWEBSITE / HTML TRIO (mandatory): whenever the user asks for a website, web app, landing page, or anything in HTML, ALWAYS create all three files — `index.html`, `styles.css`, and `app.js` (or `script.js`) — and link `<link rel="stylesheet" href="styles.css">` in `<head>` plus `<script src="app.js"><'+'/script>` in `<body>` (unless the user explicitly asked for a single self-contained file). List all three in your TODO_LIST as separate items and never ship an HTML page without a real CSS stylesheet and JS script. This rule does NOT apply to Godot engine projects — those ship project.godot, scenes and scripts instead, never index.html/styles.css/app.js.\n';
   if(sysPrompt.indexOf('GODOT-FIRST')<0)sysPrompt+='\nGODOT-FIRST (mandatory): whenever the user asks for a GAME, build it as a GODOT 4 project, never as hand-rolled HTML5/JS: `project.godot` (config_version=5, name set, run/main_scene pointing at a scene that exists), text `.tscn` scenes, `.gd` GDScript, Compatibility renderer (`rendering_method` and `.web` = "gl_compatibility" — Forward+/Mobile cannot run in a browser). NO C#, NO GDExtension, NO binary scenes. Never write export_presets.cfg custom shells or exported index.html/.wasm/.pck yourself — the server exports and the user plays via the Play button.\n';
   if(sysPrompt.indexOf('GODOT 4 API ONLY')<0)sysPrompt+='\nGODOT 4 API ONLY (never emit Godot 3 APIs): `@onready`/`@export`/`@tool` annotations, never bare onready/export/tool; `await` not yield(); `.instantiate()` not `.instance()`; randf_range/deg_to_rad/str_to_var not the old short names; Packed*Array not Pool*Array; CharacterBody2D/3D with velocity property and a no-arg move_and_slide(); signal_name.connect(callable) not connect("name", obj, "method"); RefCounted not Reference; Node3D not Spatial; Sprite2D not Sprite; suffixed body/area classes (RigidBody2D/3D, StaticBody2D/3D, Area2D/3D); change_scene_to_file() not get_tree().change_scene(); Engine.is_editor_hint(); RenderingServer not VisualServer; DisplayServer not OS.window_*; TYPE_FLOAT not TYPE_REAL; # comments; never setget. The server lints every .gd you write (3-ism scan + headless parse) and returns errors — fix them with small FILE_PATCH blocks.\n';
+  if(sysPrompt.indexOf('GODOT GAME ARCHITECT')<0)sysPrompt+='\nGODOT GAME ARCHITECT (how to structure a Godot game): act as a systems engineer, not a script typer. Design modular, single-responsibility scenes/scripts and expose tunables as `@export` at the top. Worlds/terrain: generate world DATA first (FastNoiseLite/Image/typed arrays) then build from it — 2D into a TileMapLayer, 3D via MeshInstance3D/ArrayMesh/HeightMapShape3D — separating biomes, elevation and continuous paths (rivers/roads) with noise thresholds or height maps. UI/HUD/inventory: strict container hierarchy (VBoxContainer/HBoxContainer/GridContainer/MarginContainer); NEVER hardcode position.x/position.y — use anchors and size flags (Fill/Expand) and build elements in code with add_child() from data/signals. Procedural textures/effects/materials: solve them in shaders (CanvasItem for 2D/UI, Spatial ShaderMaterial for 3D) with math (TIME, sine, UV, noise lookups) for motion/depth/tiling/gradients; blend terrain by slope or height. Strict static typing everywhere and a clean state machine instead of nested if/else in _process.\n';
+  if(sysPrompt.indexOf('AI TEXTURE GENERATION')<0)sysPrompt+='\nAI TEXTURE GENERATION (Godot, when the user wants AI-generated game textures): emit a self-contained GDScript component with NO node-tree assumptions so it can be triggered from any UI or gameplay event — it accepts a prompt, aspect ratio and API key as properties/methods; POSTs to the Google Imagen 3 endpoint `imagen-3.0-generate-002:generateImages`; awaits the response via HTTPRequest without blocking the main loop; parses the nested JSON to the base64 image string; decodes base64 into an Image/ImageTexture and applies it to a StandardMaterial3D or Sprite2D; and handles missing key, non-200 status, JSON parse failure and empty payloads with clear push_error/printerr logging.\n';
   // Raised when the model's last TODO_LIST was too coarse. Stated as a rule
   // for the rest of the run instead of a mid-task user message, which used to
   // derail the model and leave half-finished work behind.
@@ -5413,6 +5473,7 @@ async function sendCodingMessage(){
       if(_sp&&String(_sp).trim()&&String(_sp).trim()!==rawText)modelText=String(_sp).trim();
     }
   }catch(e){}
+  if(modelText!==rawText&&typeof attachSuperPromptReview==='function'){try{attachSuperPromptReview(userMsg,rawText,modelText,'coding')}catch(e){}}
   // Collaborative workspace + others active: queue this prompt for the 15s
   // team batch instead of running it now (one combined instruction is run for
   // the whole team by a randomly-chosen submitter's cloud key).
@@ -13797,7 +13858,7 @@ document.addEventListener('keydown',e=>{
 let admTab='overview',admTimers={},admTermCwd='',admTermLog=[],admTermIdx=-1;
 function admGuard(){return window.__user&&window.__user.is_admin}
 function enterAdminView(){if(!admGuard()){navigate('chat');return}const w=document.getElementById('adm-who');if(w&&window.__user)w.textContent='signed in as '+window.__user.username;admShow(admTab||'overview')}
-function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings();else if(name==='problems')admLoadCommonProblems()}
+function admShow(name,btn){admTab=name;document.querySelectorAll('#adm-tabs .modal-tab').forEach(t=>t.classList.toggle('active',t===btn||t.dataset.atab===name));document.querySelectorAll('#admin-view [data-apane]').forEach(p=>{p.style.display=p.dataset.apane===name?'':'none'});admClearTimer('logs');admClearTimer('audit');if(name==='overview'){admLoadOverview();try{admLoadOllama()}catch(e){}}else if(name==='reports')admLoadReports();else if(name==='users')admLoadUsers();else if(name==='usage')admLoadUsage();else if(name==='terminal')admInitTerminal();else if(name==='docker')admLoadDocker();else if(name==='logs'){admLoadLogs();const a=document.getElementById('adm-logs-auto');if(a&&a.checked)admArm('logs')}else if(name==='audit'){admLoadAudit();const b=document.getElementById('adm-audit-auto');if(b&&b.checked)admArm('audit')}else if(name==='review')admLoadReview();else if(name==='findings')admLoadFindings();else if(name==='problems')admLoadCommonProblems();else if(name==='superprompt')admLoadSuperprompt()}
 function admClearTimer(k){if(admTimers[k]){clearInterval(admTimers[k]);delete admTimers[k]}}
 function admArm(k){admClearTimer(k);admTimers[k]=setInterval(()=>{if(k==='logs')admLoadLogs();else admLoadAudit()},k==='logs'?2000:3000)}
 function admFmt(n){n=Number(n)||0;return n.toLocaleString()}
@@ -13924,6 +13985,30 @@ async function admLoadCommonProblems(){
   }catch(e){box.innerHTML='<div class="tool-status">Could not load common problems.</div>'}
 }
 async function admClearCommonProblems(){if(!(await appConfirm('Clear all recorded common-problem events?')))return;try{const r=await authFetch(API+'/api/admin/common-problems',{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admLoadCommonProblems()}catch(e){showToast('Could not clear: '+e.message,'error')}}
+async function admLoadSuperprompt(){
+  const box=document.getElementById('adm-superprompt');if(!box)return;
+  const f=document.getElementById('adm-sp-filter');const rating=f?f.value:'all';
+  try{
+    const r=await authFetch(API+'/api/admin/superprompt-reports?rating='+encodeURIComponent(rating));
+    if(!r.ok){box.innerHTML='<div class="tool-status">Could not load superprompt reports.</div>';return}
+    const d=await r.json();const reps=d.reports||[];
+    const meta=document.getElementById('adm-sp-meta');if(meta)meta.textContent=(d.up||0)+' good · '+(d.down||0)+' bad · showing '+reps.length;
+    box.innerHTML='';
+    if(!reps.length){box.innerHTML='<div class="tool-status">No rated super prompts yet. Rate an expanded prompt with the thumbs buttons and it will show here.</div>';return}
+    reps.forEach(rep=>{
+      const good=rep.rating==='up';
+      const card=document.createElement('div');card.className='prompt-card';
+      card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(rep.username||('user '+rep.user_id))+' · '+escapeHtml(rep.created_at||'')+'</span><span class="act-status act-status-'+(good?'success':'error')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(good?'GOOD':'BAD')+'</span></div>'
+        +'<div class="tool-result-sub" style="margin:2px 0 6px">'+escapeHtml([rep.scope,rep.model,rep.backend].filter(Boolean).join(' · '))+'</div>'
+        +'<div class="usage-section-title" style="margin-top:6px">Original prompt</div><div class="prompt-content">'+escapeHtml(rep.original||'—')+'</div>'
+        +'<div class="usage-section-title" style="margin-top:6px">Super prompt sent to the AI</div><div class="prompt-content">'+escapeHtml(rep.expanded||'—')+'</div>';
+      const row=document.createElement('div');row.className='prompt-actions';
+      const b=document.createElement('button');b.className='btn btn-ghost btn-sm';b.textContent='Delete';
+      b.onclick=async()=>{if(!(await appConfirm('Delete this superprompt report?')))return;try{const rr=await authFetch(API+'/api/admin/superprompt-reports/'+rep.id,{method:'DELETE'});if(!rr.ok)throw new Error('HTTP '+rr.status);admLoadSuperprompt()}catch(e){showToast('Could not delete: '+e.message,'error')}};
+      row.appendChild(b);card.appendChild(row);box.appendChild(card);
+    });
+  }catch(e){box.innerHTML='<div class="tool-status">Could not load superprompt reports.</div>'}
+}
 function admTmMoney(n){if(n==null||isNaN(Number(n)))return '—';return '$'+Number(n).toLocaleString(undefined,{maximumFractionDigits:2})}
 function admTmMoneySigned(v){const n=Number(v);const c=n>=0?'var(--success)':'var(--error)';return '<span style="color:'+c+'">'+(n>=0?'+':'-')+'$'+Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>'}
 function admTmRange(up,lo){

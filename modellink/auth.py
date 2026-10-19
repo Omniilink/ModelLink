@@ -155,6 +155,21 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_error_reports_status ON error_reports(status, created_at);
 
+        CREATE TABLE IF NOT EXISTS superprompt_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT DEFAULT '',
+            scope TEXT DEFAULT 'chat',
+            original TEXT DEFAULT '',
+            expanded TEXT DEFAULT '',
+            rating TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            backend TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_superprompt_reports_rating ON superprompt_reports(rating, created_at);
+
         CREATE TABLE IF NOT EXISTS shared_previews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             token TEXT UNIQUE NOT NULL,
@@ -1041,7 +1056,7 @@ def change_username(user_id: int, new_username: str) -> dict:
         # Keep denormalized copies in step so history/forums/public show the
         # new name (they are keyed by user id, so nothing is lost).
         for table in ("error_reports", "shared_previews", "public_projects",
-                      "forum_threads", "forum_posts"):
+                      "forum_threads", "forum_posts", "superprompt_reports"):
             try:
                 conn.execute(f"UPDATE {table} SET username = ? WHERE user_id = ?", (new, user_id))
             except Exception:

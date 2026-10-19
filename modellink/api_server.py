@@ -3086,6 +3086,44 @@ async def create_error_report(request: Request):
         conn.close()
 
 
+class SuperPromptReportBody(BaseModel):
+    scope: str = "chat"
+    original: str = ""
+    expanded: str = ""
+    rating: str = ""
+    model: str = ""
+    backend: str = ""
+
+
+@app.post("/api/superprompt/report")
+async def create_superprompt_report(request: Request, req: SuperPromptReportBody):
+    """Record a thumbs up/down on a super-prompt expansion. Admins see the
+    original prompt, what was actually sent to the model, and the rating."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    rating = (req.rating or "").strip().lower()
+    if rating not in ("up", "down"):
+        return JSONResponse(status_code=400,
+                            content={"error": "rating must be 'up' or 'down'"})
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO superprompt_reports (user_id, username, scope, original,"
+            " expanded, rating, model, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], user.get("username", ""),
+             str(req.scope or "chat")[:16],
+             str(req.original or "")[:8000],
+             str(req.expanded or "")[:16000],
+             rating,
+             str(req.model or "")[:128],
+             str(req.backend or "")[:16]))
+        conn.commit()
+        return {"status": "ok", "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
 _FINDINGS_COLS = ("id, user_id, username, kind, title, problem, solution,"
                   " why, model, provider, language, code, created_at")
 _FINDINGS_CAP = 1000
@@ -6308,6 +6346,41 @@ INTERACTIVE COMPLETENESS (games, sims, anything the user runs):
   server lints every script you write (Godot-3-ism scan + real headless
   parse) and sends errors back — fix them with small FILE_PATCH blocks,
   never re-emit a whole file to fix a lint error.
+- GODOT GAME ARCHITECT (how to structure a Godot game — apply whenever you
+  build or extend one): act as a systems engineer, not a script typer. Design
+  modular, single-responsibility scenes/scripts and expose every tunable as an
+  `@export` at the top of the generator/controller.
+  * Worlds/terrain: generate the world DATA first (FastNoiseLite, Image, typed
+    arrays), then build the world from it. 2D writes into a TileMapLayer; 3D
+    manipulates MeshInstance3D / ArrayMesh / HeightMapShape3D. Separate biomes,
+    elevation (hills/mountains) and continuous paths (rivers/roads) with noise
+    thresholds or height maps. Every structural parameter (seed, frequency,
+    octaves, thresholds) is an `@export`.
+  * UI/HUD/inventory: strict container hierarchy (VBoxContainer, HBoxContainer,
+    GridContainer, MarginContainer). NEVER hardcode position.x/position.y or
+    absolute offsets — sizing, padding and alignment come from anchors and
+    container size flags (Fill/Expand). Build elements in code with add_child()
+    and populate them from data or signals, not hand-placed nodes.
+  * Procedural textures/effects/materials: solve the visuals in shaders —
+    CanvasItem shaders for 2D/UI, Spatial (ShaderMaterial) for 3D. Use math
+    (TIME, sine waves, UV manipulation, procedural noise lookups) for motion,
+    depth, tiling and gradients; blend terrain textures by vertex slope or
+    height. Prefer code-driven visuals over hotlinked assets.
+  * Strict static typing everywhere (`var speed: float = 0.0`,
+    `func _ready() -> void`), Godot 4 syntax (`@onready`/`@export`,
+    `signal_name.emit()`), and a clean internal state machine instead of deeply
+    nested if/else inside `_process`.
+- AI TEXTURE GENERATION (Godot — when the user asks for AI-generated game
+  textures): emit a SELF-CONTAINED GDScript component that makes NO assumptions
+  about node-tree placement so it can be triggered modularly from any UI or
+  gameplay event. It must: accept a text prompt, aspect ratio and API key as
+  public properties/methods; POST to the Google Imagen 3 endpoint
+  `imagen-3.0-generate-002:generateImages`; await the response via HTTPRequest
+  WITHOUT blocking the main loop; safely parse the nested JSON down to the
+  base64-encoded image string; decode base64 into raw bytes, build an
+  `Image`/`ImageTexture`, and apply it to a StandardMaterial3D or Sprite2D; and
+  handle missing API key, non-200 HTTP status, JSON parse failure and
+  empty/invalid payload with clear push_error/printerr logging.
 - GODOT EXPORT (handled by the server — do NOT hand-roll it): leave
   `export_presets.cfg` alone unless it is missing; never write a custom
   HTML shell, never emit the exported `index.html`/`.js`/`.wasm`/`.pck`
@@ -18617,6 +18690,51 @@ async def admin_error_report_resolve(request: Request, report_id: int):
         if cur.rowcount == 0:
             return JSONResponse(status_code=404, content={"error": "Report not found"})
         return {"status": "ok", "id": report_id, "new_status": want}
+    finally:
+        conn.close()
+
+
+@app.get("/api/admin/superprompt-reports")
+async def admin_superprompt_reports(request: Request, rating: str = "all"):
+    """Rated super-prompt expansions: original prompt, what was sent, thumbs."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    rating = (rating or "all").strip().lower()
+    conn = get_db()
+    try:
+        cols = ("id, user_id, username, scope, original, expanded, rating,"
+                " model, backend, created_at")
+        if rating in ("up", "down"):
+            rows = conn.execute(
+                "SELECT " + cols + " FROM superprompt_reports WHERE rating = ?"
+                " ORDER BY id DESC LIMIT 300", (rating,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT " + cols + " FROM superprompt_reports"
+                " ORDER BY id DESC LIMIT 300").fetchall()
+        counts = conn.execute(
+            "SELECT SUM(CASE WHEN rating='up' THEN 1 ELSE 0 END) AS up,"
+            " SUM(CASE WHEN rating='down' THEN 1 ELSE 0 END) AS down"
+            " FROM superprompt_reports").fetchone()
+        return {"reports": [dict(r) for r in rows],
+                "up": int(counts["up"] or 0), "down": int(counts["down"] or 0)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/superprompt-reports/{report_id}")
+async def admin_superprompt_report_delete(request: Request, report_id: int):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    conn = get_db()
+    try:
+        cur = conn.execute("DELETE FROM superprompt_reports WHERE id = ?", (report_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "Report not found"})
+        return {"status": "ok", "id": report_id}
     finally:
         conn.close()
 
