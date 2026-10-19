@@ -3243,9 +3243,52 @@ async def admin_findings_delete(request: Request, finding_id: int):
 _PROBLEM_CAP = 5000
 
 
-_PROBLEM_PROMOTE_PCT = 0.30    # promote a problem to "known" at 30% of same-type projects
-_PROBLEM_RESEARCH_PCT = 0.50   # auto-research solutions once it reaches 50%
+_PROBLEM_PROMOTE_PCT = 0.30    # default promote threshold (admin-tunable)
+_PROBLEM_RESEARCH_PCT = 0.50   # default auto-research threshold (admin-tunable)
 _problem_research_running = set()
+
+
+def _meta_get(key, default=""):
+    try:
+        conn = get_db()
+        try:
+            r = conn.execute("SELECT value FROM server_meta WHERE key = ?", (key,)).fetchone()
+            return r["value"] if r else default
+        finally:
+            conn.close()
+    except Exception:
+        return default
+
+
+def _meta_set(key, value):
+    try:
+        conn = get_db()
+        try:
+            conn.execute("INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)",
+                         (key, str(value)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _problem_thresholds():
+    """(promote, research) fractions of same-type projects, admin-tunable.
+    Defaults 0.30 / 0.50; research is never allowed below promote."""
+    def num(key, default):
+        try:
+            v = float(_meta_get(key, "") or "")
+            if 0 < v <= 100:
+                return v / 100.0
+        except Exception:
+            pass
+        return default
+    promote = num("problem_promote_pct", _PROBLEM_PROMOTE_PCT)
+    research = num("problem_research_pct", _PROBLEM_RESEARCH_PCT)
+    if research < promote:
+        research = promote
+    return promote, research
 
 
 def _problem_coverage(conn, signature, project_type):
@@ -3370,7 +3413,8 @@ async def coding_problem_create(request: Request):
     finally:
         conn.close()
     try:
-        if coverage >= _PROBLEM_RESEARCH_PCT:
+        _promote, research_pct = _problem_thresholds()
+        if coverage >= research_pct:
             _maybe_spawn_problem_research(signature, ptype)
     except Exception:
         pass
@@ -3417,6 +3461,7 @@ async def coding_known_problems(request: Request, type: str = "", limit: int = 6
         cap = max(1, min(12, int(limit)))
     except (TypeError, ValueError):
         cap = 6
+    promote_pct, _research = _problem_thresholds()
     conn = get_db()
     try:
         rows = conn.execute(
@@ -3427,7 +3472,7 @@ async def coding_known_problems(request: Request, type: str = "", limit: int = 6
         out = []
         for r in rows:
             cov = _problem_coverage(conn, r["signature"], ptype)
-            if cov < _PROBLEM_PROMOTE_PCT:
+            if cov < promote_pct:
                 continue
             sol = conn.execute(
                 "SELECT solutions FROM problem_solutions"
@@ -3472,6 +3517,7 @@ async def admin_common_problems(request: Request):
         ).fetchall()
         findings = [dict(r) for r in frows]
         total = conn.execute("SELECT COUNT(*) AS c FROM problem_events").fetchone()["c"]
+        promote_pct, research_pct = _problem_thresholds()
         types = conn.execute(
             "SELECT project_type, COUNT(*) AS projects FROM project_types"
             " GROUP BY project_type ORDER BY projects DESC").fetchall()
@@ -3487,12 +3533,48 @@ async def admin_common_problems(request: Request):
                 " WHERE signature = ? AND project_type = ?",
                 (r["signature"], r["project_type"])).fetchone()
             promoted.append({**dict(r), "coverage": round(cov, 3),
-                             "promoted": cov >= _PROBLEM_PROMOTE_PCT,
+                             "promoted": cov >= promote_pct,
                              "has_solutions": bool(sol and sol["solutions"])})
         return {"problems": problems, "findings": findings, "total": total,
-                "project_types": [dict(t) for t in types], "promoted": promoted}
+                "project_types": [dict(t) for t in types], "promoted": promoted,
+                "thresholds": {"promote_pct": round(promote_pct * 100),
+                               "research_pct": round(research_pct * 100)}}
     finally:
         conn.close()
+
+
+class ProblemSettingsBody(BaseModel):
+    promote_pct: float = 30
+    research_pct: float = 50
+
+
+@app.get("/api/admin/problem-settings")
+async def admin_problem_settings_get(request: Request):
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    promote, research = _problem_thresholds()
+    return {"promote_pct": round(promote * 100), "research_pct": round(research * 100)}
+
+
+@app.post("/api/admin/problem-settings")
+async def admin_problem_settings_set(request: Request, req: ProblemSettingsBody):
+    """Admin-only: tune how common a problem must be (as a share of projects of
+    the same type) to be promoted, and to trigger background research."""
+    user, err = _require_superadmin(request)
+    if err:
+        return err
+    try:
+        promote = max(1, min(100, float(req.promote_pct or 30)))
+        research = max(1, min(100, float(req.research_pct or 50)))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "numbers required"})
+    if research < promote:
+        research = promote
+    _meta_set("problem_promote_pct", promote)
+    _meta_set("problem_research_pct", research)
+    return {"status": "ok", "promote_pct": promote, "research_pct": research}
+
 
 
 @app.delete("/api/admin/common-problems")

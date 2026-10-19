@@ -1509,6 +1509,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
             </div>
             <div data-apane="problems" style="display:none">
               <div class="tool-row"><span class="tool-result-sub">Recurring problems detected in the coding loop — wrong commands, wasted rewrites, patch misses, plus the lessons the AI logged. Grouped into patterns by how often they happen.</span><span style="flex:1"></span><button class="btn btn-ghost btn-sm" onclick="admLoadCommonProblems()">Refresh</button><button class="btn btn-ghost btn-sm" onclick="admClearCommonProblems()">Clear</button><span class="tool-result-sub" id="adm-prob-meta"></span></div>
+              <div class="tool-row"><label class="tool-result-sub">Promote at <input type="number" id="adm-prob-promote" min="1" max="100" step="1" value="30" style="width:60px" />% of same-type projects</label><label class="tool-result-sub">Auto-research at <input type="number" id="adm-prob-research" min="1" max="100" step="1" value="50" style="width:60px" />%</label><button class="btn btn-primary btn-sm" onclick="admSaveProblemSettings()">Save thresholds</button></div>
               <div id="adm-problems"></div>
             </div>
             <div data-apane="superprompt" style="display:none">
@@ -14263,6 +14264,7 @@ async function admLoadCommonProblems(){
     const d=await r.json();
     const probs=d.problems||[],finds=d.findings||[],promoted=d.promoted||[],types=d.project_types||[];
     const meta=document.getElementById('adm-prob-meta');if(meta)meta.textContent=(d.total||0)+' events · '+probs.length+' patterns · '+promoted.length+' by type';
+    if(d.thresholds){const pi=document.getElementById('adm-prob-promote');if(pi)pi.value=d.thresholds.promote_pct;const ri=document.getElementById('adm-prob-research');if(ri)ri.value=d.thresholds.research_pct}
     box.innerHTML='';
     if(!probs.length&&!finds.length&&!promoted.length){box.innerHTML='<div class="tool-status">No problems recorded yet — they appear here as the coding AI hits (and reports) recurring issues.</div>';return}
     if(types.length){
@@ -14301,6 +14303,18 @@ async function admLoadCommonProblems(){
   }catch(e){box.innerHTML='<div class="tool-status">Could not load common problems.</div>'}
 }
 async function admClearCommonProblems(){if(!(await appConfirm('Clear all recorded common-problem events?')))return;try{const r=await authFetch(API+'/api/admin/common-problems',{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);admLoadCommonProblems()}catch(e){showToast('Could not clear: '+e.message,'error')}}
+async function admSaveProblemSettings(){
+  const p=document.getElementById('adm-prob-promote'),r=document.getElementById('adm-prob-research');
+  const payload={promote_pct:Number(p?p.value:30),research_pct:Number(r?r.value:50)};
+  try{
+    const rr=await authFetch(API+'/api/admin/problem-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await rr.json().catch(()=>({}));
+    if(!rr.ok)throw new Error(d.error||('HTTP '+rr.status));
+    if(p)p.value=d.promote_pct;if(r)r.value=d.research_pct;
+    showToast('Thresholds saved — promote '+d.promote_pct+'%, research '+d.research_pct+'%','success');
+    admLoadCommonProblems();
+  }catch(e){showToast('Could not save: '+e.message,'error')}
+}
 async function admLoadSuperprompt(){
   const box=document.getElementById('adm-superprompt');if(!box)return;
   const f=document.getElementById('adm-sp-filter');const rating=f?f.value:'all';
