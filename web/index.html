@@ -6639,7 +6639,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingInternalSend=false,codingFixOrigin='';
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingRunNoops=0,codingInternalSend=false,codingFixOrigin='';
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -7653,7 +7653,7 @@ function renderSavedTools(msgEl,tools){
 }
 // Every harness-injected turn must be listed here, otherwise it renders as a
 // normal "You" bubble and the user sees words they never typed.
-const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Your HTML project is missing ','Validation FAILED on files you just wrote','The Godot engine check FAILED','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
+const HARNESS_PREFIXES=['Tool results:\n','You have used all ','Your previous reply was cut off','Your HTML references files that do not exist','Your HTML project is missing ','Validation FAILED on files you just wrote','The Godot engine check FAILED','You reported the work as done, but NOTHING actually changed','Review your work against these open todos','Verification FAILED: ','Claim rejected — ','No progress — ','Before this counts as finished: ','Plan extended to ','Not done yet: ','File snapshot: ','REFLECT FIRST (','Log what you learned this run','LOCK STATUS: ','The user declined ','The previous reply failed ','The previous model failed ','You replied with prose but emitted NO tool'];
 function isHarnessMsg(m){return m&&m.role==='user'&&typeof m.content==='string'&&HARNESS_PREFIXES.some(p=>m.content.indexOf(p)===0)}
 function harnessLabel(content){
   if(content.indexOf('Tool results:')===0){
@@ -8446,9 +8446,9 @@ async function requestFindingLog(){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  codingRounds=0;codingReplans=0;codingRunWrote=false;
+  codingRounds=0;codingReplans=0;codingRunWrote=false;codingRunNoops=0;
   let codingTruncRetries=0;
-  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false,lastGodotErrKey='';
+  let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false,lastGodotErrKey='',noChangeNudged=false;
   const runTouchedPaths=new Set();
   // Stop tracking: the ONLY early stop is the EXACT same command set with
   // no writes, 5 rounds running. Near-misses and read-only stretches keep
@@ -8494,6 +8494,7 @@ async function codingAutoContinue(){
       if(results.hasExecuted){
         codingRounds++;
         if(results.wrote){troubledProgress=true;codingNoWorkPushed=false;codingRunWrote=true;}
+        if(results.noops>0)codingRunNoops=1;
         // A wrong command (or other recognizable failure) this round means the
         // run learned something worth logging — arm the learning log.
         if(typeof resultsTroubled==='function'&&resultsTroubled(results.text))troubledRun=true;
@@ -8595,7 +8596,22 @@ async function codingAutoContinue(){
         // one, "no open todos" is vacuously true and the loop would stop
         // after the FIRST file, leaving the rest of the site unwritten.
         if(validation.files.length>0&&open0.length===0&&todosAtStart>0){
-          if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
+        if(!noChangeNudged&&!codingRunWrote&&codingRunNoops>0){
+          // The run claimed completion but made NO real change: its edit matched
+          // the file as-is (+0 -0). Tell the model to try again with an actual
+          // change instead of accepting a byte-for-byte identical project.
+          noChangeNudged=true;
+          addCodingSystemMsg('Nothing actually changed — the edit matched the file as-is. Asking the AI to try again with a real change.');
+          codingHistory.push({role:'user',content:'You reported the work as done, but NOTHING actually changed — the last edit matched what was already in the file (+0 -0), so the project is byte-for-byte identical. The user asked for a change, so this is NOT done. Re-read the relevant file(s), find what is genuinely missing or wrong, and emit a REAL edit that changes the file. If it is truly already correct, reply in ONE line naming the exact existing line that already does what was asked.'});
+          persistCodingChat();
+          codingStream=true;
+          const nt=await streamCodingTurn([{role:'system',content:await getCodingSysPrompt()},...codingHistory.slice(-20)]);
+          codingStream=false;
+          persistCodingChat();
+          if(nt.error)break;
+          continue;
+        }
+        if(!webTrioAuditDone&&typeof detectMissingWebTrio==='function'){
             const missTrio=await detectMissingWebTrio([...runTouchedPaths]);
             if(missTrio.length){
               webTrioAuditDone=true;
