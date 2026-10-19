@@ -292,6 +292,34 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_problem_events_sig ON problem_events(kind, signature);
 
+        -- Per-project problem tracking: a problem is PROMOTED once it hits a
+        -- share of projects of the same type (e.g. 30% of 3D games). project_types
+        -- is the denominator (every project we have seen, by type).
+        CREATE TABLE IF NOT EXISTS project_types (
+            project_key TEXT PRIMARY KEY,
+            project_type TEXT DEFAULT 'other',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS problem_projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            signature TEXT NOT NULL,
+            project_type TEXT DEFAULT 'other',
+            project_key TEXT NOT NULL,
+            kind TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(signature, project_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_problem_projects_type ON problem_projects(project_type, signature);
+        -- Auto-researched solution sets for a problem once it is common enough.
+        CREATE TABLE IF NOT EXISTS problem_solutions (
+            signature TEXT NOT NULL,
+            project_type TEXT DEFAULT 'other',
+            solutions TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (signature, project_type)
+        );
+
         CREATE TABLE IF NOT EXISTS trademe_listings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tm_url TEXT DEFAULT '',

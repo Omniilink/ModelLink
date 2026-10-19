@@ -283,6 +283,18 @@ a:hover{text-decoration:underline}
 .sp-review-actions button.active-up{color:var(--success);border-color:var(--success)}
 .sp-review-actions button.active-down{color:var(--error);border-color:var(--error)}
 .sp-review-note{font-size:11px;color:var(--text-muted);margin-left:auto}
+.coding-details>summary{cursor:pointer;list-style:none;font-size:12px;color:var(--text-secondary)}
+.coding-details>summary::-webkit-details-marker{display:none}
+.coding-details>summary::before{content:'\25B8 ';color:var(--text-muted)}
+.coding-details[open]>summary::before{content:'\25BE '}
+.coding-details-body{margin-top:4px;font-family:var(--mono);font-size:11px;color:var(--text-muted);white-space:pre-wrap;max-height:200px;overflow:auto}
+.fixcheck{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--bg-tertiary);padding:8px 11px;font-size:12.5px;color:var(--text-primary)}
+.fixcheck-q{font-weight:600;margin-right:2px}
+.fixcheck button{background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);cursor:pointer;padding:4px 11px;font-size:12px;font-family:var(--font)}
+.fixcheck button:hover{background:var(--bg-hover);color:var(--text-primary)}
+.fixcheck button.yes:hover{border-color:var(--success);color:var(--success)}
+.fixcheck button.no:hover{border-color:var(--error);color:var(--error)}
+.fixcheck.done{color:var(--text-muted)}
 .coding-controls{display:flex;gap:6px;padding:0 0 8px;flex-wrap:wrap}
 .coding-controls select{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);font-size:11px;padding:5px 6px;cursor:pointer;font-family:var(--font);outline:none;max-width:200px}
 .coding-controls select:hover{background:var(--bg-hover);color:var(--text-primary)}
@@ -4575,10 +4587,11 @@ function godotTabError(tab,title,msg){
     if(l)l.textContent=String(msg||'').slice(0,1200);
   }catch(e){}
 }
-async function pollGodotJob(jobKey,label,headline){
+async function pollGodotJob(jobKey,label,headline,detailEl){
   // Poll until the install/export job finishes. Reports each new phase to
-  // the run log AND mirrors it live into the Play tab; returns the finished
-  // job record (+ tab), or null (tab shows the error) on failure/timeout.
+  // the run log (into detailEl when given, so export logs stay collapsed) AND
+  // mirrors it live into the Play tab; returns the finished job record (+ tab),
+  // or null (tab shows the error) on failure/timeout.
   let tab=null;
   try{tab=window.open('about:blank','_blank')}catch(e){tab=null}
   godotProgressDoc(tab,'Godot '+label+'…',headline||('Godot '+label+'…'));
@@ -4598,7 +4611,7 @@ async function pollGodotJob(jobKey,label,headline){
     updateGodotTab(tab,line,(j.log||[]).slice(-3).join('\n'));
     if(j.phase&&j.phase!==lastPhase){
       lastPhase=j.phase;
-      try{addCodingSystemMsg(line)}catch(e){}
+      try{if(detailEl)detailEl.textContent+=(detailEl.textContent?'\n':'')+line;else addCodingSystemMsg(line)}catch(e){}
     }
     if(j.done){
       if(j.status==='ok')return{job:j,tab:tab};
@@ -4634,14 +4647,14 @@ async function playGodotGame(){
     if(!done)return;
     showToast('Godot '+st.version+' installed','success');
   }
+  const expDetail=addCodingSystemDetails('Godot export — for the browser');
   try{
     const er=await authFetch(API+'/api/coding/godot/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:folderKey})});
     const edata=await er.json().catch(()=>({}));
     if(!er.ok)throw new Error(edata.error||edata.detail||('HTTP '+er.status));
-    if(edata.running){showToast('Export already running — watching it…','info')}
-    else addCodingSystemMsg('Exporting the Godot project for the browser…');
+    if(edata.running)showToast('Export already running — watching it…','info');
   }catch(e){appAlert('Export failed to start: '+e.message);return}
-  const fin=await pollGodotJob(folderKey,'export','Exporting the Godot project for the browser…');
+  const fin=await pollGodotJob(folderKey,'export','Exporting the Godot project for the browser…',expDetail);
   if(!fin)return;
   const playUrl=fin.job&&fin.job.result&&fin.job.result.play_url;
   if(fin.job.result&&fin.job.result.cached)showToast('Nothing changed — opening the last build','info');
@@ -4742,6 +4755,23 @@ function openOmniiignoreEditor(){
 }
 function addCodingSystemMsg(text){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
 function addCodingSystemMsgBefore(text,beforeEl){const chat=document.getElementById('coding-chat');const msg=document.createElement('div');msg.className='coding-msg assistant sys';msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">'+escapeHtml(text)+'</div></div>';if(beforeEl&&beforeEl.parentNode===chat)chat.insertBefore(msg,beforeEl);else chat.appendChild(msg);chat.scrollTop=chat.scrollHeight}
+function addCodingSystemDetails(title){
+  // A collapsed run-log row: one quiet line, expandable to the full detail.
+  // Used for noisy background jobs (e.g. the Godot browser export) so the chat
+  // stays readable. Returns the body element to append lines into.
+  try{
+    const chat=document.getElementById('coding-chat');
+    const msg=document.createElement('div');msg.className='coding-msg assistant sys';
+    msg.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
+    const content=msg.querySelector('.coding-msg-content');
+    const det=document.createElement('details');det.className='coding-details';
+    const sum=document.createElement('summary');sum.textContent=title;
+    const bd=document.createElement('div');bd.className='coding-details-body';
+    det.appendChild(sum);det.appendChild(bd);content.appendChild(det);
+    chat.appendChild(msg);chat.scrollTop=chat.scrollHeight;
+    return bd;
+  }catch(e){return null}
+}
 function autoAttachProjectFiles(){
   // Hand the model the project source up front so it never burns rounds
   // re-reading files via shell (whose output the harness truncates).
@@ -5127,6 +5157,14 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   if(wsActive&&currentWorkspace){try{const cr=await authFetch(API+'/api/coding/workspace/context');if(cr.ok){const cd=await cr.json().catch(()=>({}));if(cd&&cd.active){const wsLabel=String(currentWorkspace.name||'collaborative').slice(0,48);const summary=String(cd.summary||'(no recent activity yet)').slice(0,1500);
     sysPrompt+='\nCOLLABORATIVE WORKSPACE ('+wsLabel+'): you share this project folder with other human users who edit in real time. Recent activity from everyone:\n'+summary+'\nRULES:\n- Files are LOCKED while someone edits them. If a file is locked by another editor your change is rejected — do NOT resend it; work on a different file or wait and re-read it later.\n- ALWAYS re-read a file right before editing it — a colleague may have changed it since you last saw it.\n- Keep edits small and targeted (FILE_PATCH).\n- Never delete or rename a file another user recently touched unless the task explicitly requires it.\n'}}}catch(e){}}
   if((typeof codingReviewModeOn==='function')&&codingReviewModeOn())sysPrompt+='\nREVIEW MODE (the user enabled it): audit ONLY. Do NOT emit FILE_CREATE/FILE_EDIT/FILE_PATCH/FILE_DELETE blocks and do NOT run state-changing commands — read-only inspection (cat, ls, grep, node --check) is allowed. Deliver a findings list ordered by severity, then end with VERDICT:PASS and a short summary. Never write files in this mode.\n';
+  // Before coding a 2D/3D game, surface the problems that recur across projects
+  // of the same type (with any researched solutions) so they are avoided up front.
+  try{
+    if(typeof codingProjectTypeCache!=='undefined'&&/game$/.test(codingProjectTypeCache)&&typeof loadKnownProblems==='function'){
+      const kp=await loadKnownProblems(codingProjectTypeCache);
+      if(kp)sysPrompt+=kp;
+    }
+  }catch(e){}
   return sysPrompt}
 
 function findBareRunSpans(text){
@@ -5631,7 +5669,7 @@ async function sendCodingMessage(){
     }catch(e){}
     updateAtIndicator();
   }
-  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){}
+  codingModelOverride='';codingNoWorkPushed=false;codingPlanSteps=CODING_DEFAULT_PLAN;codingRounds=0;codingReplans=0;codingSplitNudgeSig='';codingSplitPending=false;codingPlanExtendable=false;codingWrittenPaths=[];codingFailedPaths=[];codingTodosWrote=[];patchMissByFile={};patchInjected={};rewriteFails=0;codingRunT0=Date.now();codingRunTouched={};codingRunTask=rawText.slice(0,200);codingFallbackUsed=false;codingRunBaseVer=null;try{captureRunBaseVersion()}catch(e){};try{if(typeof reportProjectSeen==='function')reportProjectSeen()}catch(e){}
   let sendModel=selectedModel;
   let userContent=cleanText;
   let histContent=null;
@@ -7811,11 +7849,115 @@ function reportCodingProblem(kind,signature,sample){
     const now=Date.now(),key=kind+':'+signature;
     if(codingProblemSeenAt[key]&&now-codingProblemSeenAt[key]<15000)return;
     codingProblemSeenAt[key]=now;
-    authFetch(API+'/api/coding/problem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,signature:signature,sample:String(sample||'').slice(0,500),model:(typeof selectedModel!=='undefined'&&selectedModel)||'',language:(typeof findingLanguage==='function'?findingLanguage():'')})}).catch(()=>{});
+    authFetch(API+'/api/coding/problem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,signature:signature,sample:String(sample||'').slice(0,500),model:(typeof selectedModel!=='undefined'&&selectedModel)||'',language:(typeof findingLanguage==='function'?findingLanguage():''),project_type:(typeof codingProjectTypeCache!=='undefined'?codingProjectTypeCache:''),project_key:(typeof codingProjectKey==='function'?codingProjectKey():'')})}).catch(()=>{});
   }catch(e){}
 }
 function reportCommandProblem(cmd,result){
   try{if(!result||Number(result.exit_code)===0)return;const p=classifyCommandProblem(cmd,result);if(p)reportCodingProblem(p.kind,p.signature,p.sample+'\n'+String(result.stderr||result.stdout||'').slice(0,300))}catch(e){}
+}
+// ---- Project type + known problems (the "learn from every project" loop) ----
+let codingProjectTypeCache='',knownProblemsCache={};
+function codingProjectKey(){
+  // Stable, non-identifying key for THIS project (folder path + user id hashed).
+  try{
+    const s=String((typeof codingFolder!=='undefined'&&codingFolder)||'')+'|'+String((window.__user&&window.__user.id)||'');
+    let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))>>>0;
+    return 'p'+h.toString(36);
+  }catch(e){return 'p0'}
+}
+async function detectCodingProjectType(){
+  // 3d-game / 2d-game / web / app / other, from the project's own files.
+  try{
+    const files=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
+    const isGodot=files.some(f=>/(^|\/)project\.godot$/i.test(f))||(typeof isGodotProject==='function'&&isGodotProject());
+    if(isGodot){
+      let threeD=0,twoD=0;
+      const cands=files.filter(f=>/\.(tscn|gd)$/i.test(f)).slice(0,12);
+      for(const f of cands){
+        let t='';try{t=await codingReadFile(f)}catch(e){continue}
+        if(!t)continue;
+        if(/\b(Node3D|MeshInstance3D|Camera3D|CharacterBody3D|RigidBody3D|StaticBody3D|Area3D|WorldEnvironment|CSGBox3D|GridMap)\b/.test(t))threeD++;
+        if(/\b(Node2D|Sprite2D|Camera2D|CharacterBody2D|RigidBody2D|StaticBody2D|Area2D|TileMap|TileMapLayer|AnimatedSprite2D|ParallaxBackground)\b/.test(t))twoD++;
+      }
+      if(threeD||twoD)return threeD>=twoD?'3d-game':'2d-game';
+      return '2d-game';
+    }
+    if(files.some(f=>/\.(html?|css)$/i.test(f)))return 'web';
+    if(files.some(f=>/(^|\/)package\.json$/i.test(f)))return 'app';
+    return 'other';
+  }catch(e){return 'other'}
+}
+async function reportProjectSeen(){
+  try{
+    if(!codingFolder)return;
+    knownProblemsCache={};
+    codingProjectTypeCache=await detectCodingProjectType();
+    await authFetch(API+'/api/coding/project-seen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_key:codingProjectKey(),project_type:codingProjectTypeCache})}).catch(()=>{});
+  }catch(e){}
+}
+async function loadKnownProblems(type){
+  // Problems common to this kind of project — fetched once per run and shown to
+  // the agent BEFORE it codes, with any researched solutions.
+  try{
+    if(!type||!/game$/.test(type))return '';
+    if(!(type in knownProblemsCache)){
+      const r=await authFetch(API+'/api/coding/known-problems?type='+encodeURIComponent(type));
+      knownProblemsCache[type]=r.ok?((await r.json().catch(()=>({}))).problems||[]):[];
+    }
+    const list=knownProblemsCache[type];
+    if(!list.length)return '';
+    return '\nCOMMON PROBLEMS for this kind of project ('+type+') — these recur across MANY projects. Read them FIRST and build so you AVOID them from the start (do not repeat these known dead ends):\n'
+      +list.map((p,i)=>{
+        let line=(i+1)+'. ['+(p.kind||'problem')+'] '+p.signature+' — seen in '+Math.round((p.coverage||0)*100)+'% of '+type+' projects';
+        if(p.solutions)line+='\n   Known causes and solutions to try a DIFFERENT way:\n'+String(p.solutions).slice(0,1200);
+        return line;
+      }).join('\n');
+  }catch(e){return ''}
+}
+function codingProblemSignature(text){
+  try{
+    const t=String(text||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+    const stop=new Set(['the','and','for','with','you','want','make','that','this','from','into','are','its','all','how','can','please','fix','fixed','it','is','not','still','my','me','i','a','an','to','of','in','on','when','then','but','so','if','does','doesnt','work','working','keep','keeps','now','get','getting','very','too','also','just','again']);
+    const kws=[...new Set(t.split(' ').filter(w=>w.length>2&&!stop.has(w)))].slice(0,6);
+    return kws.join('-')||'general';
+  }catch(e){return 'general'}
+}
+function codingTaskIsFix(text){
+  const t=String(text||'').toLowerCase();
+  return /\b(fix|broken|broke|not work|doesn'?t work|does not work|isn'?t working|won'?t|crash|error|bug|wrong|stuck|falls? through|fall through|falling through|glitch|fails?|failed|problem with|issue with|bad)\b/.test(t);
+}
+function addFixConfirmation(promptText){
+  // After a fix-type run finishes, ask the user whether it actually worked.
+  // Yes -> log a reusable lesson; No -> log the failure and retry differently.
+  try{
+    const chat=document.getElementById('coding-chat');
+    if(!chat)return;
+    const row=document.createElement('div');row.className='coding-msg assistant sys';
+    row.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"><div class="fixcheck"><span class="fixcheck-q">Did that fix it?</span><button class="yes">Yes, fixed</button><button class="no">No, still broken</button></div></div></div>';
+    chat.appendChild(row);chat.scrollTop=chat.scrollHeight;
+    const box=row.querySelector('.fixcheck');
+    const done=t=>{box.className='fixcheck done';box.innerHTML=escapeHtml(t)};
+    row.querySelector('.fixcheck .yes').onclick=()=>{done('Logged — thanks. Future runs will reuse this fix.');logFixLesson(promptText)};
+    row.querySelector('.fixcheck .no').onclick=()=>{done('Logged — retrying with a different approach…');reportFixFailed(promptText);retryFixDifferent(promptText)};
+  }catch(e){}
+}
+async function logFixLesson(promptText){
+  try{
+    const title=String(promptText||'').replace(/\s+/g,' ').trim().slice(0,80)||'a bug';
+    const lastA=[...codingHistory].reverse().find(m=>m&&m.role==='assistant'&&m.content);
+    const solution=String((lastA&&lastA.content)||'').replace(/FILE_[A-Z_]+:[\s\S]*/,'').replace(/\s+/g,' ').trim().slice(0,1500)||'Fixed and confirmed by the user.';
+    await authFetch(API+'/api/coding/findings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'error',title:'User-confirmed fix: '+title,problem:title,solution:solution,model:(typeof selectedModel!=='undefined'?selectedModel:''),language:(typeof findingLanguage==='function'?findingLanguage():'')})}).catch(()=>{});
+  }catch(e){}
+}
+function reportFixFailed(promptText){
+  try{reportCodingProblem('fix','fix-not-fixed:'+codingProblemSignature(promptText),String(promptText||'').slice(0,300))}catch(e){}
+}
+function retryFixDifferent(promptText){
+  try{
+    const msg='The previous fix did NOT work — the user confirmed it is still broken. Do NOT repeat the same approach; the root cause is different. Re-read the relevant files, find the ACTUAL cause, and fix it a different way. Original problem: '+String(promptText||'').slice(0,300);
+    if(typeof codingAutoLoop!=='undefined'&&(codingAutoLoop||codingStream)){queueCodingPrompt(msg);return}
+    if(typeof startCodingLoopWith==='function')startCodingLoopWith(msg);
+  }catch(e){}
 }
 function resultsTroubled(text){
   // A round's tool output shows a wrong command / wasted action. Arms the
@@ -8683,6 +8825,16 @@ async function codingAutoContinue(){
   await maybeOfferPendingFiles().catch(()=>{});
   if(troubledRun&&troubledProgress&&!codingStopRequested&&typeof requestFindingLog==='function'){await requestFindingLog().catch(()=>{})}
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
+  // A finished FIX run asks the user whether it actually worked (once, and only
+  // when files changed and nothing else is queued to run next).
+  if(!codingStopRequested&&typeof addFixConfirmation==='function'){
+    try{
+      const wrote=Object.keys(codingRunTouched||{}).length>0;
+      const req=String((typeof codingNotifyRequest!=='undefined'&&codingNotifyRequest)||codingRunTask||'');
+      const queued=(typeof codingPromptQueue!=='undefined'&&codingPromptQueue&&codingPromptQueue.length);
+      if(wrote&&!queued&&codingTaskIsFix(req))addFixConfirmation(req);
+    }catch(e){}
+  }
   if(!codingStopRequested&&typeof maybeSendNextQueuedPrompt==='function')maybeSendNextQueuedPrompt();
 }
 
@@ -14109,10 +14261,24 @@ async function admLoadCommonProblems(){
     const r=await authFetch(API+'/api/admin/common-problems');
     if(!r.ok){box.innerHTML='<div class="tool-status">Could not load common problems.</div>';return}
     const d=await r.json();
-    const probs=d.problems||[],finds=d.findings||[];
-    const meta=document.getElementById('adm-prob-meta');if(meta)meta.textContent=(d.total||0)+' events · '+probs.length+' patterns';
+    const probs=d.problems||[],finds=d.findings||[],promoted=d.promoted||[],types=d.project_types||[];
+    const meta=document.getElementById('adm-prob-meta');if(meta)meta.textContent=(d.total||0)+' events · '+probs.length+' patterns · '+promoted.length+' by type';
     box.innerHTML='';
-    if(!probs.length&&!finds.length){box.innerHTML='<div class="tool-status">No problems recorded yet — they appear here as the coding AI hits (and reports) recurring issues.</div>';return}
+    if(!probs.length&&!finds.length&&!promoted.length){box.innerHTML='<div class="tool-status">No problems recorded yet — they appear here as the coding AI hits (and reports) recurring issues.</div>';return}
+    if(types.length){
+      box.insertAdjacentHTML('beforeend','<div class="usage-section-title">Projects seen by type</div>');
+      box.insertAdjacentHTML('beforeend','<div class="tool-result-sub" style="margin-bottom:8px">'+types.map(t=>escapeHtml(t.project_type)+': '+Number(t.projects||0)).join(' · ')+'</div>');
+    }
+    if(promoted.length){
+      box.insertAdjacentHTML('beforeend','<div class="usage-section-title">By project type (promoted at 30% of that type)</div>');
+      promoted.forEach(p=>{
+        const card=document.createElement('div');card.className='prompt-card';
+        const pct=Math.round((p.coverage||0)*100);
+        card.innerHTML='<div class="prompt-header"><span class="prompt-name">'+escapeHtml(p.signature||'(unnamed)')+'</span><span class="act-status act-status-'+(p.promoted?'error':'success')+' act-status" style="font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px">'+(p.promoted?'PROMOTED ':'')+escapeHtml(p.project_type||'')+'</span></div>'
+          +'<div class="tool-result-sub" style="margin:2px 0 6px">'+pct+'% of '+escapeHtml(p.project_type||'')+' projects · '+Number(p.projects||0)+' project(s) · '+escapeHtml(p.kind||'')+(p.has_solutions?' · has researched solutions':'')+'</div>';
+        box.appendChild(card);
+      });
+    }
     if(probs.length){
       box.insertAdjacentHTML('beforeend','<div class="usage-section-title">Detected patterns</div>');
       probs.forEach(p=>{

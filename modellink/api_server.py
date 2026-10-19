@@ -3243,11 +3243,95 @@ async def admin_findings_delete(request: Request, finding_id: int):
 _PROBLEM_CAP = 5000
 
 
+_PROBLEM_PROMOTE_PCT = 0.30    # promote a problem to "known" at 30% of same-type projects
+_PROBLEM_RESEARCH_PCT = 0.50   # auto-research solutions once it reaches 50%
+_problem_research_running = set()
+
+
+def _problem_coverage(conn, signature, project_type):
+    """Share of projects of this type that have hit this signature (0..1)."""
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM project_types WHERE project_type = ?",
+            (project_type,)).fetchone()["c"]
+        if not total:
+            return 0.0
+        hit = conn.execute(
+            "SELECT COUNT(DISTINCT project_key) AS c FROM problem_projects"
+            " WHERE signature = ? AND project_type = ?",
+            (signature, project_type)).fetchone()["c"]
+        return float(hit) / float(total)
+    except Exception:
+        return 0.0
+
+
+async def _problem_research_job(signature, project_type):
+    """Heavy research for a very common problem: search the web, then have the
+    server Ollama distill the likely root causes into several DIFFERENT
+    solutions to try next time."""
+    key = (signature, project_type)
+    try:
+        try:
+            _hits, corpus, _used = await asyncio.to_thread(
+                _web_research, signature, 25.0, 8)
+        except Exception:
+            corpus = ""
+        if not corpus:
+            return
+        sys = ("You are a senior engineer. From the web results, list the most "
+               "likely ROOT CAUSES of the problem and then 3-5 concrete, DIFFERENT "
+               "solutions. Be specific and technical. Output a short numbered list "
+               "of solutions, each 1-2 lines.")
+        user = "Problem: " + signature + "\n\nWeb results:\n" + corpus[:6000]
+        try:
+            solutions = await asyncio.to_thread(
+                _ollama_chat_once, _assistant_model(), sys, user, 180.0, 700)
+        except Exception:
+            solutions = ""
+        solutions = (solutions or "").strip()
+        if not solutions:
+            return
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO problem_solutions"
+                " (signature, project_type, solutions, source, created_at)"
+                " VALUES (?, ?, ?, ?, datetime('now'))",
+                (signature, project_type, solutions[:6000], "auto-research"))
+            conn.commit()
+        finally:
+            conn.close()
+    finally:
+        _problem_research_running.discard(key)
+
+
+def _maybe_spawn_problem_research(signature, project_type):
+    key = (signature, project_type)
+    if key in _problem_research_running:
+        return
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM problem_solutions WHERE signature = ? AND project_type = ?",
+            (signature, project_type)).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return
+    _problem_research_running.add(key)
+    try:
+        asyncio.create_task(_problem_research_job(signature, project_type))
+    except Exception:
+        _problem_research_running.discard(key)
+
+
 @app.post("/api/coding/problem")
 async def coding_problem_create(request: Request):
     """Record one recurring coding-loop problem as it happens (a wrong command,
     a wasted full rewrite, a patch miss, ...). Any signed-in user may report;
-    the admin "Common problems" tab aggregates these into patterns."""
+    the admin "Common problems" tab aggregates these into patterns. When a
+    problem reaches a share of projects of the same type it is promoted to
+    "known", and at a higher share it triggers a background research job."""
     user, err = _require_auth(request)
     if err:
         return err
@@ -3259,6 +3343,9 @@ async def coding_problem_create(request: Request):
     signature = str(data.get("signature", "")).strip().lower()[:120]
     if not kind or not signature:
         return JSONResponse(status_code=400, content={"error": "kind and signature required"})
+    ptype = str(data.get("project_type", "")).strip().lower()[:24] or "other"
+    pkey = str(data.get("project_key", "")).strip()[:160]
+    coverage = 0.0
     conn = get_db()
     try:
         conn.execute(
@@ -3270,8 +3357,88 @@ async def coding_problem_create(request: Request):
         conn.execute("DELETE FROM problem_events WHERE id NOT IN"
                      " (SELECT id FROM problem_events ORDER BY id DESC LIMIT ?)",
                      (_PROBLEM_CAP,))
+        if pkey:
+            conn.execute(
+                "INSERT OR REPLACE INTO project_types (project_key, project_type, updated_at)"
+                " VALUES (?, ?, datetime('now'))", (pkey, ptype))
+            conn.execute(
+                "INSERT OR IGNORE INTO problem_projects"
+                " (signature, project_type, project_key, kind) VALUES (?, ?, ?, ?)",
+                (signature, ptype, pkey, kind))
         conn.commit()
+        coverage = _problem_coverage(conn, signature, ptype)
+    finally:
+        conn.close()
+    try:
+        if coverage >= _PROBLEM_RESEARCH_PCT:
+            _maybe_spawn_problem_research(signature, ptype)
+    except Exception:
+        pass
+    return {"status": "ok", "coverage": round(coverage, 3)}
+
+
+class ProjectSeenBody(BaseModel):
+    project_key: str = ""
+    project_type: str = "other"
+
+
+@app.post("/api/coding/project-seen")
+async def coding_project_seen(request: Request, req: ProjectSeenBody):
+    """Register a project + its type so problem coverage has a denominator."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    pkey = str(req.project_key or "").strip()[:160]
+    if not pkey:
         return {"status": "ok"}
+    ptype = str(req.project_type or "other").strip().lower()[:24] or "other"
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO project_types (project_key, project_type, updated_at)"
+            " VALUES (?, ?, datetime('now'))", (pkey, ptype))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"status": "ok"}
+
+
+@app.get("/api/coding/known-problems")
+async def coding_known_problems(request: Request, type: str = "", limit: int = 6):
+    """Problems common enough for this project type to warn the coding agent
+    about up front (with any researched solutions)."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    ptype = (type or "").strip().lower()[:24]
+    if not ptype:
+        return {"problems": []}
+    try:
+        cap = max(1, min(12, int(limit)))
+    except (TypeError, ValueError):
+        cap = 6
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT signature, kind, COUNT(DISTINCT project_key) AS projects"
+            " FROM problem_projects WHERE project_type = ?"
+            " GROUP BY signature, kind ORDER BY projects DESC LIMIT 60",
+            (ptype,)).fetchall()
+        out = []
+        for r in rows:
+            cov = _problem_coverage(conn, r["signature"], ptype)
+            if cov < _PROBLEM_PROMOTE_PCT:
+                continue
+            sol = conn.execute(
+                "SELECT solutions FROM problem_solutions"
+                " WHERE signature = ? AND project_type = ?",
+                (r["signature"], ptype)).fetchone()
+            out.append({"signature": r["signature"], "kind": r["kind"],
+                        "projects": r["projects"], "coverage": round(cov, 3),
+                        "solutions": (sol["solutions"] if sol else "")})
+            if len(out) >= cap:
+                break
+        return {"type": ptype, "problems": out}
     finally:
         conn.close()
 
@@ -3279,7 +3446,8 @@ async def coding_problem_create(request: Request):
 @app.get("/api/admin/common-problems")
 async def admin_common_problems(request: Request):
     """Aggregate recurring problems into patterns for the admin panel: how often
-    each kind/signature happened, when, on which models, and by how many users."""
+    each kind/signature happened, when, on which models, by how many users, and
+    (per project type) how many projects it hit and whether it is promoted."""
     user, err = _require_superadmin(request)
     if err:
         return err
@@ -3304,7 +3472,25 @@ async def admin_common_problems(request: Request):
         ).fetchall()
         findings = [dict(r) for r in frows]
         total = conn.execute("SELECT COUNT(*) AS c FROM problem_events").fetchone()["c"]
-        return {"problems": problems, "findings": findings, "total": total}
+        types = conn.execute(
+            "SELECT project_type, COUNT(*) AS projects FROM project_types"
+            " GROUP BY project_type ORDER BY projects DESC").fetchall()
+        prows = conn.execute(
+            "SELECT signature, kind, project_type,"
+            " COUNT(DISTINCT project_key) AS projects FROM problem_projects"
+            " GROUP BY signature, kind, project_type ORDER BY projects DESC LIMIT 150").fetchall()
+        promoted = []
+        for r in prows:
+            cov = _problem_coverage(conn, r["signature"], r["project_type"])
+            sol = conn.execute(
+                "SELECT solutions FROM problem_solutions"
+                " WHERE signature = ? AND project_type = ?",
+                (r["signature"], r["project_type"])).fetchone()
+            promoted.append({**dict(r), "coverage": round(cov, 3),
+                             "promoted": cov >= _PROBLEM_PROMOTE_PCT,
+                             "has_solutions": bool(sol and sol["solutions"])})
+        return {"problems": problems, "findings": findings, "total": total,
+                "project_types": [dict(t) for t in types], "promoted": promoted}
     finally:
         conn.close()
 
@@ -3317,6 +3503,7 @@ async def admin_common_problems_clear(request: Request):
     conn = get_db()
     try:
         conn.execute("DELETE FROM problem_events")
+        conn.execute("DELETE FROM problem_projects")
         conn.commit()
         return {"status": "ok"}
     finally:
