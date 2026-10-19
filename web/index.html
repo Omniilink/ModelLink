@@ -6639,7 +6639,7 @@ async function continueCodingAfterAnswer(){
 }
 // ---- Run tools: todo timing/retry, run diff, explain, recipes, run history,
 // document/test runs, git commit/branch, review + parallel modes ---------------
-var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingRunNoops=0,codingInternalSend=false,codingFixOrigin='';
+var codingModelOverride='',codingRunT0=0,codingRunTouched={},codingRunTask='',codingFallbackUsed=false,codingRunBaseVer=null,codingRunBranch=null,codingRunWrote=false,codingRunNoops=0,codingInternalSend=false,codingFixOrigin='',codingGodotBuiltRun=false;
 function codingReviewModeOn(){try{return localStorage.getItem('omnilink_review_mode')==='1'}catch(e){return false}}
 function codingParallelModeOn(){try{return localStorage.getItem('omnilink_parallel_todos')==='1'}catch(e){return false}}
 function setReviewMode(on){try{localStorage.setItem('omnilink_review_mode',on?'1':'0')}catch(e){}showToast(on?'Review mode ON — the AI audits and reports, writes nothing':'Review mode OFF',on?'info':'success')}
@@ -8446,7 +8446,7 @@ async function requestFindingLog(){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  codingRounds=0;codingReplans=0;codingRunWrote=false;codingRunNoops=0;
+  codingRounds=0;codingReplans=0;codingRunWrote=false;codingRunNoops=0;codingGodotBuiltRun=false;
   let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false,lastGodotErrKey='',noChangeNudged=false;
   const runTouchedPaths=new Set();
@@ -9183,6 +9183,7 @@ async function godotPrewarmBuild(){
   try{
     if(!codingFolder)return false;
     if(typeof codingIsServerProject==='function'&&!codingIsServerProject())return false;
+    if(codingGodotBuiltRun)return true;   // the finish check already rebuilt it this run
     try{await loadAllCodingFiles(true)}catch(e){}
     const files=(typeof allCodingFiles!=='undefined'&&allCodingFiles)||[];
     if(!files.some(f=>typeof f==='string'&&/(^|\/)project\.godot$/i.test(f)))return false;
@@ -9237,6 +9238,7 @@ async function godotProjectCheck(){
         const d=await br.json().catch(()=>null);
         if(d&&Array.isArray(d.errors))errs=errs.concat(d.errors.filter(Boolean).map(e=>String(e).slice(0,300)));
         if(d&&d.build_error)errs.push('Build failed: '+String(d.build_error).slice(0,300));
+        else if(d&&!d.skipped)codingGodotBuiltRun=true;   // a fresh build exists this run
       }
     }catch(e){}
     return errs;

@@ -11298,17 +11298,10 @@ def _godot_export_thread(folder: str, user_id: int, owner: str):
         man = _godot_manifest(folder)
         man_cmp = {k: list(v) for k, v in man.items()}
         bid = _godot_build_id(folder)
-        reg = _godot_registry_load(owner)
-        row = reg.get(bid)
         outdir = os.path.join(_godot_builds_root(owner), bid, "web")
-        if row and row.get("manifest") == man_cmp and row.get("folder") == folder \
-                and os.path.isfile(os.path.join(outdir, "index.html")):
-            job.update({"status": "ok", "phase": "cached", "progress": 1.0,
-                        "done": True, "result": {"cached": True,
-                                                "threads": bool(row.get("threads")),
-                                                "play_url": _play_url(bid)}})
-            _godot_job_log(folder, "Nothing changed — reusing the last build.")
-            return
+        # Build caching REMOVED: always rebuild from the current project, so a
+        # stale cached build can never be served. The snapshot wipes its target
+        # first, so the build always reflects exactly the files on disk now.
         job["phase"] = "snapshotting"
         _godot_job_log(folder, "Copying the project to a temp build dir (your files stay untouched)…")
         src = os.path.join(_godot_builds_root(owner), bid, "src")
