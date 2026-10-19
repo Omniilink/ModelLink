@@ -272,6 +272,12 @@ a:hover{text-decoration:underline}
 .coding-model-dropdown{display:flex;max-width:220px}
 .coding-model-dropdown .model-btn{width:100%;justify-content:space-between}
 .coding-model-menu{top:calc(100% + 6px);bottom:auto;right:0;left:auto}
+.coding-queue{display:flex;flex-direction:column;gap:6px;margin:0 0 8px;max-height:190px;overflow:auto}
+.coding-queue-item{display:flex;gap:8px;align-items:flex-start;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 9px}
+.coding-queue-text{flex:1;font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;max-height:54px;overflow:hidden}
+.coding-queue-actions{display:flex;gap:4px;flex-shrink:0}
+.coding-queue-actions button{background:transparent;border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+.coding-queue-actions button:hover{background:var(--bg-hover);color:var(--text-primary)}
 .coding-input-box{display:flex;gap:8px;align-items:flex-end;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 4px 4px 12px}
 .coding-input-box:focus-within{border-color:var(--accent)}
 .coding-input-box textarea{flex:1;background:transparent;border:none;padding:7px 0;color:var(--text-primary);font-family:var(--font);font-size:13px;resize:none;outline:none;min-height:20px;max-height:120px;line-height:1.5;min-width:0}
@@ -1720,6 +1726,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                 </span>
                 <button class="ws-toggle" id="coding-checkall-toggle" onclick="checkAllCode()" title="Read and verify ALL the project code, then fix what is broken" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Check all</span></button>
               </div>
+              <div class="coding-queue" id="coding-queue" style="display:none"></div>
               <div class="coding-input-box" style="position:relative">
                 <div class="at-dropdown" id="at-dropdown"></div>
                 <div class="img-strip" id="coding-img-strip" style="display:none"></div>
@@ -4640,7 +4647,7 @@ function handleCodingKey(e){const dd=document.getElementById('at-dropdown');cons
 async function loadAllCodingFiles(force){if(!codingFolder||(!force&&allCodingFiles.length>0))return;try{let tree;if(fsHandle)tree=await fsBuildTree(fsHandle);else{const r=await authFetch(API+'/api/coding/files');const data=await r.json();if(!r.ok||!data.tree)return;tree=data.tree}
   allCodingFiles=[];allCodingFileSizes={};function flatten(entries,prefix){for(const e of entries){const p=prefix?prefix+'/'+e.name:e.name;if(e.type==='dir')flatten(e.children||[],p);else{allCodingFiles.push(p);if(typeof e.size==='number')allCodingFileSizes[p]=e.size}}}flatten(tree,'')}catch(e){}}
 
-function handleCodingInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const slashMatch=before.match(/(^|\n)\/(\w*)$/);if(slashMatch){showSlashPalette(slashMatch[2]||'');return}const refMatch=before.match(/\/reference\s+([^\n]*)$/);if(refMatch){showRefDropdown(refMatch[1]||'');return}const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
+function handleCodingInput(e){autoResize(e.target);try{syncCodingSendBtn()}catch(err){}const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const slashMatch=before.match(/(^|\n)\/(\w*)$/);if(slashMatch){showSlashPalette(slashMatch[2]||'');return}const refMatch=before.match(/\/reference\s+([^\n]*)$/);if(refMatch){showRefDropdown(refMatch[1]||'');return}const atMatch=before.match(/@(\S*)$/);if(atMatch&&codingFolder)showAtDropdown(atMatch[1].toLowerCase());else closeAtDropdown()}
 async function showRefDropdown(query){
   const dd=document.getElementById('at-dropdown');if(!dd)return;dd.innerHTML='';
   let items=[];try{items=await refProjectList()}catch(e){}
@@ -5302,9 +5309,90 @@ function syncCodingNotifyBtn(){
   b.style.opacity=on?'':'0.4';
   b.title=on?'Notify when a coding task finishes (on)':'Notify when a coding task finishes (off)';
 }
+// ---- Prompt queue: type the next idea while a task is still running ----
+// Send while busy ENQUEUES instead of stopping. Each item keeps its attached
+// images; edit loads it back into the composer (and out of the queue).
+let codingPromptQueue=[],codingPromptQueueSeq=1;
+function renderCodingPromptQueue(){
+  try{
+    const box=document.getElementById('coding-queue');
+    if(!box)return;
+    const q=codingPromptQueue||[];
+    if(!q.length){box.innerHTML='';box.style.display='none';return}
+    box.style.display='';
+    box.innerHTML=q.map(it=>'<div class="coding-queue-item"><div class="coding-queue-text">'+escapeHtml(String(it.text||'(images only)').slice(0,300))+'</div><div class="coding-queue-actions"><button title="Edit this prompt" onclick="editCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z"/></svg></button><button title="Remove from queue" onclick="removeCodingQueuedPrompt('+it.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div></div>').join('');
+  }catch(e){}
+}
+function queueCodingPrompt(text,images){
+  try{
+    const t=String(text||'').trim();
+    const imgs=(images||[]).slice();
+    if(!t&&!imgs.length)return;
+    codingPromptQueue.push({id:codingPromptQueueSeq++,text:t,images:imgs});
+    renderCodingPromptQueue();
+    showToast('Queued — it will run after the current task ('+codingPromptQueue.length+' queued)','info');
+  }catch(e){}
+}
+function removeCodingQueuedPrompt(id){
+  try{
+    codingPromptQueue=codingPromptQueue.filter(x=>x.id!==id);
+    renderCodingPromptQueue();
+  }catch(e){}
+}
+function editCodingQueuedPrompt(id){
+  try{
+    const i=codingPromptQueue.findIndex(x=>x.id===id);
+    if(i<0)return;
+    const it=codingPromptQueue.splice(i,1)[0];
+    renderCodingPromptQueue();
+    const inp=document.getElementById('coding-input');
+    if(inp){inp.value=it.text||'';inp.style.height='auto';try{autoResize(inp)}catch(e){}inp.focus()}
+    if(it.images&&it.images.length){codingPendingImages=it.images.slice();renderCodingImgStrip()}
+    syncCodingSendBtn();
+  }catch(e){}
+}
+async function sendNextQueuedPrompt(){
+  try{
+    if(!codingPromptQueue.length)return;
+    const it=codingPromptQueue.shift();
+    renderCodingPromptQueue();
+    codingStopRequested=false;
+    const inp=document.getElementById('coding-input');
+    if(inp){inp.value=it.text||'';inp.style.height='auto'}
+    codingPendingImages=(it.images||[]).slice();
+    renderCodingImgStrip();
+    // Dequeued through the normal send path so super-prompt expansion and
+    // research run (when enabled) BEFORE this prompt reaches the model.
+    await sendCodingMessage();
+  }catch(e){reportCodingLoopCrash(e)}
+}
+function maybeSendNextQueuedPrompt(){
+  // Fired when a run fully settles. A user Stop silences the queue (the next
+  // item can still be sent by hand with an empty composer); a natural finish
+  // drains the queue in order.
+  try{
+    if(codingStopRequested)return;
+    if(!codingPromptQueue||!codingPromptQueue.length)return;
+    if(codingAutoLoop||codingStream)return;
+    addCodingSystemMsg('Sending your next queued prompt…');
+    sendNextQueuedPrompt();
+  }catch(e){}
+}
 async function sendCodingMessage(){
-  if(codingAutoLoop||codingStream){codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return}
-  const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length)return;input.value='';input.style.height='auto';
+  if(codingAutoLoop||codingStream){
+    const _inp=document.getElementById('coding-input');
+    const _t=_inp?_inp.value.trim():'';
+    const _imgs=(typeof codingPendingImages!=='undefined'&&codingPendingImages||[]).slice();
+    if(_t||_imgs.length){
+      if(_inp){_inp.value='';_inp.style.height='auto'}
+      try{codingPendingImages=[];renderCodingImgStrip()}catch(e){}
+      queueCodingPrompt(_t,_imgs);
+      try{syncCodingSendBtn()}catch(e){}
+      return;
+    }
+    codingStopRequested=true;if(codingAbort){try{codingAbort.abort()}catch(e){}}return;
+  }
+  const input=document.getElementById('coding-input');const rawText=input.value.trim();const cimgs=codingPendingImages.splice(0);renderCodingImgStrip();if(!rawText&&!cimgs.length){if(typeof codingPromptQueue!=='undefined'&&codingPromptQueue.length)sendNextQueuedPrompt();return}input.value='';input.style.height='auto';
   codingNotifyRequest=rawText;
   // The prompt is rendered FIRST: the expansion/research notes below describe
   // this message, so they must follow it in the run log, never lead it.
@@ -5459,6 +5547,7 @@ async function sendCodingMessage(){
   finishCodingLiveStats(assistantEl,Date.now()-liveT0,liveMsg);
   if(!codingAutoLoop&&typeof wsActive!=='undefined'&&wsActive&&typeof wsReleaseMine==='function'){try{await wsReleaseMine()}catch(e){}}
   if(!aborted&&(!next.actionable||await isPlanMode()))await codingNotifyDone(fullText).catch(()=>{});
+  if(!codingAutoLoop&&typeof maybeSendNextQueuedPrompt==='function')maybeSendNextQueuedPrompt();
 }
 
 function isCodeLine(ln){
@@ -6900,6 +6989,8 @@ function hardStopCodingLoop(){
     try{document.querySelectorAll('#coding-chat .approve-bar').forEach(b=>b.remove())}catch(e){}
     try{document.querySelectorAll('#coding-chat .qopt:not([data-picked])').forEach(b=>b.remove())}catch(e){}
     pendingFilesOffered='';
+    // Queued prompts belong to the project that was open when they were typed.
+    try{codingPromptQueue=[];renderCodingPromptQueue()}catch(e){}
     codingStream=false;
     if(typeof setCodingLoopUI==='function'){try{setCodingLoopUI(false)}catch(e){}}
   }catch(e){}
@@ -7358,11 +7449,29 @@ function setCodingLoopUI(on){
   if(!btn)return;
   if(on){
     if(!btn.dataset.orig)btn.dataset.orig=btn.innerHTML;
-    btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
-    btn.disabled=false;btn.title='Stop AI';
+    btn.disabled=false;
+    syncCodingSendBtn();
   }else{
     if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig;
     btn.title='Send';
+  }
+}
+// While a run is live the send button doubles as Stop when the box is empty
+// and as Queue when the box has a prompt — so typing mid-task queues instead
+// of stopping, and an empty click still stops.
+function syncCodingSendBtn(){
+  const btn=document.getElementById('coding-send-btn');
+  if(!btn)return;
+  if(!(codingAutoLoop||codingStream)){if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig;btn.title='Send';return}
+  if(!btn.dataset.orig)btn.dataset.orig=btn.innerHTML;
+  const inp=document.getElementById('coding-input');
+  const hasText=!!(inp&&String(inp.value||'').trim())||(typeof codingPendingImages!=='undefined'&&codingPendingImages.length>0);
+  if(hasText){
+    btn.innerHTML=btn.dataset.orig;
+    btn.title='Queue prompt — it runs after the current task';
+  }else{
+    btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+    btn.title='Stop AI';
   }
 }
 function waitForCodingApprovals(){
@@ -8363,6 +8472,7 @@ async function codingAutoContinue(){
   await maybeOfferPendingFiles().catch(()=>{});
   if(troubledRun&&troubledProgress&&!codingStopRequested&&typeof requestFindingLog==='function'){await requestFindingLog().catch(()=>{})}
   if(!codingStopRequested)await codingNotifyDone().catch(()=>{});
+  if(!codingStopRequested&&typeof maybeSendNextQueuedPrompt==='function')maybeSendNextQueuedPrompt();
 }
 
 // ---- Remote folders (paired computers): route file/shell ops through the
