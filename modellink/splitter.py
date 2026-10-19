@@ -348,42 +348,101 @@ PROVIDERS = {
 # ==========================================
 # Web search tool (function calling)
 # ==========================================
+def _ddg_real_url(href):
+    """DuckDuckGo wraps results in /l/?uddg=<encoded> redirects; unwrap them so
+    callers get the REAL page URL (fetching the redirect just fails, which is
+    why page reads in research silently produced nothing)."""
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        h = (href or "").strip()
+        if not h:
+            return h
+        if h.startswith("//"):
+            h = "https:" + h
+        u = urlparse(h)
+        if "duckduckgo.com" in u.netloc and u.path.startswith("/l/"):
+            qs = parse_qs(u.query)
+            if qs.get("uddg"):
+                return unquote(qs["uddg"][0])
+        return h
+    except Exception:
+        return href or ""
+
+
 def web_search(query, limit=8):
     """Free web search via DuckDuckGo HTML (no API key needed).
 
-    Returns a list of {"title","url","snippet"}. Best-effort: returns []
-    on any failure so a search outage never breaks a chat turn.
-    """
+    Returns a list of {"title","url","snippet"}. Best-effort: returns [] on any
+    failure so a search outage never breaks a chat turn. Tries the html endpoint,
+    then the lite endpoint, then the JSON Instant-Answer API — and unwraps DDG
+    redirects so callers get real page URLs."""
     import re
     from html import unescape
-    results = []
-    try:
-        resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return results
-        html = resp.text
-        titles = []
+
+    def parse(html):
+        titles, urls = [], []
         for m in re.finditer(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
-            href = m.group(1)
-            title = unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
-            if title:
-                titles.append((title, href))
+            titles.append(unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip())
+            urls.append(m.group(1))
+        if not titles:
+            # lite.duckduckgo.com puts href BEFORE the class attribute.
+            for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*class="result-link"[^>]*>(.*?)</a>', html, re.S):
+                titles.append(unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip())
+                urls.append(m.group(1))
+            if not titles:
+                for m in re.finditer(r'<a[^>]+class="result-link"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
+                    titles.append(unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip())
+                    urls.append(m.group(1))
         snippets = [unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
                     for m in re.finditer(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)]
-        for i, (title, href) in enumerate(titles[:limit]):
-            results.append({
-                "title": title,
-                "url": href,
-                "snippet": snippets[i] if i < len(snippets) else "",
-            })
+        out = []
+        for i, t in enumerate(titles):
+            if not t:
+                continue
+            out.append({"title": t,
+                        "url": _ddg_real_url(urls[i] if i < len(urls) else ""),
+                        "snippet": snippets[i] if i < len(snippets) else ""})
+        return out
+
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    for endpoint in ("https://html.duckduckgo.com/html/",
+                     "https://lite.duckduckgo.com/lite/"):
+        try:
+            resp = requests.get(endpoint, params={"q": query}, headers=ua, timeout=8)
+            if resp.status_code != 200:
+                continue
+            results = parse(resp.text)
+            if results:
+                return results[:limit]
+        except Exception:
+            continue
+
+    # Last resort: the JSON Instant-Answer API (never scraped, rarely blocked).
+    try:
+        r = requests.get("https://api.duckduckgo.com/",
+                         params={"q": query, "format": "json", "no_html": 1,
+                                 "skip_disambig": 1}, headers=ua, timeout=8)
+        d = r.json() if r.status_code == 200 else {}
+        out = []
+        if d.get("AbstractText"):
+            out.append({"title": d.get("Heading") or query,
+                        "url": d.get("AbstractURL") or "",
+                        "snippet": d.get("AbstractText")})
+        def add_topic(t):
+            if isinstance(t, dict) and t.get("FirstURL"):
+                out.append({"title": str(t.get("Text") or "")[:80],
+                            "url": t["FirstURL"],
+                            "snippet": str(t.get("Text") or "")})
+            elif isinstance(t, dict):
+                for s in (t.get("Topics") or []):
+                    add_topic(s)
+        for t in (d.get("RelatedTopics") or []):
+            add_topic(t)
+        if out:
+            return out[:limit]
     except Exception:
         pass
-    return results
+    return []
 
 
 WEB_SEARCH_TOOL = {

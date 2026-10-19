@@ -3443,14 +3443,19 @@ async function superPromptResearch(text,notify){
       return sout;
     }
     const q=String(text||'').slice(0,300)+(ctx.engine?(' '+ctx.engine):'');
-    const r=await authFetch(API+'/api/websearch?q='+encodeURIComponent(q)+'&limit=6');
-    const d=await r.json().catch(()=>({}));
-    const hits=(d.results||[]).slice(0,6);
+    // One server call runs the multi-query search + top-page reads (aiming for
+    // at least 5 hits) inside a ~20s budget; the client also hard-caps the wait
+    // at 20s so the expansion never hangs — whatever was found is used as-is.
+    let hits=[],corpus='';
+    try{
+      const ctrl=(typeof AbortController!=='undefined')?new AbortController():null;
+      const to=ctrl?setTimeout(()=>{try{ctrl.abort()}catch(e){}},20000):null;
+      try{
+        const r=await authFetch(API+'/api/research?q='+encodeURIComponent(q)+'&limit=8',ctrl?{signal:ctrl.signal}:{});
+        if(r&&r.ok){const d=await r.json().catch(()=>({}));hits=(d.results||[]);corpus=String(d.corpus||'');}
+      }finally{if(to)clearTimeout(to)}
+    }catch(e){}
     _note('hits',hits.length);
-    let corpus=hits.map((h,i)=>(i+1)+'. '+(h.title||'')+' — '+(h.url||'')+'\n'+String(h.snippet||h.body||'').slice(0,500)).join('\n\n');
-    for(const h of hits.slice(0,2)){
-      try{if(h.url&&/^https?:\/\//i.test(h.url)){const fr=await authFetch(API+'/api/coding/web-fetch?url='+encodeURIComponent(h.url));const fd=await fr.json().catch(()=>({}));if(fr.ok&&fd.text)corpus+='\n\n--- '+h.url+' ---\n'+String(fd.text).slice(0,4000)}}catch(e){}
-    }
     if(!corpus.trim()){_note('empty','');return '';}
     const out=String(await assistantRunJob('super_research','You extract, from the web results, ONLY the facts needed to answer the request. Be concise and factual. Reply with only the key findings.','Request: '+String(text||'').slice(0,1500)+ctxBlock+'\n\nWeb results:\n'+corpus,300)).trim();
     const fin=(out||corpus.slice(0,1500)).trim();
@@ -3466,12 +3471,17 @@ async function buildSuperPrompt(text,notify){
     const research=superResearchOn(),features=superFeaturesOn();
     let researchCtx='';
     if(research)researchCtx=await superPromptResearch(text,notify);
-    const sys='You rewrite a user request into a clearer, more specific prompt for an AI assistant. You do NOT decide what the task is. '
+    const sys='You turn a user request into a detailed, well-STRUCTURED prompt for an AI assistant. You do NOT decide what the task is. '
       +'HARD RULE — keep the user\'s exact goal, action and deliverable: if they ask to create, build, make, add, change, move, replace or fix something, the rewritten prompt MUST still ask to do exactly that thing. '
       +'NEVER turn a create/build/make request into a review, audit, verification, syntax-check, debug, or "assess what exists" request, and never swap in a different task. '
-      +'Expand ONLY by making their existing request more specific and unambiguous — the concrete inputs, outputs, file names/formats, constraints and edge cases their request already implies. '
-      +(features?'You MAY add a few closely-related details or features that clearly fit the request — still the same goal, never a new task.':'Do NOT add any features, extras or scope beyond what the user asked.')
-      +' If the request is already specific, return it almost unchanged. Output ONLY the improved prompt — no preamble, no commentary, no questions.';
+      +'Write the expanded prompt as short labelled sections, including ONLY the ones that apply (omit the rest — never leave an empty section):\n'
+      +'GOAL: one line restating exactly what the user wants.\n'
+      +'NEW FEATURES: bullets for anything NEW to build or add.\n'
+      +'IMPROVE / FIX: bullets for changes or fixes to features that already exist.\n'
+      +'REQUIREMENTS: bullets with the concrete specifics the request implies — inputs, outputs, files/formats, constraints, edge cases.\n'
+      +'DONE WHEN: a short checklist of verifiable results.\n'
+      +(features?'You MAY add a few closely-related details or features that clearly fit the request — still the same goal, never a new task. ':'Do NOT add any features, extras or scope beyond what the user asked. ')
+      +'Be specific and unambiguous and stay consistent with the provided context, but never invent unrelated requirements. If the request is a simple question or a tiny change, keep it short and do not force sections. Output ONLY the prompt — no preamble, no commentary, no questions.';
     const ctx=superPromptContext();
     const ctxBlock=ctx.text?('\n\nContext (the conversation and project this request belongs to - keep the prompt consistent with it):\n'+ctx.text):'';
     const usr='User request:\n'+String(text||'').slice(0,2000)+(ctxBlock)+(researchCtx?('\n\nResearch findings (use only if relevant):\n'+researchCtx):'');

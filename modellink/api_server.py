@@ -5500,9 +5500,32 @@ async def api_websearch(request: Request, q: str = "", limit: int = 8):
     except (TypeError, ValueError):
         limit = 8
     try:
-        return {"query": query, "results": web_search(query, limit)}
+        return {"query": query, "results": await asyncio.to_thread(web_search, query, limit)}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/research")
+async def api_research(request: Request, q: str = "", limit: int = 8):
+    """Multi-query web research for the super-prompt researcher: runs several
+    query variants, merges/de-dupes the hits (aiming for at least 5), reads the
+    top pages, and returns the hits plus a text corpus — all within a ~20s
+    budget, after which it returns whatever it has."""
+    user, err = _require_auth(request)
+    if err:
+        return err
+    query = (q or "").strip()
+    if not query:
+        return {"query": "", "results": [], "corpus": "", "queries": []}
+    try:
+        want = max(5, min(10, int(limit)))
+    except (TypeError, ValueError):
+        want = 8
+    try:
+        hits, corpus, used = await asyncio.to_thread(_web_research, query, 20.0, want)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)[:200]})
+    return {"query": query, "results": hits, "corpus": corpus, "queries": used}
 
 
 @app.get("/api/usage")
@@ -8772,29 +8795,92 @@ def _fetch_page_text(url, timeout=15, cap=100000):
     return text
 
 
-def _assistant_research(query):
-    """Server-side web research: search, read the top pages, return a corpus.
-    This is what gives the server Ollama the same websearch/webget reach the
-    in-browser models get through the app."""
-    q = (query or "").strip()
-    if not q:
-        return ""
-    try:
-        hits = web_search(q, limit=6) or []
-    except Exception:
-        hits = []
+def _research_queries(q):
+    """Turn a raw request into a few search queries so research has more than
+    one shot at finding results (the whole sentence is usually a bad query)."""
+    base = re.sub(r"\s+", " ", (q or "").strip())
+    if not base:
+        return []
+    out = [base]
+    stop = {"the", "and", "for", "with", "you", "want", "make", "making", "that",
+            "this", "from", "into", "are", "its", "all", "how", "can", "please",
+            "really", "just", "like", "some", "very", "more", "better", "game",
+            "games", "add", "need", "should", "would", "could", "does", "have",
+            "has", "about", "there", "their", "them", "then", "when", "what",
+            "which", "will", "your", "lets", "fully", "detailed", "using"}
+    words = [w for w in re.split(r"\s+", base) if len(w) > 2]
+    kws = [w for w in words if w.lower().strip(".,!?;:'\"") not in stop]
+    if kws:
+        out.append(" ".join(kws[:8]))
+        if len(kws) >= 3:
+            out.append(" ".join(kws[:4]))
+    out.append(base[:120])
+    seen = []
+    for x in out:
+        x = x.strip()
+        if x and x not in seen:
+            seen.append(x)
+    return seen[:4]
+
+
+def _web_research(query, budget=20.0, want=8):
+    """Multi-query web research with a HARD time budget. Merges and de-dupes
+    results across query variants, then reads the top pages. Returns
+    (hits, corpus, queries_used). Best-effort: never raises, and never runs
+    longer than `budget` seconds — whatever was found is returned as-is."""
+    import time
+    t0 = time.time()
+
+    def left():
+        return budget - (time.time() - t0)
+
+    queries = _research_queries(query)
+    if not queries:
+        return [], "", []
+    seen, hits, used = set(), [], []
+    for qq in queries:
+        if left() <= 1.0 or len(hits) >= want:
+            break
+        try:
+            got = web_search(qq, limit=8) or []
+        except Exception:
+            got = []
+        if got:
+            used.append(qq)
+        for h in got:
+            u = str(h.get("url") or "").strip().lower()
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            hits.append(h)
     parts = []
-    for i, h in enumerate(hits[:6], 1):
+    for i, h in enumerate(hits[:want], 1):
         parts.append("%d. %s — %s\n%s" % (i, h.get("title") or "", h.get("url") or "",
                                           str(h.get("snippet") or h.get("body") or "")[:500]))
     corpus = "\n\n".join(parts)
-    for h in hits[:2]:
+    for h in hits[:4]:
+        if left() <= 2.0:
+            break
         url = str(h.get("url") or "")
         if url.startswith("http"):
-            page = _fetch_page_text(url)
+            try:
+                page = _fetch_page_text(url, timeout=max(2, min(8, int(left()))))
+            except Exception:
+                page = ""
             if page:
                 corpus += "\n\n--- %s ---\n%s" % (url, page[:4000])
-    return corpus
+    return hits[:want], corpus, used
+
+
+def _assistant_research(query):
+    """Server-side web research: multi-query search + top-page reads within a
+    ~20s budget. This gives the server Ollama the same websearch/webget reach
+    the in-browser models get through the app."""
+    try:
+        _hits, corpus, _used = _web_research(query, budget=20.0)
+        return corpus
+    except Exception:
+        return ""
 
 
 class AssistantRunBody(BaseModel):
