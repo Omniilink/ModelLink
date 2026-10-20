@@ -8100,10 +8100,10 @@ async function ocFetch(eng,path,opts){
 }
 async function ocHealth(eng){
   try{
-    const r=await ocFetch(eng,'/api/info',{method:'GET',__timeout:8000});
+    const r=await ocFetch(eng,'/global/health',{method:'GET',__timeout:8000});
     if(!r.ok)return null;
     const d=await r.json().catch(()=>null);
-    return {healthy:true,version:(d&&d.version)||''};
+    return (d&&d.healthy)?d:{healthy:true,version:(d&&d.version)||''};
   }catch(e){return null}
 }
 function ocB64ToBytes(b64){
@@ -8186,145 +8186,73 @@ function addOpenCodeUserBubble(text){
 function addOpenCodeWait(){
   try{
     const chat=document.getElementById('coding-chat');
-    const el=document.createElement('div');el.className='coding-msg assistant';
-    el.setAttribute('data-opencode-live','1');
+    const el=document.createElement('div');el.className='coding-msg assistant sys';
     el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content">OpenCode is working…</div></div>';
     chat.appendChild(el);chat.scrollTop=chat.scrollHeight;
-    return el;
+    return {remove(){try{el.remove()}catch(e){}}};
   }catch(e){return null}
 }
-function renderOpenCodeContent(container,content){
+function renderOpenCodeReply(reply){
   try{
-    if(!container)return;
+    const parts=(reply&&(reply.parts||(reply.info&&reply.info.parts)))||[];
     const texts=[];const tools=[];
-    for(const p of (content||[])){
+    for(const p of parts){
       if(!p)continue;
-      if(p.type==='text'&&p.text)texts.push(String(p.text));
-      else if(p.type==='tool')tools.push(p);
+      if((p.type==='text')&&p.text)texts.push(String(p.text));
+      else if(p.type==='tool'||p.tool)tools.push(p);
     }
-    let html=texts.length?renderContent(texts.join('\n\n')):(tools.length?'':'(waiting…)');
+    const chat=document.getElementById('coding-chat');
+    const el=document.createElement('div');el.className='coding-msg assistant';
+    el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
+    el.querySelector('.coding-msg-content').innerHTML=renderContent(texts.join('\n\n')||'(OpenCode returned no text)');
+    chat.appendChild(el);
     for(const tp of tools){
       try{
-        const name=tp.name||tp.tool||'tool';
-        const st=(tp.state&&tp.state.status)||'';
-        html+='<div class="coding-msg-tool"><div class="tool-label">'+escapeHtml(String(name))+(st?' — '+escapeHtml(String(st)):'')+'</div></div>';
+        const name=tp.tool||tp.name||'tool';
+        const st=(tp.state&&(tp.state.title||tp.state.status))||'';
+        const d=document.createElement('div');d.className='coding-msg-tool';
+        d.innerHTML='<div class="tool-label">'+escapeHtml(String(name))+(st?' — '+escapeHtml(String(st)):'')+'</div>';
+        chat.appendChild(d);
       }catch(e){}
     }
-    container.innerHTML=html||'(waiting…)';
+    chat.scrollTop=chat.scrollHeight;
   }catch(e){}
-}
-function renderOpenCodeFinal(msgs){
-  try{
-    const a=(msgs||[]).find(m=>m&&m.type==='assistant');
-    if(!a)return;
-    let el=document.querySelector('[data-opencode-live="1"]');
-    if(!el){
-      const chat=document.getElementById('coding-chat');
-      el=document.createElement('div');el.className='coding-msg assistant';el.setAttribute('data-opencode-live','1');
-      el.innerHTML='<div class="coding-msg-avatar">O</div><div><div class="coding-msg-content"></div></div>';
-      chat.appendChild(el);
-    }
-    renderOpenCodeContent(el.querySelector('.coding-msg-content'),a.content||[]);
-  }catch(e){}
-}
-function startOpenCodeEvents(eng,sessionId){
-  let liveEl=null,resolved=false,resolveFn=null,poll=null,timeout=null;
-  const done=new Promise(res=>{resolveFn=()=>{if(!resolved){resolved=true;res()}}});
-  const ctrl=(typeof AbortController!=='undefined')?new AbortController():null;
-  const base=String((eng&&eng.url)||'').replace(/\/+$/,'');
-  const headers={};
-  if(eng&&eng.password){try{headers['Authorization']='Basic '+btoa('opencode:'+eng.password)}catch(e){}}
-  const finish=()=>{
-    try{if(ctrl)ctrl.abort()}catch(e){}
-    if(poll){try{clearInterval(poll)}catch(e){}}
-    if(timeout){try{clearTimeout(timeout)}catch(e){}}
-    resolveFn();
-  };
-  const ensureLive=()=>{
-    if(liveEl)return liveEl;
-    liveEl=document.querySelector('[data-opencode-live="1"]');
-    if(!liveEl)liveEl=addOpenCodeWait();
-    return liveEl;
-  };
-  (async()=>{
-    try{
-      const r=await fetch(base+'/api/event',{headers,signal:ctrl?ctrl.signal:undefined});
-      if(!r.ok||!r.body)return;
-      const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
-      while(true){
-        const rd=await reader.read();if(rd.done)break;
-        buf+=dec.decode(rd.value,{stream:true});
-        let idx;
-        while((idx=buf.indexOf('\n\n'))>=0){
-          const chunk=buf.slice(0,idx);buf=buf.slice(idx+2);
-          const line=chunk.split('\n').find(l=>l.indexOf('data: ')===0);
-          if(!line)continue;
-          let ev=null;try{ev=JSON.parse(line.slice(6))}catch(e){continue}
-          if(!ev)continue;
-          const d=ev.data||{};
-          if(d.sessionID&&String(d.sessionID)!==String(sessionId))continue;
-          const t=ev.type||'';
-          if(t==='session.message.content.updated'){
-            const el=ensureLive();
-            if(el)renderOpenCodeContent(el.querySelector('.coding-msg-content'),d.content||[]);
-          }else if(t==='session.execution.succeeded'||t==='session.execution.failed'||t==='session.execution.interrupted'){
-            finish();return;
-          }
-        }
-      }
-    }catch(e){}
-  })();
-  poll=setInterval(async()=>{
-    if(resolved)return;
-    try{
-      const r=await ocFetch(eng,'/api/session/'+encodeURIComponent(sessionId)+'/message?order=desc&limit=20',{method:'GET',__timeout:10000});
-      if(!r.ok)return;
-      const d=await r.json().catch(()=>null);
-      const a=((d&&d.data)||[]).find(m=>m&&m.type==='assistant');
-      if(a){
-        const el=ensureLive();
-        if(el)renderOpenCodeContent(el.querySelector('.coding-msg-content'),a.content||[]);
-        if(a.time&&a.time.completed)finish();
-      }
-    }catch(e){}
-  },2500);
-  timeout=setTimeout(()=>finish(),600000);
-  return {wait:()=>done,stop:()=>finish()};
 }
 async function runOpenCodeTask(text,eng){
   let sessionId='';
-  let ev=null;
   try{
     const h=await ocHealth(eng);
-    if(!h){showToast('OpenCode not reachable at '+eng.url+' — start `opencode serve` in your workspace folder','error');return false}
+    if(!h){
+      showToast('OpenCode not reachable at '+eng.url+' — is `opencode serve --cors '+location.origin+'` running?','error');
+      return false;
+    }
     if(typeof fsHandle!=='undefined'&&fsHandle){showToast('OpenCode needs a server project (not a local folder) to download and sync. Using Custom.','error');return false}
     if(!opencodeDirHandle){showToast('Choose an OpenCode workspace folder in Settings first.','error');return false}
     addCodingSystemMsg('OpenCode: exporting the project to "'+(opencodeDirHandle.name||'workspace')+'"…');
     const n=await exportProjectToHandle(opencodeDirHandle);
-    addCodingSystemMsg('OpenCode: exported '+n+' files. Make sure `opencode serve` is running in that folder.');
+    addCodingSystemMsg('OpenCode: exported '+n+' files. Start `opencode serve` in that folder so it works on this copy.');
     addOpenCodeUserBubble(text);
-    addOpenCodeWait();
-    const sr=await ocFetch(eng,'/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:String(text||'Omniilink task').slice(0,60)}),__timeout:15000});
+    const sr=await ocFetch(eng,'/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:String(text||'Omniilink task').slice(0,60)}),__timeout:15000});
     if(!sr.ok)throw new Error('session create failed ('+sr.status+')');
     const sess=await sr.json().catch(()=>null);
-    sessionId=String((sess&&sess.data&&sess.data.id)||'');
+    sessionId=String((sess&&(sess.id||sess.sessionID))||'');
     if(!sessionId)throw new Error('OpenCode did not return a session id');
-    ev=startOpenCodeEvents(eng,sessionId);
-    const pr=await ocFetch(eng,'/api/session/'+encodeURIComponent(sessionId)+'/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:String(text||'')}),__timeout:30000});
-    if(!pr.ok){const t=await pr.text().catch(()=>'');throw new Error('prompt failed ('+pr.status+') '+String(t).slice(0,140))}
-    await ev.wait();
-    ev.stop();ev=null;
+    const wait=addOpenCodeWait();
+    let reply=null;
     try{
-      const mr=await ocFetch(eng,'/api/session/'+encodeURIComponent(sessionId)+'/message?order=desc&limit=20',{method:'GET',__timeout:15000});
-      if(mr.ok){const d=await mr.json().catch(()=>null);renderOpenCodeFinal(d&&d.data)}
-    }catch(e){}
+      const body={parts:[{type:'text',text:String(text||'')}]};
+      if(eng.model)body.model=eng.model;
+      const mr=await ocFetch(eng,'/session/'+encodeURIComponent(sessionId)+'/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),__timeout:600000});
+      if(!mr.ok){const t=await mr.text().catch(()=>'');throw new Error('OpenCode message failed ('+mr.status+') '+String(t).slice(0,140))}
+      reply=await mr.json().catch(()=>null);
+    }finally{if(wait&&wait.remove)wait.remove()}
+    renderOpenCodeReply(reply);
     addCodingSystemMsg('OpenCode: syncing changes back to the server…');
     const written=await syncLocalProjectBack(opencodeDirHandle);
     showToast('OpenCode finished — synced '+written+' file'+(written===1?'':'s'),'success');
     return true;
   }catch(e){
-    try{if(ev)ev.stop()}catch(e2){}
-    try{if(sessionId)await ocFetch(eng,'/api/session/'+encodeURIComponent(sessionId)+'/interrupt',{method:'POST',__timeout:8000})}catch(e2){}
+    try{if(sessionId)await ocFetch(eng,'/session/'+encodeURIComponent(sessionId)+'/abort',{method:'POST',__timeout:8000})}catch(e2){}
     addCodingSystemMsg('OpenCode failed: '+(e&&e.message?e.message:String(e))+' — falling back to the Custom engine.');
     return false;
   }
