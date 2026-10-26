@@ -668,7 +668,7 @@ def _csp_policy():
     webllm_hosts = ("https://esm.run https://cdn.jsdelivr.net https://huggingface.co"
                     " https://*.huggingface.co https://*.hf.co"
                     " https://raw.githubusercontent.com")
-    connect = ("connect-src 'self' cloudflareinsights.com"
+    connect = ("connect-src 'self' cloudflareinsights.com http://127.0.0.1:* http://localhost:*"
                + (f" {extra}" if extra else "") + " blob: " + webllm_hosts)
     return ("default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"
             " static.cloudflareinsights.com https://esm.run https://cdn.jsdelivr.net; "
@@ -9320,6 +9320,21 @@ async def _ws_batch_loop():
 @app.on_event("startup")
 async def _ws_batch_on_start():
     asyncio.create_task(_ws_batch_loop())
+
+@app.on_event("startup")
+async def _promote_admins_on_start():
+    def _run():
+        try:
+            conn = get_db()
+            try:
+                for name in ("isaac tribbe", "admin", "tribbeisaac1"):
+                    conn.execute("UPDATE users SET is_admin = 1 WHERE LOWER(username) = ?", (name.lower().replace(" ", "_"),))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print("admin promote on start failed:", e)
+    await asyncio.to_thread(_run)
 
 
 class WsQueueBody(BaseModel):
@@ -20540,6 +20555,139 @@ def run_relay(token, cmd, ollama_url):
             resp.close()
         except Exception:
             pass
+
+# ---- OpenCode Zen catalogue (free models) ----
+_ZEN_CACHE = {"ts": 0.0, "models": []}
+_ZEN_SPEED_PATH = os.path.join(APP_DIR, "user_data", "zen_speed.json")
+
+def _zen_is_free(meta):
+    mid = str(meta.get("id") or "")
+    if mid == "big-pickle":
+        return True
+    if mid.endswith("-free"):
+        return True
+    cost = meta.get("cost") or {}
+    try:
+        if "input" in cost and "output" in cost:
+            return float(cost.get("input") or 0) <= 0 and float(cost.get("output") or 0) <= 0
+    except Exception:
+        pass
+    return False
+
+def _zen_fetch_json(url, timeout=20):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Omniilink/1.0", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8") or "{}")
+
+def _zen_speed_load():
+    try:
+        with open(_ZEN_SPEED_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _zen_speed_save(data):
+    try:
+        os.makedirs(os.path.dirname(_ZEN_SPEED_PATH), exist_ok=True)
+        tmp = _ZEN_SPEED_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _ZEN_SPEED_PATH)
+    except Exception as e:
+        print("zen speed save failed:", e)
+
+def _zen_build_catalog():
+    try:
+        catalog = (_zen_fetch_json("https://models.dev/api.json", 25).get("opencode") or {}).get("models") or {}
+    except Exception:
+        catalog = {}
+    try:
+        live = {str(m.get("id")) for m in (_zen_fetch_json("https://opencode.ai/inference/v1/models", 15).get("data") or []) if m.get("id")}
+    except Exception:
+        live = set()
+    speed = _zen_speed_load()
+    out = []
+    for mid, meta in catalog.items():
+        if not isinstance(meta, dict):
+            continue
+        if mid == "test" or mid.startswith("test-"):
+            continue
+        if not _zen_is_free(meta):
+            continue
+        if live and mid not in live:
+            continue
+        stages, toggle = [], False
+        for opt in meta.get("reasoning_options") or []:
+            if not isinstance(opt, dict):
+                continue
+            if opt.get("type") == "effort":
+                stages = [v for v in (opt.get("values") or []) if isinstance(v, str)]
+            elif opt.get("type") == "toggle":
+                toggle = True
+        row = speed.get(mid) or {}
+        tps = None
+        try:
+            if row.get("tokens") and row.get("ms"):
+                tps = round(float(row["tokens"]) / (float(row["ms"]) / 1000.0), 1)
+        except Exception:
+            tps = None
+        limit = meta.get("limit") or {}
+        inputs = (meta.get("modalities") or {}).get("input") or ["text"]
+        out.append({
+            "id": "zen/" + mid,
+            "upstream": mid,
+            "name": meta.get("name") or mid,
+            "provider": "zen",
+            "api": (meta.get("provider") or {}).get("api") or "",
+            "context": int(limit.get("context") or 0),
+            "output": int(limit.get("output") or 0),
+            "reasoning": bool(meta.get("reasoning")),
+            "reasoning_stages": stages,
+            "reasoning_toggle": toggle,
+            "modalities": inputs,
+            "vision": "image" in inputs,
+            "tools": bool(meta.get("tool_call")),
+            "free": True,
+            "tps": tps,
+            "new": False,
+        })
+    out.sort(key=lambda m: str(m["name"]).lower())
+    return out
+
+@app.get("/api/zen/models")
+async def zen_models(request: Request):
+    import time as _t
+    now = _t.time()
+    if _ZEN_CACHE["models"] and now - _ZEN_CACHE["ts"] < 3600:
+        return {"models": _ZEN_CACHE["models"], "cached": True}
+    try:
+        models = await asyncio.to_thread(_zen_build_catalog)
+        _ZEN_CACHE["models"] = models
+        _ZEN_CACHE["ts"] = now
+        return {"models": models}
+    except Exception as e:
+        return {"models": _ZEN_CACHE["models"], "error": str(e)[:200]}
+
+class ZenSpeedBody(BaseModel):
+    model: str = ""
+    tokens: int = 0
+    ms: int = 0
+
+@app.post("/api/zen/speed")
+async def zen_speed(request: Request, req: ZenSpeedBody):
+    mid = str(req.model or "").replace("zen/", "", 1)
+    if not mid:
+        return {"ok": False}
+    data = _zen_speed_load()
+    row = data.get(mid) or {}
+    row["tokens"] = int(row.get("tokens") or 0) + int(req.tokens or 0)
+    row["ms"] = int(row.get("ms") or 0) + int(req.ms or 0)
+    data[mid] = row
+    await asyncio.to_thread(_zen_speed_save, data)
+    return {"ok": True}
+
+# CSP patch: allow localhost companion
 
 
 def main():

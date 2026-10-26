@@ -2046,6 +2046,7 @@ function invalidateGetCache(){_getCache={}}
 async function authFetch(url,opts={}){
   // Route in-browser (WebGPU) models straight to WebLLM — no server round-trip.
   try{if(typeof webllmMaybeIntercept==='function'){const hit=webllmMaybeIntercept(url,opts);if(hit)return hit}}catch(e){}
+  try{if(typeof zenMaybeIntercept==='function'){const hit=await zenMaybeIntercept(url,opts);if(hit)return hit}}catch(e){}
   opts.credentials='same-origin';
   const method=String(opts.method||'GET').toUpperCase();
   const cacheable=method==='GET'&&_cacheableUrl(url);
@@ -2151,11 +2152,87 @@ function loadChat(id){
 }
 function deleteChat(id){const chats=getChats();delete chats[id];saveChats(chats);try{authFetch(API+'/api/chats/'+encodeURIComponent(id),{method:'DELETE'}).catch(()=>{})}catch(e){}if(id===currentChatId){currentChatId=null;chatHistory=[];document.getElementById('chat-area').innerHTML=EMPTY_CHAT_HTML}renderChatList()}
 
+
+// ---- OpenCode Zen: free models via companion relay ----
+let zenModels=[],zenBase=null,zenProbing=null,zenDownUntil=0;
+function isZenModel(id){return String(id||'').indexOf('zen/')===0}
+async function zenProbe(){
+  if(zenBase)return zenBase;
+  if(zenProbing)return zenProbing;
+  if(Date.now()<zenDownUntil)return null;
+  zenProbing=(async()=>{
+    for(const p of [47821,53681]){
+      try{
+        const c=new AbortController();const t=setTimeout(()=>c.abort(),2500);
+        const r=await fetch('http://127.0.0.1:'+p+'/api/zen/health',{signal:c.signal});
+        clearTimeout(t);
+        if(r.ok){const d=await r.json().catch(()=>({}));if(d&&d.zen){zenBase='http://127.0.0.1:'+p;return zenBase}}
+      }catch(e){}
+    }
+    zenBase=null;zenDownUntil=Date.now()+2000;return null;
+  })().finally(()=>{zenProbing=null;try{renderCodingModelMenu()}catch(e){}});
+  return zenProbing;
+}
+async function loadZenModels(){
+  try{
+    const r=await authFetch(API+'/api/zen/models');
+    if(!r.ok)return;
+    const d=await r.json();
+    zenModels=d.models||[];
+    if(typeof renderCodingModelMenu==='function')renderCodingModelMenu();
+    zenProbe().then(()=>{try{renderCodingModelMenu()}catch(e){}}).catch(()=>{});
+  }catch(e){}
+}
+function renderCodingModelMenu(){
+  const companion=!!zenBase;
+  const zens=(zenModels||[]).map(m=>Object.assign({},m,{online:companion}));
+  const all=(typeof allModels!=='undefined'?allModels:[]).concat(zens);
+  const menu=document.getElementById('coding-model-menu');
+  if(!menu||typeof renderModelMenuInto!=='function')return;
+  renderModelMenuInto(menu,all,null);
+}
+function zenTap(stream,t0,upstream){
+  const reader=stream.getReader();const dec=new TextDecoder();let chars=0;
+  return new ReadableStream({
+    async pull(ctrl){
+      const{done,value}=await reader.read();
+      if(done){try{const ms=Date.now()-t0;const tokens=Math.max(1,Math.round(chars/4));authFetch(API+'/api/zen/speed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:upstream,tokens:tokens,ms:ms})}).catch(()=>{})}catch(e){}ctrl.close();return}
+      try{const txt=dec.decode(value,{stream:true});for(const line of txt.split('\n')){if(!line.startsWith('data: '))continue;const data=line.slice(6).trim();if(!data||data==='[DONE]')continue;try{const j=JSON.parse(data);const c=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content;if(c)chars+=c.length}catch(e){}}}catch(e){}
+      ctrl.enqueue(value);
+    },
+    cancel(){try{reader.cancel()}catch(e){}}
+  });
+}
+async function zenMaybeIntercept(url,opts){
+  try{
+    if(!opts||String(opts.method||'GET').toUpperCase()!=='POST')return null;
+    if(String(url).indexOf('/v1/chat/completions')<0)return null;
+    const body=JSON.parse(opts.body||'{}');
+    const id=String(body.model||'');
+    if(id.indexOf('zen/')!==0)return null;
+    const meta=(zenModels||[]).find(m=>m.id===id)||{upstream:id.slice(4),api:''};
+    const base=await zenProbe();
+    if(!base)return new Response(JSON.stringify({error:'Start the Omniilink companion to use free OpenCode models.'}),{status:503,headers:{'Content-Type':'application/json'}});
+    const upstream=String(meta.upstream||id.slice(4));
+    const payload={model:upstream,messages:body.messages||[],stream:body.stream!==false,temperature:body.temperature};
+    if(body.max_tokens!=null)payload.max_tokens=body.max_tokens;
+    const effort=String(body.effort||'');
+    if(effort&&effort!=='auto')payload.reasoning_effort=effort;
+    const send=()=>fetch(base+'/api/relay/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:opts.signal});
+    let r=null;
+    try{r=await send();if(r.status>=500&&r.status!==501){try{r.body&&r.body.cancel&&r.body.cancel()}catch(e){};r=await send()}}
+    catch(e){if(e&&e.name==='AbortError')throw e;try{r=await send()}catch(e2){r=null};if(!r)return new Response(JSON.stringify({error:'Could not reach the companion.'}),{status:502,headers:{'Content-Type':'application/json'}})}
+    if(!r.ok)return r;
+    if(payload.stream===false)return r;
+    return new Response(zenTap(r.body,Date.now(),upstream),{status:200,headers:{'Content-Type':'text/event-stream','Cache-Control':'no-store'}});
+  }catch(e){return null}
+}
+
 window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
-  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();
+  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();try{setTimeout(()=>{try{loadZenModels()}catch(e){}},0)}catch(e){}
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
   try{if(typeof assistantPillStart==='function')assistantPillStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
@@ -2444,7 +2521,7 @@ function renderModelMenuInto(menu,models,backupModel){
   const nohit=document.createElement('div');nohit.className='model-empty';nohit.style.display='none';nohit.textContent='No models match';menu.appendChild(nohit);
 }
 function renderModelMenu(models,backupModel){renderModelMenuInto(document.getElementById('model-menu'),models,backupModel)}
-function renderCodingModelMenu(){renderModelMenuInto(document.getElementById('coding-model-menu'),allModels||[],null)}
+
 function toggleCodingModelMenu(){document.getElementById('coding-model-menu').classList.toggle('open')}
 let providerHealth={};
 function healthDotClass(name,hasModels){
