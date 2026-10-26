@@ -20556,6 +20556,77 @@ def run_relay(token, cmd, ollama_url):
         except Exception:
             pass
 
+
+
+def main():
+    global SERVER
+    ap = argparse.ArgumentParser(description="Omniilink pairing agent")
+    ap.add_argument("--server", default=SERVER, help="Omniilink server URL")
+    ap.add_argument("--code", required=True, help="10-character pairing code from Admin > Agents")
+    ap.add_argument("--name", default=socket.gethostname(), help="Display name for this computer")
+    ap.add_argument("--ollama-url", default=OLLAMA_URL, help="Local Ollama URL for model relay")
+    args = ap.parse_args()
+    SERVER = args.server.rstrip("/")
+    ollama_url = (args.ollama_url or "").rstrip("/")
+    hostname = socket.gethostname()
+    plat = platform.system() + " " + platform.release()
+    print("pairing with " + SERVER + " ...")
+    try:
+        d = api("POST", "/api/agent/claim", None,
+                {"code": args.code, "name": args.name, "hostname": hostname, "platform": plat})
+    except Exception as e:
+        print("pairing failed: " + str(e))
+        return 1
+    token = d["token"]
+    print("paired as agent " + str(d["agent_id"]) + " - polling for commands (Ctrl+C to stop)")
+    while True:
+        try:
+            p = api("GET", "/api/agent/pending?caps=ollama", token,
+                    timeout=LONG_TIMEOUT)
+            cmd = p.get("command")
+            if cmd and cmd.get("kind") == "ollama":
+                threading.Thread(target=run_relay, args=(token, cmd, ollama_url),
+                                 daemon=True).start()
+            elif cmd:
+                print("$ " + cmd["command"])
+                try:
+                    proc = subprocess.run(cmd["command"], shell=True, capture_output=True,
+                                          text=True, timeout=int(cmd.get("timeout") or 300))
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": proc.returncode,
+                         "output": out[-65536:]})
+                    print("exit " + str(proc.returncode))
+                except subprocess.TimeoutExpired:
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": 124, "output": "[timed out]"})
+                except Exception as e:
+                    api("POST", "/api/agent/result", token,
+                        {"command_id": cmd["id"], "exit_code": 1, "output": "agent error: " + str(e)})
+            else:
+                time.sleep(5)
+        except KeyboardInterrupt:
+            print("stopped")
+            return 0
+        except TimeoutError:
+
+            # A stalled read is a network hiccup, not a broken pairing: back
+
+            # off briefly and keep polling rather than printing an alarming
+
+            # read-timeout error on every cycle.
+            time.sleep(3)
+        except Exception as e:
+            print("poll error: " + str(e))
+            time.sleep(10)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+
 # ---- OpenCode Zen catalogue (free models) ----
 _ZEN_CACHE = {"ts": 0.0, "models": []}
 _ZEN_SPEED_PATH = os.path.join(APP_DIR, "user_data", "zen_speed.json")
@@ -20688,75 +20759,6 @@ async def zen_speed(request: Request, req: ZenSpeedBody):
     return {"ok": True}
 
 # CSP patch: allow localhost companion
-
-
-def main():
-    global SERVER
-    ap = argparse.ArgumentParser(description="Omniilink pairing agent")
-    ap.add_argument("--server", default=SERVER, help="Omniilink server URL")
-    ap.add_argument("--code", required=True, help="10-character pairing code from Admin > Agents")
-    ap.add_argument("--name", default=socket.gethostname(), help="Display name for this computer")
-    ap.add_argument("--ollama-url", default=OLLAMA_URL, help="Local Ollama URL for model relay")
-    args = ap.parse_args()
-    SERVER = args.server.rstrip("/")
-    ollama_url = (args.ollama_url or "").rstrip("/")
-    hostname = socket.gethostname()
-    plat = platform.system() + " " + platform.release()
-    print("pairing with " + SERVER + " ...")
-    try:
-        d = api("POST", "/api/agent/claim", None,
-                {"code": args.code, "name": args.name, "hostname": hostname, "platform": plat})
-    except Exception as e:
-        print("pairing failed: " + str(e))
-        return 1
-    token = d["token"]
-    print("paired as agent " + str(d["agent_id"]) + " - polling for commands (Ctrl+C to stop)")
-    while True:
-        try:
-            p = api("GET", "/api/agent/pending?caps=ollama", token,
-                    timeout=LONG_TIMEOUT)
-            cmd = p.get("command")
-            if cmd and cmd.get("kind") == "ollama":
-                threading.Thread(target=run_relay, args=(token, cmd, ollama_url),
-                                 daemon=True).start()
-            elif cmd:
-                print("$ " + cmd["command"])
-                try:
-                    proc = subprocess.run(cmd["command"], shell=True, capture_output=True,
-                                          text=True, timeout=int(cmd.get("timeout") or 300))
-                    out = (proc.stdout or "") + (proc.stderr or "")
-                    api("POST", "/api/agent/result", token,
-                        {"command_id": cmd["id"], "exit_code": proc.returncode,
-                         "output": out[-65536:]})
-                    print("exit " + str(proc.returncode))
-                except subprocess.TimeoutExpired:
-                    api("POST", "/api/agent/result", token,
-                        {"command_id": cmd["id"], "exit_code": 124, "output": "[timed out]"})
-                except Exception as e:
-                    api("POST", "/api/agent/result", token,
-                        {"command_id": cmd["id"], "exit_code": 1, "output": "agent error: " + str(e)})
-            else:
-                time.sleep(5)
-        except KeyboardInterrupt:
-            print("stopped")
-            return 0
-        except TimeoutError:
-
-            # A stalled read is a network hiccup, not a broken pairing: back
-
-            # off briefly and keep polling rather than printing an alarming
-
-            # read-timeout error on every cycle.
-            time.sleep(3)
-        except Exception as e:
-            print("poll error: " + str(e))
-            time.sleep(10)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-'''
-
 
 @app.get("/api/admin/overview")
 async def admin_overview(request: Request):
