@@ -797,29 +797,50 @@ def _mcp_rpc(proc, method, params=None, timeout=30):
     return None, "timeout"
 
 def mcp_sync(servers):
-    if not isinstance(servers, list):
-        servers = []
-    # Write to mcp.json (opencode format) for manual editing
+    # Prefer local mcp.json (opencode format) if it exists and has content
     try:
-        mcp_cfg = {"mcp": {}}
-        for srv in servers:
-            name = srv.get("name")
-            if not name:
-                continue
-            if srv.get("type") == "stdio":
-                mcp_cfg["mcp"][name] = {"type": "local", "command": [srv.get("command", "")] + (srv.get("args") or []), "enabled": True}
-            else:
-                entry = {"type": "remote", "url": srv.get("url", "")}
-                if srv.get("username"):
-                    import base64 as _b64
-                    entry["headers"] = {"Authorization": "Basic " + _b64.b64encode((srv["username"] + ":" + srv.get("password", "")).encode()).decode()}
-                mcp_cfg["mcp"][name] = entry
-        pth = os.path.join(CONFIG_DIR, "mcp.json")
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(pth, "w", encoding="utf-8") as f:
-            json.dump(mcp_cfg, f, indent=2)
+        p = os.path.join(CONFIG_DIR, "mcp.json")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            mcp = data.get("mcp", data.get("servers", {}))
+            if isinstance(mcp, dict) and mcp:
+                servers = []
+                for name, cfg in mcp.items():
+                    if not isinstance(cfg, dict) or not name:
+                        continue
+                    entry = {"name": name}
+                    if cfg.get("type") == "local" or "command" in cfg:
+                        entry["type"] = "stdio"
+                        cmd = cfg.get("command", [])
+                        if isinstance(cmd, list):
+                            entry["command"] = cmd[0] if cmd else ""
+                            entry["args"] = cmd[1:] if len(cmd) > 1 else []
+                        else:
+                            entry["command"] = str(cmd)
+                            entry["args"] = cfg.get("args", [])
+                        entry["env"] = cfg.get("env", {}) or {}
+                    elif cfg.get("type") == "remote" or "url" in cfg:
+                        entry["type"] = "sse"
+                        entry["url"] = cfg.get("url", "")
+                        if cfg.get("headers") and isinstance(cfg["headers"], dict):
+                            auth = cfg["headers"].get("Authorization", "")
+                            if auth.startswith("Basic "):
+                                import base64 as _b64
+                                try:
+                                    dec = _b64.b64decode(auth[6:]).decode()
+                                    parts = dec.split(":", 1)
+                                    entry["username"] = parts[0]
+                                    entry["password"] = parts[1] if len(parts) > 1 else ""
+                                except Exception:
+                                    pass
+                    if cfg.get("enabled", True) is False:
+                        continue
+                    servers.append(entry)
     except Exception:
         pass
+    if not isinstance(servers, list):
+        servers = []
     with _MCP_LOCK:
         new_names = {s.get("name") for s in servers if s.get("name")}
         for name in list(_MCP_SERVERS.keys()):
@@ -841,7 +862,8 @@ def mcp_start(srv):
         env.update(srv.get("env", {}) or {})
         try:
             proc = subprocess.Popen([cmd] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, bufsize=0)
+                                    stderr=subprocess.PIPE, env=env, bufsize=0,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception as e:
             _MCP_SERVERS[name] = {"cfg": srv, "proc": None, "tools": [], "status": "error: " + str(e)}
             return
