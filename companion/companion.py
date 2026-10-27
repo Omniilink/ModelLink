@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.18"
+COMPANION_VERSION = "1.0.19"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -1422,8 +1422,21 @@ class _SetupHandler(_http_server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
         self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj), "application/json")
