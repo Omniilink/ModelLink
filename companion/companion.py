@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.17"
+COMPANION_VERSION = "1.0.18"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -772,29 +772,40 @@ def _mcp_rpc(proc, method, params=None, timeout=30):
         proc.stdin.flush()
     except Exception as e:
         return None, str(e)
-    buf = ""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            r, _, _ = select.select([proc.stdout], [], [], 0.5)
-            if r:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
+    # Read response using a thread (select doesn't work on Windows pipes)
+    result = {"data": None, "err": None, "done": False}
+    def _reader():
+        buf = ""
+        while not result["done"]:
+            try:
+                line = proc.stdout.readline()
+                if not line:
                     break
-                buf += chunk.decode("utf-8", "replace")
-                for line in buf.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                        if obj.get("id") == req["id"]:
-                            return obj, None
-                    except json.JSONDecodeError:
-                        continue
-        except Exception as e:
-            return None, str(e)
-    return None, "timeout"
+                line = line.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get("id") == req["id"]:
+                        result["data"] = obj
+                        result["done"] = True
+                        return
+                except json.JSONDecodeError:
+                    continue
+            except Exception as e:
+                result["err"] = str(e)
+                result["done"] = True
+                return
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if not result["done"]:
+        result["done"] = True
+        return None, "timeout"
+    if result["err"]:
+        return None, result["err"]
+    return result["data"], None
+
 
 def mcp_sync(servers):
     # Prefer local mcp.json (opencode format) if it exists and has content
@@ -968,7 +979,7 @@ def mcp_load_file():
     """Read mcp.json (opencode format) and return list of server configs."""
     p = os.path.join(CONFIG_DIR, "mcp.json")
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(p, encoding="utf-8-sig") as f:
             data = json.load(f)
     except Exception:
         return []
