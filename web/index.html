@@ -1447,13 +1447,29 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
       <div class="coding-view" id="robloxmcp-view">
         <div class="coding-toolbar">
           <h2 style="margin:0;font-size:14px">Roblox MCP</h2>
-          <div style="flex:1"></div>
+          <div class="model-dropdown coding-model-dropdown" id="roblox-model-dropdown">
+            <button class="model-btn" id="roblox-model-btn" onclick="toggleRobloxModelMenu()">
+              <span id="roblox-model-btn-text">omniilink</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="model-menu coding-model-menu" id="roblox-model-menu"></div>
+          </div>
+          <select class="level-sel" id="roblox-effort" title="Effort" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+          <select class="level-sel" id="roblox-thinking" title="Think" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+          <select class="level-sel" id="roblox-prompt-detail" title="System prompt detail" onchange="robloxMcpRefreshServers()">
+            <option value="compressed">Prompt: compressed</option>
+            <option value="medium" selected>Prompt: medium</option>
+            <option value="super">Prompt: super</option>
+          </select>
           <label style="font-size:11px;color:var(--text-secondary)">MCP server:</label>
           <select id="roblox-mcp-server" class="level-sel" style="min-width:160px"></select>
           <button class="btn btn-ghost btn-sm" onclick="robloxMcpRefreshServers()">Refresh</button>
           <button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button>
         </div>
-        <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
+        <div class="body-row">
+          <div class="leftpanel" id="roblox-mcp-tree" style="width:260px;min-width:200px;overflow:auto;padding:8px;font-size:12px"></div>
+          <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
+        </div>
         <div class="coding-input-area">
           <div class="coding-input-box" style="position:relative">
             <textarea id="roblox-mcp-input" placeholder="Ask Roblox Studio via MCP..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();robloxMcpSend()}"></textarea>
@@ -2692,7 +2708,7 @@ var codingWebSearch=false;
 function toggleCodingWebSearch(){codingWebSearch=!codingWebSearch;var b=document.getElementById('coding-websearch-toggle');if(b){b.classList.toggle('on',codingWebSearch);b.setAttribute('aria-pressed',codingWebSearch?'true':'false')}}
     function shortModelId(id){id=String(id||'');if(id.indexOf('browser:')===0)return (typeof webllmShortId==='function')?webllmShortId(id):id.slice(8);const p=providerOf(id);if(p==='device'){const i=id.indexOf('/');const j=i<0?-1:id.indexOf('/',i+1);return j>-1?id.slice(j+1):id}const i=id.indexOf('/');return(p==='ollama'&&i>-1)?id.slice(i+1):id}
     function providerOf(id){id=String(id||'');const i=id.indexOf('/');return i<0?'':id.slice(0,i)}
-    function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}try{syncLevelLock()}catch(e){}}
+    function selectModel(id){selectedModel=id;const shown=shortModelId(id);document.getElementById('model-btn-text').textContent=shown;document.getElementById('model-btn-text').title=id;const cmt=document.getElementById('coding-model-btn-text');if(cmt){cmt.textContent=shown;cmt.title=id}const rmt=document.getElementById('roblox-model-btn-text');if(rmt){rmt.textContent=shown;rmt.title=id}document.getElementById('model-menu').classList.remove('open');const cmm=document.getElementById('coding-model-menu');if(cmm)cmm.classList.remove('open');document.querySelectorAll('.model-option').forEach(o=>o.classList.toggle('selected',o.dataset.id===id));try{localStorage.setItem('omniilink_model',id)}catch(e){}try{syncLevelLock()}catch(e){}}
 
 // ---- Reasoning effort / thinking budget (mirrored in both bars) ----------
 const LEVEL_VALUES=['auto','minimum','low','medium','high','xhigh','xxhigh','max'];
@@ -2708,7 +2724,7 @@ function setLevelCtl(kind,value){
 function syncLevelControls(){
   ['effort','thinking'].forEach(kind=>{
     const v=getLevel(kind);
-    ['chat','coding'].forEach(prefix=>{
+    ['chat','coding','roblox'].forEach(prefix=>{
       const el=document.getElementById(prefix+'-'+kind);
       if(el&&el.value!==v)el.value=v;
     });
@@ -2722,7 +2738,7 @@ function syncLevelLock(){
   const locked=ollamaModelLocked();
   if(locked){try{localStorage.setItem('omnilink_effort','auto');localStorage.setItem('omnilink_thinking','auto')}catch(e){}}
   ['effort','thinking'].forEach(kind=>{
-    ['chat','coding'].forEach(prefix=>{
+    ['chat','coding','roblox'].forEach(prefix=>{
       const el=document.getElementById(prefix+'-'+kind);
       if(!el)return;
       if(el.dataset.lockTitle===undefined)el.dataset.lockTitle=el.title||'';
@@ -2770,6 +2786,7 @@ function renderModelMenuInto(menu,models,backupModel){
 function renderModelMenu(models,backupModel){renderModelMenuInto(document.getElementById('model-menu'),models,backupModel)}
 
 function toggleCodingModelMenu(){document.getElementById('coding-model-menu').classList.toggle('open')}
+function toggleRobloxModelMenu(){document.getElementById('roblox-model-menu').classList.toggle('open')}
 let providerHealth={};
 function healthDotClass(name,hasModels){
   const h=providerHealth[name];
@@ -17036,6 +17053,28 @@ async function robloxMcpRefreshServers(){
   names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o)});
   if(cur && names.includes(cur)) sel.value=cur;
   if(!names.length){const o=document.createElement('option');o.value='';o.textContent='No MCP servers connected';sel.appendChild(o)}
+  // model menu
+  try{renderModelMenuInto(document.getElementById('roblox-model-menu'), allModels||[], null)}catch(e){}
+  // tree
+  const tree=document.getElementById('roblox-mcp-tree'); if(tree){
+    tree.innerHTML='';
+    names.forEach(n=>{
+      const h=document.createElement('div'); h.style.cssText='font-weight:600;margin:6px 0 2px'; h.textContent=n+' (MCP)';
+      tree.appendChild(h);
+      (tools||[]).filter(t=>(t._server||t.server)===n).forEach(t=>{
+        const d=document.createElement('div'); d.style.cssText='padding-left:12px;color:var(--text-secondary)'; d.textContent=t.name;
+        tree.appendChild(d);
+      });
+    });
+    if(!names.length) tree.textContent='No MCP servers connected';
+  }
+}
+function robloxMcpSystemPrompt(){
+  const detail=(document.getElementById('roblox-prompt-detail')||{}).value||'medium';
+  const base='You are a Roblox Studio assistant using MCP tools. Use CALL_MCP:<server>:<tool> then JSON then END_CALL_MCP. Use LIST_MCP: <server> to discover tools.';
+  if(detail==='compressed') return base+' Keep replies short.';
+  if(detail==='super') return base+' You can search the Roblox marketplace/creator store via MCP tools, insert assets, execute Luau, inspect instances, and manage scripts. Verify each step. Explain what you did.';
+  return base+' Execute Luau to create/modify parts. Verify changes. Be concise.';
 }
 async function robloxMcpSend(){
   const input=document.getElementById('roblox-mcp-input'); const chat=document.getElementById('roblox-mcp-chat'); const sel=document.getElementById('roblox-mcp-server');
@@ -17044,11 +17083,11 @@ async function robloxMcpSend(){
   input.value='';
   const u=document.createElement('div'); u.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:4px'; u.textContent='You: '+text; chat.appendChild(u); chat.scrollTop=chat.scrollHeight;
   const server=sel?sel.value:'';
-  const sys=ROBLOX_MCP_SYSTEM_PROMPT+(server?'\nSelected MCP server: '+server:'');
+  const sys=robloxMcpSystemPrompt()+(server?'\nSelected MCP server: '+server:'');
   const a=document.createElement('div'); a.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-tertiary);border-radius:4px'; a.textContent='Assistant: '; chat.appendChild(a); chat.scrollTop=chat.scrollHeight;
   let full='';
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:selectedModel,messages:[{role:'system',content:sys},{role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:(typeof selectedModel!=='undefined'?selectedModel:'omniilink'),messages:[{role:'system',content:sys},{role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
     if(!r.ok){const t=await r.text(); a.textContent='Assistant: Error '+r.status+' '+t; return}
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     while(true){const{done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop();
