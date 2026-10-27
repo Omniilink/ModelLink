@@ -128,6 +128,18 @@ a:hover{text-decoration:underline}
 .level-sel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:6px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;font-family:var(--font);outline:none;max-width:104px}
 .level-sel:hover{border-color:var(--border-light);color:var(--text-primary)}
 .level-sel:focus{border-color:var(--accent)}
+.csel{position:relative;display:inline-block}
+.csel-btn{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:6px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;font-family:var(--font);min-width:104px;justify-content:space-between;user-select:none}
+.csel-btn:hover{border-color:var(--border-light);color:var(--text-primary)}
+.csel-btn.disabled{opacity:.5;cursor:not-allowed}
+.csel-btn svg{width:12px;height:12px;opacity:.5;flex-shrink:0}
+.csel-menu{position:absolute;left:0;top:calc(100% + 6px);min-width:170px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius);box-shadow:0 16px 48px rgba(0,0,0,.5);z-index:300;display:none;padding:6px;max-height:340px;overflow-y:auto}
+.csel-menu.open{display:block}
+.csel-opt{padding:8px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;border:1px solid transparent;white-space:nowrap}
+.csel-opt:hover{background:var(--bg-hover);color:var(--text-primary)}
+.csel-opt.selected{background:var(--accent-dim);border-color:var(--accent);color:var(--accent-light)}
+.csel-check{width:14px;flex-shrink:0;opacity:0;font-weight:700}
+.csel-opt.selected .csel-check{opacity:1}
 .chatbar-tools{display:flex;gap:8px;align-items:center;padding:0 2px 8px;flex-wrap:wrap}
 .chatbar-tools .model-menu{top:auto;bottom:calc(100% + 6px)}
 .coding-controls .model-menu{top:auto;bottom:calc(100% + 6px)}
@@ -2276,11 +2288,60 @@ async function zenMaybeIntercept(url,opts){
   }catch(e){return null}
 }
 
+
+// ---- Custom dropdown (mirrors the model selector look) ----
+function customSelect(sel){
+  if(!sel||sel._csel)return;
+  sel._csel=true;
+  const wrap=document.createElement('div');wrap.className='csel';
+  const btn=document.createElement('div');btn.className='csel-btn';btn.tabIndex=0;
+  const label=document.createElement('span');label.className='csel-label';
+  const chev=document.createElement('svg');chev.setAttribute('viewBox','0 0 24 24');chev.setAttribute('fill','none');chev.setAttribute('stroke','currentColor');chev.setAttribute('stroke-width','2');chev.innerHTML='<polyline points="6 9 12 15 18 9"/>';
+  btn.appendChild(label);btn.appendChild(chev);
+  const menu=document.createElement('div');menu.className='csel-menu';
+  wrap.appendChild(btn);wrap.appendChild(menu);
+  sel.style.display='none';
+  sel.parentNode.insertBefore(wrap,sel.nextSibling);
+  function rebuild(){
+    menu.innerHTML='';
+    const opts=Array.from(sel.options);
+    opts.forEach(o=>{
+      const row=document.createElement('div');row.className='csel-opt'+(o.value===sel.value?' selected':'');
+      const c=document.createElement('span');c.className='csel-check';c.textContent='\u2713';
+      const t=document.createElement('span');t.textContent=o.textContent;
+      row.appendChild(c);row.appendChild(t);
+      if(o.disabled){row.style.opacity='.4';row.style.cursor='not-allowed';row.style.pointerEvents='none'}
+      row.onclick=()=>{if(o.disabled)return;sel.value=o.value;sel.dispatchEvent(new Event('change',{bubbles:true}));close()};
+      menu.appendChild(row);
+    });
+    syncLabel();
+  }
+  function syncLabel(){
+    const o=sel.options[sel.selectedIndex];
+    label.textContent=o?o.textContent:'';
+    btn.classList.toggle('disabled',!!sel.disabled);
+    menu.querySelectorAll('.csel-opt').forEach((row,i)=>{row.classList.toggle('selected',sel.options[i]&&sel.options[i].value===sel.value)});
+  }
+  function open(){rebuild();menu.classList.add('open')}
+  function close(){menu.classList.remove('open')}
+  btn.onclick=e=>{e.stopPropagation();if(sel.disabled)return;menu.classList.contains('open')?close():open()};
+  btn.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();btn.click()}else if(e.key==='Escape'){close()}};
+  document.addEventListener('click',e=>{if(!wrap.contains(e.target))close()});
+  // Keep label in sync when code sets value/options/disabled programmatically.
+  const proto=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value');
+  try{Object.defineProperty(sel,'value',{get(){return proto.get.call(sel)},set(v){proto.set.call(sel,v);syncLabel()},configurable:true})}catch(e){}
+  sel.addEventListener('change',syncLabel);
+  try{new MutationObserver(()=>{syncLabel()}).observe(sel,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled']})}catch(e){}
+  rebuild();
+}
+function initCustomSelects(){
+  try{document.querySelectorAll('select.level-sel, #view-dropdown').forEach(customSelect)}catch(e){}
+}
 window.addEventListener('DOMContentLoaded',()=>{
   const saved=getTheme();setTheme(saved);
   const _hdr=document.querySelector('.header');
   if(_hdr){_hdr.style.setProperty('display','flex','important');_hdr.style.setProperty('visibility','visible','important')}
-  connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();try{setTimeout(()=>{try{loadZenModels()}catch(e){}},0)}catch(e){}
+  try{initCustomSelects()}catch(e){}connectLogStream();loadModels();loadProviderStatus();renderChatList();checkAuth();applyInitialRoute();try{setTimeout(()=>{try{loadZenModels()}catch(e){}},0)}catch(e){}
   try{if(typeof localAssistantMaybeAutoStart==='function')setTimeout(localAssistantMaybeAutoStart,1500)}catch(e){}
   try{if(typeof assistantPillStart==='function')assistantPillStart()}catch(e){}
   try{if(typeof sysstatsStart==='function')sysstatsStart()}catch(e){}
