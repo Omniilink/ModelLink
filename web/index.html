@@ -1056,14 +1056,16 @@ pre{max-width:100%}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
     </div>
+    <div class="chat-search"><input type="text" id="chat-search" placeholder="Search chats…" oninput="onChatSearch(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onChatSearch('')}" /></div>
+    <div class="chat-list" id="chat-list"></div>
     <nav class="nav" aria-label="Sections" style="display:none">
       <div class="nav-cap">Workspace</div>
       <div class="nav-item active" data-view="chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span>Chat</span>
       </div>
-      <div class="chat-search"><input type="text" id="chat-search" placeholder="Search chats…" oninput="onChatSearch(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onChatSearch('')}" /></div>
-      <div class="chat-list" id="chat-list"></div>
+      
+      
       <div class="nav-item" data-view="coding">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
         <span>Coding</span><span class="beta-tag">Beta</span>
