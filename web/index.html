@@ -1474,6 +1474,9 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="usage-section-title" style="margin-top:16px">MCP servers (on selected computer)</div>
 <div class="tool-row"><select id="mcp-agent" style="min-width:180px" onchange="mcpLoad()"></select><button class="btn btn-ghost btn-sm" onclick="mcpAdd()">+ Add server</button><button class="btn btn-ghost btn-sm" onclick="mcpLoad()">Refresh</button></div>
 <div id="mcp-list" style="margin-top:8px"></div>
+<div class="usage-section-title" style="margin-top:12px">Raw MCP config (JSON)</div>
+<textarea id="mcp-raw" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none;resize:vertical"></textarea>
+<div class="tool-row" style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="mcpSaveRaw()">Save config</button><button class="btn btn-ghost btn-sm" onclick="mcpLoadRaw()">Reload</button></div>
 <div class="usage-section-title" style="margin-top:16px">Computer access</div>
               <div class="tool-row"><select id="adm-share-agent" title="Only computers you own can be shared or transferred" style="min-width:200px"></select><input type="text" id="adm-share-user" placeholder="Other OmniLink username" style="max-width:220px" /><button class="btn btn-ghost btn-sm" onclick="admShareAgent()">Share</button><button class="btn btn-ghost btn-sm" onclick="admUnshareAgent()">Remove access</button><button class="btn btn-ghost btn-sm" onclick="admTransferAgent()">Transfer ownership</button></div>
               <div class="tool-row"><span class="tool-result-sub" style="min-width:200px">Ollama models only (no shell, no files):</span><button class="btn btn-ghost btn-sm" onclick="admShareOllama()">Share models</button><button class="btn btn-ghost btn-sm" onclick="admUnshareOllama()">Unshare models</button></div>
@@ -15500,7 +15503,7 @@ const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.st
     const x=document.createElement('button');x.className='btn btn-ghost btn-sm';x.style.marginLeft='auto';x.textContent='Remove';x.onclick=()=>admRemoveAgent(a.id);item.appendChild(x);
     const o=document.createElement('option');o.value=a.id;o.textContent=(a.name||('agent '+a.id))+' ('+a.hostname+')';sel.appendChild(o)});
   const shareSel=document.getElementById('adm-share-agent');if(shareSel){shareSel.innerHTML='';const owned=(d.agents||[]).filter(x=>x&&x.is_owner);if(!owned.length){const o=document.createElement('option');o.value='';o.textContent='No computers owned by you';shareSel.appendChild(o)}owned.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=(x.name||('agent '+x.id))+' ('+(x.hostname||'no hostname')+')';shareSel.appendChild(o)})}
-  admLoadAgentOut();if(sel.value)admFmLoad();ollamaLibraryLoad();try{mcpLoad()}catch(e){}}catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
+  admLoadAgentOut();if(sel.value)admFmLoad();ollamaLibraryLoad();try{mcpLoad();mcpLoadRaw()}catch(e){}}catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
 
 
 async function openMcpModal(){
@@ -15593,6 +15596,63 @@ async function mcpAdd(){
     const d=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
     showToast('MCP server added','success');mcpLoad();
+  }catch(e){showToast(e.message,'error')}
+}
+
+async function mcpLoadRaw(){
+  const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id)return;
+  try{
+    const r=await authFetch(API+'/api/agents/'+id+'/mcp');const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    const servers=d.servers||[];
+    const cfg={mcp:{}};
+    servers.forEach(srv=>{
+      if(!srv.name)return;
+      if(srv.type==='stdio'){
+        cfg.mcp[srv.name]={type:'local',command:[srv.command||''].concat(srv.args||[]),enabled:true};
+      }else{
+        const e={type:'remote',url:srv.url||''};
+        if(srv.username)e.headers={'Authorization':'Basic '+btoa(srv.username+':'+(srv.password||''))};
+        cfg.mcp[srv.name]=e;
+      }
+    });
+    const ta=document.getElementById('mcp-raw');if(ta)ta.value=JSON.stringify(cfg,null,2);
+  }catch(e){showToast(e.message,'error')}
+}
+async function mcpSaveRaw(){
+  const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
+  const ta=document.getElementById('mcp-raw');if(!ta)return;
+  let cfg;try{cfg=JSON.parse(ta.value)}catch(e){showToast('Invalid JSON: '+e.message,'error');return}
+  const servers=[];
+  const mcp=cfg.mcp||cfg.servers||{};
+  for(const [name,c] of Object.entries(mcp)){
+    if(!name||!c||typeof c!=='object')continue;
+    const entry={name:name};
+    if(c.type==='local'||c.command){
+      entry.type='stdio';
+      const cmd=Array.isArray(c.command)?c.command:[];
+      entry.command=cmd[0]||'';entry.args=cmd.slice(1);
+      entry.env=c.env||{};
+    }else{
+      entry.type='sse';entry.url=c.url||'';
+      if(c.headers&&c.headers.Authorization){
+        const b=c.headers.Authorization.replace('Basic ','');
+        try{const dec=atob(b);const parts=dec.split(':');entry.username=parts[0];entry.password=parts.slice(1).join(':')}catch(e){}
+      }
+    }
+    servers.push(entry);
+  }
+  // Save each server via API
+  try{
+    // First, get existing and delete all
+    const r0=await authFetch(API+'/api/agents/'+id+'/mcp');const d0=await r0.json().catch(()=>({}));
+    for(const s of (d0.servers||[])){await authFetch(API+'/api/agents/'+id+'/mcp/'+encodeURIComponent(s.name),{method:'DELETE'})}
+    // Then add all from JSON
+    for(const srv of servers){
+      const r=await authFetch(API+'/api/agents/'+id+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(srv)});
+      if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error((d&&d.error)||('HTTP '+r.status))}
+    }
+    showToast('Config saved ('+servers.length+' servers)','success');mcpLoad();
   }catch(e){showToast(e.message,'error')}
 }
 async function mcpDelete(agentId,name){
