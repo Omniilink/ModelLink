@@ -1033,21 +1033,6 @@ pre{max-width:100%}
         <option value="settings">Settings</option>
         <option value="tutorial">Help</option>
       </select>
-      <div class="model-dropdown" id="model-dropdown">
-        <button class="model-btn" id="model-btn" onclick="toggleModelMenu()">
-          <span id="model-btn-text">omniilink</span>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <div class="model-menu" id="model-menu"></div>
-      </div>
-      <div class="level-group" title="Reasoning effort and thinking budget">
-        <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" title="Effort" onchange="setLevelCtl('effort',this.value)">
-          <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
-        </select>
-        <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" title="Think" onchange="setLevelCtl('thinking',this.value)">
-          <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
-        </select>
-      </div>
     </div>
     <div class="topbar-center">
       <img src="/favicon.svg?v=5" class="topbar-logo" alt="Omniilink">
@@ -1270,7 +1255,8 @@ pre{max-width:100%}
             </button>
           </div>
         <div class="img-strip" id="img-strip" style="display:none"></div>
-        <div class="input-box">
+        <div class="input-box" style="position:relative">
+          <div class="at-dropdown" id="chat-at-dropdown"></div>
           <button class="img-btn" id="img-btn" onclick="document.getElementById('img-file').click()" title="Attach images (vision models only)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           </button>
@@ -1278,7 +1264,7 @@ pre{max-width:100%}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input type="file" id="img-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" onchange="handleImageFiles(this.files);this.value=''" />
-          <textarea id="chat-input" placeholder="Message Omniilink..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)" onfocus="onComposerFocus()"></textarea>
+          <textarea id="chat-input" placeholder="Message Omniilink..." rows="1" onkeydown="handleChatKey(event)" oninput="handleChatInput(event)" onfocus="onComposerFocus()"></textarea>
           <button class="send-btn" id="voice-btn" onclick="toggleVoiceInput()" title="Voice input" style="background:var(--bg-tertiary);color:var(--text-secondary)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
           </button>
@@ -2482,7 +2468,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
   if(window.innerWidth<=768)document.querySelector('.leftpanel').classList.add('hidden');
   document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}else if(e.ctrlKey&&e.key==='k'){e.preventDefault();openCmdPalette()}else if(e.ctrlKey&&e.key==='b'){e.preventDefault();toggleLeftPanel()}else if(e.ctrlKey&&e.key==='f'){e.preventDefault();const si=document.getElementById('chat-search');if(si){si.focus();si.select()}}else if(e.key==='Escape'){document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));document.getElementById('model-menu')?.classList.remove('open');document.getElementById('coding-model-menu')?.classList.remove('open')}});
-  document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
+  document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown')||!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu')?.classList.remove('open');const cdd=document.getElementById('chat-at-dropdown');if(cdd&&!e.target.closest('#chat-at-dropdown')&&!e.target.closest('#chat-input'))cdd.classList.remove('open')});
  document.addEventListener('click',e=>{if(!document.getElementById('coding-model-dropdown').contains(e.target))document.getElementById('coding-model-menu').classList.remove('open')});
 });
 
@@ -3003,7 +2989,7 @@ function toggleVoiceInput(){
   showToast('Listening...','info');
 }
 async function sendMessage(){
-  if(isStreaming)return;const input=document.getElementById('chat-input');const _t=(input.value||'').trim();if(_t==='/mcp'||_t==='/mcp '){input.value='';openMcpModal();return}
+  if(isStreaming)return;const input=document.getElementById('chat-input');const _t=(input.value||'').trim();if(_t==='/mcp'||_t==='/mcp '){input.value='';openMcpModal();return}if(_t==='/listmcp'||_t==='/listmcp '){input.value='';try{const tools=await mcpTools();const names=[...new Set((tools||[]).map(t=>t._server||t.server).filter(Boolean))];appendMessage('assistant','Connected MCP servers:\n'+(names.length?names.map(n=>'- '+n+' ('+(tools.filter(t=>(t._server||t.server)===n).length)+' tools)').join('\n'):'(none)'))}catch(e){addMessage('assistant','Could not list MCP servers: '+e.message)};return}if(_t==='/clear'||_t==='/clear '){input.value='';chatHistory=[];currentChatId='chat_'+Date.now();const area=document.getElementById('chat-area');if(area)area.innerHTML='';showToast('Chat cleared','success');return}
 const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip();if(!text&&!imgs.length)return;
   if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
@@ -3051,7 +3037,7 @@ const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip(
   const startTime=Date.now();
   const _liveTps=isBrowserModel(model)?chatLiveTpsStart(assistantEl.closest('.message'),startTime):null;
   try{
-    const _mcpT=await mcpTools();const _tools=[];for(const _t of _mcpT){_tools.push({type:'function',function:{name:_t.name,description:_t.description||'',parameters:_t.inputSchema||{type:'object',properties:{}}}})};const _toolParam=_tools.length?_tools:undefined;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:[{role:'system',content:chatSystemPrompt||'You are a helpful assistant.'},{role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled,tools:_toolParam})});
+    const _mcpT=await mcpTools();const _tools=[];for(const _t of _mcpT){_tools.push({type:'function',function:{name:_t.name,description:_t.description||'',parameters:_t.inputSchema||{type:'object',properties:{}}}})};const _toolParam=_tools.length?_tools:undefined;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:[{role:'system',content:(chatSystemPrompt||'You are a helpful assistant.')+'\n\nMCP (Model Context Protocol): connected servers and their tools are available. To list the MCP servers you are connected to, output LIST_MCP: (no args).'}, {role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled,tools:_toolParam})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;let _toolCalls=[];
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -5245,7 +5231,14 @@ const SLASH_COMMANDS=[
   {cmd:'attach',desc:'Attach all project files',usage:'/attach'},
   {cmd:'plan',desc:'Toggle plan mode',usage:'/plan'},
   {cmd:'help',desc:'Show all commands',usage:'/help'},
-  {cmd:'mcp',desc:'Show MCP servers',usage:'/mcp'}
+  {cmd:'mcp',desc:'Show MCP servers',usage:'/mcp'},
+  {cmd:'listmcp',desc:'List connected MCP servers and tools',usage:'/listmcp'}
+];
+const CHAT_SLASH_COMMANDS=[
+  {cmd:'help',desc:'Show chat commands',usage:'/help'},
+  {cmd:'clear',desc:'Clear this chat',usage:'/clear'},
+  {cmd:'mcp',desc:'Show MCP servers',usage:'/mcp'},
+  {cmd:'listmcp',desc:'List connected MCP servers and tools',usage:'/listmcp'}
 ];
 var codingTreeSnips=[];
 function splitSlashArgs(s){
@@ -5284,6 +5277,7 @@ async function execSlashCommands(rawText){
       const args=a.args||[];
       if(a.cmd==='help'){slashHelp()}
       else if(a.cmd==='mcp'){openMcpModal()}
+      else if(a.cmd==='listmcp'){try{const tools=await mcpTools();const names=[...new Set((tools||[]).map(t=>t._server||t.server).filter(Boolean))];addCodingSystemMsg('Connected MCP servers:\n'+(names.length?names.map(n=>'- '+n+' ('+(tools.filter(t=>(t._server||t.server)===n).length)+' tools)').join('\n'):'(none)'))}catch(e){addCodingSystemMsg('Could not list MCP servers: '+e.message)}}
       else if(a.cmd==='clear'){try{await clearCodingChat()}catch(e){}try{codingAtFiles=[];codingRefFiles=[];codingTreeSnips=[];updateAtIndicator()}catch(e){}}
       else if(a.cmd==='attach'){try{await attachAllFiles();attached=true}catch(e){showToast(e.message,'error')}}
       else if(a.cmd==='plan'){try{await togglePlanMode()}catch(e){}}
@@ -5386,6 +5380,11 @@ async function showAtDropdown(query){await loadAllCodingFiles();const dd=documen
   if(filtered.length===0){dd.innerHTML='<div class="at-dropdown-empty">No matching files</div>';dd.classList.add('open');return}
   for(let i=0;i<filtered.length;i++){const f=filtered[i];const item=document.createElement('div');item.className='at-dropdown-item'+(i===0?' selected':'');const lang=getLangForFile(f.split('/').pop());item.innerHTML='<span style="opacity:.5">\u25A1</span> <span>'+escapeHtml(f)+'</span>'+(lang?'<span class="lang">'+lang+'</span>':'');item.onclick=()=>insertAtFile(f);dd.appendChild(item)}dd.classList.add('open')}
 function closeAtDropdown(){document.getElementById('at-dropdown').classList.remove('open')}
+function handleChatInput(e){autoResize(e.target);const input=e.target;const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const slashMatch=before.match(/(^|\n)\/(\w*)$/);const dd=document.getElementById('chat-at-dropdown');if(!dd)return;if(slashMatch){showChatSlashPalette(slashMatch[2]||'');return}dd.classList.remove('open')}
+function handleChatKey(e){const dd=document.getElementById('chat-at-dropdown');const isOpen=dd&&dd.classList.contains('open');if(isOpen){const items=dd.querySelectorAll('.at-dropdown-item');const sel=dd.querySelector('.at-dropdown-item.selected');let idx=Array.from(items).indexOf(sel);if(e.key==='ArrowDown'){e.preventDefault();if(idx<items.length-1)idx++;items.forEach((it,i)=>it.classList.toggle('selected',i===idx));return}if(e.key==='ArrowUp'){e.preventDefault();if(idx>0)idx--;items.forEach((it,i)=>it.classList.toggle('selected',i===idx));return}if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const s=dd.querySelector('.at-dropdown-item.selected');if(s)s.click();return}if(e.key==='Escape'){dd.classList.remove('open');return}}if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
+function showChatSlashPalette(filter){const dd=document.getElementById('chat-at-dropdown');if(!dd)return;dd.innerHTML='';const q=String(filter||'').toLowerCase();const items=CHAT_SLASH_COMMANDS.filter(c=>!q||c.cmd.indexOf(q)===0||c.desc.toLowerCase().indexOf(q)>-1);if(!items.length){dd.innerHTML='<div class="at-dropdown-empty">No matching command</div>';dd.classList.add('open');return}items.forEach((c,i)=>{const item=document.createElement('div');item.className='at-dropdown-item'+(i===0?' selected':'');item.innerHTML='<span style="opacity:.5">/</span> <span><b>'+escapeHtml(c.cmd)+'</b> <span style="opacity:.6">'+escapeHtml(c.desc)+'</span></span>';item.onclick=()=>insertChatSlashCommand(c.cmd);dd.appendChild(item)});dd.classList.add('open')}
+function insertChatSlashCommand(cmd){const input=document.getElementById('chat-input');if(!input)return;const val=input.value;const before=val.slice(0,input.selectionStart);const replaced=before.replace(/\/\w*$/,'/'+cmd+' ');input.value=replaced+val.slice(input.selectionStart);input.selectionStart=input.selectionEnd=replaced.length;const dd=document.getElementById('chat-at-dropdown');if(dd)dd.classList.remove('open');input.focus()}
+function closeChatSlashDropdown(){const dd=document.getElementById('chat-at-dropdown');if(dd)dd.classList.remove('open')}
 function insertAtFile(path){const input=document.getElementById('coding-input');const val=input.value;const cursor=input.selectionStart;const before=val.slice(0,cursor);const after=val.slice(cursor);const newBefore=before.replace(/@\S*$/,'@'+path+' ');input.value=newBefore+after;input.selectionStart=input.selectionEnd=newBefore.length;input.focus();closeAtDropdown();if(!codingAtFiles.includes(path)){codingAtFiles.push(path);updateAtIndicator()}}
 function parseAtFiles(text){const matches=text.match(/@(\S+)/g);if(matches)for(const m of matches){const fname=m.slice(1);if(!codingAtFiles.includes(fname))codingAtFiles.push(fname)}return text.replace(/@\S+/g,'').trim()}
 var codingRefProjectsCache={at:0,items:[]};
@@ -5499,6 +5498,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   else if(execOs==='linux'&&csMode==='project')sysPrompt+='NOTE: commands share one persistent container for this project — pip/npm installs survive between commands.\n';
   if(typeof codingWebSearch!=='undefined'&&codingWebSearch)sysPrompt+='WEB SEARCH is enabled for this turn: call the web_search tool whenever current docs or facts would help, then answer from the results.\n';
   sysPrompt+='\nWEB TOOLS (use these when you need outside information — each returns its result into your next turn):\n- WEB_SEARCH: <query>  — search the web and get result snippets.\n- RESEARCH: <question>  — search the web, read the top page, and get a written answer. Use this for "how do I…", library/API questions, errors you do not recognise, or current facts.\n- WEB_FETCH: <url>  — fetch one page (then END_WEB_FETCH).\n';
+sysPrompt+='\nMCP (Model Context Protocol): connected servers and their tools are available to you. To list the MCP servers you are connected to (and their tools), output LIST_MCP: (no args). The harness will return the list.\n';
   sysPrompt+='\nSTAY ON TASK (critical — read every turn):\n- Do EXACTLY what the user asked in the current request and nothing else. Do not switch to unrelated files, do not "verify" code you were not asked about, and do not invent extra features or refactors.\n- If the request asks for a change, you MUST emit the FILE_CREATE / FILE_EDIT / FILE_PATCH / RUN_COMMAND blocks that make it. Prose that describes the change is NOT the change — a reply with no tool blocks writes nothing.\n- NEVER say you implemented, integrated, added, fixed or completed something unless you emitted the blocks that did it in THIS reply. If you did not write code this turn, say plainly what you still need to do.\n- Keep the user\'s wording as your spec: if they said "chat bar on the right", build exactly that — do not silently build something else or stop early.\n';
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
@@ -7304,11 +7304,12 @@ async function processCodingActions(text,msgEl){
   const reviewMode=(typeof codingReviewModeOn==='function')&&codingReviewModeOn();
   const fileCreates=[...parseText.matchAll(/FILE_CREATE:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_CREATE|$)/g)];const fileEdits=[...parseText.matchAll(/FILE_EDIT:([ \t]*\r?\n?[^\n]+?)\n([\s\S]*?)(?:END_FILE_EDIT|$)/g)];const fileDeletes=[...parseText.matchAll(/FILE_DELETE:([ \t]*\r?\n?[^\n]+?)(?:\nEND_FILE_DELETE|$)/g)];const filePatches=[...parseText.matchAll(/FILE_PATCH:([ \t]*\r?\n?[^\n]+?)\nOLD:\n([\s\S]*?)\nNEW:\n([\s\S]*?)(?:END_FILE_PATCH|$)/g)];const commands=[...parseText.matchAll(/RUN_COMMAND:[ \t]*\n?([\s\S]+?)(?:\nEND_RUN_COMMAND|$)/gm)];const questions=[...parseText.matchAll(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g)];
   const webFetches=[...parseText.matchAll(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g)].map(m=>({url:m[0].replace(/^WEB_FETCH:[ \t]*\r?\n?/,'').replace(/\nEND_WEB_FETCH$/,'').trim()}));
-  const webSearches=[...parseText.matchAll(/^[ \t]*WEB_SEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({query:m[1].trim()}));
-  const researches=[...parseText.matchAll(/^[ \t]*RESEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({question:m[1].trim()}));
+const webSearches=[...parseText.matchAll(/^[ \t]*WEB_SEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({query:m[1].trim()}));
+const researches=[...parseText.matchAll(/^[ \t]*RESEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({question:m[1].trim()}));
+const listMcp=[...parseText.matchAll(/^[ \t]*LIST_MCP:[ \t]*$/gm)];
   const fileSplits=(typeof parseSplitBlocks==='function')?parseSplitBlocks(parseText):[];
   const fileMerges=(typeof parseMergeBlocks==='function')?parseMergeBlocks(parseText):[];
-  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+webSearches.length+researches.length+fileSplits.length+fileMerges.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+webSearches.length+researches.length+fileSplits.length+fileMerges.length+listMcp.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   const hadTodos=parseCodingTodos(parseText);
   // A turn that writes files but never declared a TODO_LIST leaves the loop
   // blind. Derive one from the files it touched so the next round has real
@@ -7473,6 +7474,20 @@ async function processCodingActions(text,msgEl){
     const res=document.createElement('div');res.className='cmd-result';res.style.cssText='max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word';
     if(planMode||reviewMode){res.textContent='(staged — not run in this mode)'}
     else{res.textContent='Researching…';try{res.textContent=await researchAnswer(rs.question)}catch(e){res.textContent='Research failed: '+e.message}}
+    toolDiv.appendChild(res);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+  }
+  // LIST_MCP: list connected MCP servers and their tools.
+  for(const lm of listMcp){
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-fetch';
+    toolDiv.innerHTML='<div class="tool-label">List MCP servers</div>';
+    const res=document.createElement('div');res.className='cmd-result';res.style.cssText='max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word';
+    res.textContent='Loading…';
+    try{
+      const tools=await mcpTools();
+      const names=[...new Set((tools||[]).map(t=>t._server||t.server).filter(Boolean))];
+      res.textContent=names.length?names.map(n=>n+' ('+(tools.filter(t=>(t._server||t.server)===n).length)+' tools): '+tools.filter(t=>(t._server||t.server)===n).map(t=>t.name).join(', ')).join('\n'):'(no MCP servers connected)';
+      try{codingHistory.push({role:'user',content:'MCP servers connected:\n'+res.textContent})}catch(e){}
+    }catch(e){res.textContent='Failed: '+e.message}
     toolDiv.appendChild(res);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
   }
   for(const qm of questions){
