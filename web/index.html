@@ -2185,6 +2185,7 @@ function saveCurrentChat(){
   const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:stripImagesForStore(chatHistory),model:selectedModel,updated:Date.now()};
   try{saveChats(chats)}catch(e){}
   pushChatToServer(currentChatId,chats[currentChatId]);
+  try{renderChatList()}catch(e){}
   renderChatList();
 }
 
