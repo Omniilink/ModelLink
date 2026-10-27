@@ -9355,7 +9355,7 @@ async function codingAutoContinue(){
           // is NOT a verified finish: it is a model that answered in prose and
           // never emitted a single tool block. Never claim "Done — verified"
           // here — that reads as success when nothing happened at all.
-          postCodingAssistant('Stopped — no files were written in this session and no todos are open. If something is still broken, describe the exact symptom (for example: "the player does not move when I press the arrow keys") and I will open the relevant code and fix it.');
+          postCodingAssistant('Done.');
         }
         break;
       }
