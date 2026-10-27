@@ -2476,7 +2476,7 @@ async function checkBuildVersion(){
     try{localStorage.setItem('omnilink_build',b)}catch(e){}
   }catch(e){}
 }
-function toggleLeftPanel(){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
+function toggleLeftPanel(){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');const opening=sb.classList.contains('hidden');sb.classList.toggle('hidden');if(window.innerWidth<=768){sb.classList.toggle('open',opening);if(ov)ov.classList.toggle('open',opening)}}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
 var webSearchEnabled=false;
