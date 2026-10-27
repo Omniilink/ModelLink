@@ -3037,7 +3037,7 @@ const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip(
   const startTime=Date.now();
   const _liveTps=isBrowserModel(model)?chatLiveTpsStart(assistantEl.closest('.message'),startTime):null;
   try{
-    const _mcpT=await mcpTools();const _tools=[];for(const _t of _mcpT){_tools.push({type:'function',function:{name:_t.name,description:_t.description||'',parameters:_t.inputSchema||{type:'object',properties:{}}}})};const _toolParam=_tools.length?_tools:undefined;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:[{role:'system',content:(chatSystemPrompt||'You are a helpful assistant.')+'\n\nMCP (Model Context Protocol): connected servers and their tools are available. To list the MCP servers you are connected to, output LIST_MCP: (no args).'}, {role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled,tools:_toolParam})});
+    const _mcpT=await mcpTools();const _tools=[];for(const _t of _mcpT){_tools.push({type:'function',function:{name:_t.name,description:_t.description||'',parameters:_t.inputSchema||{type:'object',properties:{}}}})};const _toolParam=_tools.length?_tools:undefined;const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:[{role:'system',content:(chatSystemPrompt||'You are a helpful assistant.')+'\n\nMCP (Model Context Protocol): connected servers and their tools are available. To list the MCP servers you are connected to, output LIST_MCP: (no args). To call a tool, output CALL_MCP:<server>:<tool> on its own line, then a JSON object of arguments, then END_CALL_MCP on its own line.'}, {role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled,tools:_toolParam})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;let _toolCalls=[];
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
@@ -3047,6 +3047,21 @@ const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip(
     if(/\bLIST_MCP:/i.test(fullText)){
       fullText=fullText.replace(/^[ \t]*LIST_MCP:[^\n]*\r?\n?/gmi,'').trim();
       try{const tools=await mcpTools();const names=[...new Set((tools||[]).map(t=>t._server||t.server).filter(Boolean))];fullText+=(fullText?'\n\n':'')+'Connected MCP servers:\n'+(names.length?names.map(n=>'- '+n+' ('+(tools.filter(t=>(t._server||t.server)===n).length)+' tools)').join('\n'):'(none)')}catch(e){fullText+=(fullText?'\n\n':'')+'Could not list MCP servers: '+String(e.message||e)}
+      updateMessage(assistantEl,fullText);
+    }
+    const _callMcpMatches=[...fullText.matchAll(/CALL_MCP:([^\n:]+):([^\n]+)\s*\n([\s\S]*?)END_CALL_MCP/gi)];
+    if(_callMcpMatches.length){
+      fullText=fullText.replace(/CALL_MCP:[^\n]*\n[\s\S]*?END_CALL_MCP/gi,'').trim();
+      const _base=await zenProbe();
+      for(const _m of _callMcpMatches){
+        const _server=_m[1].trim();const _tool=_m[2].trim();let _args={};try{_args=JSON.parse((_m[3]||'').trim())||{}}catch(e){}
+        try{
+          let _d;
+          if(_base){const _r=await fetch(_base+'/api/mcp/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:_server,tool:_tool,arguments:_args})});_d=await _r.json()}
+          else _d={error:'companion not connected'};
+          fullText+=(fullText?'\n\n':'')+'MCP '+_server+'/'+_tool+': '+JSON.stringify(_d).slice(0,1500);
+        }catch(e){fullText+=(fullText?'\n\n':'')+'MCP '+_server+'/'+_tool+' failed: '+String(e.message||e)}
+      }
       updateMessage(assistantEl,fullText);
     }
     try{const _tr=await maybeTranslateReply(fullText,actualModel);if(_tr&&_tr!==fullText){fullText=_tr;updateMessage(assistantEl,fullText)}}catch(e){}
@@ -5503,7 +5518,7 @@ async function buildCodingSystemPrompt(){codingSecretsFound=[];let basePrompt=''
   else if(execOs==='linux'&&csMode==='project')sysPrompt+='NOTE: commands share one persistent container for this project — pip/npm installs survive between commands.\n';
   if(typeof codingWebSearch!=='undefined'&&codingWebSearch)sysPrompt+='WEB SEARCH is enabled for this turn: call the web_search tool whenever current docs or facts would help, then answer from the results.\n';
   sysPrompt+='\nWEB TOOLS (use these when you need outside information — each returns its result into your next turn):\n- WEB_SEARCH: <query>  — search the web and get result snippets.\n- RESEARCH: <question>  — search the web, read the top page, and get a written answer. Use this for "how do I…", library/API questions, errors you do not recognise, or current facts.\n- WEB_FETCH: <url>  — fetch one page (then END_WEB_FETCH).\n';
-sysPrompt+='\nMCP (Model Context Protocol): connected servers and their tools are available to you. To list the MCP servers you are connected to (and their tools), output LIST_MCP: (no args). The harness will return the list.\n';
+sysPrompt+='\nMCP (Model Context Protocol): connected servers and their tools are available to you. To list the MCP servers you are connected to (and their tools), output LIST_MCP: (no args). The harness will return the list. To call a tool, output CALL_MCP:<server>:<tool> on its own line, then a JSON object of arguments, then END_CALL_MCP on its own line. The harness will execute it and return the result.\n';
   sysPrompt+='\nSTAY ON TASK (critical — read every turn):\n- Do EXACTLY what the user asked in the current request and nothing else. Do not switch to unrelated files, do not "verify" code you were not asked about, and do not invent extra features or refactors.\n- If the request asks for a change, you MUST emit the FILE_CREATE / FILE_EDIT / FILE_PATCH / RUN_COMMAND blocks that make it. Prose that describes the change is NOT the change — a reply with no tool blocks writes nothing.\n- NEVER say you implemented, integrated, added, fixed or completed something unless you emitted the blocks that did it in THIS reply. If you did not write code this turn, say plainly what you still need to do.\n- Keep the user\'s wording as your spec: if they said "chat bar on the right", build exactly that — do not silently build something else or stop early.\n';
   {const rl=(typeof remotePromptLine==='function')?remotePromptLine():'';if(rl)sysPrompt+=rl+'\n'}if(codingFolder)sysPrompt+='\nCurrent project folder: '+codingFolder+'\nCommands run inside this folder automatically — never cd elsewhere, never use absolute paths.\n';
   if(window.__user&&!window.__user.is_admin)sysPrompt+='PERMISSION: RESTRICTED user. Shell commands run locked inside their own project folder only. Absolute paths (C:\\, UNC) and .. are rejected — use plain relative paths. Prefer FILE_CREATE/FILE_EDIT blocks (always allowed) over shell commands. NEVER emit a command you know will be rejected; if a command fails with a permission error, do NOT retry shell — finish with file blocks instead.\n';
@@ -6322,6 +6337,7 @@ function stripToolBlocks(text){
    c=c.replace(/WEB_FETCH:[ \t]*\r?\n?[^\n]+?(?:\nEND_WEB_FETCH|$)/g,'');
     c=c.replace(/^[ \t]*(?:WEB_SEARCH|RESEARCH):[ \t]*[^\n]*$/gm,'');
     c=c.replace(/^[ \t]*LIST_MCP:[^\n]*\r?\n?/gmi,'');
+    c=c.replace(/CALL_MCP:[^\n]*\n[\s\S]*?END_CALL_MCP/gi,'');
   c=c.replace(/TODO_LIST:\n([\s\S]*?)(?:END_TODO_LIST|$)/g,'');
   c=c.replace(/QUESTION:([^\n]*)\n((?:OPTION:[^\n]*(?:\n|$))+)(?:END_QUESTION|$)/g,'');
   return c.trim();
@@ -7313,9 +7329,10 @@ async function processCodingActions(text,msgEl){
 const webSearches=[...parseText.matchAll(/^[ \t]*WEB_SEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({query:m[1].trim()}));
 const researches=[...parseText.matchAll(/^[ \t]*RESEARCH:[ \t]*([^\n]+)$/gm)].map(m=>({question:m[1].trim()}));
 const listMcp=[...parseText.matchAll(/^[ \t]*LIST_MCP:[ \t]*$/gm)];
+const callMcps=[...parseText.matchAll(/CALL_MCP:([^\n:]+):([^\n]+)\s*\n([\s\S]*?)END_CALL_MCP/gi)].map(m=>({server:m[1].trim(),tool:m[2].trim(),argsText:(m[3]||'').trim()}));
   const fileSplits=(typeof parseSplitBlocks==='function')?parseSplitBlocks(parseText):[];
   const fileMerges=(typeof parseMergeBlocks==='function')?parseMergeBlocks(parseText):[];
-  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+webSearches.length+researches.length+fileSplits.length+fileMerges.length+listMcp.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
+  const hasToolBlocks=fileCreates.length+fileEdits.length+fileDeletes.length+filePatches.length+commands.length+questions.length+webFetches.length+webSearches.length+researches.length+fileSplits.length+fileMerges.length+listMcp.length+callMcps.length>0;const stickyBar=document.getElementById('coding-sticky-bar');
   const hadTodos=parseCodingTodos(parseText);
   // A turn that writes files but never declared a TODO_LIST leaves the loop
   // blind. Derive one from the files it touched so the next round has real
@@ -7494,6 +7511,23 @@ const listMcp=[...parseText.matchAll(/^[ \t]*LIST_MCP:[ \t]*$/gm)];
       res.textContent=names.length?names.map(n=>n+' ('+(tools.filter(t=>(t._server||t.server)===n).length)+' tools): '+tools.filter(t=>(t._server||t.server)===n).map(t=>t.name).join(', ')).join('\n'):'(no MCP servers connected)';
       try{codingHistory.push({role:'user',content:'MCP servers connected:\n'+res.textContent})}catch(e){}
     }catch(e){res.textContent='Failed: '+e.message}
+    toolDiv.appendChild(res);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
+  }
+  // CALL_MCP: execute MCP tool calls emitted as text blocks.
+  for(const cm of callMcps){
+    const toolDiv=document.createElement('div');toolDiv.className='coding-msg-tool tool-fetch';
+    toolDiv.innerHTML='<div class="tool-label">MCP: '+escapeHtml(cm.server)+' / '+escapeHtml(cm.tool)+'</div>';
+    const res=document.createElement('div');res.className='cmd-result';res.style.cssText='max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word';
+    res.textContent='Running…';
+    let args={};try{args=JSON.parse(cm.argsText||'{}')||{}}catch(e){}
+    try{
+      const base=await zenProbe();
+      if(!base)throw new Error('companion not connected');
+      const r=await fetch(base+'/api/mcp/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:cm.server,tool:cm.tool,arguments:args})});
+      const d=await r.json();
+      res.textContent=JSON.stringify(d,null,2).slice(0,4000);
+      try{codingHistory.push({role:'user',content:'MCP '+cm.server+'/'+cm.tool+' result:\n'+JSON.stringify(d).slice(0,2000)})}catch(e){}
+    }catch(e){res.textContent='Failed: '+String(e.message||e)}
     toolDiv.appendChild(res);msgEl.querySelector('.coding-msg-content').parentElement.appendChild(toolDiv);
   }
   for(const qm of questions){
