@@ -1444,18 +1444,20 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
-      <div class="view-panel" id="robloxmcp-view">
-        <div class="view-header"><h2>Roblox MCP</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button></div>
-        <div class="view-body" style="display:flex;flex-direction:column;gap:10px;padding:16px">
-          <div class="tool-row" style="align-items:center">
-            <label style="font-size:12px;color:var(--text-secondary)">MCP server:</label>
-            <select id="roblox-mcp-server" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:12px"></select>
-            <button class="btn btn-ghost btn-sm" onclick="robloxMcpRefreshServers()">Refresh</button>
-          </div>
-          <div id="roblox-mcp-chat" style="flex:1;min-height:300px;overflow:auto;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px"></div>
-          <div style="display:flex;gap:8px">
-            <textarea id="roblox-mcp-input" rows="2" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px;color:var(--text-primary);font-family:var(--font);font-size:13px;resize:vertical" placeholder="Ask Roblox Studio via MCP..."></textarea>
-            <button class="btn btn-primary" onclick="robloxMcpSend()">Send</button>
+      <div class="coding-view" id="robloxmcp-view">
+        <div class="coding-toolbar">
+          <h2 style="margin:0;font-size:14px">Roblox MCP</h2>
+          <div style="flex:1"></div>
+          <label style="font-size:11px;color:var(--text-secondary)">MCP server:</label>
+          <select id="roblox-mcp-server" class="level-sel" style="min-width:160px"></select>
+          <button class="btn btn-ghost btn-sm" onclick="robloxMcpRefreshServers()">Refresh</button>
+          <button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button>
+        </div>
+        <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
+        <div class="coding-input-area">
+          <div class="coding-input-box" style="position:relative">
+            <textarea id="roblox-mcp-input" placeholder="Ask Roblox Studio via MCP..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();robloxMcpSend()}"></textarea>
+            <button class="send-btn" onclick="robloxMcpSend()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
           </div>
         </div>
       </div>
