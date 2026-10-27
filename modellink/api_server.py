@@ -20228,6 +20228,104 @@ async def agents_companion_version(request: Request):
     except OSError:
         pass
     return {"version": ver or "0.0.0"}
+
+# ---- MCP server config per agent ----
+def _agent_mcp_list(agent_id):
+    with _AGENT_LOCK:
+        st = _agents_load()
+    a = (st.get("agents") or {}).get(str(agent_id)) or {}
+    cfg = a.get("mcp_servers")
+    if not isinstance(cfg, list):
+        return []
+    return cfg
+
+def _agent_mcp_save(agent_id, servers):
+    with _AGENT_LOCK:
+        st = _agents_load()
+        a = (st.get("agents") or {}).get(str(agent_id))
+        if not a:
+            return False
+        a["mcp_servers"] = servers
+        _agents_save(st)
+    return True
+
+class McpServerBody(BaseModel):
+    name: str = ""
+    type: str = "sse"  # stdio or sse
+    command: str = ""
+    args: list = []
+    url: str = ""
+    username: str = ""
+    password: str = ""
+    env: dict = {}
+
+@app.get("/api/agents/{agent_id}/mcp")
+async def agent_mcp_list(request: Request, agent_id: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    # owner or shared access
+    with _AGENT_LOCK:
+        st = _agents_load()
+    a = (st.get("agents") or {}).get(str(agent_id))
+    if not a:
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    if a.get("owner") != user.get("username") and user.get("username") not in (a.get("shared_with") or []):
+        return JSONResponse(status_code=403, content={"error": "Not authorized"})
+    return {"servers": _agent_mcp_list(agent_id)}
+
+@app.post("/api/agents/{agent_id}/mcp")
+async def agent_mcp_add(request: Request, agent_id: str, body: McpServerBody):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st = _agents_load()
+    a = (st.get("agents") or {}).get(str(agent_id))
+    if not a:
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    if a.get("owner") != user.get("username"):
+        return JSONResponse(status_code=403, content={"error": "Only the owner can manage MCP servers"})
+    name = str(body.name or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "Name required"})
+    stype = str(body.type or "stdio").strip().lower()
+    if stype not in ("stdio", "sse"):
+        return JSONResponse(status_code=400, content={"error": "Type must be stdio or sse"})
+    entry = {"name": name, "type": stype}
+    if stype == "stdio":
+        entry["command"] = str(body.command or "").strip()
+        entry["args"] = [str(x) for x in (body.args or [])]
+        entry["env"] = {str(k): str(v) for k, v in (body.env or {}).items()}
+    else:
+        entry["url"] = str(body.url or "").strip()
+        if body.username: entry["username"] = str(body.username).strip()
+        if body.password: entry["password"] = str(body.password).strip()
+    servers = _agent_mcp_list(agent_id)
+    # replace if same name
+    servers = [s for s in servers if s.get("name") != name]
+    servers.append(entry)
+    if not _agent_mcp_save(agent_id, servers):
+        return JSONResponse(status_code=500, content={"error": "Save failed"})
+    return {"ok": True, "servers": servers}
+
+@app.delete("/api/agents/{agent_id}/mcp/{server_name}")
+async def agent_mcp_delete(request: Request, agent_id: str, server_name: str):
+    user, err = _require_auth(request)
+    if err:
+        return err
+    with _AGENT_LOCK:
+        st = _agents_load()
+    a = (st.get("agents") or {}).get(str(agent_id))
+    if not a:
+        return JSONResponse(status_code=404, content={"error": "Agent not found"})
+    if a.get("owner") != user.get("username"):
+        return JSONResponse(status_code=403, content={"error": "Only the owner can manage MCP servers"})
+    servers = [s for s in _agent_mcp_list(agent_id) if s.get("name") != server_name]
+    if not _agent_mcp_save(agent_id, servers):
+        return JSONResponse(status_code=500, content={"error": "Save failed"})
+    return {"ok": True, "servers": servers}
+
 @app.post("/api/agent/claim")
 async def agent_claim(request: Request):
     data, bad = await _safe_json(request)
@@ -20320,7 +20418,12 @@ async def agent_pending(request: Request, caps: str = ""):
     if not known:
         return JSONResponse(status_code=401, content={"error": "Unknown agent"})
     if nxt is None:
-        return {"command": None}
+        # include MCP config in idle poll so companion can sync
+        with _AGENT_LOCK:
+            st = _agents_load()
+        a = (st.get("agents") or {}).get(str(a["id"])) or {}
+        mcp = a.get("mcp_servers") if isinstance(a.get("mcp_servers"), list) else []
+        return {"command": None, "mcp_servers": mcp}
     return {"command": nxt}
 
 

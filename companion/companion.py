@@ -564,6 +564,11 @@ def poll_once(server, token, root, status_cb=None):
         if status_cb:
             status_cb(False, str(e))
         return "error"
+    # Sync MCP config from server
+    try:
+        mcp_sync(p.get("mcp_servers") or [])
+    except Exception:
+        pass
     cmd = p.get("command")
     if not cmd:
         if status_cb:
@@ -702,6 +707,177 @@ def install_update_and_quit(msi_path, quit_fn):
         pass
     return True
 
+
+
+# ---- Zen health + MCP (Model Context Protocol) client ----
+import subprocess as _mcp_subprocess
+_MCP_SERVERS = {}
+_MCP_LOCK = threading.Lock()
+_MCP_ID = [0]
+_RELAY_PROC = None
+_RELAY_PASSWORD = ""
+_RELAY_PORT = 4096
+
+def _mcp_next_id():
+    _MCP_ID[0] += 1
+    return _MCP_ID[0]
+
+def _mcp_rpc(proc, method, params=None, timeout=30):
+    req = {"jsonrpc": "2.0", "id": _mcp_next_id(), "method": method}
+    if params is not None:
+        req["params"] = params
+    try:
+        proc.stdin.write((json.dumps(req) + "\n").encode())
+        proc.stdin.flush()
+    except Exception as e:
+        return None, str(e)
+    buf = ""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r, _, _ = select.select([proc.stdout], [], [], 0.5)
+            if r:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", "replace")
+                for line in buf.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if obj.get("id") == req["id"]:
+                            return obj, None
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            return None, str(e)
+    return None, "timeout"
+
+def mcp_sync(servers):
+    if not isinstance(servers, list):
+        servers = []
+    with _MCP_LOCK:
+        new_names = {s.get("name") for s in servers if s.get("name")}
+        for name in list(_MCP_SERVERS.keys()):
+            if name not in new_names:
+                mcp_stop(name)
+        for srv in servers:
+            name = srv.get("name")
+            if not name or name in _MCP_SERVERS:
+                continue
+            mcp_start(srv)
+
+def mcp_start(srv):
+    name = srv.get("name")
+    stype = srv.get("type", "stdio")
+    if stype == "stdio":
+        cmd = srv.get("command", "")
+        args = srv.get("args", [])
+        env = dict(os.environ)
+        env.update(srv.get("env", {}) or {})
+        try:
+            proc = subprocess.Popen([cmd] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env, bufsize=0)
+        except Exception as e:
+            _MCP_SERVERS[name] = {"cfg": srv, "proc": None, "tools": [], "status": "error: " + str(e)}
+            return
+        resp, err = _mcp_rpc(proc, "initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                                  "clientInfo": {"name": "omniilink", "version": "1.0"}}, 15)
+        if err or not resp:
+            _MCP_SERVERS[name] = {"cfg": srv, "proc": proc, "tools": [], "status": "error: " + (err or "no response")}
+            return
+        try:
+            proc.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n").encode())
+            proc.stdin.flush()
+        except Exception:
+            pass
+        resp, err = _mcp_rpc(proc, "tools/list", {}, 15)
+        tools = []
+        if resp and isinstance(resp.get("result"), dict):
+            tools = resp["result"].get("tools", []) or []
+        _MCP_SERVERS[name] = {"cfg": srv, "proc": proc, "tools": tools, "status": "ready"}
+    elif stype == "sse":
+        _MCP_SERVERS[name] = {"cfg": srv, "proc": None, "tools": [], "status": "sse: " + srv.get("url", "")}
+
+def mcp_stop(name):
+    entry = _MCP_SERVERS.pop(name, None)
+    if entry and entry.get("proc"):
+        try:
+            entry["proc"].terminate()
+            entry["proc"].wait(timeout=5)
+        except Exception:
+            try:
+                entry["proc"].kill()
+            except Exception:
+                pass
+
+def mcp_list_tools():
+    out = []
+    with _MCP_LOCK:
+        for name, entry in _MCP_SERVERS.items():
+            for t in entry.get("tools", []):
+                tool = dict(t)
+                tool["_server"] = name
+                out.append(tool)
+    return out
+
+def mcp_call_tool(server_name, tool_name, arguments):
+    with _MCP_LOCK:
+        entry = _MCP_SERVERS.get(server_name)
+    if not entry:
+        return {"error": "server not found"}
+    proc = entry.get("proc")
+    if not proc:
+        return {"error": "server not running"}
+    resp, err = _mcp_rpc(proc, "tools/call", {"name": tool_name, "arguments": arguments or {}}, 60)
+    if err:
+        return {"error": err}
+    if resp and "result" in resp:
+        return {"result": resp["result"]}
+    if resp and "error" in resp:
+        return {"error": resp["error"]}
+    return {"error": "no response"}
+
+def mcp_status():
+    out = []
+    with _MCP_LOCK:
+        for name, entry in _MCP_SERVERS.items():
+            out.append({"name": name, "type": entry["cfg"].get("type"), "status": entry["status"],
+                        "tool_count": len(entry.get("tools", []))})
+    return out
+
+def relay_status():
+    global _RELAY_PROC
+    import urllib.request
+    try:
+        r = urllib.request.urlopen("http://127.0.0.1:%d/global/health" % _RELAY_PORT, timeout=3)
+        data = json.loads(r.read().decode())
+        return {"ok": True, "running": True, "authed": True, "url": "http://127.0.0.1:%d" % _RELAY_PORT,
+                "version": data.get("version", ""), "connected": [], "free_ready": True}
+    except Exception:
+        return {"ok": True, "running": False, "authed": False, "url": "http://127.0.0.1:%d" % _RELAY_PORT,
+                "error": "OpenCode not running", "free_ready": False}
+
+def relay_start():
+    global _RELAY_PROC
+    import shutil
+    binary = shutil.which("opencode") or ""
+    if not binary:
+        for p in [os.path.join(os.environ.get("APPDATA",""), "npm", "opencode.CMD"),
+                  os.path.join(os.environ.get("APPDATA",""), "npm", "opencode.cmd")]:
+            if os.path.isfile(p):
+                binary = p; break
+    if not binary:
+        return {"ok": False, "running": False, "error": "opencode not found"}
+    try:
+        _RELAY_PROC = subprocess.Popen([binary, "serve", "--port", str(_RELAY_PORT), "--hostname", "127.0.0.1"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(3)
+        return relay_status()
+    except Exception as e:
+        return {"ok": False, "running": False, "error": str(e)}
 
 def run_tray():
     """System-tray icon with green/red/amber connection indicator."""
@@ -1102,6 +1278,13 @@ class _SetupHandler(_http_server.BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"checks": [{"name": "diagnostics", "ok": False,
                                                "detail": str(e)}]})
+        if urlparse(self.path).path == "/api/zen/health":
+            return self._json({"ok": True, "zen": True, "port": self.server.server_address[1],
+                               "mcp": mcp_status(), "mcp_tools": mcp_list_tools()})
+        if urlparse(self.path).path == "/api/mcp/status":
+            return self._json({"servers": mcp_status()})
+        if urlparse(self.path).path == "/api/mcp/tools":
+            return self._json({"tools": mcp_list_tools()})
         if urlparse(self.path).path == "/api/status":
             cfg = load_config()
             paired = bool(cfg.get("token") and cfg.get("server"))
@@ -1123,6 +1306,14 @@ class _SetupHandler(_http_server.BaseHTTPRequestHandler):
     def do_POST(self):
         from urllib.parse import urlparse
         path = urlparse(self.path).path
+        if path == "/api/mcp/call":
+            data = self._body_json()
+            result = mcp_call_tool(str(data.get("server") or ""), str(data.get("tool") or ""), data.get("arguments") or {})
+            return self._json(result)
+        if path == "/api/relay/start":
+            return self._json(relay_start())
+        if path == "/api/relay/status":
+            return self._json(relay_status())
         if path == "/api/pair":
             data = self._body_json()
             server = normalize_server(data.get("server", ""))

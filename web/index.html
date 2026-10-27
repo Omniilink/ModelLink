@@ -15492,19 +15492,13 @@ async function mcpLoad(){
 }
 async function mcpAdd(){
   const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
-  const name=await appPrompt('MCP server name','','e.g. filesystem');if(!name)return;
-  const type=await appPrompt('Server type (stdio or sse)','stdio','stdio or sse');if(!type)return;
-  let entry={name:name.trim(),type:type.trim().toLowerCase()};
-  if(entry.type==='stdio'){
-    const cmd=await appPrompt('Command','npx','e.g. npx, python, node');if(!cmd)return;
-    const args=await appPrompt('Arguments (comma-separated)','','-p @modelcontextprotocol/server-filesystem /tmp');if(args===null)return;
-    entry.command=cmd.trim();entry.args=args.split(',').map(x=>x.trim()).filter(Boolean);
-    const env=await appPrompt('Environment variables (KEY=VALUE, comma-separated)','');if(env===null)return;
-    entry.env={};(env||'').split(',').forEach(kv=>{const parts=kv.split('=');if(parts.length>=2)entry.env[parts[0].trim()]=parts.slice(1).join('=').trim()});
-  }else{
-    const url=await appPrompt('SSE/HTTP URL','','https://...');if(!url)return;
-    entry.url=url.trim();
-  }
+  const url=await appPrompt('MCP server URL','','https://...');if(!url)return;
+  const name=await appPrompt('Name (optional)','',url.trim());if(name===null)return;
+  const username=await appPrompt('Username (optional)','');if(username===null)return;
+  const password=await appPrompt('Password (optional)','');if(password===null)return;
+  let entry={name:(name.trim()||url.trim()),type:'sse',url:url.trim()};
+  if(username.trim())entry.username=username.trim();
+  if(password.trim())entry.password=password.trim();
   try{
     const r=await authFetch(API+'/api/agents/'+id+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(entry)});
     const d=await r.json().catch(()=>({}));
