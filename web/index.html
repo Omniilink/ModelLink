@@ -2910,7 +2910,7 @@ async function sendMessage(){
   const startTime=Date.now();
   const _liveTps=isBrowserModel(model)?chatLiveTpsStart(assistantEl.closest('.message'),startTime):null;
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:await resolveHistoryImages(chatHistory),stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model,messages:[{role:'system',content:'You are a helpful assistant.'},{role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels(),websearch:webSearchEnabled})});
     if(!r.ok){const errBody=await r.text();let errMsg='Error '+r.status;try{errMsg=JSON.parse(errBody).error||errMsg}catch(e){}settleSpinners(assistantEl);updateMessage(assistantEl,errMsg);maybeAttachReport(assistantEl.closest('.message'),errMsg,selectedModel,'chat');chatHistory.push({role:'assistant',content:errMsg});saveCurrentChat();isStreaming=false;document.getElementById('send-btn').disabled=false;return}
     const reader=r.body.getReader();const decoder=new TextDecoder();let buffer='',fullText='',actualModel=model,seenDone=false;
     while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();
