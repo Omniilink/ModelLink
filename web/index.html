@@ -3000,7 +3000,8 @@ function toggleVoiceInput(){
   showToast('Listening...','info');
 }
 async function sendMessage(){
-  if(isStreaming)return;const input=document.getElementById('chat-input');const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip();if(!text&&!imgs.length)return;
+  if(isStreaming)return;const input=document.getElementById('chat-input');const _t=(input.value||'').trim();if(_t==='/mcp'||_t==='/mcp '){input.value='';openMcpModal();return}
+const text=input.value.trim();const imgs=pendingImages.splice(0);renderImgStrip();if(!text&&!imgs.length)return;
   if(!currentChatId)currentChatId='chat_'+Date.now();
   input.value='';input.style.height='auto';document.getElementById('chat-empty')?.remove();
   let content=text,model=selectedModel;
@@ -5239,7 +5240,8 @@ const SLASH_COMMANDS=[
   {cmd:'clear',desc:'Clear this chat',usage:'/clear'},
   {cmd:'attach',desc:'Attach all project files',usage:'/attach'},
   {cmd:'plan',desc:'Toggle plan mode',usage:'/plan'},
-  {cmd:'help',desc:'Show all commands',usage:'/help'}
+  {cmd:'help',desc:'Show all commands',usage:'/help'},
+  {cmd:'mcp',desc:'Show MCP servers',usage:'/mcp'}
 ];
 var codingTreeSnips=[];
 function splitSlashArgs(s){
@@ -5277,6 +5279,7 @@ async function execSlashCommands(rawText){
     try{
       const args=a.args||[];
       if(a.cmd==='help'){slashHelp()}
+      else if(a.cmd==='mcp'){openMcpModal()}
       else if(a.cmd==='clear'){try{await clearCodingChat()}catch(e){}try{codingAtFiles=[];codingRefFiles=[];codingTreeSnips=[];updateAtIndicator()}catch(e){}}
       else if(a.cmd==='attach'){try{await attachAllFiles();attached=true}catch(e){showToast(e.message,'error')}}
       else if(a.cmd==='plan'){try{await togglePlanMode()}catch(e){}}
@@ -15499,6 +15502,55 @@ const r=await authFetch(API+'/api/agents');if(!r.ok)throw new Error('HTTP '+r.st
   const shareSel=document.getElementById('adm-share-agent');if(shareSel){shareSel.innerHTML='';const owned=(d.agents||[]).filter(x=>x&&x.is_owner);if(!owned.length){const o=document.createElement('option');o.value='';o.textContent='No computers owned by you';shareSel.appendChild(o)}owned.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=(x.name||('agent '+x.id))+' ('+(x.hostname||'no hostname')+')';shareSel.appendChild(o)})}
   admLoadAgentOut();if(sel.value)admFmLoad();ollamaLibraryLoad();try{mcpLoad()}catch(e){}}catch(e){box.innerHTML='<div class="tool-status">Error: '+escapeHtml(e.message)+'</div>'}}
 
+
+async function openMcpModal(){
+  // Fetch companion MCP status
+  let servers=[];let tools=[];
+  try{
+    const base=await zenProbe();
+    if(base){
+      const r=await fetch(base+'/api/mcp/status',{signal:AbortSignal.timeout(5000)});
+      if(r.ok){const d=await r.json();servers=d.servers||[]}
+      const r2=await fetch(base+'/api/mcp/tools',{signal:AbortSignal.timeout(5000)});
+      if(r2.ok){const d2=await r2.json();tools=d2.tools||[]}
+    }
+  }catch(e){}
+  // Also fetch from server
+  let serverServers=[];
+  try{
+    const agents=admAgentsCache||[];
+    const sel=document.getElementById('mcp-agent');
+    const id=sel&&sel.value;
+    if(id){
+      const r=await authFetch(API+'/api/agents/'+id+'/mcp');
+      if(r.ok){const d=await r.json();serverServers=d.servers||[]}
+    }
+  }catch(e){}
+  const displayServers=serverServers.length?serverServers:servers;
+  const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=100000;
+  const m=document.createElement('div');m.className='modal';m.style.maxWidth='560px';
+  let html='<div class="modal-header"><h2>MCP servers</h2><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">';
+  if(!displayServers.length){html+='<div class="tool-result-sub">No MCP servers configured. Add them in Agents view.</div>'}
+  else{
+    html+='<div style="display:flex;flex-direction:column;gap:8px">';
+    displayServers.forEach(srv=>{
+      const st=servers.find(x=>x.name===srv.name);
+      const status=st?st.status:'unknown';
+      const toolCount=st?st.tool_count:(tools.filter(t=>t._server===srv.name).length);
+      const isOn=srv.enabled!==false;
+      html+='<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs)">';
+      html+='<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(srv.name)+'</div>';
+      html+='<div style="font-size:11px;color:var(--text-muted)">'+escapeHtml(srv.type||'')+(srv.url?' \u2014 '+escapeHtml(srv.url):'')+(srv.command?' \u2014 '+escapeHtml(srv.command):'')+'</div>';
+      html+='<div style="font-size:11px;color:var(--text-muted)">Device: companion \u2022 Tools: '+toolCount+' \u2022 Status: <span style="color:'+(status==='ready'?'var(--success)':'var(--warning)')+'">'+escapeHtml(status)+'</span></div></div>';
+      html+='<div class="toggle-switch'+(isOn?' on':'')+'" onclick="this.classList.toggle(\'on\');showToast(\'Toggle saved\',\'info\')" style="cursor:pointer"></div>';
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  html+='</div>';
+  m.innerHTML=html;ov.appendChild(m);document.body.appendChild(ov);
+  ov.onclick=e=>{if(e.target===ov)ov.remove()};
+}
 async function mcpLoad(){
   const sel=document.getElementById('mcp-agent');const box=document.getElementById('mcp-list');if(!sel||!box)return;
   // populate agent selector from admAgentsCache
