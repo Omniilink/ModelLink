@@ -1029,6 +1029,7 @@ pre{max-width:100%}
         <option value="api">API Keys</option>
         <option value="providers">Providers</option>
         <option value="more">More Tools</option>
+        <option value="agents">Agents</option>
         <option value="settings">Settings</option>
         <option value="tutorial">Help</option>
       </select>
@@ -2237,8 +2238,23 @@ function renderChatList(){
 function stripImagesForStore(history){return(history||[]).map(m=>{if(!m||!Array.isArray(m.content)||!m.content.some(p=>p&&p.type==='image_url'))return m;const kept=m.content.filter(p=>!(p&&p.type==='image_url')||String((p.image_url||{}).url||'').indexOf('data:')!==0);if(kept.some(p=>p&&p.type==='image_url'))return Object.assign({},m,{content:kept});const t=msgTextContent(m.content);return Object.assign({},m,{content:t||'(image message)'})})}
 
 
-function setChatFolder(){const cur=chatFolder||'';const v=window.prompt('Folder for this chat (leave empty for none):',cur);if(v===null)return;chatFolder=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatFolder?'Folder set to '+chatFolder:'Folder cleared','success')}
-function setChatSystemPrompt(){const cur=chatSystemPrompt||'';const v=window.prompt('Custom system prompt for this chat (leave empty for default):',cur);if(v===null)return;chatSystemPrompt=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatSystemPrompt?'System prompt set':'System prompt cleared','success')}
+function appPrompt(title,defaultValue,placeholder){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=100000;
+    const m=document.createElement('div');m.className='modal';m.style.maxWidth='420px';
+    m.innerHTML='<div class="modal-header"><h2>'+escapeHtml(title)+'</h2></div><div class="modal-body"><input type="text" class="modal-input" placeholder="'+escapeHtml(placeholder||'')+'" value="'+escapeHtml(defaultValue||'')+'" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:14px;outline:none;font-family:var(--font)"></div><div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--border)"><button class="btn btn-ghost btn-sm" data-cancel>Cancel</button><button class="btn btn-primary btn-sm" data-ok>OK</button></div>';
+    ov.appendChild(m);document.body.appendChild(ov);
+    const inp=m.querySelector('.modal-input');
+    setTimeout(()=>{inp.focus();inp.select()},50);
+    const close=v=>{ov.remove();resolve(v)};
+    m.querySelector('[data-cancel]').onclick=()=>close(null);
+    m.querySelector('[data-ok]').onclick=()=>close(inp.value);
+    inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();close(inp.value)}if(e.key==='Escape')close(null)};
+    ov.onclick=e=>{if(e.target===ov)close(null)};
+  });
+}
+async function setChatFolder(){const cur=chatFolder||'';const v=await appPrompt('Folder for this chat',cur,'Leave empty for none');if(v===null)return;chatFolder=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatFolder?'Folder set to '+chatFolder:'Folder cleared','success')}
+async function setChatSystemPrompt(){const cur=chatSystemPrompt||'';const v=await appPrompt('Custom system prompt for this chat',cur,'Leave empty for default');if(v===null)return;chatSystemPrompt=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatSystemPrompt?'System prompt set':'System prompt cleared','success')}
 function saveCurrentChat(){
   if(!currentChatId||chatHistory.length===0)return;
   const chats=getChats();chats[currentChatId]={title:getChatTitle(chatHistory),history:stripImagesForStore(chatHistory),model:selectedModel,updated:Date.now(),system_prompt:chatSystemPrompt||'',folder:chatFolder||''};
@@ -15476,17 +15492,17 @@ async function mcpLoad(){
 }
 async function mcpAdd(){
   const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
-  const name=window.prompt('MCP server name:');if(!name)return;
-  const type=window.prompt('Type (stdio or sse):','stdio');if(!type)return;
+  const name=await appPrompt('MCP server name','','e.g. filesystem');if(!name)return;
+  const type=await appPrompt('Server type (stdio or sse)','stdio','stdio or sse');if(!type)return;
   let entry={name:name.trim(),type:type.trim().toLowerCase()};
   if(entry.type==='stdio'){
-    const cmd=window.prompt('Command (e.g. npx, python):');if(!cmd)return;
-    const args=window.prompt('Arguments (comma-separated):','');if(args===null)return;
+    const cmd=await appPrompt('Command','npx','e.g. npx, python, node');if(!cmd)return;
+    const args=await appPrompt('Arguments (comma-separated)','','-p @modelcontextprotocol/server-filesystem /tmp');if(args===null)return;
     entry.command=cmd.trim();entry.args=args.split(',').map(x=>x.trim()).filter(Boolean);
-    const env=window.prompt('Environment variables (KEY=VALUE, comma-separated):','');if(env===null)return;
-    entry.env={};env.split(',').forEach(kv=>{const parts=kv.split('=');if(parts.length>=2)entry.env[parts[0].trim()]=parts.slice(1).join('=').trim()});
+    const env=await appPrompt('Environment variables (KEY=VALUE, comma-separated)','');if(env===null)return;
+    entry.env={};(env||'').split(',').forEach(kv=>{const parts=kv.split('=');if(parts.length>=2)entry.env[parts[0].trim()]=parts.slice(1).join('=').trim()});
   }else{
-    const url=window.prompt('SSE/HTTP URL:');if(!url)return;
+    const url=await appPrompt('SSE/HTTP URL','','https://...');if(!url)return;
     entry.url=url.trim();
   }
   try{
