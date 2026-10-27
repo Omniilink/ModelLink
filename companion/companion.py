@@ -954,6 +954,20 @@ def run_tray():
     def on_setup(icon, item):
         _ensure_setup_page(False)
 
+    def on_mcp_config(icon, item):
+        p = os.path.join(CONFIG_DIR, "mcp.json")
+        try:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            if not os.path.exists(p):
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump({"mcp": {}}, f, indent=2)
+        except Exception:
+            pass
+        try:
+            os.startfile(p)
+        except Exception:
+            pass
+
     def do_quit():
         state["stop"].set()
         try:
@@ -1015,6 +1029,7 @@ def run_tray():
 
     menu = pystray.Menu(
         pystray.MenuItem("Open projects folder", on_open),
+        pystray.MenuItem("Open MCP config", on_mcp_config),
         pystray.MenuItem("Setup…", on_setup),
         pystray.MenuItem(update_label, on_update),
         pystray.MenuItem("Quit", on_quit),

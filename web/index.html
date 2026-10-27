@@ -2253,6 +2253,38 @@ function appPrompt(title,defaultValue,placeholder){
     ov.onclick=e=>{if(e.target===ov)close(null)};
   });
 }
+
+function appFormModal(title,fields){
+  return new Promise(resolve=>{
+    const ov=document.createElement('div');ov.className='modal-overlay open';ov.style.zIndex=100000;
+    const m=document.createElement('div');m.className='modal';m.style.maxWidth='460px';
+    let html='<div class="modal-header"><h2>'+escapeHtml(title)+'</h2></div><div class="modal-body">';
+    fields.forEach(f=>{
+      html+='<div class="modal-field"><label>'+escapeHtml(f.label)+'</label>';
+      if(f.type==='select'){
+        html+='<select class="modal-input" data-key="'+escapeHtml(f.key)+'" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 12px;color:var(--text-primary);font-size:14px;outline:none;font-family:var(--font)">';
+        (f.options||[]).forEach(o=>{html+='<option value="'+escapeHtml(o)+'"'+(o===f.default?' selected':'')+'>'+escapeHtml(o)+'</option>'});
+        html+='</select>';
+      }else{
+        html+='<input type="'+(f.type||'text')+'" class="modal-input" data-key="'+escapeHtml(f.key)+'" placeholder="'+escapeHtml(f.placeholder||'')+'" value="'+escapeHtml(f.default||'')+'" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:9px 12px;color:var(--text-primary);font-size:14px;outline:none;font-family:var(--font)">';
+      }
+      if(f.hint)html+='<div class="hint" style="font-size:11px;color:var(--text-muted);margin-top:4px">'+escapeHtml(f.hint)+'</div>';
+      html+='</div>';
+    });
+    html+='</div><div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border)"><button class="btn btn-ghost btn-sm" data-cancel>Cancel</button><button class="btn btn-primary btn-sm" data-ok>Save</button></div>';
+    m.innerHTML=html;ov.appendChild(m);document.body.appendChild(ov);
+    const close=v=>{ov.remove();resolve(v)};
+    m.querySelector('[data-cancel]').onclick=()=>close(null);
+    m.querySelector('[data-ok]').onclick=()=>{
+      const vals={};
+      m.querySelectorAll('.modal-input').forEach(inp=>{vals[inp.dataset.key]=inp.value});
+      close(vals);
+    };
+    const first=m.querySelector('.modal-input');if(first)setTimeout(()=>{first.focus()},50);
+    ov.onclick=e=>{if(e.target===ov)close(null)};
+  });
+}
+
 async function setChatFolder(){const cur=chatFolder||'';const v=await appPrompt('Folder for this chat',cur,'Leave empty for none');if(v===null)return;chatFolder=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatFolder?'Folder set to '+chatFolder:'Folder cleared','success')}
 async function setChatSystemPrompt(){const cur=chatSystemPrompt||'';const v=await appPrompt('Custom system prompt for this chat',cur,'Leave empty for default');if(v===null)return;chatSystemPrompt=v.trim();try{saveCurrentChat()}catch(e){}showToast(chatSystemPrompt?'System prompt set':'System prompt cleared','success')}
 function saveCurrentChat(){
@@ -15484,7 +15516,7 @@ async function mcpLoad(){
       const info=document.createElement('div');info.style.flex='1';info.style.fontSize='12px';
       info.innerHTML='<b>'+escapeHtml(srv.name)+'</b> <span style="color:var(--text-muted)">('+escapeHtml(srv.type)+')</span>';
       if(srv.type==='stdio')info.innerHTML+=' <span style="color:var(--text-muted);font-size:11px">'+escapeHtml(srv.command||'')+' '+(srv.args||[]).join(' ')+'</span>';
-      else info.innerHTML+=' <span style="color:var(--text-muted);font-size:11px">'+escapeHtml(srv.url||'')+'</span>';
+      else info.innerHTML+=' <span style="color:var(--text-muted);font-size:11px">'+escapeHtml(srv.url||'')+'</span>'+(srv.username?' <span style="color:var(--text-muted);font-size:11px">(auth: '+escapeHtml(srv.username)+')</span>':'');
       const del=document.createElement('button');del.className='btn btn-ghost btn-sm';del.textContent='Remove';del.onclick=()=>mcpDelete(id,srv.name);
       row.appendChild(info);row.appendChild(del);box.appendChild(row);
     });
@@ -15492,13 +15524,18 @@ async function mcpLoad(){
 }
 async function mcpAdd(){
   const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
-  const url=await appPrompt('MCP server URL','','https://...');if(!url)return;
-  const name=await appPrompt('Name (optional)','',url.trim());if(name===null)return;
-  const username=await appPrompt('Username (optional)','');if(username===null)return;
-  const password=await appPrompt('Password (optional)','');if(password===null)return;
-  let entry={name:(name.trim()||url.trim()),type:'sse',url:url.trim()};
-  if(username.trim())entry.username=username.trim();
-  if(password.trim())entry.password=password.trim();
+  const vals=await appFormModal('Add MCP server',[
+    {label:'URL',key:'url',placeholder:'https://... or http://localhost:...'},
+    {label:'Name (optional)',key:'name',placeholder:'My MCP server'},
+    {label:'Username (optional)',key:'username',placeholder:''},
+    {label:'Password (optional)',key:'password',type:'password',placeholder:''},
+  ]);
+  if(!vals)return;
+  const url=(vals.url||'').trim();if(!url)return;
+  const name=(vals.name||'').trim()||url;
+  const entry={name:name,type:'sse',url:url};
+  if(vals.username&&vals.username.trim())entry.username=vals.username.trim();
+  if(vals.password&&vals.password.trim())entry.password=vals.password.trim();
   try{
     const r=await authFetch(API+'/api/agents/'+id+'/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(entry)});
     const d=await r.json().catch(()=>({}));
