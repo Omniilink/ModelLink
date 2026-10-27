@@ -2583,6 +2583,7 @@ function switchView(view){
   document.getElementById('workspaces-view').classList.toggle('open',view==='workspaces');
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
+document.getElementById('robloxmcp-view').classList.toggle('open',view==='robloxmcp');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -7672,6 +7673,7 @@ const callMcps=[...parseText.matchAll(/CALL_MCP:([^\n:]+):([^\n]+)\s*\n([\s\S]*?
   }
   const wroteNow=(typeof codingWrittenPaths!=='undefined'&&codingWrittenPaths)?codingWrittenPaths.slice():[];
   if(wroteNow.length&&typeof recordCodingVersion==='function'){recordCodingVersion(wroteNow).catch(()=>{})}
+  try{if(callMcps.length)codingRunMcp=true}catch(e){}
   return{blocks:hasToolBlocks,actionable:hasToolBlocks||shownFallback>0||codingTodosNew||truncFrom>=0||reserveAcquired>0,truncated:truncFrom>=0};
 }
 
@@ -8976,7 +8978,7 @@ async function requestFindingLog(){
 }
 async function codingAutoContinue(){
   codingAutoLoop=true;codingStopRequested=false;setCodingLoopUI(true);
-  codingRounds=0;codingReplans=0;codingRunWrote=false;codingRunNoops=0;codingGodotBuiltRun=false;
+  codingRounds=0;codingReplans=0;codingRunWrote=false;codingRunNoops=0;codingGodotBuiltRun=false;codingRunMcp=false;
   let codingTruncRetries=0;
   let setbacks=0,lastReason='',lastMissingKey='',lastOfferedKey='',stagnantRounds=0,lastSig='',repeatRounds=0,repeatNudges=0,planJustExtended=false,lastAssetKey='',planAuditDone=false,webTrioAuditDone=false,lastGodotErrKey='',noChangeNudged=false;
   const runTouchedPaths=new Set();
@@ -9373,6 +9375,7 @@ async function codingAutoContinue(){
           // here — that reads as success when nothing happened at all.
           postCodingAssistant('Done.');
         }
+        if(codingRunMcp){codingRunMcp=false;continue;}
         break;
       }
       if(planJustExtended){
