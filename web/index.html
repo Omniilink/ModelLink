@@ -40,7 +40,20 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
 ::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
 a{color:var(--accent-light);text-decoration:none}
 a:hover{text-decoration:underline}
-.app{display:flex;height:100vh;height:100dvh;width:100vw}
+.app{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:52px;flex-shrink:0;background:var(--bg-secondary);border-bottom:1px solid var(--border);z-index:100}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar-center{display:flex;align-items:center;gap:10px;position:absolute;left:50%;transform:translateX(-50%)}
+.topbar-logo{height:28px}
+.topbar-slogan{font-size:13px;color:var(--text-muted);font-weight:500}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.view-dropdown{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-primary);padding:6px 10px;font-size:13px;cursor:pointer;font-family:var(--font)}
+.view-dropdown:hover{border-color:var(--border-light)}
+.body-row{display:flex;flex:1;overflow:hidden}
+.leftpanel{width:248px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width .18s ease}
+.leftpanel.collapsed{width:0;margin-left:-1px;overflow:hidden}
+.leftpanel-overlay{display:none}
+@media(max-width:768px){.leftpanel{position:fixed;top:52px;left:0;bottom:0;z-index:200;transform:translateX(-100%);transition:transform .22s ease}.leftpanel.open{transform:translateX(0)}.leftpanel-overlay{display:block;position:fixed;inset:0;top:52px;background:rgba(4,6,10,.6);z-index:199;opacity:0;pointer-events:none;transition:opacity .22s}.leftpanel-overlay.open{opacity:1;pointer-events:auto}}
 .sidebar{width:248px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:width .18s ease,margin .18s ease,transform .22s ease}
 .sidebar.hidden{width:0;margin-left:-1px;overflow:hidden}
 .ws-head{display:flex;align-items:center;gap:8px;padding:12px 12px 10px;min-height:58px;flex-shrink:0}
@@ -814,8 +827,8 @@ pre{max-width:100%}
 .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:200;width:min(300px,86vw);transform:translateX(-102%)}
 .sidebar.hidden{width:min(300px,86vw);transform:translateX(-102%)}
 .sidebar:not(.hidden){transform:translateX(0)}
-.sidebar-overlay{position:fixed;inset:0;background:rgba(4,6,10,.6);z-index:199;display:none}
-.sidebar-overlay.open{display:block}
+.leftpanel-overlay{position:fixed;inset:0;background:rgba(4,6,10,.6);z-index:199;display:none}
+.leftpanel-overlay.open{display:block}
 .header{height:56px;min-height:56px;padding:0 10px;gap:6px}
 .header-brand{display:flex}
 .header-mobile-only{display:flex}
@@ -973,7 +986,32 @@ pre{max-width:100%}
 
 <body>
 <div class="app">
-  <div class="sidebar" id="sidebar">
+  <div class="topbar">
+    <div class="topbar-left">
+      <select class="view-dropdown" id="view-dropdown" onchange="navigate(this.value)">
+        <option value="chat">Chat</option>
+        <option value="coding">Coding</option>
+        <option value="projects">Projects</option>
+        <option value="workspaces">Workspaces</option>
+        <option value="more">More</option>
+        <option value="settings">Settings</option>
+      </select>
+    </div>
+    <div class="topbar-center">
+      <img src="/favicon.svg?v=5" class="topbar-logo" alt="Omniilink">
+      <span class="topbar-slogan">Your AI, your way</span>
+    </div>
+    <div class="topbar-right">
+      <button class="header-btn hide-mobile" onclick="openSettings()" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      </button>
+      <button class="header-btn hide-mobile" onclick="toggleLeftPanel()" title="Toggle chat list">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="body-row">
+    <div class="leftpanel" id="leftpanel">
     <div class="ws-head">
       <div class="ws-brand">
         <img src="/favicon.svg?v=5" height="30" alt="Omniilink">
@@ -982,7 +1020,7 @@ pre{max-width:100%}
           <span class="ws-sub"><span class="status-dot" id="status-dot"></span><span id="status-text">Connecting...</span></span>
         </div>
       </div>
-      <button class="ws-x" onclick="toggleSidebar()" aria-label="Close sidebar" title="Close sidebar">&times;</button>
+      <button class="ws-x" onclick="toggleLeftPanel()" aria-label="Close sidebar" title="Close sidebar">&times;</button>
     </div>
     <div class="ws-compose">
       <button class="compose-btn" onclick="newChat()">
@@ -1086,7 +1124,7 @@ pre{max-width:100%}
       </button>
     </div>
   </div>
-  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+  <div class="leftpanel-overlay" id="leftpanel-overlay" onclick="toggleLeftPanel()"></div>
   <div class="main">
     <div class="header">
       <div class="header-brand"><img src="/favicon.svg?v=5" height="22" alt="Omniilink"><span>Omniilink</span></div>
@@ -1816,6 +1854,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
 <div class="cmd-overlay" id="cmd-overlay" onclick="if(event.target===this)closeCmdPalette()"><div class="cmd-box"><input class="cmd-input" id="cmd-input" placeholder="Search commands, models, chats..." oninput="filterCmdPalette(this.value)" onkeydown="handleCmdKey(event)" autocomplete="off" /><div class="cmd-results" id="cmd-results"></div></div></div>
 <div class="modal-overlay" id="auth-modal"><div class="modal" style="max-width:380px"><div class="modal-header"><h2 id="auth-modal-title">Sign In</h2></div><div class="modal-body"><a class="btn btn-ghost" id="auth-google" style="display:none;justify-content:center;gap:8px;margin-bottom:10px;width:100%" href="/api/auth/google/start"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.5 12.3c0-.9-.1-1.5-.3-2.3H12v4.5h6.5c-.1 1.1-.8 2.7-2.4 3.8l3.5 2.7c2.2-2 3.9-5 3.9-8.7z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.8-2.9c-1 .7-2.4 1.2-4.1 1.2-3.2 0-5.9-2.1-6.8-5l-3.7 2.9C3.3 21.3 7.3 24 12 24z"/><path fill="#FBBC05" d="M5.2 14.4c-.2-.7-.4-1.5-.4-2.4s.1-1.7.4-2.4l-3.7-2.9C.5 8.7 0 10.2 0 12s.5 3.3 1.4 4.7l3.8-2.3z"/><path fill="#EA4335" d="M12 4.7c1.8 0 3 .8 3.7 1.4l3.3-3.2C17.9 1.1 15.2 0 12 0 7.3 0 3.3 2.7 1.4 6.7l3.8 2.9c.9-2.9 3.6-4.9 6.8-4.9z"/></svg> Sign in with Google</a><div id="auth-google-note" style="display:none;font-size:12px;color:var(--text-muted);margin-bottom:10px;text-align:center">Password sign-in is disabled on this server — continue with Google.</div><div id="auth-form-signin"><div class="modal-field"><label>Username</label><input type="text" id="auth-username" placeholder="username" autocomplete="username" onkeydown="if(event.key==='Enter')doAuth()" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-password" placeholder="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAuth()" /></div><div id="auth-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignup()">Create account</button><button class="btn btn-primary" onclick="doAuth()">Sign In</button></div></div><div id="auth-form-signup" style="display:none"><div class="modal-field"><label>Username</label><input type="text" id="auth-signup-username" placeholder="username (3+ chars)" autocomplete="username" onkeydown="if(event.key==='Enter')doSignup()" /></div><div class="modal-field"><label>Display Name</label><input type="text" id="auth-signup-name" placeholder="Your Name (optional)" /></div><div class="modal-field"><label>Password</label><input type="password" id="auth-signup-password" placeholder="password (6+ chars)" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSignup()" /></div><div id="auth-signup-error" style="color:var(--error);font-size:12px;margin-bottom:10px;display:none"></div><div class="modal-actions"><button class="btn btn-ghost" onclick="showAuthSignin()">Back to sign in</button><button class="btn btn-primary" onclick="doSignup()">Create Account</button></div></div></div></div></div>
 <div class="modal-overlay" id="shortcuts-modal"><div class="modal" style="max-width:520px"><div class="modal-header"><h2>Keyboard Shortcuts</h2><button class="modal-close" onclick="document.getElementById('shortcuts-modal').classList.remove('open')">&times;</button></div><div class="modal-body"><div class="shortcuts-grid"><div class="shortcut-item"><span>New Chat</span><div class="keys"><kbd>Ctrl</kbd><kbd>N</kbd></div></div><div class="shortcut-item"><span>Command Palette</span><div class="keys"><kbd>Ctrl</kbd><kbd>K</kbd></div></div><div class="shortcut-item"><span>Search Chats</span><div class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></div></div><div class="shortcut-item"><span>Toggle Sidebar</span><div class="keys"><kbd>Ctrl</kbd><kbd>B</kbd></div></div><div class="shortcut-item"><span>Settings</span><div class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></div></div><div class="shortcut-item"><span>Send Message</span><div class="keys"><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>New Line</span><div class="keys"><kbd>Shift</kbd><kbd>Enter</kbd></div></div><div class="shortcut-item"><span>Compare Mode</span><div class="keys"><kbd>Ctrl</kbd><kbd>M</kbd></div></div><div class="shortcut-item"><span>Toggle Theme</span><div class="keys"><kbd>Ctrl</kbd><kbd>\\</kbd></div></div><div class="shortcut-item"><span>Bookmarks</span><div class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></div></div></div></div></div></div>
+</div>
 
 <script>
 if(location.search.indexOf('diag')!==-1){
@@ -1825,7 +1864,7 @@ if(location.search.indexOf('diag')!==-1){
     setTimeout(function(){
       var h=document.querySelector('.header');
       var r=h?h.getBoundingClientRect():null;
-      var sb=document.querySelector('.sidebar');
+      var sb=document.querySelector('.leftpanel');
       var lines=[
         'w='+window.innerWidth+' h='+window.innerHeight+' dpr='+(window.devicePixelRatio||1),
         'ua='+navigator.userAgent,
@@ -2243,7 +2282,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   updateBandwidthIndicator();setInterval(updateBandwidthIndicator,1000);
   refreshProviderHealth();setInterval(refreshProviderHealth,15000);
   const _dlf=document.getElementById('coding-dl-format');if(_dlf)_dlf.value=localStorage.getItem('omnilink_dl_format')||'zip';syncLevelLock();syncCodingNotifyBtn();if(!matchMedia('(pointer:coarse)').matches)document.getElementById('chat-input').focus();
-  if(window.innerWidth<=768)document.querySelector('.sidebar').classList.add('hidden');
+  if(window.innerWidth<=768)document.querySelector('.leftpanel').classList.add('hidden');
   document.addEventListener('click',e=>{if(!document.getElementById('model-dropdown').contains(e.target))document.getElementById('model-menu').classList.remove('open')});
  document.addEventListener('click',e=>{if(!document.getElementById('coding-model-dropdown').contains(e.target))document.getElementById('coding-model-menu').classList.remove('open')});
 });
@@ -2326,6 +2365,7 @@ function applyTerminalFilters(){
 function toggleAutoScroll(){const btn=document.getElementById('terminal-autoscroll');btn.classList.toggle('on');if(btn.classList.contains('on')){const el=document.getElementById('terminal-body');el.scrollTop=el.scrollHeight}}
 
 function switchView(view){
+  const dd=document.getElementById('view-dropdown');if(dd)dd.value=view;
   if(view==='admin'&&!(window.__user&&window.__user.is_admin))view='chat';
   if(view==='trademe'&&!(window.__user&&window.__user.is_admin))view='chat';
   currentView=view;
@@ -2354,7 +2394,7 @@ function switchView(view){
   if(view==='projects')loadProjectsPage();if(view==='workspaces')loadWorkspacesPage();if(view==='prompts')renderPromptsPage();
   if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
-  if(window.innerWidth<=768){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
+  if(window.innerWidth<=768){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
 const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
@@ -2436,7 +2476,7 @@ async function checkBuildVersion(){
     try{localStorage.setItem('omnilink_build',b)}catch(e){}
   }catch(e){}
 }
-function toggleSidebar(){const sb=document.querySelector('.sidebar');const ov=document.getElementById('sidebar-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
+function toggleLeftPanel(){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');sb.classList.toggle('hidden');if(window.innerWidth<=768)ov.classList.toggle('open',!sb.classList.contains('hidden'))}
 function toggleTerminal(){navigate(currentView==='terminal'?'chat':'terminal')}
 function toggleModelMenu(){document.getElementById('model-menu').classList.toggle('open')}
 var webSearchEnabled=false;
@@ -9982,7 +10022,7 @@ function exportChatJSON(){const chats=getChats();const chat=chats[currentChatId]
 window.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
   if(e.ctrlKey&&e.key==='t'){e.preventDefault();toggleTerminal()}
-  if(e.ctrlKey&&e.key==='b'){e.preventDefault();document.querySelector('.sidebar').classList.toggle('hidden')}
+  if(e.ctrlKey&&e.key==='b'){e.preventDefault();document.querySelector('.leftpanel').classList.toggle('hidden')}
   if(e.ctrlKey&&e.key==='/'){e.preventDefault();navigate('tutorial')}
   if(e.key==='Escape'){document.getElementById('model-menu').classList.remove('open');document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'))}
 });
@@ -12134,7 +12174,7 @@ function buildCmdList(query){
     {icon:'\u266B',label:'Prompts Library',action:()=>{closeCmdPalette();navigate('prompts')}},
     {icon:'\u2699',label:'API Keys',action:()=>{closeCmdPalette();navigate('api')}},
     {icon:'\uD83D\uDCCA',label:'Usage Dashboard',action:()=>{closeCmdPalette();navigate('usage')}},
-    {icon:'\uD83D\uDCD1',label:'Toggle Sidebar',action:()=>{closeCmdPalette();toggleSidebar()},keys:'Ctrl+B'},
+    {icon:'\uD83D\uDCD1',label:'Toggle Sidebar',action:()=>{closeCmdPalette();toggleLeftPanel()},keys:'Ctrl+B'},
     {icon:'\uD83C\uDF19',label:'Toggle Theme',action:()=>{closeCmdPalette();toggleTheme()},keys:'Ctrl+\\'},
     {icon:'\uD83D\uDD0D',label:'Search in Chat',action:()=>{closeCmdPalette();openChatSearch()},keys:'Ctrl+F'},
     {icon:'\u2605',label:'View Bookmarks',action:()=>{closeCmdPalette();viewBookmarks()},keys:'Ctrl+D'},
@@ -14423,7 +14463,7 @@ function stopCodingWatcher(){if(codingWatchTimer){clearInterval(codingWatchTimer
 document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.key==='k'){e.preventDefault();openCmdPalette()}
   else if(e.ctrlKey&&e.key==='n'){e.preventDefault();newChat()}
-  else if(e.ctrlKey&&e.key==='b'&&!e.target.closest('.coding-view')){e.preventDefault();toggleSidebar()}
+  else if(e.ctrlKey&&e.key==='b'&&!e.target.closest('.coding-view')){e.preventDefault();toggleLeftPanel()}
   else if(e.ctrlKey&&e.key===','){e.preventDefault();navigate('settings')}
   else if(e.ctrlKey&&e.key==='f'&&!e.target.closest('.coding-view')&&currentView==='chat'){e.preventDefault();openChatSearch()}
   else if(e.ctrlKey&&e.key==='\\'){e.preventDefault();toggleTheme()}
