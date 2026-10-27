@@ -1472,7 +1472,7 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
               <div class="usage-section-title" style="margin-top:16px">Paired computers</div>
               <div id="adm-agents"></div>
               <div class="usage-section-title" style="margin-top:16px">MCP servers (on selected computer)</div>
-<div class="tool-row"><select id="mcp-agent" style="min-width:180px" onchange="mcpLoad()"></select><button class="btn btn-ghost btn-sm" onclick="mcpAdd()">+ Add server</button><button class="btn btn-ghost btn-sm" onclick="mcpLoad()">Refresh</button></div>
+<div class="tool-row"><select id="mcp-agent" style="min-width:180px" onchange="mcpLoad()"></select><button class="btn btn-ghost btn-sm" onclick="mcpAdd()">+ Add server</button><button class="btn btn-ghost btn-sm" onclick="mcpLoad()">Refresh</button><button class="btn btn-primary btn-sm" onclick="mcpDiscover()">Discover tools</button></div><div id="mcp-tools" style="margin-top:8px"></div>
 <div id="mcp-list" style="margin-top:8px"></div>
 <div class="usage-section-title" style="margin-top:12px">Raw MCP config (JSON)</div>
 <textarea id="mcp-raw" style="width:100%;min-height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:10px 12px;color:var(--text-primary);font-size:12px;font-family:var(--mono);outline:none;resize:vertical"></textarea>
@@ -15622,7 +15622,7 @@ async function mcpLoadRaw(){
 async function mcpSaveRaw(){
   const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
   const ta=document.getElementById('mcp-raw');if(!ta)return;
-  let cfg;try{cfg=JSON.parse(ta.value)}catch(e){showToast('Invalid JSON: '+e.message,'error');return}
+  let cfg;try{cfg=JSON.parse(ta.value.replace(/^\uFEFF/,''))}catch(e){showToast('Invalid JSON: '+e.message,'error');return}
   const servers=[];
   const mcp=cfg.mcp||cfg.servers||{};
   for(const [name,c] of Object.entries(mcp)){
@@ -15654,6 +15654,30 @@ async function mcpSaveRaw(){
     }
     showToast('Config saved ('+servers.length+' servers)','success');mcpLoad();
   }catch(e){showToast(e.message,'error')}
+}
+
+async function mcpDiscover(){
+  const box=document.getElementById('mcp-tools');if(!box)return;
+  box.innerHTML='<div class="tool-result-sub">Discovering...</div>';
+  try{
+    const base=await zenProbe();if(!base){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">Companion not found</div>';return}
+    const r=await fetch(base+'/api/mcp/tools',{signal:AbortSignal.timeout(10000)});
+    const d=await r.json();const tools=d.tools||[];
+    if(!tools.length){box.innerHTML='<div class="tool-result-sub">No MCP tools discovered. Make sure servers are running.</div>';return}
+    box.innerHTML='';
+    const grouped={};
+    tools.forEach(t=>{const srv=t._server||'unknown';if(!grouped[srv])grouped[srv]=[];grouped[srv].push(t)});
+    for(const [srv,ts] of Object.entries(grouped)){
+      const hdr=document.createElement('div');hdr.className='usage-section-title';hdr.style.margin='8px 0 4px';hdr.textContent=srv+' ('+ts.length+' tools)';box.appendChild(hdr);
+      ts.forEach(t=>{
+        const row=document.createElement('div');row.className='tool-row';row.style.alignItems='center';row.style.padding='4px 0';
+        const info=document.createElement('div');info.style.flex='1';info.style.fontSize='12px';
+        info.innerHTML='<b>'+escapeHtml(t.name)+'</b>'+(t.description?' <span style="color:var(--text-muted);font-size:11px">'+escapeHtml(t.description.slice(0,80))+'</span>':'');
+        row.appendChild(info);box.appendChild(row);
+      });
+    }
+    showToast('Discovered '+tools.length+' MCP tools','success');
+  }catch(e){box.innerHTML='<div class="tool-result-sub" style="color:var(--error)">Error: '+escapeHtml(e.message)+'</div>'}
 }
 async function mcpDelete(agentId,name){
   if(!(await appConfirm('Remove MCP server "'+name+'"?')))return;
