@@ -15577,14 +15577,14 @@ async function mcpLoad(){
 async function mcpAdd(){
   const sel=document.getElementById('mcp-agent');const id=sel&&sel.value;if(!id){showToast('Select a computer first','error');return}
   const vals=await appFormModal('Add MCP server',[
+    {label:'Name',key:'name',placeholder:'e.g. roblox-studio'},
     {label:'URL',key:'url',placeholder:'https://... or http://localhost:...'},
-    {label:'Name (optional)',key:'name',placeholder:'My MCP server'},
     {label:'Username (optional)',key:'username',placeholder:''},
     {label:'Password (optional)',key:'password',type:'password',placeholder:''},
   ]);
   if(!vals)return;
+  const name=(vals.name||'').trim();if(!name)return;
   const url=(vals.url||'').trim();if(!url)return;
-  const name=(vals.name||'').trim()||url;
   const entry={name:name,type:'sse',url:url};
   if(vals.username&&vals.username.trim())entry.username=vals.username.trim();
   if(vals.password&&vals.password.trim())entry.password=vals.password.trim();

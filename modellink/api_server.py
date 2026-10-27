@@ -20270,7 +20270,7 @@ async def agent_mcp_list(request: Request, agent_id: str):
     a = (st.get("agents") or {}).get(str(agent_id))
     if not a:
         return JSONResponse(status_code=404, content={"error": "Agent not found"})
-    if a.get("owner") != user.get("username") and user.get("username") not in (a.get("shared_with") or []):
+    if (a.get("owner_name") or a.get("created_by_name") or "") != user.get("username") and user.get("username") not in (a.get("shared_with") or []):
         return JSONResponse(status_code=403, content={"error": "Not authorized"})
     return {"servers": _agent_mcp_list(agent_id)}
 
@@ -20284,7 +20284,7 @@ async def agent_mcp_add(request: Request, agent_id: str, body: McpServerBody):
     a = (st.get("agents") or {}).get(str(agent_id))
     if not a:
         return JSONResponse(status_code=404, content={"error": "Agent not found"})
-    if a.get("owner") != user.get("username"):
+    if (a.get("owner_name") or a.get("created_by_name") or "") != user.get("username"):
         return JSONResponse(status_code=403, content={"error": "Only the owner can manage MCP servers"})
     name = str(body.name or "").strip()
     if not name:
@@ -20319,7 +20319,7 @@ async def agent_mcp_delete(request: Request, agent_id: str, server_name: str):
     a = (st.get("agents") or {}).get(str(agent_id))
     if not a:
         return JSONResponse(status_code=404, content={"error": "Agent not found"})
-    if a.get("owner") != user.get("username"):
+    if (a.get("owner_name") or a.get("created_by_name") or "") != user.get("username"):
         return JSONResponse(status_code=403, content={"error": "Only the owner can manage MCP servers"})
     servers = [s for s in _agent_mcp_list(agent_id) if s.get("name") != server_name]
     if not _agent_mcp_save(agent_id, servers):

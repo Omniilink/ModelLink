@@ -799,6 +799,27 @@ def _mcp_rpc(proc, method, params=None, timeout=30):
 def mcp_sync(servers):
     if not isinstance(servers, list):
         servers = []
+    # Write to mcp.json (opencode format) for manual editing
+    try:
+        mcp_cfg = {"mcp": {}}
+        for srv in servers:
+            name = srv.get("name")
+            if not name:
+                continue
+            if srv.get("type") == "stdio":
+                mcp_cfg["mcp"][name] = {"type": "local", "command": [srv.get("command", "")] + (srv.get("args") or []), "enabled": True}
+            else:
+                entry = {"type": "remote", "url": srv.get("url", "")}
+                if srv.get("username"):
+                    import base64 as _b64
+                    entry["headers"] = {"Authorization": "Basic " + _b64.b64encode((srv["username"] + ":" + srv.get("password", "")).encode()).decode()}
+                mcp_cfg["mcp"][name] = entry
+        pth = os.path.join(CONFIG_DIR, "mcp.json")
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(pth, "w", encoding="utf-8") as f:
+            json.dump(mcp_cfg, f, indent=2)
+    except Exception:
+        pass
     with _MCP_LOCK:
         new_names = {s.get("name") for s in servers if s.get("name")}
         for name in list(_MCP_SERVERS.keys()):
@@ -920,11 +941,70 @@ def relay_start():
     except Exception as e:
         return {"ok": False, "running": False, "error": str(e)}
 
+
+def mcp_load_file():
+    """Read mcp.json (opencode format) and return list of server configs."""
+    p = os.path.join(CONFIG_DIR, "mcp.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    mcp = data.get("mcp", data.get("servers", {}))
+    if not isinstance(mcp, dict):
+        return []
+    out = []
+    for name, cfg in mcp.items():
+        if not isinstance(cfg, dict):
+            continue
+        entry = {"name": name}
+        ctype = cfg.get("type", "")
+        if ctype == "local" or "command" in cfg:
+            entry["type"] = "stdio"
+            cmd = cfg.get("command", [])
+            if isinstance(cmd, list):
+                entry["command"] = cmd[0] if cmd else ""
+                entry["args"] = cmd[1:] if len(cmd) > 1 else []
+            else:
+                entry["command"] = str(cmd)
+                entry["args"] = cfg.get("args", [])
+            entry["env"] = cfg.get("env", {}) or {}
+        elif ctype == "remote" or "url" in cfg:
+            entry["type"] = "sse"
+            entry["url"] = cfg.get("url", "")
+            if cfg.get("headers"):
+                entry["username"] = cfg["headers"].get("Authorization", "").replace("Bearer ", "") if isinstance(cfg["headers"], dict) else ""
+        if cfg.get("enabled", True) is False:
+            continue
+        out.append(entry)
+    return out
+
+_MCP_FILE_MTIME = [0.0]
+
+def mcp_file_watcher(stop):
+    """Watch mcp.json for changes and sync MCP servers."""
+    while not stop.is_set():
+        p = os.path.join(CONFIG_DIR, "mcp.json")
+        try:
+            if os.path.exists(p):
+                mt = os.path.getmtime(p)
+                if mt != _MCP_FILE_MTIME[0]:
+                    _MCP_FILE_MTIME[0] = mt
+                    servers = mcp_load_file()
+                    mcp_sync(servers)
+        except Exception:
+            pass
+        stop.wait(3)
+
 def run_tray():
     """System-tray icon with green/red/amber connection indicator."""
     import pystray
     cfg = load_config()
     os.makedirs(cfg["projects_root"], exist_ok=True)
+    try:
+        mcp_sync(mcp_load_file())
+    except Exception:
+        pass
     state = {"icon": None, "ok": None, "msg": "starting…", "stop": threading.Event()}
     try:
         start_setup_server(SETUP_PORT)
@@ -1078,6 +1158,7 @@ def run_tray():
     icon = pystray.Icon(APP_NAME, _dot_icon((217, 160, 33)), APP_NAME + " — starting…", menu)
     state["icon"] = icon
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=mcp_file_watcher, args=(state["stop"],), daemon=True).start()
     threading.Thread(target=auto_update, daemon=True).start()
     icon.run()
 
