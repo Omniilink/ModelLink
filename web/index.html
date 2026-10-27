@@ -2390,7 +2390,9 @@ function switchView(view){
   document.getElementById('forums-view').classList.toggle('open',view==='forums');
   document.getElementById('terminal-toggle').classList.toggle('active',view==='terminal');
   document.querySelectorAll('.nav-item').forEach(n=>{const v=n.dataset.view;n.classList.toggle('active',v===view||(v==='chat'&&view==='chat'))});
+  const lp=document.getElementById('leftpanel');if(lp)lp.style.display=(view==='chat')?'':'none';
   if(view==='settings')loadSettingsData();if(view==='coding')initCodingView();if(view==='api')loadApiPage();if(view==='providers')renderProvidersPage();
+  if(view==='coding'||view==='workspaces'){try{renderCodingModelMenu()}catch(e){}}
   if(view==='projects')loadProjectsPage();if(view==='workspaces')loadWorkspacesPage();if(view==='prompts')renderPromptsPage();
   if(view==='usage')loadUsage('24h');if(view==='admin')enterAdminView();if(view==='agents')admLoadAgents();if(view==='assets')loadAssetsView();if(view==='public')loadPublicView();if(view==='forums')loadForumsView();if(view==='tutorial'){try{setupOllamaLoad()}catch(e){}}if(view==='trademe'){try{admTmLoadSettings();admTmModels();admTmList()}catch(e){}}
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
