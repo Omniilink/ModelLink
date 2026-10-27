@@ -41,7 +41,7 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
 a{color:var(--accent-light);text-decoration:none}
 a:hover{text-decoration:underline}
 .app{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:52px;flex-shrink:0;background:var(--bg-secondary);border-bottom:1px solid var(--border);z-index:100}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:52px;flex-shrink:0;background:var(--bg-secondary);border-bottom:1px solid var(--border);z-index:100;position:relative}
 .topbar-left{display:flex;align-items:center;gap:12px}
 .topbar-center{display:flex;align-items:center;gap:10px;position:absolute;left:50%;transform:translateX(-50%)}
 .topbar-logo{height:28px}
@@ -49,7 +49,7 @@ a:hover{text-decoration:underline}
 .topbar-right{display:flex;align-items:center;gap:8px}
 .view-dropdown{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-primary);padding:6px 10px;font-size:13px;cursor:pointer;font-family:var(--font)}
 .view-dropdown:hover{border-color:var(--border-light)}
-.body-row{display:flex;flex:1;overflow:hidden}
+.body-row{display:flex;flex:1;overflow:hidden;min-height:0}
 .leftpanel{width:248px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width .18s ease}
 .leftpanel.collapsed{width:0;margin-left:-1px;overflow:hidden}
 .leftpanel-overlay{display:none}
