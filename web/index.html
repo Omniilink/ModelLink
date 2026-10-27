@@ -120,7 +120,7 @@ button,.nav-item,.model-option,.chat-item,.project-card,.quick-action-btn,.msg-a
 .theme-btn:hover{background:var(--bg-hover);color:var(--text-primary);border-color:var(--border-light)}
 .theme-btn svg{width:14px;height:14px}
 .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
-.header{height:52px;min-height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:8px;flex-shrink:0}
+.header{display:none !important;height:52px;min-height:52px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:8px;flex-shrink:0}
 .crumbs{display:flex;align-items:center;gap:8px;min-width:0}
 #crumb-view{font-weight:700;font-size:13.5px;color:var(--text-primary);letter-spacing:-0.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .header-spacer{flex:1;min-width:4px}
@@ -1032,6 +1032,21 @@ pre{max-width:100%}
         <option value="settings">Settings</option>
         <option value="tutorial">Help</option>
       </select>
+      <div class="model-dropdown" id="model-dropdown">
+        <button class="model-btn" id="model-btn" onclick="toggleModelMenu()">
+          <span id="model-btn-text">omniilink</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="model-menu" id="model-menu"></div>
+      </div>
+      <div class="level-group" title="Reasoning effort and thinking budget">
+        <select class="level-sel" id="chat-effort" aria-label="Reasoning effort" title="Effort" onchange="setLevelCtl('effort',this.value)">
+          <option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
+        </select>
+        <select class="level-sel" id="chat-thinking" aria-label="Thinking budget" title="Think" onchange="setLevelCtl('thinking',this.value)">
+          <option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option>
+        </select>
+      </div>
     </div>
     <div class="topbar-center">
       <img src="/favicon.svg?v=5" class="topbar-logo" alt="Omniilink">
