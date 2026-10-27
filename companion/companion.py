@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 APP_NAME = "Omniilink Server"
-COMPANION_VERSION = "1.0.15"
+COMPANION_VERSION = "1.0.16"
 CONFIG_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "OmniilinkCompanion")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -693,14 +693,55 @@ def fetch_update(server, token):
     return latest, dest
 
 
+def _find_product_code():
+    """Find the installed product code from the registry."""
+    import winreg
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for sub in (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"):
+            try:
+                key = winreg.OpenKey(hive, sub)
+            except Exception:
+                continue
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(key, i)
+                    i += 1
+                except OSError:
+                    break
+                try:
+                    sk = winreg.OpenKey(key, name)
+                    dn = winreg.QueryValueEx(sk, "DisplayName")[0]
+                    if "Omniilink" in str(dn):
+                        winreg.CloseKey(sk)
+                        winreg.CloseKey(key)
+                        return name
+                    winreg.CloseKey(sk)
+                except Exception:
+                    pass
+            try:
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+    return None
+
 def install_update_and_quit(msi_path, quit_fn):
-    """Launch the MSI upgrade (in place, config preserved) and get out of
-    the way so no files are locked. Returns False only if msiexec itself
-    could not start."""
+    """Uninstall the old version silently, then install the new one.
+    Returns False only if msiexec itself could not start."""
     try:
-        subprocess.Popen(["msiexec", "/i", msi_path])
+        code = _find_product_code()
+        if code:
+            # uninstall old
+            subprocess.run(["msiexec", "/x", code, "/qn", "/norestart"], timeout=120)
+            time.sleep(2)
+        # install new
+        subprocess.Popen(["msiexec", "/i", msi_path, "/qn", "/norestart"])
     except Exception:
-        return False
+        try:
+            subprocess.Popen(["msiexec", "/i", msi_path, "/qn", "/norestart"])
+        except Exception:
+            return False
     try:
         quit_fn()
     except Exception:
