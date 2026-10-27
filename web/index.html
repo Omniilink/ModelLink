@@ -41,6 +41,14 @@ html,body{height:100%;font-family:var(--font);background:var(--bg-primary);color
 a{color:var(--accent-light);text-decoration:none}
 a:hover{text-decoration:underline}
 .app{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
+@keyframes viewFadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.view-fade{animation:viewFadeIn .22s ease-out}
+@keyframes modalFadeIn{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
+.modal{animation:modalFadeIn .18s ease-out}
+@keyframes toastSlideIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.toast{animation:toastSlideIn .2s ease-out}
+@keyframes panelSlide{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+.leftpanel{animation:panelSlide .2s ease-out}
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:52px;flex-shrink:0;background:var(--bg-secondary);border-bottom:1px solid var(--border);z-index:100;position:relative}
 .topbar-left{display:flex;align-items:center;gap:12px}
 .topbar-center{display:flex;align-items:center;gap:10px;position:absolute;left:50%;transform:translateX(-50%)}
@@ -2443,6 +2451,7 @@ function switchView(view){
   if(view==='admin'&&!(window.__user&&window.__user.is_admin))view='chat';
   if(view==='trademe'&&!(window.__user&&window.__user.is_admin))view='chat';
   currentView=view;
+  try{const _v=document.getElementById(view+'-view')||document.getElementById(view+'View');if(_v){_v.classList.remove('view-fade');void _v.offsetWidth;_v.classList.add('view-fade')}}catch(e){}
   document.getElementById('chat-area').style.display=view==='chat'?'flex':'none';
   document.getElementById('input-area').style.display=view==='chat'?'block':'none';
   document.getElementById('terminal-panel').classList.toggle('open',view==='terminal');
