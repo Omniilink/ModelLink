@@ -47,8 +47,8 @@ a:hover{text-decoration:underline}
 .topbar-logo{height:28px}
 .topbar-slogan{font-size:13px;color:var(--text-muted);font-weight:500}
 .topbar-right{display:flex;align-items:center;gap:8px}
-.view-dropdown{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-primary);padding:6px 10px;font-size:13px;cursor:pointer;font-family:var(--font)}
-.view-dropdown:hover{border-color:var(--border-light)}
+.view-dropdown{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-primary);padding:7px 12px;font-size:13px;cursor:pointer;font-family:var(--font);font-weight:500;transition:border-color .15s,background .15s;min-width:120px}
+.view-dropdown:hover{border-color:var(--border-light);background:var(--bg-hover)}
 .body-row{display:flex;flex:1;overflow:hidden;min-height:0}
 .leftpanel{width:248px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width .18s ease}
 .leftpanel.collapsed{width:0;margin-left:-1px;overflow:hidden}
@@ -125,8 +125,8 @@ a:hover{text-decoration:underline}
 .ws-toggle{display:inline-flex;align-items:center;gap:5px;background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-muted);padding:5px 10px;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;font-family:var(--font);flex-shrink:0}
 .ws-toggle:hover{color:var(--text-primary);border-color:var(--border-light)}
 .ws-toggle.on{background:var(--accent-dim);border-color:var(--accent);color:var(--accent-light)}
-.level-sel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-secondary);padding:6px 6px;border-radius:var(--radius-xs);font-size:11px;font-family:var(--font);cursor:pointer;outline:none;max-width:104px}
-.level-sel:hover{border-color:var(--border-light);color:var(--text-primary)}
+.level-sel{background:var(--bg-tertiary);border:1px solid var(--border);color:var(--text-primary);padding:7px 12px;border-radius:var(--radius-xs);font-size:12px;font-family:var(--font);cursor:pointer;font-weight:500;transition:border-color .15s,background .15s;outline:none;max-width:104px}
+.level-sel:hover{border-color:var(--border-light);background:var(--bg-hover)}
 .level-sel:focus{border-color:var(--accent)}
 .chatbar-tools{display:flex;gap:8px;align-items:center;padding:0 2px 8px;flex-wrap:wrap}
 .chatbar-tools .model-menu{top:auto;bottom:calc(100% + 6px)}
@@ -993,8 +993,17 @@ pre{max-width:100%}
         <option value="coding">Coding</option>
         <option value="projects">Projects</option>
         <option value="workspaces">Workspaces</option>
-        <option value="more">More</option>
+        <option value="prompts">Prompts</option>
+        <option value="assets">Assets</option>
+        <option value="public">Public</option>
+        <option value="forums">Forums</option>
+        <option value="terminal">Terminal</option>
+        <option value="usage">Usage</option>
+        <option value="api">API Keys</option>
+        <option value="providers">Providers</option>
+        <option value="more">More Tools</option>
         <option value="settings">Settings</option>
+        <option value="tutorial">Help</option>
       </select>
     </div>
     <div class="topbar-center">
@@ -1794,8 +1803,8 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
                   </button>
                   <div class="model-menu coding-model-menu" id="coding-model-menu"></div>
                 </div>
-                <select id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
-                <select id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+                <select class="level-sel" id="coding-effort" title="Reasoning effort (thinking wins where both apply)" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
+                <select class="level-sel" id="coding-thinking" title="Thinking budget" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
                 <button class="ws-toggle" id="coding-websearch-toggle" onclick="toggleCodingWebSearch()" title="Let the model search the web for current information" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Web</span></button>
                 <button class="ws-toggle" id="coding-superprompt-toggle" onclick="toggleSuperPrompt()" title="Expand your message with the local assistant into a detailed prompt before sending" aria-pressed="false" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 2l2.4 6.2L21 9l-5 4.2L17.5 20 12 16.6 6.5 20 8 13.2 3 9l6.6-.8z"/></svg><span>Super</span></button>
                 <span id="coding-superprompt-extra" style="display:none;gap:6px;align-items:center">
