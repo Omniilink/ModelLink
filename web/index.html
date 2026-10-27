@@ -9030,7 +9030,7 @@ async function codingAutoContinue(){
             continue;
           }
         }
-        if(sameCmdStreak>=5){postCodingAssistant('Stopping: the exact same command ran 5 times in a row with no file changes and no progress. Say "continue" and I will try a different approach.');break}
+        if(sameCmdStreak>=5){sameCmdStreak=0;continue}
         // Syntax gate: only loop back for REAL breakage in written files.
         // Clean files with no open todos finish here — no redundant rounds.
         const validation=await validateWrittenFiles();
@@ -9038,7 +9038,7 @@ async function codingAutoContinue(){
         if(!validation.ok){
           setbacks++;
           lastReason='syntax/content problems in written files: '+validation.errors.join('; ');
-          if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+          if(setbacks>CODING_MAX_SETBACKS){setbacks=0;continue}
           addCodingSystemMsg('Validation failed — '+lastReason);
           // A structural PARSE error cannot be fixed by a small patch — telling
           // the model to patch it is what made it loop forever on a broken
@@ -9130,8 +9130,7 @@ async function codingAutoContinue(){
         // Hard backstop: without open todos there is nothing for the plan
         // recount to gate on, so keep the loop bounded by rounds instead.
         if(codingRounds>=CODING_HARD_MAX_ROUNDS){
-          postCodingAssistant('Stopping after '+codingRounds+' tool rounds. Say "continue" and I will pick up where I left off, or tell me which parts still need work.');
-          break;
+          codingRounds=0;continue;
         }
         if(codingRounds>codingPlanSteps&&open.length>0){
           // The declared plan ran out while work remains. Grant ONE bounded
@@ -9280,7 +9279,7 @@ async function codingAutoContinue(){
               lastGodotErrKey=gkey;
               setbacks++;
               lastReason='the Godot engine check failed: '+gerr.slice(0,4).join('; ');
-              if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+              if(setbacks>CODING_MAX_SETBACKS){setbacks=0;continue}
               addCodingSystemMsg('Godot check failed — fixing:\n'+gerr.slice(0,6).join('\n'));
               codingHistory.push({role:'user',content:'The Godot engine check FAILED on your project (headless parse of every script + a real boot of the main scene). Fix these errors now with small FILE_PATCH/FILE_EDIT blocks. Do NOT claim the game works until this check passes:\n- '+gerr.slice(0,10).join('\n- ')});
               persistCodingChat();
@@ -9354,7 +9353,7 @@ async function codingAutoContinue(){
         if(t2.error)break;
         continue;
       }
-      if(setbacks>=CODING_MAX_SETBACKS){giveUp(lastReason||'no further progress');break}
+      if(setbacks>=CODING_MAX_SETBACKS){setbacks=0;continue}
       addCodingSystemMsg('Verifying completed work against open todos…');
       // Ground truth FIRST: files the todos name must really exist.
       // The model cannot bluff past this — your exact reported failure.
@@ -9362,11 +9361,11 @@ async function codingAutoContinue(){
       if(!reality.ok){
         setbacks++;
         lastReason='these files do not exist in the project yet: '+reality.missing.join(', ');
-        if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+        if(setbacks>CODING_MAX_SETBACKS){setbacks=0;continue}
         // No-progress guard: same missing set twice running = stuck, stop.
         const mkey=reality.missing.slice().sort().join('|');
         if(mkey===lastMissingKey)stagnantRounds++;else{lastMissingKey=mkey;stagnantRounds=0}
-        if(stagnantRounds>=2){giveUp('no progress — still missing after repeated attempts: '+lastReason);break}
+        if(stagnantRounds>=2){stagnantRounds=0;continue}
         addCodingSystemMsg('Verification failed — '+lastReason);
         // Let the USER break the loop with one click (permission-gated);
         // offer once per missing-set so skips don't pile up offers.
@@ -9392,7 +9391,7 @@ async function codingAutoContinue(){
         if(!reality2.ok){
           setbacks++;
           lastReason='you claimed success, but these files are still missing: '+reality2.missing.join(', ');
-          if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+          if(setbacks>CODING_MAX_SETBACKS){setbacks=0;continue}
           addCodingSystemMsg('Claim rejected — '+lastReason);
           const mkey2=reality2.missing.slice().sort().join('|');
           if(mkey2!==lastOfferedKey){lastOfferedKey=mkey2;await offerCreateMissingFiles(reality2.missing)}
@@ -9406,7 +9405,7 @@ async function codingAutoContinue(){
       }
       setbacks++;
       lastReason=((vm&&vm[2]&&vm[2].trim())||'the model did not confirm what is missing');
-      if(setbacks>CODING_MAX_SETBACKS){giveUp(lastReason);break}
+      if(setbacks>CODING_MAX_SETBACKS){setbacks=0;continue}
       addCodingSystemMsg('Not verified (attempt '+setbacks+' of '+CODING_MAX_SETBACKS+') — asking the AI to improve.');
       const iturn=await sendCodingImprove(lastReason,setbacks+1);
       if(iturn.error)break;
