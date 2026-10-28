@@ -30,6 +30,10 @@ import {
   detectOpenCode,
   IS_TAURI,
   deleteSecret,
+  oauthClear,
+  oauthPoll,
+  oauthStart,
+  openUrl,
   setSecret,
   type OpenCodeInfo,
 } from "@/lib/tauri";
@@ -887,6 +891,56 @@ function DataSettings() {
 }
 
 function AccountSettings() {
+  const pushToast = useApp((state) => state.pushToast);
+  const [connecting, setConnecting] = useState(false);
+  const [serverUrl, setServerUrl] = useState(
+    "https://omniilink.dpdns.org",
+  );
+
+  const connectGoogle = async () => {
+    if (!IS_TAURI) {
+      pushToast({
+        title: "Sign-in runs in the desktop app",
+        tone: "danger",
+      });
+      return;
+    }
+    setConnecting(true);
+    const port = 8765;
+    try {
+      const url = await oauthStart(port, serverUrl);
+      await openUrl(url);
+      // Poll for the callback token.
+      for (let i = 0; i < 120; i++) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const token = await oauthPoll(port);
+        if (token) {
+          await setSecret("account.sessionToken", token);
+          await oauthClear(port);
+          pushToast({
+            title: "Signed in",
+            description: "Google account connected.",
+            tone: "success",
+          });
+          setConnecting(false);
+          return;
+        }
+      }
+      pushToast({
+        title: "Sign-in timed out",
+        tone: "danger",
+      });
+    } catch (error) {
+      pushToast({
+        title: "Sign-in failed",
+        description: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      });
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   return (
     <div className="space-y-7">
       <div className="overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
@@ -908,10 +962,25 @@ function AccountSettings() {
           </div>
         </div>
         <div className="border-t border-line bg-[color-mix(in_srgb,var(--bg-base)_45%,transparent)] px-5 py-3">
-          <p className="text-[10px] leading-relaxed text-subtle">
-            Google sign-in and cross-device sync arrive with the account
-            service. Chats, projects, MCP configuration, and prompts are ready
-            for versioned sync when it connects.
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              value={serverUrl}
+              onChange={(event) => setServerUrl(event.target.value)}
+              placeholder="https://omniilink.dpdns.org"
+              className="field h-8 flex-1 text-[11px]"
+            />
+            <button
+              type="button"
+              onClick={() => void connectGoogle()}
+              disabled={connecting}
+              className="btn btn-primary h-8 text-[10.5px]"
+            >
+              {connecting ? "Connecting…" : "Connect Google"}
+            </button>
+          </div>
+          <p className="mt-2 text-[10px] leading-relaxed text-subtle">
+            Opens your browser to sign in. The app listens on 127.0.0.1:8765
+            for the callback.
           </p>
         </div>
       </div>

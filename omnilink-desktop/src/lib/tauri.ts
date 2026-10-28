@@ -50,6 +50,27 @@ export async function mcpProbeHttp(url: string): Promise<{ name: string; descrip
   if (!IS_TAURI) return [];
   return invoke("mcp_probe_http", { url });
 }
+export async function oauthStart(port: number, serverBase: string): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("oauth_start", { port, serverBase });
+}
+
+export async function oauthPoll(port: number): Promise<string | null> {
+  if (!IS_TAURI) return null;
+  return invoke<string | null>("oauth_poll", { port });
+}
+
+export async function oauthClear(port: number): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("oauth_clear", { port });
+}
+export async function openUrl(url: string): Promise<void> {
+  if (!IS_TAURI) {
+    window.open(url, "_blank");
+    return;
+  }
+  await invoke("open_url", { url });
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

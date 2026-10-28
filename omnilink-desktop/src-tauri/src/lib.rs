@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use tauri::{AppHandle, Manager};
 
@@ -404,7 +408,122 @@ pub async fn mcp_probe_http_impl(url: String) -> Result<Vec<McpTool>, String> {
         .collect())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+static OAUTH_TOKENS: OnceLock<Mutex<HashMap<u16, Option<String>>>> = OnceLock::new();
+
+fn oauth_tokens() -> &'static Mutex<HashMap<u16, Option<String>>> {
+    OAUTH_TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+fn oauth_start(port: u16, server_base: String) -> Result<String, String> {
+    oauth_start_impl(port, server_base)
+}
+
+pub fn oauth_start_impl(port: u16, server_base: String) -> Result<String, String> {
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).map_err(|e| e.to_string())?;
+    // store pending
+    {
+        let mut map = oauth_tokens().lock().map_err(|e| e.to_string())?;
+        map.insert(port, None);
+    }
+    let base = server_base.trim_end_matches('/');
+    let url = format!("{}/api/auth/google/start?desktop_port={}", base, port);
+    // spawn listener thread
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line);
+            // parse path
+            let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+            // extract token from query
+            let mut token: Option<String> = None;
+            if let Some(q) = path.split('?').nth(1) {
+                for pair in q.split('&') {
+                    let mut kv = pair.splitn(2, '=');
+                    if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                        if k == "token" {
+                            token = Some(urldecode(v));
+                        }
+                    }
+                }
+            }
+            {
+                let mut map = oauth_tokens().lock().unwrap();
+                map.insert(port, token);
+            }
+            // respond
+            let body = "<html><body><h2>Signed in to OmniLink</h2><p>You can close this tab.</p></body></html>";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    Ok(url)
+}
+
+#[tauri::command]
+fn oauth_poll(port: u16) -> Result<Option<String>, String> {
+    oauth_poll_impl(port)
+}
+
+pub fn oauth_poll_impl(port: u16) -> Result<Option<String>, String> {
+    let mut map = oauth_tokens().lock().map_err(|e| e.to_string())?;
+    Ok(map.get(&port).cloned().flatten())
+}
+
+#[tauri::command]
+fn oauth_clear(port: u16) -> Result<(), String> {
+    oauth_clear_impl(port)
+}
+
+pub fn oauth_clear_impl(port: u16) -> Result<(), String> {
+    let mut map = oauth_tokens().lock().map_err(|e| e.to_string())?;
+    map.remove(&port);
+    Ok(())
+}
+
+fn urldecode(s: &str) -> String {
+    let mut out = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v as char);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+    }
+    Ok(())
+}
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -427,7 +546,11 @@ pub fn run() {
             secret_get,
             secret_delete,
             mcp_probe_stdio,
-            mcp_probe_http
+            mcp_probe_http,
+            oauth_start,
+            oauth_poll,
+            oauth_clear,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while building OmniLink");
