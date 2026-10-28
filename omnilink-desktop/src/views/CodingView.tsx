@@ -33,7 +33,8 @@ import {
   languageForPath,
 } from "@/lib/utils";
 import { useApp } from "@/store/app";
-import type { ProjectFile } from "@/types";
+import type { ProjectFile, ModelProvider } from "@/types";
+import { isModelConfigured, streamChat } from "@/lib/models";
 
 interface TreeDir {
   type: "dir";
@@ -227,6 +228,79 @@ export function CodingView() {
   const [savedTick, setSavedTick] = useState(0);
   const lastProject = useRef<string | undefined>(undefined);
 
+  const modelProvider = useApp((state) => state.modelProvider);
+  const modelBaseUrl = useApp((state) => state.modelBaseUrl);
+  const modelApiKey = useApp((state) => state.modelApiKey);
+  const modelName = useApp((state) => state.modelName);
+  const providers = useApp((state) => state.providers);
+  const activeProviderId = useApp((state) => state.activeProviderId);
+
+  const runAgent = async () => {
+    if (!project || agentRunning || !agentTask.trim()) return;
+    const activeProvider = providers.find((p) => p.id === activeProviderId);
+    const config = activeProvider
+      ? {
+          provider: (activeProvider.baseUrl.includes("127.0.0.1") ||
+          activeProvider.baseUrl.includes("localhost")
+            ? "ollama"
+            : "custom") as ModelProvider,
+          baseUrl: activeProvider.baseUrl,
+          apiKey: "",
+          model: activeProvider.model,
+        }
+      : {
+          provider: modelProvider,
+          baseUrl: modelBaseUrl,
+          apiKey: modelApiKey,
+          model: modelName,
+        };
+    if (!isModelConfigured(config)) {
+      pushToast({ title: "Connect a model first", tone: "danger" });
+      return;
+    }
+    setAgentRunning(true);
+    setAgentLog("");
+    let accumulated = "";
+    const context = project.files
+      .map((f) => `### ${f.path}\n${f.content}`)
+      .join("\n\n");
+    const messages = [
+      { role: "system" as const, content: "You are a coding agent. When you want to edit a file, respond with a JSON block: {\"edits\":[{\"path\":\"...\",\"content\":\"...\"}]}. Otherwise explain your plan in prose. End with DONE when finished." , createdAt: Date.now(), id: "sys" },
+      { role: "user" as const, content: `Project: ${project.name}\n\nFiles:\n${context}\n\nTask: ${agentTask}`, createdAt: Date.now(), id: "u1" },
+    ];
+    try {
+      await streamChat(config, messages as any, (token) => {
+        accumulated += token;
+        setAgentLog(accumulated);
+      });
+      // Try to parse edits.
+      const match = accumulated.match(/\{[\s\S]*"edits"[\s\S]*\}/);
+      if (match) {
+        try {
+          const parsed = JSON.parse(match[0]) as { edits: { path: string; content: string }[] };
+          if (parsed.edits?.length) {
+            setAgentPreview(parsed.edits[0]);
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+    } catch (error) {
+      setAgentLog((prev) => prev + `\n\n⚠ ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAgentRunning(false);
+    }
+  };
+
+  const [agentMode, setAgentMode] = useState(false);
+  const [agentTask, setAgentTask] = useState("");
+  const [agentLog, setAgentLog] = useState("");
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentPreview, setAgentPreview] = useState<{
+    path: string;
+    content: string;
+  } | null>(null);
+
   const tree = useMemo(
     () => buildTree(project?.files ?? []),
     [project?.files],
@@ -414,6 +488,13 @@ export function CodingView() {
               </>
             )}
           </span>
+          <IconButton
+            label="Toggle agent"
+            onClick={() => setAgentMode((v) => !v)}
+            className="h-7 w-7"
+          >
+            <Braces size={13} />
+          </IconButton>
           {selectedFile?.path.toLowerCase().endsWith(".html") && (
             <IconButton
               label="Preview file"
@@ -459,6 +540,68 @@ export function CodingView() {
           </IconButton>
         </div>
       </div>
+
+      {agentMode && (
+        <div className="flex min-h-0 flex-1 flex-col gap-3 border-b border-line px-5 py-4">
+          <textarea
+            value={agentTask}
+            onChange={(e) => setAgentTask(e.target.value)}
+            placeholder="Describe the change you want the agent to make…"
+            className="min-h-[80px] w-full resize-none rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2 text-[12.5px] text-fg outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={agentRunning || !agentTask.trim()}
+              onClick={() => void runAgent()}
+              className="btn btn-primary h-8 text-[10.5px]"
+            >
+              {agentRunning ? "Running…" : "Run agent"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAgentMode(false)}
+              className="btn btn-ghost h-8 text-[10.5px]"
+            >
+              Close
+            </button>
+          </div>
+          {agentLog && (
+            <pre className="scroll-thin max-h-64 overflow-auto rounded-lg border border-line bg-[var(--bg-base)] p-3 font-mono text-[10.5px] text-muted whitespace-pre-wrap">
+              {agentLog}
+            </pre>
+          )}
+          {agentPreview && (
+            <div className="rounded-lg border border-line bg-[var(--bg-base)] p-3">
+              <p className="mb-2 text-[11px] font-medium text-fg">
+                Proposed edit: {agentPreview.path}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (project) {
+                      updateProjectFile(project.id, agentPreview.path, agentPreview.content);
+                      pushToast({ title: "Edit applied", tone: "success" });
+                    }
+                    setAgentPreview(null);
+                  }}
+                  className="btn btn-primary h-7 text-[10.5px]"
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentPreview(null)}
+                  className="btn btn-ghost h-7 text-[10.5px]"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[208px] flex-none flex-col border-r border-line bg-[color-mix(in_srgb,var(--bg-surface)_60%,transparent)]">
