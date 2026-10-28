@@ -40,6 +40,7 @@ export interface CodingProject {
   description: string;
   files: ProjectFile[];
   sample?: boolean;
+  workspaceId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -75,6 +76,12 @@ export interface Provider {
   baseUrl: string;
   model: string;
   hasKey: boolean;
+  createdAt: number;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
   createdAt: number;
 }
 

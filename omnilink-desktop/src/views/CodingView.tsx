@@ -11,6 +11,7 @@ import {
   FolderPlus,
   HardDrive,
   Save,
+  Share2,
   Trash2,
 } from "lucide-react";
 import {
@@ -394,6 +395,24 @@ export function CodingView() {
               </>
             )}
           </span>
+          <IconButton
+            label="Share project"
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(project, null, 2)], {
+                type: "application/json",
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `${project.name}.omnilink.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+              pushToast({ title: "Project exported", tone: "success" });
+            }}
+            className="h-7 w-7"
+          >
+            <Share2 size={13} />
+          </IconButton>
           <IconButton
             label="Delete project"
             onClick={() => setConfirmDelete(true)}

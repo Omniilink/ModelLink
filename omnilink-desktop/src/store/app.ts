@@ -22,6 +22,7 @@ import type {
   SettingsSection,
   ThemeMode,
   Toast,
+  Workspace,
 } from "@/types";
 import { uid } from "@/lib/utils";
 import { zustandStorage } from "@/lib/storage";
@@ -34,6 +35,7 @@ function scaffoldProject(name: string, description: string): CodingProject {
     description,
     createdAt: timestamp,
     updatedAt: timestamp,
+    workspaceId: "default",
     files: [
       {
         path: "README.md",
@@ -58,6 +60,8 @@ interface AppState {
   modal: ModalState;
   activeConversationId: string | null;
   activeProjectId: string | null;
+  workspaces: Workspace[];
+  activeWorkspaceId: string | null;
   promptTag: string | null;
   ollamaUrl: string;
   modelProvider: ModelProvider;
@@ -99,6 +103,10 @@ interface AppState {
     content: string,
   ) => void;
   setActiveProject: (id: string | null) => void;
+
+  addWorkspace: (name: string) => string;
+  deleteWorkspace: (id: string) => void;
+  setActiveWorkspace: (id: string | null) => void;
 
   addMcpServer: (server: {
     name: string;
@@ -157,6 +165,8 @@ export const useApp = create<AppState>()(
       modal: null,
       activeConversationId: welcomeConversation.id,
       activeProjectId: gettingStartedProject.id,
+      workspaces: [{ id: "default", name: "Default", createdAt: Date.now() }],
+      activeWorkspaceId: "default",
       promptTag: null,
       ollamaUrl: "http://127.0.0.1:11434",
       modelProvider: "ollama",
@@ -296,6 +306,35 @@ export const useApp = create<AppState>()(
 
       setActiveProject: (activeProjectId) =>
         set({ activeProjectId, section: "coding" }),
+
+      addWorkspace: (name) => {
+        const workspace: Workspace = {
+          id: uid("workspace-"),
+          name: name.slice(0, 60) || "Workspace",
+          createdAt: Date.now(),
+        };
+        set((state) => ({
+          workspaces: [...state.workspaces, workspace],
+          activeWorkspaceId: workspace.id,
+        }));
+        return workspace.id;
+      },
+      deleteWorkspace: (id) =>
+        set((state) => {
+          if (id === "default") return state;
+          const workspaces = state.workspaces.filter((w) => w.id !== id);
+          const activeWorkspaceId =
+            state.activeWorkspaceId === id ? "default" : state.activeWorkspaceId;
+          return { workspaces, activeWorkspaceId };
+        }),
+      setActiveWorkspace: (activeWorkspaceId) =>
+        set({ activeWorkspaceId }),
+      renameWorkspace: (id: string, name: string) =>
+        set((state) => ({
+          workspaces: state.workspaces.map((w) =>
+            w.id === id ? { ...w, name: name.slice(0, 60) || w.name } : w,
+          ),
+        })),
 
       addMcpServer: (server) => {
         const timestamp = Date.now();
@@ -438,7 +477,8 @@ export const useApp = create<AppState>()(
           mcpServers: seedMcpServers,
           activeConversationId: welcomeConversation.id,
           activeProjectId: gettingStartedProject.id,
-          promptTag: null,
+          workspaces: [{ id: "default", name: "Default", createdAt: Date.now() }],
+          activeWorkspaceId: "default",
           modal: null,
           paletteOpen: false,
           toasts: [],
@@ -457,6 +497,8 @@ export const useApp = create<AppState>()(
         contextCollapsed: state.contextCollapsed,
         activeConversationId: state.activeConversationId,
         activeProjectId: state.activeProjectId,
+        workspaces: state.workspaces,
+        activeWorkspaceId: state.activeWorkspaceId,
         promptTag: state.promptTag,
         ollamaUrl: state.ollamaUrl,
         modelProvider: state.modelProvider,

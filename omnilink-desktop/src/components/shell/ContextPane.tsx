@@ -278,11 +278,17 @@ function ChatPane() {
 function CodingPane() {
   const projects = useApp((state) => state.projects);
   const activeId = useApp((state) => state.activeProjectId);
+  const workspaces = useApp((state) => state.workspaces);
+  const activeWorkspaceId = useApp((state) => state.activeWorkspaceId);
   const setActiveProject = useApp((state) => state.setActiveProject);
+  const setActiveWorkspace = useApp((state) => state.setActiveWorkspace);
+  const addWorkspace = useApp((state) => state.addWorkspace);
   const openModal = useApp((state) => state.openModal);
+  const pushToast = useApp((state) => state.pushToast);
   const [query, setQuery] = useState("");
 
   const filtered = projects
+    .filter((project) => (project.workspaceId ?? "default") === (activeWorkspaceId ?? "default"))
     .filter((project) =>
       project.name.toLowerCase().includes(query.trim().toLowerCase()),
     )
@@ -290,9 +296,35 @@ function CodingPane() {
 
   return (
     <>
+      <div className="flex h-11 flex-none items-center justify-between pl-4 pr-2.5">
+        <select
+          value={activeWorkspaceId ?? "default"}
+          onChange={(event) => setActiveWorkspace(event.target.value)}
+          className="h-6 rounded-md border border-line bg-[var(--bg-base)] px-2 text-[10.5px] text-fg outline-none"
+        >
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+        </select>
+        <IconButton
+          label="New workspace"
+          onClick={() => {
+            const name = window.prompt("Workspace name");
+            if (name) {
+              addWorkspace(name);
+              pushToast({ title: "Workspace created", tone: "success" });
+            }
+          }}
+          className="h-6 w-6"
+        >
+          <Plus size={12} />
+        </IconButton>
+      </div>
       <PaneHeader
         title="Projects"
-        count={projects.length}
+        count={filtered.length}
         onAdd={() => openModal({ type: "project-new" })}
         addLabel="New project"
       />
