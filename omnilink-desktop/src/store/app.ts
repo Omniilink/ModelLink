@@ -96,6 +96,8 @@ interface AppState {
   deleteConversation: (id: string) => void;
   appendMessage: (conversationId: string, message: Message) => void;
   renameConversation: (id: string, title: string) => void;
+  editMessage: (conversationId: string, messageId: string, content: string) => void;
+  truncateAfter: (conversationId: string, messageId: string) => void;
   setActiveConversation: (id: string | null) => void;
 
   addProject: (name: string, description: string) => string;
@@ -274,6 +276,37 @@ export const useApp = create<AppState>()(
               ? { ...conversation, title: title.slice(0, 120), updatedAt: Date.now() }
               : conversation,
           ),
+        })),
+
+      editMessage: (conversationId, messageId, content) =>
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id !== conversationId
+              ? conversation
+              : {
+                  ...conversation,
+                  messages: conversation.messages.map((message) =>
+                    message.id === messageId
+                      ? { ...message, content }
+                      : message,
+                  ),
+                  updatedAt: Date.now(),
+                },
+          ),
+        })),
+
+      truncateAfter: (conversationId, messageId) =>
+        set((state) => ({
+          conversations: state.conversations.map((conversation) => {
+            if (conversation.id !== conversationId) return conversation;
+            const idx = conversation.messages.findIndex((m) => m.id === messageId);
+            if (idx === -1) return conversation;
+            return {
+              ...conversation,
+              messages: conversation.messages.slice(0, idx + 1),
+              updatedAt: Date.now(),
+            };
+          }),
         })),
 
       setActiveConversation: (activeConversationId) =>

@@ -35,6 +35,7 @@ NEW IDEA. users can toggle an auto completion ai in settings, and select whateve
 26. **Tool call audit log** — history of every tool invocation with inputs/outputs.
 27. **MCP server marketplace** — one-click install of popular MCP servers.
 28. **Per-server permissions** — allow/deny specific tools per server.
+Native ollama intergration, section on the side if ollama is installed for finding ollama models, one button install, silimar to the one in the website.
 
 ## Sync & collaboration
 29. **Cloud sync** — chats, projects, MCP configs, prompts across devices, opt in inside settings.

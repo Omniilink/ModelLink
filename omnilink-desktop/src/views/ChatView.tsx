@@ -7,6 +7,8 @@ import {
   Cpu,
   GitBranch,
   Map,
+  Pencil,
+  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -51,7 +53,17 @@ const suggestions = [
   },
 ];
 
-function MessageRow({ message }: { message: Message }) {
+function MessageRow({
+  message,
+  onEdit,
+  onRegenerate,
+  streaming,
+}: {
+  message: Message;
+  onEdit?: (message: Message) => void;
+  onRegenerate?: (message: Message) => void;
+  streaming?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
 
@@ -102,6 +114,26 @@ function MessageRow({ message }: { message: Message }) {
               <Copy size={11} />
             )}
           </button>
+          {isUser && onEdit && (
+            <button
+              type="button"
+              aria-label="Edit message"
+              onClick={() => onEdit(message)}
+              className="flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100"
+            >
+              <Pencil size={11} />
+            </button>
+          )}
+          {!isUser && onRegenerate && !streaming && (
+            <button
+              type="button"
+              aria-label="Regenerate"
+              onClick={() => onRegenerate(message)}
+              className="flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100"
+            >
+              <RefreshCw size={11} />
+            </button>
+          )}
         </div>
         {isUser ? (
           <div className="rounded-2xl rounded-tr-md border border-line bg-[var(--bg-elevated)] px-3.5 py-2.5 text-[13px] leading-relaxed text-fg shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
@@ -235,6 +267,8 @@ export function ChatView() {
   const pushToast = useApp((state) => state.pushToast);
   const appendMessage = useApp((state) => state.appendMessage);
   const updateMessage = useApp((state) => state.updateMessage);
+  const editMessage = useApp((state) => state.editMessage);
+  const truncateAfter = useApp((state) => state.truncateAfter);
   const modelProvider = useApp((state) => state.modelProvider);
   const modelBaseUrl = useApp((state) => state.modelBaseUrl);
   const modelApiKey = useApp((state) => state.modelApiKey);
@@ -294,6 +328,71 @@ export function ChatView() {
       };
   const noModel = !isModelConfigured(modelConfig);
 
+  const startEdit = (message: Message) => {
+    if (!conversation) return;
+    const next = window.prompt("Edit message", message.content);
+    if (next === null || next.trim() === message.content.trim()) return;
+    editMessage(conversation.id, message.id, next.trim());
+    truncateAfter(conversation.id, message.id);
+    // regenerate
+    void regenerateAfterEdit(message.id, next.trim());
+  };
+
+  const regenerate = async (assistantMessage: Message) => {
+    if (!conversation) return;
+    // find the preceding user message
+    const idx = conversation.messages.findIndex((m) => m.id === assistantMessage.id);
+    if (idx <= 0) return;
+    const userMsg = conversation.messages[idx - 1];
+    if (!userMsg || userMsg.role !== "user") return;
+    truncateAfter(conversation.id, userMsg.id);
+    void regenerateAfterEdit(userMsg.id, userMsg.content);
+  };
+
+  const regenerateAfterEdit = async (userMessageId: string, content: string) => {
+    const conv = conversations.find((c) => c.id === activeId);
+    if (!conv) return;
+    const userMessage: Message = {
+      id: userMessageId,
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    // ensure user message exists
+    const assistantId = `message-${Date.now() + 1}`;
+    appendMessage(conv.id, {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      createdAt: Date.now(),
+    });
+    setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let accumulated = "";
+    const cfg = modelConfig;
+    const msgs = conv.messages
+      .filter((m) => m.id !== assistantId)
+      .concat(userMessage);
+    try {
+      await streamChat(
+        cfg,
+        msgs,
+        (token) => {
+          accumulated += token;
+          updateMessage(conv.id, assistantId, accumulated);
+        },
+        controller.signal,
+      );
+    } catch (error) {
+      const m = error instanceof Error ? error.message : "Model request failed";
+      updateMessage(conv.id, assistantId, accumulated || `⚠ ${m}`);
+      pushToast({ title: "Model request failed", description: m, tone: "danger" });
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  };
   const handleSend = async (content: string) => {
     if (!conversation || streaming) return;
     const userMessage: Message = {
@@ -498,7 +597,13 @@ export function ChatView() {
           <div className="mx-auto w-full max-w-[780px] px-7 pb-4 pt-2">
             <AnimatePresence initial={false}>
               {conversation.messages.map((message) => (
-                <MessageRow key={message.id} message={message} />
+                <MessageRow
+                  key={message.id}
+                  message={message}
+                  onEdit={(m) => startEdit(m)}
+                  onRegenerate={(m) => void regenerate(m)}
+                  streaming={streaming}
+                />
               ))}
             </AnimatePresence>
           </div>
