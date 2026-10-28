@@ -1448,43 +1448,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
-          <select class="level-sel" id="roblox-effort" title="Effort" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
-          <select class="level-sel" id="roblox-thinking" title="Think" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
-          <select class="level-sel" id="roblox-prompt-detail" title="System prompt detail" onchange="robloxMcpRefreshServers()">
-            <option value="compressed">Prompt: compressed</option>
-            <option value="medium" selected>Prompt: medium</option>
-            <option value="super">Prompt: super</option>
-          </select>
-          <label style="font-size:11px;color:var(--text-secondary)">MCP server:</label>
-          <select id="roblox-mcp-server" class="level-sel" style="min-width:160px"></select>
-          <button class="btn btn-ghost btn-sm" onclick="robloxMcpRefreshServers()">Refresh</button>
-          <button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back</button>
-        </div>
-        <div class="body-row">
-          <div class="leftpanel" id="roblox-mcp-tree" style="width:260px;min-width:200px;overflow:auto;padding:8px;font-size:12px"></div>
-          <div style="display:flex;gap:8px;padding:0 12px 8px 12px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm" onclick="robloxMcpListScripts()">List scripts</button>
-          <input id="roblox-mcp-script-path" placeholder="game.ServerScriptService.Script" style="flex:1;min-width:180px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:12px">
-          <button class="btn btn-ghost btn-sm" onclick="robloxMcpReadScript()">Read</button>
-          <button class="btn btn-primary btn-sm" onclick="robloxMcpSaveScript()">Save</button>
-        </div>
-        <textarea id="roblox-mcp-script-src" placeholder="-- Luau source --" style="margin:0 12px 8px 12px;height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text-primary);font-family:var(--mono);font-size:12px;resize:vertical"></textarea>
-        <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
-        </div>
-        <div class="coding-input-area">
-          <div class="coding-input-box" style="position:relative">
-            <textarea id="roblox-mcp-input" placeholder="Ask Roblox Studio via MCP..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();robloxMcpSend()}"></textarea>
-            <button class="send-btn" onclick="robloxMcpSend()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
-          </div>
-        </div>
-        <div style="padding:8px 12px;border-top:1px solid var(--border);background:var(--bg-secondary)">
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-            <span id="roblox-mcp-edit-path" style="font-size:11px;color:var(--text-muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">No file selected</span>
-            <button class="btn btn-primary btn-sm" onclick="robloxMcpSaveFile()">Save</button>
-          </div>
-          <textarea id="roblox-mcp-editor" style="width:100%;min-height:160px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-xs);padding:8px;color:var(--text-primary);font-family:var(--mono);font-size:12px" placeholder="Select a script in the tree to edit..."></textarea>
-        </div>
-      </div>
       <div class="view-panel" id="settings-view">
         <div class="view-header"><h2>Settings</h2><button class="btn btn-ghost btn-sm" onclick="navigate('chat')">Back to Chat</button></div>
         <div class="view-body" id="settings-body"></div>
