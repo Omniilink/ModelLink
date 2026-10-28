@@ -7,6 +7,7 @@ import {
   Cpu,
   GitBranch,
   Map,
+  Mic,
   Pencil,
   Pin,
   RefreshCw,
@@ -184,6 +185,7 @@ function Composer({
   const openSettings = useApp((state) => state.openSettings);
   const pushToast = useApp((state) => state.pushToast);
   const newConversation = useApp((state) => state.newConversation);
+  const [listening, setListening] = useState(false);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -287,6 +289,38 @@ function Composer({
           <span className="mr-1 hidden text-[9.5px] text-subtle sm:block">
             Enter to send · Shift+Enter for a new line
           </span>
+          <button
+            type="button"
+            aria-label="Voice input"
+            onClick={() => {
+              const SR =
+                (window as any).SpeechRecognition ||
+                (window as any).webkitSpeechRecognition;
+              if (!SR) {
+                pushToast({ title: "Voice input not supported", tone: "danger" });
+                return;
+              }
+              if (listening) return;
+              const rec = new SR();
+              rec.lang = "en-US";
+              rec.interimResults = false;
+              rec.onstart = () => setListening(true);
+              rec.onresult = (e: any) => {
+                const text = e.results?.[0]?.[0]?.transcript ?? "";
+                if (text) onDraftChange(draft ? `${draft} ${text}` : text);
+              };
+              rec.onend = () => setListening(false);
+              rec.onerror = () => setListening(false);
+              rec.start();
+            }}
+            className={`flex h-7 w-7 flex-none items-center justify-center rounded-lg transition-all ${
+              listening
+                ? "bg-danger text-white animate-pulse"
+                : "bg-[var(--bg-active)] text-subtle hover:text-fg"
+            }`}
+          >
+            <Mic size={14} />
+          </button>
           <button
             type="button"
             aria-label="Send message"
