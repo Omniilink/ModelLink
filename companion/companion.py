@@ -859,9 +859,21 @@ def mcp_sync(servers):
                 mcp_stop(name)
         for srv in servers:
             name = srv.get("name")
-            if not name or name in _MCP_SERVERS:
+            if not name:
                 continue
-            mcp_start(srv)
+            entry = _MCP_SERVERS.get(name)
+            # Restart if missing, errored, or process died.
+            if entry is not None:
+                proc = entry.get("proc")
+                dead = (proc is not None and getattr(proc, "poll", lambda: 0)() is not None)
+                if entry.get("status", "").startswith("error") or dead or entry.get("cfg") != srv:
+                    mcp_stop(name)
+                    entry = None
+            if entry is None:
+                mcp_start(srv)
+            else:
+                # keep config fresh
+                _MCP_SERVERS[name]["cfg"] = srv
 
 def mcp_start(srv):
     name = srv.get("name")
