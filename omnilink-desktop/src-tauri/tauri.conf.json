@@ -34,6 +34,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI2MzY1QUIxMzJERjM4NDUKUldSRk9OOHlzVm8ydHFRN2lXMDF3QXp1bEo1cmhCVDdUOEVDSUdwa1NYdFZkODVMZE9XVzZTMzUK",
+      "endpoints": [
+        "https://github.com/Omniilink/ModelLink/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

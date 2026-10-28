@@ -1019,6 +1019,39 @@ function UpdatesSettings() {
   const autoCheckUpdates = useApp((state) => state.autoCheckUpdates);
   const setAutoCheckUpdates = useApp((state) => state.setAutoCheckUpdates);
   const pushToast = useApp((state) => state.pushToast);
+  const [checking, setChecking] = useState(false);
+
+  const checkNow = async () => {
+    if (!IS_TAURI) {
+      pushToast({
+        title: "Updates are checked in the desktop app",
+        tone: "danger",
+      });
+      return;
+    }
+    setChecking(true);
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        pushToast({
+          title: `Update ${update.version} available`,
+          description: "Download and install from the release page.",
+          tone: "success",
+        });
+      } else {
+        pushToast({ title: "You are up to date", tone: "success" });
+      }
+    } catch (error) {
+      pushToast({
+        title: "Update check failed",
+        description: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
 
   return (
     <div className="space-y-7">
@@ -1071,14 +1104,15 @@ function UpdatesSettings() {
           </Row>
           <Row
             title="Check now"
-            description="The signed update feed activates with the first public release."
+            description="Queries the signed update feed."
           >
             <button
               type="button"
+              onClick={() => void checkNow()}
+              disabled={checking}
               className="btn h-7 text-[10.5px]"
-              disabled
             >
-              Check for updates
+              {checking ? "Checking…" : "Check for updates"}
             </button>
           </Row>
         </Group>
