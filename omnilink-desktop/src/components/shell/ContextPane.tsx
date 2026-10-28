@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  BarChart3,
   BookText,
   Database,
   DownloadCloud,
@@ -32,6 +33,7 @@ const settingsItems: {
   { id: "models", label: "Models", icon: Cpu },
   { id: "data", label: "Data & storage", icon: Database },
   { id: "account", label: "Account", icon: UserRound },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
   { id: "updates", label: "Updates", icon: DownloadCloud },
   { id: "about", label: "About", icon: Info },
 ];
@@ -607,6 +609,20 @@ function SettingsPane() {
   );
 }
 
+function AssetsPane() {
+  const assets = useApp((state) => state.assets);
+  return (
+    <>
+      <PaneHeader title="Assets" count={assets.length} />
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[11px] text-subtle">
+        {assets.length === 0
+          ? "No assets yet. Add images or 3D models from the Assets view."
+          : `${assets.length} asset${assets.length === 1 ? "" : "s"} in this workspace.`}
+      </div>
+    </>
+  );
+}
+
 export function ContextPane() {
   const section = useApp((state) => state.section);
 
@@ -625,6 +641,7 @@ export function ContextPane() {
           {section === "coding" && <CodingPane />}
           {section === "mcp" && <McpPane />}
           {section === "prompts" && <PromptsPane />}
+          {section === "assets" && <AssetsPane />}
           {section === "settings" && <SettingsPane />}
         </motion.div>
       </AnimatePresence>

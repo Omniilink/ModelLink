@@ -11,6 +11,7 @@ import { Toaster } from "@/components/ui/Toaster";
 import { IS_TAURI, getSecret, showMainWindow } from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
 import { useApp } from "@/store/app";
+import { AssetsView } from "@/views/AssetsView";
 import { ChatView } from "@/views/ChatView";
 import { CodingView } from "@/views/CodingView";
 import { McpView } from "@/views/McpView";
@@ -101,6 +102,7 @@ export default function App() {
         "2": () => state.setSection("coding"),
         "3": () => state.setSection("mcp"),
         "4": () => state.setSection("prompts"),
+        "5": () => state.setSection("assets"),
       };
       const navigate = digits[key];
       if (navigate) {
@@ -148,6 +150,7 @@ export default function App() {
                 {section === "coding" && <CodingView />}
                 {section === "mcp" && <McpView />}
                 {section === "prompts" && <PromptsView />}
+                {section === "assets" && <AssetsView />}
                 {section === "settings" && <SettingsView />}
               </motion.div>
             </AnimatePresence>

@@ -3,6 +3,7 @@ import {
   Blocks,
   BookText,
   Code2,
+  Image,
   MessageSquare,
   Settings2,
   type LucideIcon,
@@ -23,6 +24,7 @@ const primaryNav: NavItem[] = [
   { id: "coding", label: "Coding", icon: Code2, shortcut: "Ctrl 2" },
   { id: "mcp", label: "MCP", icon: Blocks, shortcut: "Ctrl 3" },
   { id: "prompts", label: "Prompts", icon: BookText, shortcut: "Ctrl 4" },
+  { id: "assets", label: "Assets", icon: Image, shortcut: "Ctrl 5" },
 ];
 
 function RailButton({ item }: { item: NavItem }) {

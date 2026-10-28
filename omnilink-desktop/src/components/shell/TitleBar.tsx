@@ -17,6 +17,7 @@ const sectionNames: Record<Section, string> = {
   coding: "Coding",
   mcp: "MCP",
   prompts: "Prompts",
+  assets: "Assets",
   settings: "Settings",
 };
 

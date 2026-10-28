@@ -9,6 +9,7 @@ import {
 } from "@/data/seed";
 import type {
   Accent,
+  Asset,
   CodingProject,
   Conversation,
   McpServer,
@@ -77,6 +78,8 @@ interface AppState {
   prompts: Prompt[];
   mcpServers: McpServer[];
   toasts: Toast[];
+  assets: Asset[];
+  analytics: Record<string, number>;
 
   setSection: (section: Section) => void;
   openSettings: (section: SettingsSection) => void;
@@ -135,6 +138,10 @@ interface AppState {
   deletePrompt: (id: string) => void;
   setPromptTag: (tag: string | null) => void;
 
+  addAsset: (asset: Omit<Asset, "id" | "createdAt">) => string;
+  deleteAsset: (id: string) => void;
+  trackEvent: (name: string) => void;
+
   setOllamaUrl: (url: string) => void;
   setModelProvider: (provider: ModelProvider) => void;
   setModelBaseUrl: (url: string) => void;
@@ -182,6 +189,8 @@ export const useApp = create<AppState>()(
       prompts: seedPrompts,
       mcpServers: seedMcpServers,
       toasts: [],
+      assets: [],
+      analytics: {},
 
       setSection: (section) =>
         set({ section, paletteOpen: false, modal: null }),
@@ -220,6 +229,7 @@ export const useApp = create<AppState>()(
           modal: null,
           paletteOpen: false,
         }));
+        get().trackEvent("chat.created");
         return conversation.id;
       },
 
@@ -276,6 +286,7 @@ export const useApp = create<AppState>()(
           section: "coding",
           modal: null,
         }));
+        get().trackEvent("project.created");
         return project.id;
       },
 
@@ -410,6 +421,18 @@ export const useApp = create<AppState>()(
 
       setPromptTag: (promptTag) => set({ promptTag }),
 
+      addAsset: (asset) => {
+        const entry: Asset = { ...asset, id: uid("asset-"), createdAt: Date.now() };
+        set((state) => ({ assets: [entry, ...state.assets] }));
+        return entry.id;
+      },
+      deleteAsset: (id) =>
+        set((state) => ({ assets: state.assets.filter((a) => a.id !== id) })),
+      trackEvent: (name) =>
+        set((state) => ({
+          analytics: { ...state.analytics, [name]: (state.analytics[name] ?? 0) + 1 },
+        })),
+
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
       setModelProvider: (modelProvider) => set({ modelProvider }),
       setModelBaseUrl: (modelBaseUrl) => set({ modelBaseUrl }),
@@ -482,6 +505,8 @@ export const useApp = create<AppState>()(
           modal: null,
           paletteOpen: false,
           toasts: [],
+      assets: [],
+      analytics: {},
         }),
     }),
     {
@@ -512,6 +537,8 @@ export const useApp = create<AppState>()(
         projects: state.projects,
         prompts: state.prompts,
         mcpServers: state.mcpServers,
+        assets: state.assets,
+        analytics: state.analytics,
       }),
     },
   ),

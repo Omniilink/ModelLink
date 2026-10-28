@@ -52,6 +52,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   models: "Models",
   data: "Data & storage",
   account: "Account",
+  analytics: "Analytics",
   updates: "Updates",
   about: "About",
 };
@@ -61,6 +62,7 @@ const sectionDescriptions: Record<SettingsSection, string> = {
   models: "Connect the models that power chat and coding",
   data: "Local workspace data and exports",
   account: "Identity, sync, and connected services",
+  analytics: "Local usage events",
   updates: "Version and release channel",
   about: "Build details and project information",
 };
@@ -1142,6 +1144,40 @@ function AccountSettings() {
   );
 }
 
+function AnalyticsSettings() {
+  const analytics = useApp((state) => state.analytics);
+  const entries = Object.entries(analytics).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="space-y-7">
+      <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-5">
+        <h2 className="text-[13.5px] font-semibold text-fg">Usage analytics</h2>
+        <p className="mt-1 text-[10.5px] text-subtle">
+          Events are tracked locally on this device.
+        </p>
+        {entries.length === 0 ? (
+          <p className="mt-4 text-[11.5px] text-muted">
+            No events recorded yet.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-2">
+            {entries.map(([name, count]) => (
+              <div
+                key={name}
+                className="flex items-center justify-between rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2"
+              >
+                <span className="text-[11.5px] text-fg">{name}</span>
+                <span className="font-mono text-[11px] tabular-nums text-subtle">
+                  {count}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function UpdatesSettings() {
   const autoCheckUpdates = useApp((state) => state.autoCheckUpdates);
   const setAutoCheckUpdates = useApp((state) => state.setAutoCheckUpdates);
@@ -1397,6 +1433,7 @@ export function SettingsView() {
           {section === "models" && <ModelsSettings />}
           {section === "data" && <DataSettings />}
           {section === "account" && <AccountSettings />}
+          {section === "analytics" && <AnalyticsSettings />}
           {section === "updates" && <UpdatesSettings />}
           {section === "about" && <AboutSettings />}
 

@@ -1,4 +1,4 @@
-export type Section = "chat" | "coding" | "mcp" | "prompts" | "settings";
+export type Section = "chat" | "coding" | "mcp" | "prompts" | "assets" | "settings";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -9,6 +9,7 @@ export type SettingsSection =
   | "models"
   | "data"
   | "account"
+  | "analytics"
   | "updates"
   | "about";
 
@@ -82,6 +83,14 @@ export interface Provider {
 export interface Workspace {
   id: string;
   name: string;
+  createdAt: number;
+}
+
+export interface Asset {
+  id: string;
+  name: string;
+  kind: "image" | "model" | "other";
+  path: string;
   createdAt: number;
 }
 
