@@ -1,8 +1,0 @@
-</script>
-
-<script>
-// ===== In-browser LLMs (WebGPU / WebLLM) =====
-// Runs small→medium models entirely in the browser via WebGPU. Weights are
-// downloaded once into the browser Cache API and reused offline. Off by
-// default; enabled in Settings. Model ids are namespaced `browser:<id>` so the
-//
