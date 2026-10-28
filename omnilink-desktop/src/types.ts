@@ -22,6 +22,7 @@ export interface Message {
   content: string;
   createdAt: number;
   pinned?: boolean;
+  attachments?: { name: string; type: string; data: string }[];
 }
 
 export interface Conversation {
@@ -119,6 +120,13 @@ export interface UsageEntry {
   model: string;
   tokens: number;
   timestamp: number;
+}
+
+export interface ChatTemplate {
+  id: string;
+  name: string;
+  systemPrompt: string;
+  createdAt: number;
 }
 
 export type ModalState =

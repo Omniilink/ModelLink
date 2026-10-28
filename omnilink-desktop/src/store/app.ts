@@ -10,6 +10,7 @@ import {
 import type {
   Accent,
   Asset,
+  ChatTemplate,
   CodingProject,
   Conversation,
   McpServer,
@@ -91,6 +92,10 @@ interface AppState {
   usageLog: UsageEntry[];
   costThreshold: number;
   crashReportsEnabled: boolean;
+  chatTemplates: ChatTemplate[];
+  splitPane: boolean;
+  autoComplete: boolean;
+  autoCompleteModel: string;
   localOnlyMode: boolean;
   encryptedWorkspace: boolean;
   projectVersions: ProjectVersion[];
@@ -170,6 +175,12 @@ interface AppState {
   clearUsage: () => void;
   setCostThreshold: (v: number) => void;
   setCrashReportsEnabled: (v: boolean) => void;
+  addChatTemplate: (t: { name: string; systemPrompt: string }) => string;
+  deleteChatTemplate: (id: string) => void;
+  setSplitPane: (v: boolean) => void;
+  setAutoComplete: (v: boolean) => void;
+  setAutoCompleteModel: (m: string) => void;
+  forkConversation: (conversationId: string, messageId: string) => string;
   addAudit: (action: string, detail: string) => void;
   setLocalOnlyMode: (v: boolean) => void;
   setEncryptedWorkspace: (v: boolean) => void;
@@ -241,6 +252,10 @@ export const useApp = create<AppState>()(
       usageLog: [],
       costThreshold: 10,
       crashReportsEnabled: false,
+      chatTemplates: [],
+      splitPane: false,
+      autoComplete: false,
+      autoCompleteModel: "",
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,
@@ -557,6 +572,43 @@ export const useApp = create<AppState>()(
       setCostThreshold: (costThreshold) => set({ costThreshold }),
       setCrashReportsEnabled: (crashReportsEnabled) => set({ crashReportsEnabled }),
 
+      addChatTemplate: (t) => {
+        const entry: ChatTemplate = {
+          id: uid("tpl-"),
+          name: t.name,
+          systemPrompt: t.systemPrompt,
+          createdAt: Date.now(),
+        };
+        set((state) => ({ chatTemplates: [...state.chatTemplates, entry] }));
+        return entry.id;
+      },
+      deleteChatTemplate: (id) =>
+        set((state) => ({
+          chatTemplates: state.chatTemplates.filter((t) => t.id !== id),
+        })),
+      setSplitPane: (splitPane) => set({ splitPane }),
+      setAutoComplete: (autoComplete) => set({ autoComplete }),
+      setAutoCompleteModel: (autoCompleteModel) => set({ autoCompleteModel }),
+      forkConversation: (conversationId, messageId) => {
+        const conv = get().conversations.find((c) => c.id === conversationId);
+        if (!conv) return "";
+        const idx = conv.messages.findIndex((m) => m.id === messageId);
+        if (idx === -1) return "";
+        const newConv: Conversation = {
+          id: uid("chat-"),
+          title: `${conv.title} (fork)`,
+          messages: conv.messages.slice(0, idx + 1).map((m) => ({ ...m })),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        set((state) => ({
+          conversations: [newConv, ...state.conversations],
+          activeConversationId: newConv.id,
+        }));
+        get().trackEvent("chat.forked");
+        return newConv.id;
+      },
+
       addAudit: (action, detail) =>
         set((state) => ({
           auditLog: [
@@ -722,6 +774,10 @@ export const useApp = create<AppState>()(
       usageLog: [],
       costThreshold: 10,
       crashReportsEnabled: false,
+      chatTemplates: [],
+      splitPane: false,
+      autoComplete: false,
+      autoCompleteModel: "",
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,        }),
@@ -765,6 +821,10 @@ export const useApp = create<AppState>()(
         usageLog: state.usageLog,
         costThreshold: state.costThreshold,
         crashReportsEnabled: state.crashReportsEnabled,
+        chatTemplates: state.chatTemplates,
+        splitPane: state.splitPane,
+        autoComplete: state.autoComplete,
+        autoCompleteModel: state.autoCompleteModel,
         projectVersions: state.projectVersions,
         serverUrl: state.serverUrl,
         syncEnabled: state.syncEnabled,

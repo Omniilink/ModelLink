@@ -220,6 +220,8 @@ function AppearanceSettings() {
   const setAccent = useApp((state) => state.setAccent);
   const reduceMotion = useApp((state) => state.reduceMotion);
   const setReduceMotion = useApp((state) => state.setReduceMotion);
+  const splitPane = useApp((state) => state.splitPane);
+  const setSplitPane = useApp((state) => state.setSplitPane);
   const fontSize = useApp((state) => state.fontSize);
   const setFontSize = useApp((state) => state.setFontSize);
   const customCss = useApp((state) => state.customCss);
@@ -321,6 +323,16 @@ function AppearanceSettings() {
               checked={!contextCollapsed}
               onChange={toggleContext}
               label="Show sidebar"
+            />
+          </Row>
+          <Row
+            title="Split pane"
+            description="Show chat alongside the current view."
+          >
+            <Switch
+              checked={splitPane}
+              onChange={setSplitPane}
+              label="Split pane"
             />
           </Row>
         </Group>

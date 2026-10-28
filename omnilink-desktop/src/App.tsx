@@ -38,6 +38,7 @@ export default function App() {
   const customCss = useApp((state) => state.customCss);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
   const focusMode = useApp((state) => state.focusMode);
+  const splitPane = useApp((state) => state.splitPane);
   const crashReportsEnabled = useApp((state) => state.crashReportsEnabled);
   const localOnlyMode = useApp((state) => state.localOnlyMode);
 
@@ -221,24 +222,52 @@ export default function App() {
           )}
 
           <main className="app-content">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={section}
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -3 }}
-                transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-                className="h-full min-h-0"
-              >
-                {section === "chat" && <ChatView />}
-                {section === "coding" && <CodingView />}
-                {section === "workspaces" && <WorkspacesView />}
-                {section === "mcp" && <McpView />}
-                {section === "prompts" && <PromptsView />}
-                {section === "assets" && <AssetsView />}
-                {section === "settings" && <SettingsView />}
-              </motion.div>
-            </AnimatePresence>
+            {splitPane ? (
+              <div className="flex h-full min-h-0">
+                <div className="min-w-0 flex-1 border-r border-line">
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={section}
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -3 }}
+                      transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+                      className="h-full min-h-0"
+                    >
+                      {section === "chat" && <ChatView />}
+                      {section === "coding" && <CodingView />}
+                      {section === "mcp" && <McpView />}
+                      {section === "prompts" && <PromptsView />}
+                      {section === "assets" && <AssetsView />}
+                      {section === "settings" && <SettingsView />}
+                      {section === "workspaces" && <WorkspacesView />}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <ChatView />
+                </div>
+              </div>
+            ) : (
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={section}
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -3 }}
+                  transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+                  className="h-full min-h-0"
+                >
+                  {section === "chat" && <ChatView />}
+                  {section === "coding" && <CodingView />}
+                  {section === "mcp" && <McpView />}
+                  {section === "prompts" && <PromptsView />}
+                  {section === "assets" && <AssetsView />}
+                  {section === "settings" && <SettingsView />}
+                  {section === "workspaces" && <WorkspacesView />}
+                </motion.div>
+              </AnimatePresence>
+            )}
           </main>
         </div>
         <StatusBar />
