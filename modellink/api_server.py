@@ -617,6 +617,10 @@ app.add_middleware(
         "https://omniilink.dpdns.org",
         "http://127.0.0.1:8080",
         "http://localhost:8080",
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+        "tauri://localhost",
+        "https://tauri.localhost",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -2195,6 +2199,10 @@ async def google_oauth_start(request: Request):
     resp = RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + params, status_code=302)
     resp.set_cookie(key="g_oauth_state", value=state, httponly=True, samesite="lax",
                     secure=_request_is_https(request), max_age=600, path="/")
+    desktop_port = request.query_params.get("desktop_port", "")
+    if desktop_port.isdigit():
+        resp.set_cookie(key="g_oauth_desktop_port", value=desktop_port, httponly=True,
+                        samesite="lax", secure=_request_is_https(request), max_age=600, path="/")
     return resp
 
 def _google_post(url: str, data: dict):
@@ -2275,9 +2283,17 @@ async def google_oauth_callback(request: Request):
     else:
         logger.info(f"[AUTH] Google signin user={user.get('username','-')}")
     token = create_session(user["id"])
-    resp = RedirectResponse("/chat", status_code=302)
+    desktop_port = request.cookies.get("g_oauth_desktop_port", "")
+    if desktop_port.isdigit():
+        resp = RedirectResponse(
+            f"http://127.0.0.1:{desktop_port}/callback?token={urllib.parse.quote(token)}",
+            status_code=302,
+        )
+    else:
+        resp = RedirectResponse("/chat", status_code=302)
     set_session_cookie(resp, token, secure=_request_is_https(request))
     resp.delete_cookie("g_oauth_state", path="/")
+    resp.delete_cookie("g_oauth_desktop_port", path="/")
     return resp
 
 @app.get("/api/auth/me")
