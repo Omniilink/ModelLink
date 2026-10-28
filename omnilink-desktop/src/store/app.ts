@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 import {
   gettingStartedProject,
@@ -16,12 +16,14 @@ import type {
   Message,
   ModalState,
   Prompt,
+  ModelProvider,
   Section,
   SettingsSection,
   ThemeMode,
   Toast,
 } from "@/types";
 import { uid } from "@/lib/utils";
+import { zustandStorage } from "@/lib/storage";
 
 function scaffoldProject(name: string, description: string): CodingProject {
   const timestamp = Date.now();
@@ -57,6 +59,10 @@ interface AppState {
   activeProjectId: string | null;
   promptTag: string | null;
   ollamaUrl: string;
+  modelProvider: ModelProvider;
+  modelBaseUrl: string;
+  modelApiKey: string;
+  modelName: string;
   autoCheckUpdates: boolean;
 
   conversations: Conversation[];
@@ -119,6 +125,11 @@ interface AppState {
   setPromptTag: (tag: string | null) => void;
 
   setOllamaUrl: (url: string) => void;
+  setModelProvider: (provider: ModelProvider) => void;
+  setModelBaseUrl: (url: string) => void;
+  setModelApiKey: (key: string) => void;
+  setModelName: (name: string) => void;
+  updateMessage: (conversationId: string, messageId: string, content: string) => void;
   setAutoCheckUpdates: (value: boolean) => void;
 
   pushToast: (toast: Omit<Toast, "id">) => void;
@@ -141,6 +152,10 @@ export const useApp = create<AppState>()(
       activeProjectId: gettingStartedProject.id,
       promptTag: null,
       ollamaUrl: "http://127.0.0.1:11434",
+      modelProvider: "ollama",
+      modelBaseUrl: "http://127.0.0.1:11434",
+      modelApiKey: "",
+      modelName: "",
       autoCheckUpdates: true,
 
       conversations: [welcomeConversation],
@@ -348,6 +363,24 @@ export const useApp = create<AppState>()(
       setPromptTag: (promptTag) => set({ promptTag }),
 
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
+      setModelProvider: (modelProvider) => set({ modelProvider }),
+      setModelBaseUrl: (modelBaseUrl) => set({ modelBaseUrl }),
+      setModelApiKey: (modelApiKey) => set({ modelApiKey }),
+      setModelName: (modelName) => set({ modelName }),
+      updateMessage: (conversationId, messageId, content) =>
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id !== conversationId
+              ? conversation
+              : {
+                  ...conversation,
+                  messages: conversation.messages.map((message) =>
+                    message.id === messageId ? { ...message, content } : message,
+                  ),
+                  updatedAt: Date.now(),
+                },
+          ),
+        })),
       setAutoCheckUpdates: (autoCheckUpdates) => set({ autoCheckUpdates }),
 
       pushToast: (toast) => {
@@ -381,6 +414,7 @@ export const useApp = create<AppState>()(
     {
       name: "omnilink.workspace",
       version: 1,
+      storage: createJSONStorage(() => zustandStorage),
       partialize: (state) => ({
         section: state.section,
         settingsSection: state.settingsSection,
@@ -392,6 +426,10 @@ export const useApp = create<AppState>()(
         activeProjectId: state.activeProjectId,
         promptTag: state.promptTag,
         ollamaUrl: state.ollamaUrl,
+        modelProvider: state.modelProvider,
+        modelBaseUrl: state.modelBaseUrl,
+        // modelApiKey is stored in the OS keychain / localStorage, never in the DB.
+        modelName: state.modelName,
         autoCheckUpdates: state.autoCheckUpdates,
         conversations: state.conversations,
         projects: state.projects,

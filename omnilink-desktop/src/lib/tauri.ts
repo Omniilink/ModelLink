@@ -27,6 +27,20 @@ export async function showMainWindow() {
   }
 }
 
+export async function setSecret(key: string, value: string): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("secret_set", { key, value });
+}
+
+export async function getSecret(key: string): Promise<string | null> {
+  if (!IS_TAURI) return null;
+  return invoke<string | null>("secret_get", { key });
+}
+
+export async function deleteSecret(key: string): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("secret_delete", { key });
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

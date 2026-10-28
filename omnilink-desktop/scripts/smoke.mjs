@@ -159,7 +159,7 @@ try {
   await shot("11-appearance-light-emerald");
 
   await page.getByRole("button", { name: "Models", exact: true }).click();
-  await page.getByText("OpenCode Zen").waitFor();
+  await page.getByRole("heading", { name: "OpenCode Zen" }).waitFor();
   await settle(600);
   await shot("12-settings-models");
 

@@ -21,6 +21,7 @@ import { Logo } from "@/components/ui/Logo";
 import { useApp } from "@/store/app";
 import type { Message } from "@/types";
 import { cn, copyText, formatTime } from "@/lib/utils";
+import { isModelConfigured, streamChat } from "@/lib/models";
 
 const suggestions = [
   {
@@ -122,16 +123,19 @@ function Composer({
   draft,
   onDraftChange,
   noModel,
+  streaming,
+  onSend,
 }: {
   conversationId: string;
   draft: string;
   onDraftChange: (value: string) => void;
   noModel: boolean;
+  streaming: boolean;
+  onSend: (content: string) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const openSettings = useApp((state) => state.openSettings);
   const pushToast = useApp((state) => state.pushToast);
-  const appendMessage = useApp((state) => state.appendMessage);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -141,7 +145,7 @@ function Composer({
   }, [draft, conversationId]);
 
   const submit = () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || streaming) return;
     if (noModel) {
       pushToast({
         title: "Connect a model first",
@@ -150,12 +154,7 @@ function Composer({
       });
       return;
     }
-    appendMessage(conversationId, {
-      id: `message-${Date.now()}`,
-      role: "user",
-      content: draft.trim(),
-      createdAt: Date.now(),
-    });
+    onSend(draft.trim());
     onDraftChange("");
   };
 
@@ -211,7 +210,7 @@ function Composer({
             type="button"
             aria-label="Send message"
             onClick={submit}
-            disabled={!draft.trim()}
+            disabled={!draft.trim() || streaming}
             className={cn(
               "flex h-7 w-7 flex-none items-center justify-center rounded-lg transition-all",
               draft.trim()
@@ -233,13 +232,72 @@ export function ChatView() {
   const deleteConversation = useApp((state) => state.deleteConversation);
   const newConversation = useApp((state) => state.newConversation);
   const pushToast = useApp((state) => state.pushToast);
+  const appendMessage = useApp((state) => state.appendMessage);
+  const updateMessage = useApp((state) => state.updateMessage);
+  const modelProvider = useApp((state) => state.modelProvider);
+  const modelBaseUrl = useApp((state) => state.modelBaseUrl);
+  const modelApiKey = useApp((state) => state.modelApiKey);
+  const modelName = useApp((state) => state.modelName);
   const [draft, setDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copiedTranscript, setCopiedTranscript] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const conversation = conversations.find((item) => item.id === activeId);
-  const noModel = true;
+  const modelConfig = {
+    provider: modelProvider,
+    baseUrl: modelBaseUrl,
+    apiKey: modelApiKey,
+    model: modelName,
+  };
+  const noModel = !isModelConfigured(modelConfig);
+
+  const handleSend = async (content: string) => {
+    if (!conversation || streaming) return;
+    const userMessage: Message = {
+      id: `message-${Date.now()}`,
+      role: "user",
+      content,
+      createdAt: Date.now(),
+    };
+    appendMessage(conversation.id, userMessage);
+    const assistantId = `message-${Date.now() + 1}`;
+    appendMessage(conversation.id, {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      createdAt: Date.now(),
+    });
+    setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let accumulated = "";
+    try {
+      await streamChat(
+        modelConfig,
+        [...conversation.messages, userMessage],
+        (token) => {
+          accumulated += token;
+          updateMessage(conversation.id, assistantId, accumulated);
+        },
+        controller.signal,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Model request failed";
+      updateMessage(
+        conversation.id,
+        assistantId,
+        accumulated || `⚠ ${message}`,
+      );
+      pushToast({ title: "Model request failed", description: message, tone: "danger" });
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  };
 
   useEffect(() => {
     setDraft("");
@@ -414,6 +472,8 @@ export function ChatView() {
             draft={draft}
             onDraftChange={setDraft}
             noModel={noModel}
+            streaming={streaming}
+            onSend={(content) => void handleSend(content)}
           />
         </div>
       </div>

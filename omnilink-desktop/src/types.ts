@@ -67,6 +67,8 @@ export interface Prompt {
   updatedAt: number;
 }
 
+export type ModelProvider = "ollama" | "openai" | "custom";
+
 export type ModalState =
   | { type: "project-new" }
   | { type: "prompt-new" }

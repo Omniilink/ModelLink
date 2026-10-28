@@ -26,7 +26,13 @@ import {
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Switch } from "@/components/ui/Switch";
 import { Segmented } from "@/components/ui/Segmented";
-import { detectOpenCode, IS_TAURI, type OpenCodeInfo } from "@/lib/tauri";
+import {
+  detectOpenCode,
+  IS_TAURI,
+  deleteSecret,
+  setSecret,
+  type OpenCodeInfo,
+} from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
 import {
   copyText,
@@ -35,7 +41,7 @@ import {
   pluralize,
 } from "@/lib/utils";
 import { useApp } from "@/store/app";
-import type { Accent, SettingsSection, ThemeMode } from "@/types";
+import type { Accent, ModelProvider, SettingsSection, ThemeMode } from "@/types";
 
 const sectionTitles: Record<SettingsSection, string> = {
   appearance: "Appearance",
@@ -330,6 +336,14 @@ function AppearanceSettings() {
 function ModelsSettings() {
   const ollamaUrl = useApp((state) => state.ollamaUrl);
   const setOllamaUrl = useApp((state) => state.setOllamaUrl);
+  const modelProvider = useApp((state) => state.modelProvider);
+  const modelBaseUrl = useApp((state) => state.modelBaseUrl);
+  const modelApiKey = useApp((state) => state.modelApiKey);
+  const modelName = useApp((state) => state.modelName);
+  const setModelProvider = useApp((state) => state.setModelProvider);
+  const setModelBaseUrl = useApp((state) => state.setModelBaseUrl);
+  const setModelApiKey = useApp((state) => state.setModelApiKey);
+  const setModelName = useApp((state) => state.setModelName);
   const pushToast = useApp((state) => state.pushToast);
   const [opencode, setOpencode] = useState<{
     status: "idle" | "desktop" | "checking" | "found" | "missing";
@@ -433,6 +447,131 @@ function ModelsSettings() {
 
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-4">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-line bg-[var(--bg-elevated)] text-accent-text">
+            <Cpu size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[12.5px] font-medium text-fg">
+              Model connection
+            </h3>
+            <p className="mt-1 max-w-[560px] text-[10.5px] leading-relaxed text-subtle">
+              Connects chat to a model. Keys stay on this device; Ollama and
+              OpenAI-compatible endpoints (including OpenCode Zen) are supported.
+            </p>
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted">
+                  Provider
+                </span>
+                <select
+                  value={modelProvider}
+                  onChange={(event) =>
+                    setModelProvider(event.target.value as ModelProvider)
+                  }
+                  className="field h-8 text-[11px]"
+                >
+                  <option value="ollama">Ollama (local)</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="custom">Custom (OpenAI-compatible)</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted">Model</span>
+                <input
+                  value={modelName}
+                  onChange={(event) => setModelName(event.target.value)}
+                  placeholder={
+                    modelProvider === "ollama" ? "llama3.2" : "gpt-4o-mini"
+                  }
+                  className="field h-8 text-[11px]"
+                />
+              </label>
+            </div>
+
+            <label className="mt-2 flex flex-col gap-1">
+              <span className="text-[10px] font-medium text-muted">
+                Base URL
+              </span>
+              <input
+                value={modelBaseUrl}
+                onChange={(event) => setModelBaseUrl(event.target.value)}
+                placeholder="http://127.0.0.1:11434"
+                className="field h-8 text-[11px]"
+              />
+            </label>
+
+            {modelProvider !== "ollama" && (
+              <label className="mt-2 flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted">
+                  API key
+                </span>
+                <input
+                  type="password"
+                  value={modelApiKey}
+                  onChange={(event) => setModelApiKey(event.target.value)}
+                  placeholder="sk-…"
+                  className="field h-8 text-[11px]"
+                />
+              </label>
+            )}
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const configured =
+                    modelBaseUrl.trim() &&
+                    modelName.trim() &&
+                    (modelProvider === "ollama" ||
+                      modelApiKey.trim() ||
+                      modelBaseUrl.includes("127.0.0.1") ||
+                      modelBaseUrl.includes("localhost"));
+                  if (configured) {
+                    if (IS_TAURI) {
+                      void setSecret(
+                        "model.apiKey",
+                        modelApiKey,
+                      ).catch(() => undefined);
+                      if (!modelApiKey.trim()) {
+                        void deleteSecret("model.apiKey").catch(
+                          () => undefined,
+                        );
+                      }
+                    } else {
+                      if (modelApiKey.trim()) {
+                        window.localStorage.setItem(
+                          "omnilink.apiKey",
+                          modelApiKey,
+                        );
+                      } else {
+                        window.localStorage.removeItem("omnilink.apiKey");
+                      }
+                    }
+                  }
+                  pushToast({
+                    title: configured
+                      ? "Model connection saved"
+                      : "Missing required fields",
+                    tone: configured ? "success" : "danger",
+                  });
+                }}
+                className="btn h-7 text-[10.5px]"
+              >
+                Save connection
+              </button>
+              <span className="text-[9.5px] text-subtle">
+                {modelProvider === "ollama"
+                  ? "Streams from a local Ollama instance."
+                  : "Uses an OpenAI-compatible chat completions endpoint."}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-4">
         <div className="flex items-start gap-3">
           <span className="relative flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-line bg-[var(--bg-elevated)] text-accent-text">

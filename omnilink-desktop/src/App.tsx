@@ -8,7 +8,7 @@ import { Rail } from "@/components/shell/Rail";
 import { StatusBar } from "@/components/shell/StatusBar";
 import { TitleBar } from "@/components/shell/TitleBar";
 import { Toaster } from "@/components/ui/Toaster";
-import { showMainWindow } from "@/lib/tauri";
+import { IS_TAURI, getSecret, showMainWindow } from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
 import { useApp } from "@/store/app";
 import { ChatView } from "@/views/ChatView";
@@ -45,6 +45,27 @@ export default function App() {
       window.setTimeout(() => void showMainWindow(), 40);
     });
     return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (IS_TAURI) {
+        try {
+          const value = await getSecret("model.apiKey");
+          if (!cancelled && value) useApp.getState().setModelApiKey(value);
+        } catch {
+          // Keychain unavailable; leave the in-memory key empty.
+        }
+      } else {
+        const value = window.localStorage.getItem("omnilink.apiKey");
+        if (!cancelled && value) useApp.getState().setModelApiKey(value);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
