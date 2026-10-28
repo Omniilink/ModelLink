@@ -3,6 +3,7 @@ import {
   Check,
   ChevronRight,
   Code2,
+  Eye,
   File,
   FileCode2,
   FileText,
@@ -248,9 +249,27 @@ export function CodingView() {
     }
   }, [project]);
 
+  const [previewOpen, setPreviewOpen] = useState(false);
+
   const selectedFile = project?.files.find(
     (file) => file.path === selectedPath,
   );
+
+  const scanDangerous = (content: string): string[] => {
+    const warnings: string[] = [];
+    const patterns: [RegExp, string][] = [
+      [/eval\s*\(/, "eval()"],
+      [/new\s+Function\s*\(/, "new Function()"],
+      [/child_process/, "child_process"],
+      [/require\s*\(\s*['"]fs['"]\s*\)/, "fs module"],
+      [/process\.exit/, "process.exit"],
+      [/<script[^>]*src=/i, "external script"],
+    ];
+    for (const [re, label] of patterns) {
+      if (re.test(content)) warnings.push(label);
+    }
+    return warnings;
+  };
   const dirty = Boolean(selectedFile && draft !== selectedFile.content);
 
   const saveNow = useCallback(() => {
@@ -395,6 +414,24 @@ export function CodingView() {
               </>
             )}
           </span>
+          {selectedFile?.path.toLowerCase().endsWith(".html") && (
+            <IconButton
+              label="Preview file"
+              onClick={() => {
+                const warnings = scanDangerous(selectedFile.content);
+                if (warnings.length > 0) {
+                  const ok = window.confirm(
+                    `Safety scan found: ${warnings.join(", ")}. Preview anyway?`,
+                  );
+                  if (!ok) return;
+                }
+                setPreviewOpen(true);
+              }}
+              className="h-7 w-7"
+            >
+              <Eye size={13} />
+            </IconButton>
+          )}
           <IconButton
             label="Share project"
             onClick={() => {
@@ -525,6 +562,31 @@ export function CodingView() {
           pushToast({ title: "Project deleted" });
         }}
       />
+
+      {previewOpen && selectedFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="truncate font-mono text-[11px] text-muted">
+                {selectedFile.path}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                className="btn btn-ghost h-7 text-[10.5px]"
+              >
+                Close
+              </button>
+            </div>
+            <iframe
+              title="Preview"
+              srcDoc={selectedFile.content}
+              sandbox="allow-scripts"
+              className="min-h-0 flex-1 border-0 bg-white"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
