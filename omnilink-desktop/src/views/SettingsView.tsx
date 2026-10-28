@@ -1376,6 +1376,18 @@ function AboutSettings() {
         <Row title="Version" description="Desktop build">
           <span className="font-mono text-[10.5px] text-muted">0.1.0</span>
         </Row>
+        <Row title="Replay tutorial" description="Walk through the app again">
+          <button
+            type="button"
+            onClick={() => {
+              window.localStorage.removeItem("omnilink.tutorialDone");
+              window.location.reload();
+            }}
+            className="btn btn-ghost h-7 text-[10.5px]"
+          >
+            Replay
+          </button>
+        </Row>
         <Row title="Identifier" description="Application bundle identifier">
           <span className="font-mono text-[10.5px] text-muted">
             com.omnilink.desktop

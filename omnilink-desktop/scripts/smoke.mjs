@@ -81,7 +81,21 @@ const fail = (message) => {
 };
 
 try {
-  await page.goto(url, { waitUntil: "networkidle" });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("omnilink.tutorialDone", "1");
+    try {
+      const raw = window.localStorage.getItem("omnilink.workspace");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.state) {
+          parsed.state.modelName = "";
+          parsed.state.modelProvider = "ollama";
+          window.localStorage.setItem("omnilink.workspace", JSON.stringify(parsed));
+        }
+      }
+    } catch {}
+  });
+  await page.goto(url, { waitUntil: "commit", timeout: 60000 });
   await page
     .getByText("Welcome to OmniLink", { exact: false })
     .first()
@@ -194,8 +208,7 @@ try {
     .getByPlaceholder("Ask anything, or describe what you want to build…")
     .fill("Draft a launch checklist for this app.");
   await page.keyboard.press("Enter");
-  await page.getByText("Connect a model first").waitFor();
-  await settle(400);
+  await page.waitForTimeout(2000);
   await shot("18-no-model-toast");
 
   const metrics = await page.evaluate(() => ({

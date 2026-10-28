@@ -8,6 +8,7 @@ import { Rail } from "@/components/shell/Rail";
 import { StatusBar } from "@/components/shell/StatusBar";
 import { TitleBar } from "@/components/shell/TitleBar";
 import { Toaster } from "@/components/ui/Toaster";
+import { TutorialOverlay } from "@/components/tutorial/TutorialOverlay";
 import { IS_TAURI, getSecret, showMainWindow } from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
 import { useApp } from "@/store/app";
@@ -62,6 +63,24 @@ export default function App() {
       } else {
         const value = window.localStorage.getItem("omnilink.apiKey");
         if (!cancelled && value) useApp.getState().setModelApiKey(value);
+      }
+      // Auto-detect an Ollama model if none is configured.
+      const state = useApp.getState();
+      if (state.modelProvider === "ollama" && !state.modelName.trim()) {
+        try {
+          const res = await fetch(
+            `${state.modelBaseUrl.replace(/\/+$/, "")}/api/tags`,
+          );
+          if (res.ok) {
+            const data = (await res.json()) as { models?: { name?: string }[] };
+            const first = data.models?.[0]?.name;
+            if (!cancelled && first) {
+              useApp.getState().setModelName(first);
+            }
+          }
+        } catch {
+          // Ollama not running; leave empty.
+        }
       }
     };
     void load();
@@ -163,6 +182,7 @@ export default function App() {
         <CommandPalette />
         <ModalHost />
         <Toaster />
+        <TutorialOverlay />
       </div>
     </MotionConfig>
   );
