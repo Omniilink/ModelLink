@@ -1,5 +1,6 @@
 import {
   Braces,
+  Camera,
   Check,
   ChevronRight,
   Code2,
@@ -11,6 +12,7 @@ import {
   FolderOpen,
   FolderPlus,
   HardDrive,
+  History,
   Save,
   Share2,
   Trash2,
@@ -219,6 +221,10 @@ export function CodingView() {
   const openModal = useApp((state) => state.openModal);
   const pushToast = useApp((state) => state.pushToast);
   const resolvedTheme = useResolvedTheme();
+  const projectVersions = useApp((state) => state.projectVersions);
+  const createSnapshot = useApp((state) => state.createSnapshot);
+  const deleteSnapshot = useApp((state) => state.deleteSnapshot);
+  const restoreSnapshot = useApp((state) => state.restoreSnapshot);
 
   const project = projects.find((item) => item.id === activeProjectId);
   const [selectedPath, setSelectedPath] = useState("");
@@ -226,6 +232,8 @@ export function CodingView() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [savedTick, setSavedTick] = useState(0);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotName, setSnapshotName] = useState("");
   const lastProject = useRef<string | undefined>(undefined);
 
   const modelProvider = useApp((state) => state.modelProvider);
@@ -514,6 +522,26 @@ export function CodingView() {
             </IconButton>
           )}
           <IconButton
+            label="Create snapshot"
+            onClick={() => {
+              const id = createSnapshot(project.id, snapshotName);
+              if (id) {
+                setSnapshotName("");
+                pushToast({ title: "Snapshot created", tone: "success" });
+              }
+            }}
+            className="h-7 w-7"
+          >
+            <Camera size={13} />
+          </IconButton>
+          <IconButton
+            label="Versions"
+            onClick={() => setSnapshotOpen(true)}
+            className="h-7 w-7"
+          >
+            <History size={13} />
+          </IconButton>
+          <IconButton
             label="Share project"
             onClick={() => {
               const blob = new Blob([JSON.stringify(project, null, 2)], {
@@ -705,6 +733,69 @@ export function CodingView() {
           pushToast({ title: "Project deleted" });
         }}
       />
+
+      {snapshotOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="text-[12.5px] font-medium text-fg">
+                Snapshots — {project.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSnapshotOpen(false)}
+                className="btn btn-ghost h-7 text-[10.5px]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
+              {projectVersions.filter((v) => v.projectId === project.id).length === 0 ? (
+                <p className="text-[11px] text-muted">No snapshots yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {projectVersions
+                    .filter((v) => v.projectId === project.id)
+                    .map((v) => (
+                      <div
+                        key={v.id}
+                        className="flex items-center gap-3 rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[12px] font-medium text-fg">
+                            {v.name}
+                          </p>
+                          <p className="text-[9.5px] text-subtle">
+                            {v.files.length} files ·{" "}
+                            {new Date(v.createdAt).toLocaleString()}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            restoreSnapshot(v.id);
+                            pushToast({ title: "Snapshot restored", tone: "success" });
+                            setSnapshotOpen(false);
+                          }}
+                          className="btn h-7 text-[10px]"
+                        >
+                          Restore
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteSnapshot(v.id)}
+                          className="btn btn-danger h-7 text-[10px]"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {previewOpen && selectedFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">

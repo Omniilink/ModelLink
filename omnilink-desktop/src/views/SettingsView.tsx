@@ -1080,6 +1080,32 @@ function DataSettings() {
             </button>
           </Row>
           <Row
+            title="Import workspace"
+            description="Restore from a previously exported JSON archive."
+            icon={<Download size={13} />}
+          >
+            <label className="btn btn-ghost h-7 cursor-pointer text-[10.5px]">
+              Import JSON
+              <input
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    useApp.getState().importWorkspace(text);
+                    pushToast({ title: "Workspace imported", tone: "success" });
+                  } catch {
+                    pushToast({ title: "Import failed", tone: "danger" });
+                  }
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          </Row>
+          <Row
             title="Reset local data"
             description="Restore the welcome workspace and remove all local chats, projects, prompts, and servers."
             icon={<RotateCcw size={13} />}
@@ -1173,6 +1199,34 @@ function AccountSettings() {
     }
   };
 
+  const syncEnabled = useApp((state) => state.syncEnabled);
+  const setSyncEnabled = useApp((state) => state.setSyncEnabled);
+  const [syncing, setSyncing] = useState(false);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const state = useApp.getState();
+      await fetch(`${serverUrl}/api/chats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "desktop-sync",
+          messages: state.conversations.flatMap((c) => c.messages),
+        }),
+      }).catch(() => null);
+      pushToast({ title: "Sync complete", tone: "success" });
+    } catch (e) {
+      pushToast({
+        title: "Sync failed",
+        description: e instanceof Error ? e.message : String(e),
+        tone: "danger",
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="space-y-7">
       <div className="overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
@@ -1216,6 +1270,46 @@ function AccountSettings() {
           </p>
         </div>
       </div>
+
+      <section>
+        <GroupLabel>Cloud sync</GroupLabel>
+        <Group>
+          <Row
+            title="Server URL"
+            description="OmniLink API endpoint for sync."
+          >
+            <input
+              value={serverUrl}
+              onChange={(event) => setServerUrl(event.target.value)}
+              placeholder="http://127.0.0.1:8080"
+              className="field h-7 w-[240px] font-mono text-[10.5px]"
+            />
+          </Row>
+          <Row
+            title="Auto sync"
+            description="Sync changes when online."
+          >
+            <Switch
+              checked={syncEnabled}
+              onChange={setSyncEnabled}
+              label="Enable cloud sync"
+            />
+          </Row>
+          <Row
+            title="Sync now"
+            description="Push local chats to the server."
+          >
+            <button
+              type="button"
+              onClick={() => void syncNow()}
+              disabled={syncing}
+              className="btn h-7 text-[10.5px]"
+            >
+              {syncing ? "Syncing…" : "Sync now"}
+            </button>
+          </Row>
+        </Group>
+      </section>
 
       <section>
         <GroupLabel>Connection</GroupLabel>

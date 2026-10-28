@@ -105,6 +105,14 @@ export interface ToolAuditEntry {
   timestamp: number;
 }
 
+export interface ProjectVersion {
+  id: string;
+  projectId: string;
+  name: string;
+  files: ProjectFile[];
+  createdAt: number;
+}
+
 export type ModalState =
   | { type: "project-new" }
   | { type: "prompt-new" }

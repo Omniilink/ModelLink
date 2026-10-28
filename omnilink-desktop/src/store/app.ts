@@ -16,6 +16,7 @@ import type {
   McpTransport,
   Message,
   ModalState,
+  ProjectVersion,
   Prompt,
   Provider,
   ModelProvider,
@@ -82,6 +83,9 @@ interface AppState {
   assets: Asset[];
   analytics: Record<string, number>;
   toolAuditLog: ToolAuditEntry[];
+  projectVersions: ProjectVersion[];
+  serverUrl: string;
+  syncEnabled: boolean;
 
   setSection: (section: Section) => void;
   openSettings: (section: SettingsSection) => void;
@@ -150,6 +154,14 @@ interface AppState {
   addAuditEntry: (entry: Omit<ToolAuditEntry, "id" | "timestamp">) => void;
   clearAuditLog: () => void;
 
+  createSnapshot: (projectId: string, name: string) => string;
+  deleteSnapshot: (id: string) => void;
+  restoreSnapshot: (id: string) => void;
+  exportWorkspace: () => string;
+  importWorkspace: (json: string) => void;
+  setServerUrl: (url: string) => void;
+  setSyncEnabled: (v: boolean) => void;
+
   setOllamaUrl: (url: string) => void;
   setModelProvider: (provider: ModelProvider) => void;
   setModelBaseUrl: (url: string) => void;
@@ -200,7 +212,9 @@ export const useApp = create<AppState>()(
       assets: [],
       analytics: {},
       toolAuditLog: [],
-
+      projectVersions: [],
+      serverUrl: "http://127.0.0.1:8080",
+      syncEnabled: false,
       setSection: (section) =>
         set({ section, paletteOpen: false, modal: null }),
 
@@ -499,6 +513,80 @@ export const useApp = create<AppState>()(
         })),
       clearAuditLog: () => set({ toolAuditLog: [] }),
 
+      createSnapshot: (projectId, name) => {
+        const project = get().projects.find((p) => p.id === projectId);
+        if (!project) return "";
+        const snap: ProjectVersion = {
+          id: uid("snap-"),
+          projectId,
+          name: name.trim() || `Snapshot ${new Date().toLocaleString()}`,
+          files: project.files.map((f: { path: string; content: string }) => ({ ...f })),
+          createdAt: Date.now(),
+        };
+        set((state) => ({
+          projectVersions: [snap, ...state.projectVersions],
+        }));
+        get().trackEvent("snapshot.created");
+        return snap.id;
+      },
+      deleteSnapshot: (id) =>
+        set((state) => ({
+          projectVersions: state.projectVersions.filter((s) => s.id !== id),
+        })),
+      restoreSnapshot: (id) => {
+        const snap = get().projectVersions.find((s) => s.id === id);
+        if (!snap) return;
+        const project = get().projects.find((p) => p.id === snap.projectId);
+        if (!project) return;
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === snap.projectId
+              ? { ...p, files: snap.files.map((f) => ({ ...f })), updatedAt: Date.now() }
+              : p,
+          ),
+        }));
+        get().trackEvent("snapshot.restored");
+      },
+      exportWorkspace: () => {
+        const state = get();
+        return JSON.stringify(
+          {
+            version: 1,
+            exportedAt: Date.now(),
+            projects: state.projects,
+            conversations: state.conversations,
+            prompts: state.prompts,
+            mcpServers: state.mcpServers,
+            workspaces: state.workspaces,
+          },
+          null,
+          2,
+        );
+      },
+      importWorkspace: (json) => {
+        try {
+          const data = JSON.parse(json) as {
+            projects?: CodingProject[];
+            conversations?: Conversation[];
+            prompts?: Prompt[];
+            mcpServers?: McpServer[];
+            workspaces?: Workspace[];
+          };
+          set((state) => ({
+            projects: data.projects ?? state.projects,
+            conversations: data.conversations ?? state.conversations,
+            prompts: data.prompts ?? state.prompts,
+            mcpServers: data.mcpServers ?? state.mcpServers,
+            workspaces: data.workspaces ?? state.workspaces,
+          }));
+          get().trackEvent("workspace.imported");
+        } catch {
+          get().pushToast({ title: "Import failed", tone: "danger" });
+        }
+      },
+      setServerUrl: (serverUrl) => set({ serverUrl }),
+      setSyncEnabled: (syncEnabled) => set({ syncEnabled }),
+
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
       setModelProvider: (modelProvider) => set({ modelProvider }),
       setModelBaseUrl: (modelBaseUrl) => set({ modelBaseUrl }),
@@ -574,7 +662,9 @@ export const useApp = create<AppState>()(
       assets: [],
       analytics: {},
       toolAuditLog: [],
-        }),
+      projectVersions: [],
+      serverUrl: "http://127.0.0.1:8080",
+      syncEnabled: false,        }),
     }),
     {
       name: "omnilink.workspace",
@@ -606,7 +696,9 @@ export const useApp = create<AppState>()(
         mcpServers: state.mcpServers,
         assets: state.assets,
         analytics: state.analytics,
-        toolAuditLog: state.toolAuditLog,
+        projectVersions: state.projectVersions,
+        serverUrl: state.serverUrl,
+        syncEnabled: state.syncEnabled,
       }),
     },
   ),
