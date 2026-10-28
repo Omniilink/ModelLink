@@ -6,6 +6,7 @@ import {
   Code2,
   Copy,
   Cpu,
+  ExternalLink,
   GitBranch,
   Map,
   Mic,
@@ -624,6 +625,30 @@ export function ChatView() {
     return () => window.cancelAnimationFrame(frame);
   }, [conversation?.id, conversation?.messages.length]);
 
+  const detachChat = async () => {
+    if (!conversation) return;
+    if (!IS_TAURI) {
+      pushToast({ title: "Floating windows require the desktop app", tone: "danger" });
+      return;
+    }
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      new WebviewWindow(`chat-${conversation.id}`, {
+        url: `/?detach=${conversation.id}`,
+        title: conversation.title,
+        width: 480,
+        height: 640,
+      });
+      pushToast({ title: "Chat detached", tone: "success" });
+    } catch (e) {
+      pushToast({
+        title: "Detach failed",
+        description: e instanceof Error ? e.message : String(e),
+        tone: "danger",
+      });
+    }
+  };
+
   const copyTranscript = async () => {
     if (!conversation) return;
     const transcript = conversation.messages
@@ -702,6 +727,12 @@ export function ChatView() {
           ) : (
             <Copy size={14} />
           )}
+        </IconButton>
+        <IconButton
+          label="Detach window"
+          onClick={() => void detachChat()}
+        >
+          <ExternalLink size={14} />
         </IconButton>
         <IconButton
           label="Delete conversation"
