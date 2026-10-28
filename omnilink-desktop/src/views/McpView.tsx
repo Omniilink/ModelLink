@@ -1,4 +1,5 @@
 import {
+  Activity,
   Blocks,
   Check,
   Copy,
@@ -16,7 +17,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Switch } from "@/components/ui/Switch";
 import { copyText } from "@/lib/utils";
-import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp, mcpListResourcesStdio, mcpListResourcesHttp, runShellCommand, httpRequest } from "@/lib/tauri";
+import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp, mcpListResourcesStdio, mcpListResourcesHttp, mcpListPromptsStdio, mcpListPromptsHttp, runShellCommand, httpRequest, watchdogStart, watchdogStop } from "@/lib/tauri";
 import { useApp } from "@/store/app";
 import type { McpServer, McpTransport } from "@/types";
 
@@ -78,6 +79,7 @@ function ServerRow({
   const toggleMcpServer = useApp((state) => state.toggleMcpServer);
   const pushToast = useApp((state) => state.pushToast);
   const [probing, setProbing] = useState(false);
+  const [watching, setWatching] = useState(false);
 
   const testConnection = async () => {
     setProbing(true);
@@ -168,11 +170,53 @@ function ServerRow({
           <Plug size={12} className={probing ? "animate-pulse" : ""} />
         </IconButton>
         <IconButton
+          label="Toggle watchdog"
+          onClick={async () => {
+            if (watching) {
+              await watchdogStop(server.id);
+              setWatching(false);
+              pushToast({ title: "Watchdog stopped" });
+            } else {
+              if (server.transport !== "stdio") {
+                pushToast({ title: "Watchdog only supports stdio", tone: "danger" });
+                return;
+              }
+              await watchdogStart(server.id, server.command, server.args);
+              setWatching(true);
+              pushToast({ title: "Watchdog started", tone: "success" });
+            }
+          }}
+          className="h-6 w-6"
+        >
+          <Activity size={12} className={watching ? "text-success" : ""} />
+        </IconButton>
+        <IconButton
           label="Browse tools"
           onClick={() => onBrowseTools(server)}
           className="h-6 w-6"
         >
           <Terminal size={12} />
+        </IconButton>
+        <IconButton
+          label="Toggle watchdog"
+          onClick={async () => {
+            if (watching) {
+              await watchdogStop(server.id);
+              setWatching(false);
+              pushToast({ title: "Watchdog stopped" });
+            } else {
+              if (server.transport !== "stdio") {
+                pushToast({ title: "Watchdog only supports stdio", tone: "danger" });
+                return;
+              }
+              await watchdogStart(server.id, server.command, server.args);
+              setWatching(true);
+              pushToast({ title: "Watchdog started", tone: "success" });
+            }
+          }}
+          className="h-6 w-6"
+        >
+          <Activity size={12} className={watching ? "text-success" : ""} />
         </IconButton>
         <IconButton
           label="Edit server"
@@ -569,13 +613,51 @@ export function McpView() {
               <span className="text-[12.5px] font-medium text-fg">
                 Tools — {selectedServer.name}
               </span>
-              <button
-                type="button"
-                onClick={() => setSelectedServer(null)}
-                className="btn btn-ghost h-7 text-[10.5px]"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const prompts =
+                        selectedServer.transport === "stdio"
+                          ? await mcpListPromptsStdio(selectedServer.command, selectedServer.args)
+                          : await mcpListPromptsHttp(selectedServer.url);
+                      if (prompts.length === 0) {
+                        pushToast({ title: "No prompts found", tone: "danger" });
+                        return;
+                      }
+                      for (const name of prompts) {
+                        useApp.getState().addPrompt({
+                          title: name,
+                          description: `Imported from ${selectedServer.name}`,
+                          body: "",
+                          tags: ["mcp", selectedServer.name],
+                        });
+                      }
+                      pushToast({
+                        title: `${prompts.length} prompt(s) imported`,
+                        tone: "success",
+                      });
+                    } catch (e) {
+                      pushToast({
+                        title: "Failed to import prompts",
+                        description: e instanceof Error ? e.message : String(e),
+                        tone: "danger",
+                      });
+                    }
+                  }}
+                  className="btn btn-ghost h-7 text-[10.5px]"
+                >
+                  Sync prompts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedServer(null)}
+                  className="btn btn-ghost h-7 text-[10.5px]"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div className="mt-6">
