@@ -10,10 +10,11 @@ export interface ModelConfig {
 
 export function isModelConfigured(config: ModelConfig): boolean {
   const base = config.baseUrl.trim();
-  const model = config.model.trim();
-  if (!base || !model) return false;
+  if (!base) return false;
   if (config.provider === "ollama") return true;
-  return config.apiKey.trim().length > 0 || base.includes("127.0.0.1") || base.includes("localhost");
+  // OpenAI-compatible: allow localhost without a key.
+  if (base.includes("127.0.0.1") || base.includes("localhost")) return true;
+  return config.apiKey.trim().length > 0;
 }
 
 function normalizeBase(url: string): string {
@@ -36,11 +37,25 @@ export async function streamChat(
   const base = normalizeBase(config.baseUrl);
 
   if (config.provider === "ollama") {
+    let model = config.model.trim();
+    if (!model) {
+      // Auto-pick the first available model.
+      try {
+        const res = await fetch(`${base}/api/tags`);
+        if (res.ok) {
+          const data = (await res.json()) as { models?: { name?: string }[] };
+          model = data.models?.[0]?.name ?? "";
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!model) throw new Error("No Ollama model available");
     const response = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: config.model.trim(),
+        model,
         messages: toOpenAIMessages(messages),
         stream: true,
       }),
