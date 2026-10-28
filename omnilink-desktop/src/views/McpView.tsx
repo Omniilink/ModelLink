@@ -16,7 +16,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Switch } from "@/components/ui/Switch";
 import { copyText } from "@/lib/utils";
-import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp, runShellCommand, httpRequest } from "@/lib/tauri";
+import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp, mcpListResourcesStdio, mcpListResourcesHttp, runShellCommand, httpRequest } from "@/lib/tauri";
 import { useApp } from "@/store/app";
 import type { McpServer, McpTransport } from "@/types";
 
@@ -199,6 +199,7 @@ export function McpView() {
   const pushToast = useApp((state) => state.pushToast);
   const deleteMcpServer = useApp((state) => state.deleteMcpServer);
   const [toolsMap, setToolsMap] = useState<Record<string, { name: string; description?: string }[]>>({});
+  const [resourcesMap, setResourcesMap] = useState<Record<string, { uri: string; name?: string; description?: string }[]>>({});
   const [selectedServer, setSelectedServer] = useState<McpServer | null>(null);
   const [toolArgs, setToolArgs] = useState("{}");
   const [toolResult, setToolResult] = useState("");
@@ -382,6 +383,16 @@ export function McpView() {
                             ? await mcpProbeStdio(s.command, s.args)
                             : await mcpProbeHttp(s.url);
                         setToolsMap((prev) => ({ ...prev, [s.id]: tools }));
+                        // also fetch resources
+                        try {
+                          const res =
+                            s.transport === "stdio"
+                              ? await mcpListResourcesStdio(s.command, s.args)
+                              : await mcpListResourcesHttp(s.url);
+                          setResourcesMap((prev) => ({ ...prev, [s.id]: res }));
+                        } catch {
+                          // resources not supported
+                        }
                       } catch (e) {
                         pushToast({ title: "Failed to list tools", tone: "danger" });
                       }
@@ -595,6 +606,33 @@ export function McpView() {
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+              {(resourcesMap[selectedServer.id] ?? []).length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-subtle">
+                    Resources
+                  </p>
+                  <div className="space-y-1">
+                    {(resourcesMap[selectedServer.id] ?? []).map((r) => (
+                      <div
+                        key={r.uri}
+                        className="rounded border border-line bg-[var(--bg-base)] px-2.5 py-1.5"
+                      >
+                        <p className="text-[11px] font-medium text-fg">
+                          {r.name ?? r.uri}
+                        </p>
+                        {r.description && (
+                          <p className="text-[9.5px] text-subtle">
+                            {r.description}
+                          </p>
+                        )}
+                        <p className="truncate font-mono text-[9px] text-subtle">
+                          {r.uri}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
