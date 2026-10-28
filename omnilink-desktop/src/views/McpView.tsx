@@ -1,0 +1,350 @@
+import {
+  Blocks,
+  Check,
+  Copy,
+  Globe,
+  Pencil,
+  Plus,
+  Radio,
+  Terminal,
+  Trash2,
+} from "lucide-react";
+import { useState } from "react";
+
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { IconButton } from "@/components/ui/IconButton";
+import { Switch } from "@/components/ui/Switch";
+import { copyText } from "@/lib/utils";
+import { useApp } from "@/store/app";
+import type { McpServer, McpTransport } from "@/types";
+
+const transportMeta: Record<
+  McpTransport,
+  { label: string; description: string; icon: typeof Terminal }
+> = {
+  stdio: {
+    label: "stdio",
+    description: "Local process",
+    icon: Terminal,
+  },
+  sse: {
+    label: "SSE",
+    description: "Server-sent events",
+    icon: Radio,
+  },
+  http: {
+    label: "HTTP",
+    description: "Streamable HTTP",
+    icon: Globe,
+  },
+};
+
+const sampleConfig = `{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "C:\\\\projects"
+      ]
+    }
+  }
+}`;
+
+function TransportIcon({
+  transport,
+  size = 13,
+}: {
+  transport: McpTransport;
+  size?: number;
+}) {
+  const Icon = transportMeta[transport].icon;
+  return <Icon size={size} />;
+}
+
+function ServerRow({
+  server,
+  onDelete,
+}: {
+  server: McpServer;
+  onDelete: (server: McpServer) => void;
+}) {
+  const openModal = useApp((state) => state.openModal);
+  const toggleMcpServer = useApp((state) => state.toggleMcpServer);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => openModal({ type: "mcp-edit", id: server.id })}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openModal({ type: "mcp-edit", id: server.id });
+        }
+      }}
+      className="group flex cursor-pointer items-center gap-3 border-b border-line px-4 py-3 transition-colors last:border-b-0 hover:bg-[var(--bg-hover)]"
+    >
+      <span className="relative flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-line bg-[var(--bg-elevated)] text-muted">
+        <TransportIcon transport={server.transport} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-[12.5px] font-medium text-fg">
+            {server.name}
+          </span>
+          <span className="rounded border border-line px-1 py-px font-mono text-[8px] uppercase tracking-wide text-subtle">
+            {transportMeta[server.transport].label}
+          </span>
+        </div>
+        <p className="mt-0.5 truncate font-mono text-[10px] text-subtle">
+          {server.transport === "stdio"
+            ? `${server.command} ${server.args}`.trim() || "No command"
+            : server.url || "No endpoint"}
+        </p>
+      </div>
+      <span className="hidden w-[88px] flex-none items-center gap-1.5 text-[10px] text-subtle lg:flex">
+        <span
+          className={
+            server.enabled
+              ? "h-1.5 w-1.5 rounded-full bg-success"
+              : "h-1.5 w-1.5 rounded-full bg-[var(--fg-subtle)]"
+          }
+        />
+        {server.enabled ? "Enabled" : "Disabled"}
+      </span>
+      <div
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <Switch
+          checked={server.enabled}
+          onChange={() => toggleMcpServer(server.id)}
+          label={`${server.enabled ? "Disable" : "Enable"} ${server.name}`}
+        />
+      </div>
+      <div
+        className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <IconButton
+          label="Edit server"
+          onClick={() => openModal({ type: "mcp-edit", id: server.id })}
+          className="h-6 w-6"
+        >
+          <Pencil size={12} />
+        </IconButton>
+        <IconButton
+          label="Delete server"
+          onClick={() => onDelete(server)}
+          className="h-6 w-6 hover:text-danger"
+        >
+          <Trash2 size={12} />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
+export function McpView() {
+  const servers = useApp((state) => state.mcpServers);
+  const openModal = useApp((state) => state.openModal);
+  const pushToast = useApp((state) => state.pushToast);
+  const deleteMcpServer = useApp((state) => state.deleteMcpServer);
+  const [deleteTarget, setDeleteTarget] = useState<McpServer | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const enabled = servers.filter((server) => server.enabled).length;
+  const remote = servers.filter((server) => server.transport !== "stdio").length;
+
+  const copySample = async () => {
+    try {
+      await copyText(sampleConfig);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+      pushToast({ title: "Example configuration copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Could not access the clipboard", tone: "danger" });
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-[52px] flex-none items-center gap-3 border-b border-line px-6">
+        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md border border-line bg-[var(--bg-elevated)] text-muted">
+          <Blocks size={14} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h1 className="text-[13px] font-semibold tracking-[-0.01em] text-fg">
+              MCP servers
+            </h1>
+            {servers.length > 0 && (
+              <span className="rounded-full bg-[var(--bg-hover)] px-1.5 py-px text-[9px] tabular-nums text-subtle">
+                {servers.length}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[10px] text-subtle">
+            Give agents access to local processes and remote tools
+          </p>
+        </div>
+        {servers.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => openModal({ type: "mcp-new" })}
+          >
+            <Plus size={13} />
+            Add server
+          </button>
+        )}
+      </div>
+
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        {servers.length === 0 ? (
+          <div className="mx-auto w-full max-w-[760px] px-6 py-12">
+            <div className="flex flex-col items-center text-center">
+              <div className="relative">
+                <div className="absolute inset-0 rounded-2xl bg-accent opacity-20 blur-2xl" />
+                <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-[var(--bg-elevated)] text-accent-text shadow-xl">
+                  <Blocks size={24} />
+                </div>
+              </div>
+              <h2 className="mt-5 text-[22px] font-semibold tracking-[-0.025em] text-fg">
+                Give your agents tools
+              </h2>
+              <p className="mt-2 max-w-[430px] text-[12.5px] leading-relaxed text-muted">
+                Register Model Context Protocol servers once, then reuse them
+                across chat and coding sessions. OmniLink supports local
+                processes and remote endpoints.
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary mt-5"
+                onClick={() => openModal({ type: "mcp-new" })}
+              >
+                <Plus size={13} />
+                Add your first server
+              </button>
+            </div>
+
+            <div className="mt-9 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {(Object.keys(transportMeta) as McpTransport[]).map((key) => {
+                const meta = transportMeta[key];
+                const Icon = meta.icon;
+                return (
+                  <div
+                    key={key}
+                    className="rounded-xl border border-line bg-[var(--bg-surface)] p-3.5"
+                  >
+                    <span className="flex h-7 w-7 items-center justify-center rounded-md border border-line bg-[var(--bg-elevated)] text-muted">
+                      <Icon size={13} />
+                    </span>
+                    <p className="mt-2.5 flex items-center gap-2 text-[11.5px] font-medium text-fg">
+                      {meta.label}
+                      <span className="rounded border border-line px-1 py-px text-[8px] uppercase tracking-wide text-subtle">
+                        supported
+                      </span>
+                    </p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-subtle">
+                      {meta.description}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+              <div className="flex items-center justify-between border-b border-line px-3.5 py-2">
+                <span className="text-[10px] font-medium text-muted">
+                  Example configuration
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void copySample()}
+                  className="flex items-center gap-1.5 rounded px-1.5 py-1 text-[10px] text-subtle transition-colors hover:bg-hover hover:text-fg"
+                >
+                  {copied ? (
+                    <Check size={11} className="text-success" />
+                  ) : (
+                    <Copy size={11} />
+                  )}
+                  {copied ? "Copied" : "Copy JSON"}
+                </button>
+              </div>
+              <pre className="overflow-x-auto bg-[color-mix(in_srgb,var(--bg-base)_60%,transparent)] p-3.5 font-mono text-[10.5px] leading-relaxed text-muted">
+                {sampleConfig}
+              </pre>
+            </div>
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-[900px] px-6 py-6">
+            <div className="mb-5 grid grid-cols-3 gap-2">
+              {[
+                { label: "Configured", value: servers.length },
+                { label: "Enabled", value: enabled },
+                { label: "Remote", value: remote },
+              ].map((stat) => (
+                <div
+                  key={stat.label}
+                  className="rounded-xl border border-line bg-[var(--bg-surface)] px-4 py-3"
+                >
+                  <p className="text-[9.5px] font-medium uppercase tracking-[0.12em] text-subtle">
+                    {stat.label}
+                  </p>
+                  <p className="mt-1 text-[20px] font-semibold tabular-nums tracking-tight text-fg">
+                    {stat.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+              <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-subtle">
+                  Servers
+                </span>
+                <span className="text-[10px] text-subtle">
+                  {enabled} of {servers.length} enabled
+                </span>
+              </div>
+              {servers.map((server) => (
+                <ServerRow
+                  key={server.id}
+                  server={server}
+                  onDelete={setDeleteTarget}
+                />
+              ))}
+            </div>
+
+            <p className="mt-3 px-1 text-[10px] leading-relaxed text-subtle">
+              Server processes are supervised by the agent runtime when a
+              session starts. Configuration itself is stored locally.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete MCP server?"
+        description={
+          deleteTarget
+            ? `"${deleteTarget.name}" will be removed from your configuration.`
+            : ""
+        }
+        confirmLabel="Delete server"
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          deleteMcpServer(deleteTarget.id);
+          pushToast({ title: "MCP server deleted" });
+          setDeleteTarget(null);
+        }}
+      />
+    </div>
+  );
+}
