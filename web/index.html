@@ -17055,6 +17055,7 @@ async function openForumThread(tid){
 }
 
 // ---- Roblox MCP view ----
+let robloxMcpRounds=0;
 const ROBLOX_MCP_SYSTEM_PROMPT='You are a Roblox Studio assistant. You control Roblox Studio through MCP tools on a connected server. Use CALL_MCP:<server>:<tool> then a JSON object of arguments then END_CALL_MCP to act. Use LIST_MCP: <server> to discover tools. Be concise and verify changes. Only use the selected MCP server.';
 async function robloxMcpRefreshServers(){
   const sel=document.getElementById('roblox-mcp-server'); if(!sel) return;
@@ -17088,12 +17089,12 @@ function robloxMcpSystemPrompt(){
   if(detail==='super') return base+' You can search the Roblox marketplace/creator store via MCP tools, insert assets, execute Luau, inspect instances, and manage scripts. Verify each step. Explain what you did.';
   return base+' Execute Luau to create/modify parts. Verify changes. Be concise.';
 }
-async function robloxMcpSend(){
+async function robloxMcpRun(text){
   const input=document.getElementById('roblox-mcp-input'); const chat=document.getElementById('roblox-mcp-chat'); const sel=document.getElementById('roblox-mcp-server');
-  if(!input||!chat) return;
-  const text=input.value.trim(); if(!text) return;
-  input.value='';
-  const u=document.createElement('div'); u.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:4px'; u.textContent='You: '+text; chat.appendChild(u); chat.scrollTop=chat.scrollHeight;
+  if(!chat) return;
+  const prompt=String(text||'').trim(); if(!prompt) return;
+  if(input) input.value='';
+  const u=document.createElement('div'); u.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:4px'; u.textContent='You: '+prompt; chat.appendChild(u); chat.scrollTop=chat.scrollHeight;
   const server=sel?sel.value:'';
   let toolList='';
   try{const ts=(await mcpTools()).filter(t=>(t._server||t.server)===server); if(ts.length) toolList='\nAvailable tools:\n'+ts.map(t=>'- '+t.name+': '+(t.description||'')).join('\n');}catch(e){}
@@ -17101,7 +17102,7 @@ async function robloxMcpSend(){
   const a=document.createElement('div'); a.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-tertiary);border-radius:4px'; a.textContent='Assistant: '; chat.appendChild(a); chat.scrollTop=chat.scrollHeight;
   let full='';
   try{
-    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:(typeof selectedModel!=='undefined'?selectedModel:'omniilink'),messages:[{role:'system',content:sys},{role:'user',content:text}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
+    const r=await authFetch(API+'/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:(typeof selectedModel!=='undefined'?selectedModel:'omniilink'),messages:[{role:'system',content:sys},{role:'user',content:prompt}],stream:true,temperature:0.7,max_tokens:2000,...requestLevels()})});
     if(!r.ok){const t=await r.text(); a.textContent='Assistant: Error '+r.status+' '+t; return}
     const reader=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     while(true){const{done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop();
@@ -17130,7 +17131,10 @@ async function robloxMcpSend(){
     } else {
       a.textContent='Assistant: '+full;
     }
-  }catch(e){ a.textContent='Assistant: Error: '+e.message; }
+  const hadCalls=matches.length>0;
+  if(hadCalls && robloxMcpRounds<20){ robloxMcpRounds++; setTimeout(()=>robloxMcpRun('Continue the task using the tool results above. If finished, reply with a short summary and no CALL_MCP.'), 800); }
+  else { robloxMcpRounds=0; }
+  }catch(e){ a.textContent='Assistant: Error: '+e.message; robloxMcpRounds=0; }
 }
 // refresh servers when view opens
 const _origApplyRoute=applyRoute;
@@ -32819,6 +32823,9 @@ async function openForumThread(tid){
 }
 
 // ---- Roblox MCP view ----
+
+function robloxMcpSend(){ robloxMcpRounds=0; robloxMcpRun(document.getElementById('roblox-mcp-input')?document.getElementById('roblox-mcp-input').value:''); }
+
 </script>
 </body>
 </html>
