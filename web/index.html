@@ -1473,7 +1473,14 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
         </div>
         <div class="body-row">
           <div class="leftpanel" id="roblox-mcp-tree" style="width:260px;min-width:200px;overflow:auto;padding:8px;font-size:12px"></div>
-          <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
+          <div style="display:flex;gap:8px;padding:0 12px 8px 12px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="robloxMcpListScripts()">List scripts</button>
+          <input id="roblox-mcp-script-path" placeholder="game.ServerScriptService.Script" style="flex:1;min-width:180px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;color:var(--text-primary);font-size:12px">
+          <button class="btn btn-ghost btn-sm" onclick="robloxMcpReadScript()">Read</button>
+          <button class="btn btn-primary btn-sm" onclick="robloxMcpSaveScript()">Save</button>
+        </div>
+        <textarea id="roblox-mcp-script-src" placeholder="-- Luau source --" style="margin:0 12px 8px 12px;height:120px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:8px;color:var(--text-primary);font-family:var(--mono);font-size:12px;resize:vertical"></textarea>
+        <div class="coding-chat" id="roblox-mcp-chat" style="flex:1;overflow:auto;padding:12px"></div>
         </div>
         <div class="coding-input-area">
           <div class="coding-input-box" style="position:relative">
@@ -32825,6 +32832,49 @@ async function openForumThread(tid){
 // ---- Roblox MCP view ----
 
 function robloxMcpSend(){ robloxMcpRounds=0; robloxMcpRun(document.getElementById('roblox-mcp-input')?document.getElementById('roblox-mcp-input').value:''); }
+
+
+async function robloxMcpExec(code){
+  const sel=document.getElementById('roblox-mcp-server'); const server=sel?sel.value:'';
+  const base=await zenProbe(); if(!base) throw new Error('companion not connected');
+  const r=await fetch(base+'/api/mcp/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:server,tool:'execute_luau',arguments:{code:code}})});
+  const d=await r.json(); if(d.error) throw new Error(typeof d.error==='string'?d.error:JSON.stringify(d.error));
+  return d.result!==undefined?d.result:d;
+}
+async function robloxMcpListScripts(){
+  const chat=document.getElementById('roblox-mcp-chat'); if(!chat) return;
+  const div=document.createElement('div'); div.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-tertiary);border-radius:4px'; div.textContent='Listing scripts…'; chat.appendChild(div); chat.scrollTop=chat.scrollHeight;
+  try{
+    const res=await robloxMcpExec('local out={} for _,v in ipairs(game:GetDescendants()) do if v:IsA("LuaSourceContainer") then table.insert(out, v:GetFullName()) end end return table.concat(out, "\n")');
+    div.textContent='Scripts:\n'+String(res||'(none)');
+  }catch(e){ div.textContent='Failed: '+e.message; }
+  chat.scrollTop=chat.scrollHeight;
+}
+async function robloxMcpReadScript(){
+  const path=(document.getElementById('roblox-mcp-script-path')||{}).value||'';
+  const chat=document.getElementById('roblox-mcp-chat'); const ta=document.getElementById('roblox-mcp-script-src');
+  if(!path||!chat||!ta) return;
+  const div=document.createElement('div'); div.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-tertiary);border-radius:4px'; div.textContent='Reading '+path+'…'; chat.appendChild(div); chat.scrollTop=chat.scrollHeight;
+  try{
+    const code='local inst=game for part in string.split("'+path.replace(/"/g,'\"')+'",".") do if part~="game" then local f=inst:FindFirstChild(part); if not f then return "NOT_FOUND" end; inst=f end end if not inst or not inst:IsA("LuaSourceContainer") then return "NOT_SCRIPT" end return inst.Source';
+    const res=await robloxMcpExec(code);
+    ta.value=String(res||'');
+    div.textContent='Read '+path;
+  }catch(e){ div.textContent='Failed: '+e.message; }
+  chat.scrollTop=chat.scrollHeight;
+}
+async function robloxMcpSaveScript(){
+  const path=(document.getElementById('roblox-mcp-script-path')||{}).value||'';
+  const src=(document.getElementById('roblox-mcp-script-src')||{}).value||'';
+  const chat=document.getElementById('roblox-mcp-chat'); if(!path||!chat) return;
+  const div=document.createElement('div'); div.style.cssText='margin:6px 0;padding:6px 8px;background:var(--bg-tertiary);border-radius:4px'; div.textContent='Saving '+path+'…'; chat.appendChild(div); chat.scrollTop=chat.scrollHeight;
+  try{
+    const code='local inst=game for part in string.split("'+path.replace(/"/g,'\"')+'",".") do if part~="game" then local f=inst:FindFirstChild(part); if not f then return "NOT_FOUND" end; inst=f end end if not inst or not inst:IsA("LuaSourceContainer") then return "NOT_SCRIPT" end inst.Source=[['+src+']] return "OK"';
+    const res=await robloxMcpExec(code);
+    div.textContent='Save result: '+String(res);
+  }catch(e){ div.textContent='Failed: '+e.message; }
+  chat.scrollTop=chat.scrollHeight;
+}
 
 </script>
 </body>
