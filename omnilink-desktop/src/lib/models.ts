@@ -11,6 +11,7 @@ export interface ModelConfig {
 export function isModelConfigured(config: ModelConfig): boolean {
   const base = config.baseUrl.trim();
   if (!base) return false;
+  if (config.model.trim().toLowerCase() === "auto") return true;
   if (config.provider === "ollama") return true;
   // OpenAI-compatible: allow localhost without a key.
   if (base.includes("127.0.0.1") || base.includes("localhost")) return true;
@@ -38,13 +39,18 @@ export async function streamChat(
 
   if (config.provider === "ollama") {
     let model = config.model.trim();
-    if (!model) {
+    if (!model || model.toLowerCase() === "auto") {
       // Auto-pick the first available model.
       try {
         const res = await fetch(`${base}/api/tags`);
         if (res.ok) {
           const data = (await res.json()) as { models?: { name?: string }[] };
-          model = data.models?.[0]?.name ?? "";
+          const names = (data.models ?? []).map((m) => m.name).filter(Boolean) as string[];
+          // Prefer a chat-capable model by name heuristic, preferring :latest tags.
+          const chatModels = names.filter((n) => /gemma|llama|phi|mistral/i.test(n));
+          const pool = chatModels.length ? chatModels : names;
+          const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0] ?? "";
+          model = preferred;
         }
       } catch {
         // ignore
@@ -97,11 +103,24 @@ export async function streamChat(
   if (config.apiKey.trim()) {
     headers.Authorization = `Bearer ${config.apiKey.trim()}`;
   }
+  let model = config.model.trim();
+  if (!model || model.toLowerCase() === "auto") {
+    try {
+      const res = await fetch(`${base}/models`, { headers });
+      if (res.ok) {
+        const data = (await res.json()) as { data?: { id?: string }[] };
+        model = data.data?.[0]?.id ?? "";
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!model) throw new Error("No model available. Set a model name in Settings → Models.");
   const response = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: config.model.trim(),
+      model,
       messages: toOpenAIMessages(messages),
       stream: true,
     }),

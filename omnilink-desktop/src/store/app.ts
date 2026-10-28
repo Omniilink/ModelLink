@@ -183,7 +183,7 @@ export const useApp = create<AppState>()(
       modelProvider: "ollama",
       modelBaseUrl: "http://127.0.0.1:11434",
       modelApiKey: "",
-      modelName: "",
+      modelName: "auto",
       providers: [],
       activeProviderId: null,
       autoCheckUpdates: true,

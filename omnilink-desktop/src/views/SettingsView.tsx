@@ -387,7 +387,10 @@ function ModelsSettings() {
           .filter((n): n is string => Boolean(n));
         setOllamaModels(names);
         if (names.length && !modelName.trim()) {
-          setModelName(names[0]);
+          const chatModels = names.filter((n) => /gemma|llama|phi|mistral/i.test(n));
+          const pool = chatModels.length ? chatModels : names;
+          const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0];
+          setModelName(preferred ?? names[0]);
         }
       })
       .catch(() => setOllamaModels([]))
@@ -646,6 +649,7 @@ function ModelsSettings() {
                     onChange={(event) => setModelName(event.target.value)}
                     className="field h-8 text-[11px]"
                   >
+                    <option value="auto">auto (first available)</option>
                     {ollamaModels.map((m) => (
                       <option key={m} value={m}>
                         {m}
