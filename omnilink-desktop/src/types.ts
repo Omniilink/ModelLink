@@ -114,6 +114,13 @@ export interface ProjectVersion {
   createdAt: number;
 }
 
+export interface UsageEntry {
+  id: string;
+  model: string;
+  tokens: number;
+  timestamp: number;
+}
+
 export type ModalState =
   | { type: "project-new" }
   | { type: "prompt-new" }

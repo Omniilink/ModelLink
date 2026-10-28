@@ -24,6 +24,7 @@ import type {
   SettingsSection,
   ThemeMode,
   Toast,
+  UsageEntry,
   Workspace,
   ToolAuditEntry,
 } from "@/types";
@@ -87,6 +88,9 @@ interface AppState {
   analytics: Record<string, number>;
   toolAuditLog: ToolAuditEntry[];
   auditLog: { action: string; detail: string; timestamp: number }[];
+  usageLog: UsageEntry[];
+  costThreshold: number;
+  crashReportsEnabled: boolean;
   localOnlyMode: boolean;
   encryptedWorkspace: boolean;
   projectVersions: ProjectVersion[];
@@ -162,6 +166,10 @@ interface AppState {
   trackEvent: (name: string) => void;
   addAuditEntry: (entry: Omit<ToolAuditEntry, "id" | "timestamp">) => void;
   clearAuditLog: () => void;
+  addUsage: (entry: Omit<UsageEntry, "id" | "timestamp">) => void;
+  clearUsage: () => void;
+  setCostThreshold: (v: number) => void;
+  setCrashReportsEnabled: (v: boolean) => void;
   addAudit: (action: string, detail: string) => void;
   setLocalOnlyMode: (v: boolean) => void;
   setEncryptedWorkspace: (v: boolean) => void;
@@ -230,6 +238,9 @@ export const useApp = create<AppState>()(
       auditLog: [],
       localOnlyMode: false,
       encryptedWorkspace: false,
+      usageLog: [],
+      costThreshold: 10,
+      crashReportsEnabled: false,
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,
@@ -535,6 +546,17 @@ export const useApp = create<AppState>()(
         })),
       clearAuditLog: () => set({ toolAuditLog: [] }),
 
+      addUsage: (entry) =>
+        set((state) => ({
+          usageLog: [
+            { ...entry, id: uid("usage-"), timestamp: Date.now() },
+            ...state.usageLog,
+          ].slice(0, 1000),
+        })),
+      clearUsage: () => set({ usageLog: [] }),
+      setCostThreshold: (costThreshold) => set({ costThreshold }),
+      setCrashReportsEnabled: (crashReportsEnabled) => set({ crashReportsEnabled }),
+
       addAudit: (action, detail) =>
         set((state) => ({
           auditLog: [
@@ -697,6 +719,9 @@ export const useApp = create<AppState>()(
       auditLog: [],
       localOnlyMode: false,
       encryptedWorkspace: false,
+      usageLog: [],
+      costThreshold: 10,
+      crashReportsEnabled: false,
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,        }),
@@ -737,6 +762,9 @@ export const useApp = create<AppState>()(
         auditLog: state.auditLog,
         localOnlyMode: state.localOnlyMode,
         encryptedWorkspace: state.encryptedWorkspace,
+        usageLog: state.usageLog,
+        costThreshold: state.costThreshold,
+        crashReportsEnabled: state.crashReportsEnabled,
         projectVersions: state.projectVersions,
         serverUrl: state.serverUrl,
         syncEnabled: state.syncEnabled,

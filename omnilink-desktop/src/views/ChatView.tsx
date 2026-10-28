@@ -474,6 +474,12 @@ export function ChatView() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      if (accumulated) {
+        useApp.getState().addUsage({
+          model: modelConfig.model || "auto",
+          tokens: Math.ceil(accumulated.length / 4),
+        });
+      }
     }
   };
   const handleSend = async (content: string) => {
@@ -518,6 +524,12 @@ export function ChatView() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      if (accumulated) {
+        useApp.getState().addUsage({
+          model: modelConfig.model || "auto",
+          tokens: Math.ceil(accumulated.length / 4),
+        });
+      }
     }
   };
 

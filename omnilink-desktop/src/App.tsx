@@ -38,6 +38,7 @@ export default function App() {
   const customCss = useApp((state) => state.customCss);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
   const focusMode = useApp((state) => state.focusMode);
+  const crashReportsEnabled = useApp((state) => state.crashReportsEnabled);
   const localOnlyMode = useApp((state) => state.localOnlyMode);
 
   useEffect(() => {
@@ -67,6 +68,22 @@ export default function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!crashReportsEnabled) return;
+    const handler = (event: ErrorEvent) => {
+      try {
+        useApp.getState().addAudit(
+          "crash",
+          `${event.message} at ${event.filename}:${event.lineno}`,
+        );
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("error", handler);
+    return () => window.removeEventListener("error", handler);
+  }, [crashReportsEnabled]);
 
   useEffect(() => {
     if (!localOnlyMode) return;

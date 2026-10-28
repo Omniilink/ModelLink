@@ -1383,34 +1383,117 @@ function AccountSettings() {
 
 function AnalyticsSettings() {
   const analytics = useApp((state) => state.analytics);
+  const usageLog = useApp((state) => state.usageLog);
+  const costThreshold = useApp((state) => state.costThreshold);
+  const setCostThreshold = useApp((state) => state.setCostThreshold);
+  const crashReportsEnabled = useApp((state) => state.crashReportsEnabled);
+  const setCrashReportsEnabled = useApp((state) => state.setCrashReportsEnabled);
   const entries = Object.entries(analytics).sort((a, b) => b[1] - a[1]);
+  const totalTokens = usageLog.reduce((sum, u) => sum + u.tokens, 0);
+  const byModel = usageLog.reduce<Record<string, number>>((acc, u) => {
+    acc[u.model] = (acc[u.model] ?? 0) + u.tokens;
+    return acc;
+  }, {});
+  const costEstimate = totalTokens * 0.000002;
+
   return (
     <div className="space-y-7">
       <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-5">
-        <h2 className="text-[13.5px] font-semibold text-fg">Usage analytics</h2>
+        <h2 className="text-[13.5px] font-semibold text-fg">Usage dashboard</h2>
         <p className="mt-1 text-[10.5px] text-subtle">
-          Events are tracked locally on this device.
+          Token usage per model (estimated).
         </p>
-        {entries.length === 0 ? (
-          <p className="mt-4 text-[11.5px] text-muted">
-            No events recorded yet.
-          </p>
-        ) : (
-          <div className="mt-4 space-y-2">
-            {entries.map(([name, count]) => (
-              <div
-                key={name}
-                className="flex items-center justify-between rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2"
-              >
-                <span className="text-[11.5px] text-fg">{name}</span>
-                <span className="font-mono text-[11px] tabular-nums text-subtle">
-                  {count}
-                </span>
-              </div>
-            ))}
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <div className="rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2">
+            <p className="text-[9px] uppercase text-subtle">Total tokens</p>
+            <p className="text-[16px] font-semibold">{totalTokens.toLocaleString()}</p>
           </div>
-        )}
+          <div className="rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2">
+            <p className="text-[9px] uppercase text-subtle">Est. cost</p>
+            <p className="text-[16px] font-semibold">${costEstimate.toFixed(2)}</p>
+          </div>
+          <div className="rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2">
+            <p className="text-[9px] uppercase text-subtle">Messages</p>
+            <p className="text-[16px] font-semibold">{usageLog.length}</p>
+          </div>
+        </div>
+        <div className="mt-4 space-y-1.5">
+          {Object.entries(byModel).map(([model, tokens]) => (
+            <div
+              key={model}
+              className="flex items-center justify-between rounded border border-line bg-[var(--bg-base)] px-2.5 py-1.5"
+            >
+              <span className="truncate font-mono text-[10.5px] text-fg">
+                {model}
+              </span>
+              <span className="font-mono text-[10px] text-subtle">
+                {tokens.toLocaleString()}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
+
+      <section>
+        <GroupLabel>Cost alerts</GroupLabel>
+        <Group>
+          <Row
+            title="Threshold"
+            description="Warn when estimated spend exceeds this amount."
+          >
+            <input
+              type="number"
+              min={0}
+              value={costThreshold}
+              onChange={(event) =>
+                setCostThreshold(Number(event.target.value))
+              }
+              className="field h-7 w-20 text-[11px]"
+            />
+          </Row>
+        </Group>
+      </section>
+
+      <section>
+        <GroupLabel>Crash reports</GroupLabel>
+        <Group>
+          <Row
+            title="Opt-in crash reporting"
+            description="Send anonymous crash reports to help improve the app."
+          >
+            <Switch
+              checked={crashReportsEnabled}
+              onChange={setCrashReportsEnabled}
+              label="Crash reports"
+            />
+          </Row>
+        </Group>
+      </section>
+
+      <section>
+        <GroupLabel>Events</GroupLabel>
+        <div className="overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+          {entries.length === 0 ? (
+            <p className="px-4 py-6 text-center text-[11px] text-muted">
+              No events recorded yet.
+            </p>
+          ) : (
+            <div className="scroll-thin max-h-64 overflow-y-auto">
+              {entries.map(([name, count]) => (
+                <div
+                  key={name}
+                  className="flex items-center justify-between border-b border-line px-4 py-2 last:border-b-0"
+                >
+                  <span className="text-[11px] text-fg">{name}</span>
+                  <span className="font-mono text-[10.5px] tabular-nums text-subtle">
+                    {count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
