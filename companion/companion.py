@@ -565,8 +565,12 @@ def poll_once(server, token, root, status_cb=None):
             status_cb(False, str(e))
         return "error"
     # Sync MCP config from server
+    global _LAST_MCP_SERVERS
     try:
-        mcp_sync(p.get("mcp_servers") or [])
+        srvs = p.get("mcp_servers")
+        if isinstance(srvs, list):
+            _LAST_MCP_SERVERS = srvs
+        mcp_sync(_LAST_MCP_SERVERS or [])
     except Exception:
         pass
     cmd = p.get("command")
@@ -753,6 +757,7 @@ def install_update_and_quit(msi_path, quit_fn):
 # ---- Zen health + MCP (Model Context Protocol) client ----
 import subprocess as _mcp_subprocess
 _MCP_SERVERS = {}
+_LAST_MCP_SERVERS = []
 _MCP_LOCK = threading.Lock()
 _MCP_ID = [0]
 _RELAY_PROC = None
@@ -1202,6 +1207,15 @@ def run_tray():
     )
     icon = pystray.Icon(APP_NAME, _dot_icon((217, 160, 33)), APP_NAME + " — starting…", menu)
     state["icon"] = icon
+    def _mcp_watchdog():
+        while not state["stop"].is_set():
+            try:
+                mcp_sync(_LAST_MCP_SERVERS if _LAST_MCP_SERVERS else mcp_load_file())
+            except Exception:
+                pass
+            state["stop"].wait(10)
+    threading.Thread(target=_mcp_watchdog, daemon=True).start()
+
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=mcp_file_watcher, args=(state["stop"],), daemon=True).start()
     threading.Thread(target=auto_update, daemon=True).start()
