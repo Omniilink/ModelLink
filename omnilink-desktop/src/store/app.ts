@@ -16,6 +16,7 @@ import type {
   Message,
   ModalState,
   Prompt,
+  Provider,
   ModelProvider,
   Section,
   SettingsSection,
@@ -63,6 +64,8 @@ interface AppState {
   modelBaseUrl: string;
   modelApiKey: string;
   modelName: string;
+  providers: Provider[];
+  activeProviderId: string | null;
   autoCheckUpdates: boolean;
 
   conversations: Conversation[];
@@ -129,6 +132,10 @@ interface AppState {
   setModelBaseUrl: (url: string) => void;
   setModelApiKey: (key: string) => void;
   setModelName: (name: string) => void;
+  addProvider: (provider: Omit<Provider, "id" | "createdAt">) => string;
+  updateProvider: (id: string, patch: Partial<Provider>) => void;
+  deleteProvider: (id: string) => void;
+  setActiveProvider: (id: string | null) => void;
   updateMessage: (conversationId: string, messageId: string, content: string) => void;
   setAutoCheckUpdates: (value: boolean) => void;
 
@@ -156,6 +163,8 @@ export const useApp = create<AppState>()(
       modelBaseUrl: "http://127.0.0.1:11434",
       modelApiKey: "",
       modelName: "",
+      providers: [],
+      activeProviderId: null,
       autoCheckUpdates: true,
 
       conversations: [welcomeConversation],
@@ -367,6 +376,30 @@ export const useApp = create<AppState>()(
       setModelBaseUrl: (modelBaseUrl) => set({ modelBaseUrl }),
       setModelApiKey: (modelApiKey) => set({ modelApiKey }),
       setModelName: (modelName) => set({ modelName }),
+      addProvider: (provider) => {
+        const entry: Provider = {
+          ...provider,
+          id: uid("provider-"),
+          createdAt: Date.now(),
+        };
+        set((state) => ({
+          providers: [...state.providers, entry],
+        }));
+        return entry.id;
+      },
+      updateProvider: (id, patch) =>
+        set((state) => ({
+          providers: state.providers.map((provider) =>
+            provider.id === id ? { ...provider, ...patch } : provider,
+          ),
+        })),
+      deleteProvider: (id) =>
+        set((state) => ({
+          providers: state.providers.filter((provider) => provider.id !== id),
+          activeProviderId:
+            state.activeProviderId === id ? null : state.activeProviderId,
+        })),
+      setActiveProvider: (activeProviderId) => set({ activeProviderId }),
       updateMessage: (conversationId, messageId, content) =>
         set((state) => ({
           conversations: state.conversations.map((conversation) =>
@@ -430,6 +463,8 @@ export const useApp = create<AppState>()(
         modelBaseUrl: state.modelBaseUrl,
         // modelApiKey is stored in the OS keychain / localStorage, never in the DB.
         modelName: state.modelName,
+        providers: state.providers,
+        activeProviderId: state.activeProviderId,
         autoCheckUpdates: state.autoCheckUpdates,
         conversations: state.conversations,
         projects: state.projects,

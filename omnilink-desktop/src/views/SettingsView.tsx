@@ -338,6 +338,15 @@ function AppearanceSettings() {
 }
 
 function ModelsSettings() {
+  const providers = useApp((state) => state.providers);
+  const activeProviderId = useApp((state) => state.activeProviderId);
+  const addProvider = useApp((state) => state.addProvider);
+  const deleteProvider = useApp((state) => state.deleteProvider);
+  const setActiveProvider = useApp((state) => state.setActiveProvider);
+  const [newName, setNewName] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+  const [newModel, setNewModel] = useState("");
+  const [newKey, setNewKey] = useState("");
   const ollamaUrl = useApp((state) => state.ollamaUrl);
   const setOllamaUrl = useApp((state) => state.setOllamaUrl);
   const modelProvider = useApp((state) => state.modelProvider);
@@ -451,6 +460,124 @@ function ModelsSettings() {
 
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[12.5px] font-medium text-fg">Providers</h3>
+            <p className="mt-1 max-w-[560px] text-[10.5px] leading-relaxed text-subtle">
+              Manage multiple AI providers. Keys are stored in the OS keychain.
+            </p>
+          </div>
+        </div>
+
+        {providers.length === 0 ? (
+          <p className="mt-3 text-[10.5px] text-subtle">
+            No providers configured yet. Add one below.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {providers.map((provider) => (
+              <div
+                key={provider.id}
+                className="flex items-center gap-3 rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-[12px] font-medium text-fg">
+                      {provider.name}
+                    </span>
+                    {activeProviderId === provider.id && (
+                      <span className="rounded border border-[var(--accent-border)] bg-[var(--accent-soft)] px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide text-accent-text">
+                        active
+                      </span>
+                    )}
+                    {provider.hasKey && (
+                      <span className="text-[9px] text-success">key set</span>
+                    )}
+                  </div>
+                  <p className="truncate font-mono text-[9.5px] text-subtle">
+                    {provider.baseUrl} · {provider.model}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveProvider(provider.id)}
+                  className="btn h-7 text-[10px]"
+                >
+                  Use
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteProvider(provider.id)}
+                  className="btn btn-danger h-7 text-[10px]"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Name (e.g. Groq)"
+            className="field h-8 text-[11px]"
+          />
+          <input
+            value={newUrl}
+            onChange={(e) => setNewUrl(e.target.value)}
+            placeholder="Base URL"
+            className="field h-8 text-[11px]"
+          />
+          <input
+            value={newModel}
+            onChange={(e) => setNewModel(e.target.value)}
+            placeholder="Model"
+            className="field h-8 text-[11px]"
+          />
+          <input
+            type="password"
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="API key"
+            className="field h-8 text-[11px]"
+          />
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (!newName.trim() || !newUrl.trim() || !newModel.trim()) {
+                pushToast({ title: "Name, URL, and model required", tone: "danger" });
+                return;
+              }
+              const id = addProvider({
+                name: newName.trim(),
+                baseUrl: newUrl.trim(),
+                model: newModel.trim(),
+                hasKey: Boolean(newKey.trim()),
+              });
+              if (newKey.trim()) {
+                void setSecret(`provider.${id}.apiKey`, newKey.trim()).catch(
+                  () => undefined,
+                );
+              }
+              setActiveProvider(id);
+              setNewName("");
+              setNewUrl("");
+              setNewModel("");
+              setNewKey("");
+              pushToast({ title: "Provider added", tone: "success" });
+            }}
+            className="btn btn-primary h-7 text-[10.5px]"
+          >
+            Add provider
+          </button>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-line bg-[var(--bg-surface)] p-4">
         <div className="flex items-start gap-3">
           <span className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-line bg-[var(--bg-elevated)] text-accent-text">

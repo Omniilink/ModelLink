@@ -19,8 +19,9 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
 import { useApp } from "@/store/app";
-import type { Message } from "@/types";
+import type { Message, ModelProvider } from "@/types";
 import { cn, copyText, formatTime } from "@/lib/utils";
+import { IS_TAURI, getSecret } from "@/lib/tauri";
 import { isModelConfigured, streamChat } from "@/lib/models";
 
 const suggestions = [
@@ -246,12 +247,51 @@ export function ChatView() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const conversation = conversations.find((item) => item.id === activeId);
-  const modelConfig = {
-    provider: modelProvider,
-    baseUrl: modelBaseUrl,
-    apiKey: modelApiKey,
-    model: modelName,
-  };
+  const providers = useApp((state) => state.providers);
+  const activeProviderId = useApp((state) => state.activeProviderId);
+  const activeProvider = providers.find((p) => p.id === activeProviderId);
+  const [providerKey, setProviderKey] = useState("");
+  useEffect(() => {
+    if (!activeProvider) {
+      setProviderKey("");
+      return;
+    }
+    if (!activeProvider.hasKey) {
+      setProviderKey("");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const v = IS_TAURI
+          ? await getSecret(`provider.${activeProvider.id}.apiKey`)
+          : window.localStorage.getItem(`provider.${activeProvider.id}.apiKey`);
+        if (!cancelled) setProviderKey(v ?? "");
+      } catch {
+        if (!cancelled) setProviderKey("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProvider?.id, activeProvider?.hasKey]);
+
+  const modelConfig = activeProvider
+    ? {
+        provider: (activeProvider.baseUrl.includes("127.0.0.1") ||
+        activeProvider.baseUrl.includes("localhost")
+          ? "ollama"
+          : "custom") as ModelProvider,
+        baseUrl: activeProvider.baseUrl,
+        apiKey: providerKey,
+        model: activeProvider.model,
+      }
+    : {
+        provider: modelProvider,
+        baseUrl: modelBaseUrl,
+        apiKey: modelApiKey,
+        model: modelName,
+      };
   const noModel = !isModelConfigured(modelConfig);
 
   const handleSend = async (content: string) => {

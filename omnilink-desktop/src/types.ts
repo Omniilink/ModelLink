@@ -69,6 +69,15 @@ export interface Prompt {
 
 export type ModelProvider = "ollama" | "openai" | "custom";
 
+export interface Provider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  createdAt: number;
+}
+
 export type ModalState =
   | { type: "project-new" }
   | { type: "prompt-new" }
