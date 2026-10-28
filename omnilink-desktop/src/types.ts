@@ -1,4 +1,4 @@
-export type Section = "chat" | "coding" | "mcp" | "prompts" | "assets" | "settings";
+export type Section = "chat" | "coding" | "workspaces" | "mcp" | "prompts" | "assets" | "settings";
 
 export type ThemeMode = "dark" | "light" | "system";
 

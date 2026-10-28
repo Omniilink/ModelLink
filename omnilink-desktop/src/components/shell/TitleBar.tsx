@@ -15,6 +15,7 @@ import type { Section } from "@/types";
 const sectionNames: Record<Section, string> = {
   chat: "Chat",
   coding: "Coding",
+  workspaces: "Workspaces",
   mcp: "MCP",
   prompts: "Prompts",
   assets: "Assets",

@@ -110,6 +110,7 @@ interface AppState {
   addWorkspace: (name: string) => string;
   deleteWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string | null) => void;
+  renameWorkspace: (id: string, name: string) => void;
 
   addMcpServer: (server: {
     name: string;

@@ -17,6 +17,7 @@ import { CodingView } from "@/views/CodingView";
 import { McpView } from "@/views/McpView";
 import { PromptsView } from "@/views/PromptsView";
 import { SettingsView } from "@/views/SettingsView";
+import { WorkspacesView } from "@/views/WorkspacesView";
 
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -103,6 +104,7 @@ export default function App() {
         "3": () => state.setSection("mcp"),
         "4": () => state.setSection("prompts"),
         "5": () => state.setSection("assets"),
+        "6": () => state.setSection("workspaces"),
       };
       const navigate = digits[key];
       if (navigate) {
@@ -148,6 +150,7 @@ export default function App() {
               >
                 {section === "chat" && <ChatView />}
                 {section === "coding" && <CodingView />}
+                {section === "workspaces" && <WorkspacesView />}
                 {section === "mcp" && <McpView />}
                 {section === "prompts" && <PromptsView />}
                 {section === "assets" && <AssetsView />}

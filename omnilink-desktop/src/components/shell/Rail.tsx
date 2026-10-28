@@ -3,6 +3,7 @@ import {
   Blocks,
   BookText,
   Code2,
+  FolderKanban,
   Image,
   MessageSquare,
   Settings2,
@@ -22,6 +23,7 @@ interface NavItem {
 const primaryNav: NavItem[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, shortcut: "Ctrl 1" },
   { id: "coding", label: "Coding", icon: Code2, shortcut: "Ctrl 2" },
+  { id: "workspaces", label: "Workspaces", icon: FolderKanban, shortcut: "Ctrl 6" },
   { id: "mcp", label: "MCP", icon: Blocks, shortcut: "Ctrl 3" },
   { id: "prompts", label: "Prompts", icon: BookText, shortcut: "Ctrl 4" },
   { id: "assets", label: "Assets", icon: Image, shortcut: "Ctrl 5" },

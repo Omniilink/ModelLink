@@ -4,6 +4,7 @@ import {
   BookText,
   Database,
   DownloadCloud,
+  FolderKanban,
   HardDrive,
   Info,
   Palette,
@@ -623,6 +624,37 @@ function AssetsPane() {
   );
 }
 
+function WorkspacesPane() {
+  const workspaces = useApp((state) => state.workspaces);
+  const activeWorkspaceId = useApp((state) => state.activeWorkspaceId);
+  const setActiveWorkspace = useApp((state) => state.setActiveWorkspace);
+  return (
+    <>
+      <PaneHeader title="Workspaces" count={workspaces.length} />
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1">
+        {workspaces.map((workspace) => {
+          const active = workspace.id === activeWorkspaceId;
+          return (
+            <button
+              key={workspace.id}
+              type="button"
+              onClick={() => setActiveWorkspace(workspace.id)}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]",
+                active && "bg-[var(--bg-active)]",
+              )}
+            >
+              <FolderKanban size={13} className="flex-none text-muted" />
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">
+                {workspace.name}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
 export function ContextPane() {
   const section = useApp((state) => state.section);
 
@@ -639,6 +671,7 @@ export function ContextPane() {
         >
           {section === "chat" && <ChatPane />}
           {section === "coding" && <CodingPane />}
+          {section === "workspaces" && <WorkspacesPane />}
           {section === "mcp" && <McpPane />}
           {section === "prompts" && <PromptsPane />}
           {section === "assets" && <AssetsPane />}
