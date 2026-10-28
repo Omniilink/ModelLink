@@ -53,6 +53,7 @@ import type { Accent, ModelProvider, SettingsSection, ThemeMode } from "@/types"
 const sectionTitles: Record<SettingsSection, string> = {
   appearance: "Appearance",
   models: "Models",
+  editor: "Editor",
   data: "Data & storage",
   account: "Account",
   analytics: "Analytics",
@@ -64,6 +65,7 @@ const sectionTitles: Record<SettingsSection, string> = {
 const sectionDescriptions: Record<SettingsSection, string> = {
   appearance: "Theme, accent, and motion preferences",
   models: "Connect the models that power chat and coding",
+  editor: "Auto-completion and editor preferences",
   data: "Local workspace data and exports",
   account: "Identity, sync, and connected services",
   analytics: "Local usage events",
@@ -1647,6 +1649,43 @@ function PrivacySettings() {
   );
 }
 
+function EditorSettings() {
+  const autoComplete = useApp((state) => state.autoComplete);
+  const setAutoComplete = useApp((state) => state.setAutoComplete);
+  const autoCompleteModel = useApp((state) => state.autoCompleteModel);
+  const setAutoCompleteModel = useApp((state) => state.setAutoCompleteModel);
+  return (
+    <div className="space-y-7">
+      <section>
+        <GroupLabel>Auto-completion</GroupLabel>
+        <Group>
+          <Row
+            title="Enable AI completion"
+            description="Show inline suggestions as you type. Ollama FIM models recommended."
+          >
+            <Switch
+              checked={autoComplete}
+              onChange={setAutoComplete}
+              label="Auto-completion"
+            />
+          </Row>
+          <Row
+            title="Completion model"
+            description="Model used for inline suggestions."
+          >
+            <input
+              value={autoCompleteModel}
+              onChange={(event) => setAutoCompleteModel(event.target.value)}
+              placeholder="e.g. qwen2.5-coder:1.5b"
+              className="field h-7 w-[240px] font-mono text-[10.5px]"
+            />
+          </Row>
+        </Group>
+      </section>
+    </div>
+  );
+}
+
 function UpdatesSettings() {
   const autoCheckUpdates = useApp((state) => state.autoCheckUpdates);
   const setAutoCheckUpdates = useApp((state) => state.setAutoCheckUpdates);
@@ -1925,6 +1964,7 @@ export function SettingsView() {
         <div className="mx-auto w-full max-w-[820px] px-6 py-6">
           {section === "appearance" && <AppearanceSettings />}
           {section === "models" && <ModelsSettings />}
+          {section === "editor" && <EditorSettings />}
           {section === "data" && <DataSettings />}
           {section === "account" && <AccountSettings />}
           {section === "analytics" && <AnalyticsSettings />}

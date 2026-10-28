@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
+  BookText,
   Check,
   Code2,
   Copy,
@@ -8,7 +9,7 @@ import {
   GitBranch,
   Map,
   Mic,
-  Pencil,
+  Paperclip,
   Pin,
   RefreshCw,
   Search,
@@ -57,15 +58,15 @@ const suggestions = [
 
 function MessageRow({
   message,
-  onEdit,
   onRegenerate,
   onPin,
+  onFork,
   streaming,
 }: {
   message: Message;
-  onEdit?: (message: Message) => void;
   onRegenerate?: (message: Message) => void;
   onPin?: (message: Message) => void;
+  onFork?: (message: Message) => void;
   streaming?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
@@ -129,16 +130,14 @@ function MessageRow({
               <Copy size={11} />
             )}
           </button>
-          {isUser && onEdit && (
-            <button
-              type="button"
-              aria-label="Edit message"
-              onClick={() => onEdit(message)}
-              className="flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100"
-            >
-              <Pencil size={11} />
-            </button>
-          )}
+          <button
+            type="button"
+            aria-label="Fork conversation here"
+            onClick={() => onFork?.(message)}
+            className="flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <GitBranch size={11} />
+          </button>
           {!isUser && onRegenerate && !streaming && (
             <button
               type="button"
@@ -152,10 +151,32 @@ function MessageRow({
         </div>
         {isUser ? (
           <div className="rounded-2xl rounded-tr-md border border-line bg-[var(--bg-elevated)] px-3.5 py-2.5 text-[13px] leading-relaxed text-fg shadow-[0_1px_2px_rgba(0,0,0,0.12)]">
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {message.attachments.map((a, i) => (
+                  <span
+                    key={i}
+                    className="rounded border border-line bg-[var(--bg-base)] px-2 py-1 text-[9.5px] text-subtle"
+                  >
+                    {a.name}
+                  </span>
+                ))}
+              </div>
+            )}
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           </div>
         ) : (
           <div className="prose-chat">
+            {message.thinking && (
+              <details className="mb-2 rounded-lg border border-line bg-[var(--bg-elevated)] p-2">
+                <summary className="cursor-pointer text-[10.5px] font-medium text-subtle">
+                  Thinking
+                </summary>
+                <p className="mt-1 whitespace-pre-wrap text-[10.5px] text-muted">
+                  {message.thinking}
+                </p>
+              </details>
+            )}
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {message.content}
             </ReactMarkdown>
@@ -179,7 +200,7 @@ function Composer({
   onDraftChange: (value: string) => void;
   noModel: boolean;
   streaming: boolean;
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments?: { name: string; type: string; data: string }[]) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const openSettings = useApp((state) => state.openSettings);
@@ -194,8 +215,11 @@ function Composer({
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   }, [draft, conversationId]);
 
+  const [attachments, setAttachments] = useState<{ name: string; type: string; data: string }[]>([]);
+
   const submit = () => {
-    if (!draft.trim() || streaming) return;
+    if (!draft.trim() && attachments.length === 0) return;
+    if (streaming) return;
     const text = draft.trim();
     if (text.startsWith("/")) {
       const [cmd] = text.slice(1).split(/\s+/);
@@ -237,8 +261,9 @@ function Composer({
       });
       return;
     }
-    onSend(text);
+    onSend(text, attachments);
     onDraftChange("");
+    setAttachments([]);
   };
 
   return (
@@ -259,6 +284,27 @@ function Composer({
         </div>
       )}
       <div className="overflow-hidden rounded-2xl border border-line bg-[color-mix(in_srgb,var(--bg-elevated)_92%,transparent)] shadow-[0_10px_40px_-18px_rgba(0,0,0,0.5)] transition-colors focus-within:border-[var(--accent-border)]">
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+            {attachments.map((a, i) => (
+              <span
+                key={i}
+                className="flex items-center gap-1 rounded border border-line bg-[var(--bg-base)] px-2 py-1 text-[9.5px] text-subtle"
+              >
+                {a.name}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((_, idx) => idx !== i))
+                  }
+                  className="text-subtle hover:text-danger"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           data-composer
@@ -289,6 +335,28 @@ function Composer({
           <span className="mr-1 hidden text-[9.5px] text-subtle sm:block">
             Enter to send · Shift+Enter for a new line
           </span>
+          <label className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-lg bg-[var(--bg-active)] text-subtle transition-colors hover:text-fg">
+            <Paperclip size={14} />
+            <input
+              type="file"
+              accept="image/*,.pdf,.txt,.md,.json,.ts,.tsx,.js,.py"
+              className="hidden"
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const data = String(reader.result ?? "");
+                  setAttachments((prev) => [
+                    ...prev,
+                    { name: file.name, type: file.type, data },
+                  ]);
+                };
+                reader.readAsDataURL(file);
+                event.target.value = "";
+              }}
+            />
+          </label>
           <button
             type="button"
             aria-label="Voice input"
@@ -349,9 +417,12 @@ export function ChatView() {
   const pushToast = useApp((state) => state.pushToast);
   const appendMessage = useApp((state) => state.appendMessage);
   const updateMessage = useApp((state) => state.updateMessage);
-  const editMessage = useApp((state) => state.editMessage);
   const truncateAfter = useApp((state) => state.truncateAfter);
   const togglePin = useApp((state) => state.togglePin);
+  const forkConversation = useApp((state) => state.forkConversation);
+  const chatTemplates = useApp((state) => state.chatTemplates);
+  const addChatTemplate = useApp((state) => state.addChatTemplate);
+  const deleteChatTemplate = useApp((state) => state.deleteChatTemplate);
   const modelProvider = useApp((state) => state.modelProvider);
   const modelBaseUrl = useApp((state) => state.modelBaseUrl);
   const modelApiKey = useApp((state) => state.modelApiKey);
@@ -360,6 +431,7 @@ export function ChatView() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copiedTranscript, setCopiedTranscript] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -410,16 +482,6 @@ export function ChatView() {
         model: modelName,
       };
   const noModel = !isModelConfigured(modelConfig);
-
-  const startEdit = (message: Message) => {
-    if (!conversation) return;
-    const next = window.prompt("Edit message", message.content);
-    if (next === null || next.trim() === message.content.trim()) return;
-    editMessage(conversation.id, message.id, next.trim());
-    truncateAfter(conversation.id, message.id);
-    // regenerate
-    void regenerateAfterEdit(message.id, next.trim());
-  };
 
   const regenerate = async (assistantMessage: Message) => {
     if (!conversation) return;
@@ -482,12 +544,13 @@ export function ChatView() {
       }
     }
   };
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, attachments?: { name: string; type: string; data: string }[]) => {
     if (!conversation || streaming) return;
     const userMessage: Message = {
       id: `message-${Date.now()}`,
       role: "user",
       content,
+      attachments,
       createdAt: Date.now(),
     };
     appendMessage(conversation.id, userMessage);
@@ -624,6 +687,12 @@ export function ChatView() {
           </p>
         </div>
         <IconButton
+          label="Templates"
+          onClick={() => setTemplateOpen(true)}
+        >
+          <BookText size={14} />
+        </IconButton>
+        <IconButton
           label={copiedTranscript ? "Copied" : "Copy conversation"}
           onClick={() => void copyTranscript()}
           disabled={isEmpty}
@@ -710,9 +779,12 @@ export function ChatView() {
                 <MessageRow
                   key={message.id}
                   message={message}
-                  onEdit={(m) => startEdit(m)}
                   onRegenerate={(m) => void regenerate(m)}
                   onPin={(m) => togglePin(conversation.id, m.id)}
+                  onFork={(m) => {
+                    forkConversation(conversation.id, m.id);
+                    pushToast({ title: "Conversation forked", tone: "success" });
+                  }}
                   streaming={streaming}
                 />
               ))}
@@ -733,6 +805,74 @@ export function ChatView() {
           />
         </div>
       </div>
+
+      {templateOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="text-[12.5px] font-medium text-fg">Templates</span>
+              <button type="button" onClick={() => setTemplateOpen(false)} className="btn btn-ghost h-7 text-[10.5px]">
+                Close
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 space-y-2">
+              {chatTemplates.length === 0 && (
+                <p className="text-[11px] text-muted">No templates yet.</p>
+              )}
+              {chatTemplates.map((t) => (
+                <div key={t.id} className="flex items-center gap-2 rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2">
+                  <span className="flex-1 truncate text-[11.5px] text-fg">{t.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const convId = newConversation();
+                      // apply system prompt as first message
+                      appendMessage(convId, { id: `sys-${Date.now()}`, role: "system", content: t.systemPrompt, createdAt: Date.now() });
+                      setTemplateOpen(false);
+                      pushToast({ title: "Template applied", tone: "success" });
+                    }}
+                    className="btn h-7 text-[10px]"
+                  >
+                    Use
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteChatTemplate(t.id)}
+                    className="btn btn-danger h-7 text-[10px]"
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+              <div className="mt-3 border-t border-line pt-3">
+                <input
+                  placeholder="Template name"
+                  className="field mb-2 h-8 text-[11px]"
+                  id="tpl-name"
+                />
+                <textarea
+                  placeholder="System prompt"
+                  className="field mb-2 min-h-[60px] text-[11px]"
+                  id="tpl-body"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const name = (document.getElementById("tpl-name") as HTMLInputElement)?.value?.trim();
+                    const body = (document.getElementById("tpl-body") as HTMLTextAreaElement)?.value?.trim();
+                    if (!name || !body) return;
+                    addChatTemplate({ name, systemPrompt: body });
+                    pushToast({ title: "Template saved", tone: "success" });
+                  }}
+                  className="btn btn-primary h-7 text-[10.5px]"
+                >
+                  Save template
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDelete}

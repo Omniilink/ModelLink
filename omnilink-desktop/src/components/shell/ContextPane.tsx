@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   BarChart3,
   BookText,
+  Code2,
   Database,
   DownloadCloud,
   FolderKanban,
@@ -32,6 +33,7 @@ const settingsItems: {
 }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "models", label: "Models", icon: Cpu },
+  { id: "editor", label: "Editor", icon: Code2 },
   { id: "data", label: "Data & storage", icon: Database },
   { id: "account", label: "Account", icon: UserRound },
   { id: "analytics", label: "Analytics", icon: BarChart3 },

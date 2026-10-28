@@ -7,6 +7,7 @@ export type Accent = "violet" | "cyan" | "emerald" | "rose" | "amber";
 export type SettingsSection =
   | "appearance"
   | "models"
+  | "editor"
   | "data"
   | "account"
   | "analytics"
@@ -23,6 +24,7 @@ export interface Message {
   createdAt: number;
   pinned?: boolean;
   attachments?: { name: string; type: string; data: string }[];
+  thinking?: string;
 }
 
 export interface Conversation {
