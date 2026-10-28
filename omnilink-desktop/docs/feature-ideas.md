@@ -3,7 +3,6 @@
 A backlog of features that would make OmniLink stand out or are necessary for v1.
 
 ## Chat & AI
-1. **Multi-model side-by-side** — send one prompt to 2-3 models and compare answers in split panes.
 2. **Voice input/output** — push-to-talk transcription and TTS replies.
 3. **Image & file attachments** — drag images/PDFs/code into chat for vision models.
 4. **Chat branching** — fork a conversation at any message and explore alternatives.
@@ -12,19 +11,20 @@ A backlog of features that would make OmniLink stand out or are necessary for v1
 7. **Conversation templates** — start chats from saved templates with system prompts.
 8. **Slash commands** — `/search`, `/code`, `/mcp` inline commands in the composer.
 9. **Tool-use transparency** — collapsible "thinking" blocks showing model reasoning.
-10. **Offline model fallback** — auto-switch to a local Ollama model when offline.
+10. **Offline model fallback** — auto-switch to a local Ollama model when offline, switch in settings to toggle on or off auto switch.
 
 ## Coding agent
 11. **Plan → act → verify loop** — agent proposes a plan, edits files, runs tests, reports.
 12. **Diff preview with accept/reject** — per-file diff view before applying edits.
-13. **Auto-continue** — agent keeps going until the task is marked done.
-14. **Risk-tiered permissions** — read (auto), write (confirm), delete/exec (confirm + allowlist).
+13. **Auto-continue** — agent keeps going until the task is marked done, advanced auto loop detector that can be toggled in settings, on by default.
+14. **Risk-tiered permissions** — read (auto), write (confirm), delete/exec (confirm + allowlist). section in settings to auto give permissions to all of them.
 15. **Terminal integration** — run shell commands in a sandboxed terminal pane.
 16. **Test runner integration** — detect test framework and run tests after edits.
 17. **Git integration** — stage, commit, branch, and PR creation from the UI.
 18. **Code review mode** — agent reviews a diff and posts inline comments.
 19. **Refactor suggestions** — "extract function", "rename symbol" with preview.
 20. **Multi-file edits** — atomic apply across several files with rollback.
+NEW IDEA. users can toggle an auto completion ai in settings, and select whatever model they want to use, ollama FIM models recommended. 
 
 ## MCP & tools
 21. **MCP watchdog** — auto-restart crashed stdio servers with backoff.
@@ -37,8 +37,8 @@ A backlog of features that would make OmniLink stand out or are necessary for v1
 28. **Per-server permissions** — allow/deny specific tools per server.
 
 ## Sync & collaboration
-29. **Cloud sync** — chats, projects, MCP configs, prompts across devices.
-30. **Conflict resolution UI** — side-by-side merge for divergent files.
+29. **Cloud sync** — chats, projects, MCP configs, prompts across devices, opt in inside settings.
+30. **Conflict resolution UI** — side-by-side merge for divergent files, hard to implement, dont implement if not possible or not practical.
 31. **Shared workspaces** — invite others to a workspace with role-based access.
 32. **Real-time co-editing** — collaborative code editing with cursors.
 33. **Project versioning** — named snapshots with restore and diff.
@@ -63,9 +63,4 @@ A backlog of features that would make OmniLink stand out or are necessary for v1
 
 ## Analytics & growth
 48. **Usage dashboard** — tokens, cost, latency per model (beyond event counts).
-49. **Cost alerts** — notify when spending exceeds a threshold.
 50. **Crash reports** — opt-in Sentry-style crash reporting.
-
-## Mobile & reach
-51. **Companion mobile app** — view chats and approve agent actions on phone.
-52. **Remote control** — drive the desktop from a browser on another device.

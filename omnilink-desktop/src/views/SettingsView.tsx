@@ -365,11 +365,38 @@ function ModelsSettings() {
     info?: OpenCodeInfo;
     error?: string;
   }>({ status: "idle" });
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [ollama, setOllama] = useState<{
     status: "idle" | "checking" | "online" | "offline";
     models?: string[];
     error?: string;
   }>({ status: "idle" });
+
+  useEffect(() => {
+    if (modelProvider !== "ollama") return;
+    const base = modelBaseUrl.trim().replace(/\/+$/, "");
+    if (!base) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3000);
+    fetch(`${base}/api/tags`, { signal: controller.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { models?: { name?: string }[] } | null) => {
+        if (!data) return;
+        const names = (data.models ?? [])
+          .map((m) => m.name)
+          .filter((n): n is string => Boolean(n));
+        setOllamaModels(names);
+        if (names.length && !modelName.trim()) {
+          setModelName(names[0]);
+        }
+      })
+      .catch(() => setOllamaModels([]))
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [modelProvider, modelBaseUrl]);
   const [copiedCommand, setCopiedCommand] = useState(false);
 
   const checkOpenCode = async () => {
@@ -613,14 +640,28 @@ function ModelsSettings() {
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-[10px] font-medium text-muted">Model</span>
-                <input
-                  value={modelName}
-                  onChange={(event) => setModelName(event.target.value)}
-                  placeholder={
-                    modelProvider === "ollama" ? "llama3.2" : "gpt-4o-mini"
-                  }
-                  className="field h-8 text-[11px]"
-                />
+                {modelProvider === "ollama" && ollamaModels.length > 0 ? (
+                  <select
+                    value={modelName}
+                    onChange={(event) => setModelName(event.target.value)}
+                    className="field h-8 text-[11px]"
+                  >
+                    {ollamaModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={modelName}
+                    onChange={(event) => setModelName(event.target.value)}
+                    placeholder={
+                      modelProvider === "ollama" ? "llama3.2" : "gpt-4o-mini"
+                    }
+                    className="field h-8 text-[11px]"
+                  />
+                )}
               </label>
             </div>
 
