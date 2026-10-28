@@ -33,11 +33,12 @@ export default function App() {
   const section = useApp((state) => state.section);
   const accent = useApp((state) => state.accent);
   const reduceMotion = useApp((state) => state.reduceMotion);
+  const resolvedTheme = useResolvedTheme();
   const fontSize = useApp((state) => state.fontSize);
   const customCss = useApp((state) => state.customCss);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
   const focusMode = useApp((state) => state.focusMode);
-  const resolvedTheme = useResolvedTheme();
+  const localOnlyMode = useApp((state) => state.localOnlyMode);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -66,6 +67,32 @@ export default function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!localOnlyMode) return;
+    const originalFetch = window.fetch;
+    window.fetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input);
+      const isLocal =
+        url.includes("127.0.0.1") ||
+        url.includes("localhost") ||
+        url.startsWith("/") ||
+        url.startsWith("blob:") ||
+        url.startsWith("data:");
+      if (!isLocal) {
+        throw new Error("Blocked by local-only mode");
+      }
+      return originalFetch(input, init);
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, [localOnlyMode]);
 
   useEffect(() => {
     let cancelled = false;

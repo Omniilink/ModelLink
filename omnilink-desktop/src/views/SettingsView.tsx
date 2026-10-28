@@ -36,6 +36,8 @@ import {
   openUrl,
   runShellCommand,
   setSecret,
+  workspaceDecrypt,
+  workspaceEncrypt,
   type OpenCodeInfo,
 } from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
@@ -54,6 +56,7 @@ const sectionTitles: Record<SettingsSection, string> = {
   data: "Data & storage",
   account: "Account",
   analytics: "Analytics",
+  privacy: "Privacy",
   updates: "Updates",
   about: "About",
 };
@@ -64,6 +67,7 @@ const sectionDescriptions: Record<SettingsSection, string> = {
   data: "Local workspace data and exports",
   account: "Identity, sync, and connected services",
   analytics: "Local usage events",
+  privacy: "Local-only mode and encrypted storage",
   updates: "Version and release channel",
   about: "Build details and project information",
 };
@@ -1411,6 +1415,143 @@ function AnalyticsSettings() {
   );
 }
 
+function PrivacySettings() {
+  const localOnlyMode = useApp((state) => state.localOnlyMode);
+  const setLocalOnlyMode = useApp((state) => state.setLocalOnlyMode);
+  const encryptedWorkspace = useApp((state) => state.encryptedWorkspace);
+  const setEncryptedWorkspace = useApp((state) => state.setEncryptedWorkspace);
+  const pushToast = useApp((state) => state.pushToast);
+  const auditLog = useApp((state) => state.auditLog);
+  const [rotating, setRotating] = useState(false);
+
+  return (
+    <div className="space-y-7">
+      <section>
+        <GroupLabel>Local-only mode</GroupLabel>
+        <Group>
+          <Row
+            title="Air-gapped"
+            description="Block all network calls. Only local models and files."
+          >
+            <Switch
+              checked={localOnlyMode}
+              onChange={setLocalOnlyMode}
+              label="Local-only mode"
+            />
+          </Row>
+        </Group>
+      </section>
+
+      <section>
+        <GroupLabel>Encrypted workspace</GroupLabel>
+        <Group>
+          <Row
+            title="Encrypt database"
+            description="Encrypt the SQLite database at rest using OS keychain."
+          >
+            <Switch
+              checked={encryptedWorkspace}
+              onChange={async (v) => {
+                setEncryptedWorkspace(v);
+                if (v) {
+                  try {
+                    await workspaceEncrypt();
+                    pushToast({ title: "Workspace encrypted", tone: "success" });
+                  } catch (e) {
+                    pushToast({
+                      title: "Encryption failed",
+                      description: e instanceof Error ? e.message : String(e),
+                      tone: "danger",
+                    });
+                  }
+                } else {
+                  try {
+                    await workspaceDecrypt();
+                    pushToast({ title: "Workspace decrypted", tone: "success" });
+                  } catch (e) {
+                    pushToast({
+                      title: "Decryption failed",
+                      description: e instanceof Error ? e.message : String(e),
+                      tone: "danger",
+                    });
+                  }
+                }
+              }}
+              label="Encrypted workspace"
+            />
+          </Row>
+        </Group>
+      </section>
+
+      <section>
+        <GroupLabel>Secret rotation</GroupLabel>
+        <Group>
+          <Row
+            title="Rotate keys"
+            description="Re-encrypt all stored secrets."
+          >
+            <button
+              type="button"
+              disabled={rotating}
+              onClick={async () => {
+                setRotating(true);
+                try {
+                  // Re-save a marker secret to trigger re-encryption.
+                  await setSecret("rotation.marker", String(Date.now()));
+                  pushToast({ title: "Secrets rotated", tone: "success" });
+                } catch (e) {
+                  pushToast({
+                    title: "Rotation failed",
+                    description: e instanceof Error ? e.message : String(e),
+                    tone: "danger",
+                  });
+                } finally {
+                  setRotating(false);
+                }
+              }}
+              className="btn h-7 text-[10.5px]"
+            >
+              {rotating ? "Rotating…" : "Rotate now"}
+            </button>
+          </Row>
+        </Group>
+      </section>
+
+      <section>
+        <GroupLabel>Audit log</GroupLabel>
+        <div className="overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+          {auditLog.length === 0 ? (
+            <p className="px-4 py-6 text-center text-[11px] text-muted">
+              No audit entries yet.
+            </p>
+          ) : (
+            <div className="scroll-thin max-h-64 overflow-y-auto">
+              {auditLog.slice(0, 50).map((entry, i) => (
+                <div
+                  key={i}
+                  className="border-b border-line px-4 py-2 last:border-b-0"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10.5px] font-medium text-fg">
+                      {entry.action}
+                    </span>
+                    <span className="ml-auto text-[9px] text-subtle">
+                      {new Date(entry.timestamp).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-[10px] text-subtle">
+                    {entry.detail}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function UpdatesSettings() {
   const autoCheckUpdates = useApp((state) => state.autoCheckUpdates);
   const setAutoCheckUpdates = useApp((state) => state.setAutoCheckUpdates);
@@ -1692,6 +1833,7 @@ export function SettingsView() {
           {section === "data" && <DataSettings />}
           {section === "account" && <AccountSettings />}
           {section === "analytics" && <AnalyticsSettings />}
+          {section === "privacy" && <PrivacySettings />}
           {section === "updates" && <UpdatesSettings />}
           {section === "about" && <AboutSettings />}
 

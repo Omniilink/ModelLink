@@ -35,6 +35,7 @@ const settingsItems: {
   { id: "data", label: "Data & storage", icon: Database },
   { id: "account", label: "Account", icon: UserRound },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "privacy", label: "Privacy", icon: ShieldCheck },
   { id: "updates", label: "Updates", icon: DownloadCloud },
   { id: "about", label: "About", icon: Info },
 ];

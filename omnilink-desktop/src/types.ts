@@ -10,6 +10,7 @@ export type SettingsSection =
   | "data"
   | "account"
   | "analytics"
+  | "privacy"
   | "updates"
   | "about";
 

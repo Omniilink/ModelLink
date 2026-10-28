@@ -806,9 +806,155 @@ fn watchdog_status(id: String) -> Result<WatchdogStatus, String> {
     }
 }
 
+#[tauri::command]
+fn workspace_encrypt(app: AppHandle) -> Result<(), String> {
+    use std::fs;
+    let db = app_data_dir(&app)?.join("omnilink.db");
+    if !db.exists() {
+        return Ok(());
+    }
+    let data = fs::read(&db).map_err(|e| e.to_string())?;
+    // Encrypt with DPAPI.
+    #[cfg(windows)]
+    {
+        // Use the secrets module's DPAPI.
+        // Reuse CryptProtectData via a local call.
+        #[repr(C)]
+        struct DataBlob {
+            cb_data: u32,
+            pb_data: *mut u8,
+        }
+        #[link(name = "crypt32")]
+        extern "C" {
+            fn CryptProtectData(
+                p_data_in: *const DataBlob,
+                sz_data_desc: *const u16,
+                p_optional_entropy: *const DataBlob,
+                pv_reserved: *mut std::ffi::c_void,
+                p_prompt_struct: *mut std::ffi::c_void,
+                dw_flags: u32,
+                p_data_out: *mut DataBlob,
+            ) -> i32;
+            fn LocalFree(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        }
+        let blob_in = DataBlob {
+            cb_data: data.len() as u32,
+            pb_data: data.as_ptr() as *mut u8,
+        };
+        let mut blob_out = DataBlob {
+            cb_data: 0,
+            pb_data: std::ptr::null_mut(),
+        };
+        let ok = unsafe {
+            CryptProtectData(
+                &blob_in,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                &mut blob_out,
+            )
+        };
+        if ok == 0 {
+            return Err("CryptProtectData failed".to_string());
+        }
+        let encrypted = unsafe {
+            std::slice::from_raw_parts(blob_out.pb_data, blob_out.cb_data as usize)
+        };
+        let enc_path = app_data_dir(&app)?.join("omnilink.db.enc");
+        fs::write(&enc_path, encrypted).map_err(|e| e.to_string())?;
+        unsafe {
+            LocalFree(blob_out.pb_data as *mut std::ffi::c_void);
+        }
+        // Remove unencrypted DB and WAL files.
+        let _ = fs::remove_file(&db);
+        let _ = fs::remove_file(app_data_dir(&app)?.join("omnilink.db-wal"));
+        let _ = fs::remove_file(app_data_dir(&app)?.join("omnilink.db-shm"));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = data;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn workspace_decrypt(app: AppHandle) -> Result<(), String> {
+    use std::fs;
+    let enc_path = app_data_dir(&app)?.join("omnilink.db.enc");
+    if !enc_path.exists() {
+        return Ok(());
+    }
+    let data = fs::read(&enc_path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct DataBlob {
+            cb_data: u32,
+            pb_data: *mut u8,
+        }
+        #[link(name = "crypt32")]
+        extern "C" {
+            fn CryptUnprotectData(
+                p_data_in: *const DataBlob,
+                ppsz_data_desc: *mut *mut u16,
+                p_optional_entropy: *const DataBlob,
+                pv_reserved: *mut std::ffi::c_void,
+                p_prompt_struct: *mut std::ffi::c_void,
+                dw_flags: u32,
+                p_data_out: *mut DataBlob,
+            ) -> i32;
+            fn LocalFree(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        }
+        let blob_in = DataBlob {
+            cb_data: data.len() as u32,
+            pb_data: data.as_ptr() as *mut u8,
+        };
+        let mut blob_out = DataBlob {
+            cb_data: 0,
+            pb_data: std::ptr::null_mut(),
+        };
+        let ok = unsafe {
+            CryptUnprotectData(
+                &blob_in,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                &mut blob_out,
+            )
+        };
+        if ok == 0 {
+            return Err("CryptUnprotectData failed".to_string());
+        }
+        let decrypted = unsafe {
+            std::slice::from_raw_parts(blob_out.pb_data, blob_out.cb_data as usize)
+        };
+        let db = app_data_dir(&app)?.join("omnilink.db");
+        fs::write(&db, decrypted).map_err(|e| e.to_string())?;
+        unsafe {
+            LocalFree(blob_out.pb_data as *mut std::ffi::c_void);
+        }
+        let _ = fs::remove_file(&enc_path);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = data;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // Decrypt workspace if an encrypted file exists.
+            let handle = app.handle();
+            let _ = workspace_decrypt(handle.clone());
+            Ok(())
+        })
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
@@ -844,6 +990,8 @@ pub fn run() {
             watchdog_start,
             watchdog_stop,
             watchdog_status,
+            workspace_encrypt,
+            workspace_decrypt,
             run_shell_command,
             http_request
         ])

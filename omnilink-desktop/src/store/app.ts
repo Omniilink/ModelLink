@@ -86,6 +86,9 @@ interface AppState {
   assets: Asset[];
   analytics: Record<string, number>;
   toolAuditLog: ToolAuditEntry[];
+  auditLog: { action: string; detail: string; timestamp: number }[];
+  localOnlyMode: boolean;
+  encryptedWorkspace: boolean;
   projectVersions: ProjectVersion[];
   serverUrl: string;
   syncEnabled: boolean;
@@ -159,6 +162,9 @@ interface AppState {
   trackEvent: (name: string) => void;
   addAuditEntry: (entry: Omit<ToolAuditEntry, "id" | "timestamp">) => void;
   clearAuditLog: () => void;
+  addAudit: (action: string, detail: string) => void;
+  setLocalOnlyMode: (v: boolean) => void;
+  setEncryptedWorkspace: (v: boolean) => void;
 
   createSnapshot: (projectId: string, name: string) => string;
   deleteSnapshot: (id: string) => void;
@@ -221,6 +227,9 @@ export const useApp = create<AppState>()(
       assets: [],
       analytics: {},
       toolAuditLog: [],
+      auditLog: [],
+      localOnlyMode: false,
+      encryptedWorkspace: false,
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,
@@ -526,6 +535,16 @@ export const useApp = create<AppState>()(
         })),
       clearAuditLog: () => set({ toolAuditLog: [] }),
 
+      addAudit: (action, detail) =>
+        set((state) => ({
+          auditLog: [
+            { action, detail, timestamp: Date.now() },
+            ...state.auditLog,
+          ].slice(0, 500),
+        })),
+      setLocalOnlyMode: (localOnlyMode) => set({ localOnlyMode }),
+      setEncryptedWorkspace: (encryptedWorkspace) => set({ encryptedWorkspace }),
+
       createSnapshot: (projectId, name) => {
         const project = get().projects.find((p) => p.id === projectId);
         if (!project) return "";
@@ -675,6 +694,9 @@ export const useApp = create<AppState>()(
       assets: [],
       analytics: {},
       toolAuditLog: [],
+      auditLog: [],
+      localOnlyMode: false,
+      encryptedWorkspace: false,
       projectVersions: [],
       serverUrl: "http://127.0.0.1:8080",
       syncEnabled: false,        }),
@@ -712,6 +734,9 @@ export const useApp = create<AppState>()(
         mcpServers: state.mcpServers,
         assets: state.assets,
         analytics: state.analytics,
+        auditLog: state.auditLog,
+        localOnlyMode: state.localOnlyMode,
+        encryptedWorkspace: state.encryptedWorkspace,
         projectVersions: state.projectVersions,
         serverUrl: state.serverUrl,
         syncEnabled: state.syncEnabled,

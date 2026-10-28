@@ -123,6 +123,15 @@ export async function watchdogStatus(id: string): Promise<{ running: boolean; re
   if (!IS_TAURI) return { running: false, restarts: 0 };
   return invoke("watchdog_status", { id });
 }
+export async function workspaceEncrypt(): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("workspace_encrypt");
+}
+
+export async function workspaceDecrypt(): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("workspace_decrypt");
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();
