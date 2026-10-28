@@ -11,6 +11,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranch,
   HardDrive,
   History,
   Save,
@@ -36,6 +37,7 @@ import {
 } from "@/lib/utils";
 import { useApp } from "@/store/app";
 import type { ProjectFile, ModelProvider } from "@/types";
+import { runShellCommand } from "@/lib/tauri";
 import { isModelConfigured, streamChat } from "@/lib/models";
 
 interface TreeDir {
@@ -308,6 +310,10 @@ export function CodingView() {
     path: string;
     content: string;
   } | null>(null);
+  const [gitStatus, setGitStatus] = useState("");
+  const [gitMessage, setGitMessage] = useState("");
+  const [gitLoading, setGitLoading] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
 
   const tree = useMemo(
     () => buildTree(project?.files ?? []),
@@ -497,11 +503,22 @@ export function CodingView() {
             )}
           </span>
           <IconButton
-            label="Toggle agent"
-            onClick={() => setAgentMode((v) => !v)}
+            label="Git"
+            onClick={async () => {
+              setGitOpen(true);
+              setGitLoading(true);
+              try {
+                const res = await runShellCommand("git status --short");
+                setGitStatus(res);
+              } catch (e) {
+                setGitStatus(e instanceof Error ? e.message : String(e));
+              } finally {
+                setGitLoading(false);
+              }
+            }}
             className="h-7 w-7"
           >
-            <Braces size={13} />
+            <GitBranch size={13} />
           </IconButton>
           {selectedFile?.path.toLowerCase().endsWith(".html") && (
             <IconButton
@@ -740,7 +757,68 @@ export function CodingView() {
         }}
       />
 
-      {snapshotOpen && (
+      {gitOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="text-[12.5px] font-medium text-fg">Git</span>
+              <button type="button" onClick={() => setGitOpen(false)} className="btn btn-ghost h-7 text-[10.5px]">
+                Close
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 space-y-3">
+              <pre className="rounded border border-line bg-[var(--bg-base)] p-2 font-mono text-[10px] text-muted whitespace-pre-wrap">
+                {gitLoading ? "Loading…" : gitStatus || "Clean working tree."}
+              </pre>
+              <input
+                value={gitMessage}
+                onChange={(e) => setGitMessage(e.target.value)}
+                placeholder="Commit message"
+                className="field h-8 text-[11px]"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setGitLoading(true);
+                    try {
+                      await runShellCommand("git add -A");
+                      const res = await runShellCommand(`git commit -m "${gitMessage.replace(/"/g, '\\"')}"`);
+                      setGitStatus(res);
+                      pushToast({ title: "Committed", tone: "success" });
+                    } catch (e) {
+                      pushToast({ title: "Commit failed", description: e instanceof Error ? e.message : String(e), tone: "danger" });
+                    } finally {
+                      setGitLoading(false);
+                    }
+                  }}
+                  className="btn btn-primary h-7 text-[10.5px]"
+                >
+                  Commit all
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setGitLoading(true);
+                    try {
+                      const res = await runShellCommand("git log --oneline -10");
+                      setGitStatus(res);
+                    } catch (e) {
+                      setGitStatus(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setGitLoading(false);
+                    }
+                  }}
+                  className="btn btn-ghost h-7 text-[10.5px]"
+                >
+                  Log
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+        {snapshotOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
           <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
             <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
