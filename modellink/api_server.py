@@ -2187,7 +2187,12 @@ async def oauth_status():
 async def google_oauth_start(request: Request):
     if not _google_oauth_configured():
         return JSONResponse(status_code=501, content={"error": "Google sign-in is not set up on this server"})
-    state = secrets.token_urlsafe(24)
+    desktop_port = request.query_params.get("desktop_port", "")
+    base_state = secrets.token_urlsafe(24)
+    if desktop_port.isdigit():
+        state = base_state + ":" + desktop_port
+    else:
+        state = base_state
     params = urllib.parse.urlencode({
         "client_id": os.environ["GOOGLE_CLIENT_ID"],
         "redirect_uri": _google_redirect_uri(),
@@ -2199,7 +2204,6 @@ async def google_oauth_start(request: Request):
     resp = RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + params, status_code=302)
     resp.set_cookie(key="g_oauth_state", value=state, httponly=True, samesite="lax",
                     secure=_request_is_https(request), max_age=600, path="/")
-    desktop_port = request.query_params.get("desktop_port", "")
     if desktop_port.isdigit():
         resp.set_cookie(key="g_oauth_desktop_port", value=desktop_port, httponly=True,
                         samesite="lax", secure=_request_is_https(request), max_age=600, path="/")
@@ -2227,6 +2231,10 @@ async def google_oauth_callback(request: Request):
     code = request.query_params.get("code", "")
     state = request.query_params.get("state", "")
     want = request.cookies.get("g_oauth_state", "")
+    # Allow desktop_port to come from state (survives cross-site redirects better).
+    desktop_port_from_state = ""
+    if ":" in state:
+        desktop_port_from_state = state.split(":")[-1]
     if not code or not state or not want or not hmac.compare_digest(state, want):
         return fail("Sign-in expired - please try again")
     if not _google_oauth_configured():
@@ -2283,7 +2291,7 @@ async def google_oauth_callback(request: Request):
     else:
         logger.info(f"[AUTH] Google signin user={user.get('username','-')}")
     token = create_session(user["id"])
-    desktop_port = request.cookies.get("g_oauth_desktop_port", "")
+    desktop_port = request.cookies.get("g_oauth_desktop_port", "") or desktop_port_from_state
     if desktop_port.isdigit():
         resp = RedirectResponse(
             f"http://127.0.0.1:{desktop_port}/callback?token={urllib.parse.quote(token)}",
