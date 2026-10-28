@@ -524,6 +524,159 @@ fn open_url(url: String) -> Result<(), String> {
     }
     Ok(())
 }
+#[derive(serde::Serialize, Debug)]
+pub struct McpResource {
+    pub uri: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+#[tauri::command]
+async fn mcp_call_tool_stdio(command: String, args: String, tool_name: String, tool_args: String) -> Result<String, String> {
+    use rmcp::{ServiceExt, transport::TokioChildProcess};
+
+    let mut cmd = tokio::process::Command::new(&command);
+    for a in args.split_whitespace() {
+        cmd.arg(a);
+    }
+    let transport = TokioChildProcess::new(cmd).map_err(|e| e.to_string())?;
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let parsed_args: Option<serde_json::Value> = if tool_args.trim().is_empty() { None } else { serde_json::from_str(&tool_args).ok() };
+    let mut params = rmcp::model::CallToolRequestParams::new(tool_name);
+    if let Some(obj) = parsed_args.and_then(|v| v.as_object().cloned()) {
+        params = params.with_arguments(obj);
+    }
+    let result = client.call_tool(params).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    let mut out = String::new();
+    for c in &result.content {
+        if let Some(t) = c.as_text() {
+            out.push_str(&t.text);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        out = serde_json::to_string(&result).unwrap_or_default();
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn mcp_call_tool_http(url: String, tool_name: String, tool_args: String) -> Result<String, String> {
+    use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
+
+    let transport = StreamableHttpClientTransport::from_uri(url);
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let parsed_args: Option<serde_json::Value> = if tool_args.trim().is_empty() { None } else { serde_json::from_str(&tool_args).ok() };
+    let mut params = rmcp::model::CallToolRequestParams::new(tool_name);
+    if let Some(obj) = parsed_args.and_then(|v| v.as_object().cloned()) {
+        params = params.with_arguments(obj);
+    }
+    let result = client.call_tool(params).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    let mut out = String::new();
+    for c in &result.content {
+        if let Some(t) = c.as_text() {
+            out.push_str(&t.text);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        out = serde_json::to_string(&result).unwrap_or_default();
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn mcp_list_resources_stdio(command: String, args: String) -> Result<Vec<McpResource>, String> {
+    use rmcp::{ServiceExt, transport::TokioChildProcess};
+
+    let mut cmd = tokio::process::Command::new(&command);
+    for a in args.split_whitespace() {
+        cmd.arg(a);
+    }
+    let transport = TokioChildProcess::new(cmd).map_err(|e| e.to_string())?;
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let result = client.list_resources(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result.resources.into_iter().map(|r| McpResource {
+        uri: r.uri.to_string(),
+        name: Some(r.name.to_string()),
+        description: r.description.map(|d| d.to_string()),
+        mime_type: r.mime_type.map(|m| m.to_string()),
+    }).collect())
+}
+
+#[tauri::command]
+async fn mcp_list_resources_http(url: String) -> Result<Vec<McpResource>, String> {
+    use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
+
+    let transport = StreamableHttpClientTransport::from_uri(url);
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let result = client.list_resources(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result.resources.into_iter().map(|r| McpResource {
+        uri: r.uri.to_string(),
+        name: Some(r.name.to_string()),
+        description: r.description.map(|d| d.to_string()),
+        mime_type: r.mime_type.map(|m| m.to_string()),
+    }).collect())
+}
+
+#[tauri::command]
+fn run_shell_command(command: String) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", &command])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut out = stdout;
+        if !stderr.is_empty() {
+            out.push_str("\n--- stderr ---\n");
+            out.push_str(&stderr);
+        }
+        out.push_str(&format!("\n--- exit: {} ---", output.status));
+        Ok(out)
+    }
+    #[cfg(not(windows))]
+    {
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut out = stdout;
+        if !stderr.is_empty() {
+            out.push_str("\n--- stderr ---\n");
+            out.push_str(&stderr);
+        }
+        out.push_str(&format!("\n--- exit: {} ---", output.status));
+        Ok(out)
+    }
+}
+
+#[tauri::command]
+async fn http_request(method: String, url: String, body: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let req = match method.to_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url).body(body),
+        "PUT" => client.put(&url).body(body),
+        "DELETE" => client.delete(&url),
+        _ => return Err(format!("Unsupported method: {}", method)),
+    };
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(format!("HTTP {}\n{}", status, text))
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -551,7 +704,13 @@ pub fn run() {
             oauth_start,
             oauth_poll,
             oauth_clear,
-            open_url
+            open_url,
+            mcp_call_tool_stdio,
+            mcp_call_tool_http,
+            mcp_list_resources_stdio,
+            mcp_list_resources_http,
+            run_shell_command,
+            http_request
         ])
         .run(tauri::generate_context!())
         .expect("error while building OmniLink");

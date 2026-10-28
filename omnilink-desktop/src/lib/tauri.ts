@@ -71,6 +71,35 @@ export async function openUrl(url: string): Promise<void> {
   }
   await invoke("open_url", { url });
 }
+export async function mcpCallToolStdio(command: string, args: string, toolName: string, toolArgs: string): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("mcp_call_tool_stdio", { command, args, toolName, toolArgs });
+}
+
+export async function mcpCallToolHttp(url: string, toolName: string, toolArgs: string): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("mcp_call_tool_http", { url, toolName, toolArgs });
+}
+
+export async function mcpListResourcesStdio(command: string, args: string): Promise<{ uri: string; name?: string; description?: string; mimeType?: string }[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_list_resources_stdio", { command, args });
+}
+
+export async function mcpListResourcesHttp(url: string): Promise<{ uri: string; name?: string; description?: string; mimeType?: string }[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_list_resources_http", { url });
+}
+
+export async function runShellCommand(command: string): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("run_shell_command", { command });
+}
+
+export async function httpRequest(method: string, url: string, body: string): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("http_request", { method, url, body });
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

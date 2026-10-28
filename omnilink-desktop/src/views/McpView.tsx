@@ -16,7 +16,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Switch } from "@/components/ui/Switch";
 import { copyText } from "@/lib/utils";
-import { mcpProbeHttp, mcpProbeStdio } from "@/lib/tauri";
+import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp } from "@/lib/tauri";
 import { useApp } from "@/store/app";
 import type { McpServer, McpTransport } from "@/types";
 
@@ -68,9 +68,11 @@ function TransportIcon({
 function ServerRow({
   server,
   onDelete,
+  onBrowseTools,
 }: {
   server: McpServer;
   onDelete: (server: McpServer) => void;
+  onBrowseTools: (server: McpServer) => void;
 }) {
   const openModal = useApp((state) => state.openModal);
   const toggleMcpServer = useApp((state) => state.toggleMcpServer);
@@ -166,6 +168,13 @@ function ServerRow({
           <Plug size={12} className={probing ? "animate-pulse" : ""} />
         </IconButton>
         <IconButton
+          label="Browse tools"
+          onClick={() => onBrowseTools(server)}
+          className="h-6 w-6"
+        >
+          <Terminal size={12} />
+        </IconButton>
+        <IconButton
           label="Edit server"
           onClick={() => openModal({ type: "mcp-edit", id: server.id })}
           className="h-6 w-6"
@@ -189,6 +198,11 @@ export function McpView() {
   const openModal = useApp((state) => state.openModal);
   const pushToast = useApp((state) => state.pushToast);
   const deleteMcpServer = useApp((state) => state.deleteMcpServer);
+  const [toolsMap, setToolsMap] = useState<Record<string, { name: string; description?: string }[]>>({});
+  const [selectedServer, setSelectedServer] = useState<McpServer | null>(null);
+  const [toolArgs, setToolArgs] = useState("{}");
+  const [toolResult, setToolResult] = useState("");
+  const [invoking, setInvoking] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<McpServer | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -352,6 +366,22 @@ export function McpView() {
                   key={server.id}
                   server={server}
                   onDelete={setDeleteTarget}
+                  onBrowseTools={(s) => {
+                    setSelectedServer(s);
+                    // fetch tools
+                    const fetchTools = async () => {
+                      try {
+                        const tools =
+                          s.transport === "stdio"
+                            ? await mcpProbeStdio(s.command, s.args)
+                            : await mcpProbeHttp(s.url);
+                        setToolsMap((prev) => ({ ...prev, [s.id]: tools }));
+                      } catch (e) {
+                        pushToast({ title: "Failed to list tools", tone: "danger" });
+                      }
+                    };
+                    void fetchTools();
+                  }}
                 />
               ))}
             </div>
@@ -363,6 +393,92 @@ export function McpView() {
           </div>
         )}
       </div>
+
+      {selectedServer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+              <span className="text-[12.5px] font-medium text-fg">
+                Tools — {selectedServer.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedServer(null)}
+                className="btn btn-ghost h-7 text-[10.5px]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
+              {(toolsMap[selectedServer.id] ?? []).length === 0 ? (
+                <p className="text-[11px] text-muted">No tools found.</p>
+              ) : (
+                <div className="space-y-3">
+                  {(toolsMap[selectedServer.id] ?? []).map((tool) => (
+                    <div
+                      key={tool.name}
+                      className="rounded-lg border border-line bg-[var(--bg-base)] p-3"
+                    >
+                      <p className="text-[12px] font-medium text-fg">
+                        {tool.name}
+                      </p>
+                      {tool.description && (
+                        <p className="mt-0.5 text-[10.5px] text-subtle">
+                          {tool.description}
+                        </p>
+                      )}
+                      <textarea
+                        value={toolArgs}
+                        onChange={(e) => setToolArgs(e.target.value)}
+                        rows={2}
+                        className="mt-2 w-full rounded border border-line bg-[var(--bg-surface)] px-2 py-1 font-mono text-[10px] text-fg outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={invoking}
+                        onClick={async () => {
+                          setInvoking(true);
+                          setToolResult("");
+                          try {
+                            const res =
+                              selectedServer.transport === "stdio"
+                                ? await mcpCallToolStdio(
+                                    selectedServer.command,
+                                    selectedServer.args,
+                                    tool.name,
+                                    toolArgs,
+                                  )
+                                : await mcpCallToolHttp(
+                                    selectedServer.url,
+                                    tool.name,
+                                    toolArgs,
+                                  );
+                            setToolResult(res);
+                          } catch (e) {
+                            setToolResult(
+                              e instanceof Error ? e.message : String(e),
+                            );
+                          } finally {
+                            setInvoking(false);
+                          }
+                        }}
+                        className="btn btn-primary mt-2 h-7 text-[10.5px]"
+                      >
+                        {invoking ? "Invoking…" : "Invoke"}
+                      </button>
+                      {toolResult && (
+                        <pre className="mt-2 max-h-40 overflow-auto rounded border border-line bg-[var(--bg-surface)] p-2 font-mono text-[10px] text-muted whitespace-pre-wrap">
+                          {toolResult}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
