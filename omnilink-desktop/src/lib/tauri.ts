@@ -147,6 +147,144 @@ export async function workspaceDecrypt(): Promise<void> {
   if (!IS_TAURI) return;
   await invoke("workspace_decrypt");
 }
+
+// ---------------------------------------------------------------------------
+// Model transport (Rust-proxied, so release builds are not blocked by CORS)
+// ---------------------------------------------------------------------------
+
+export interface ModelHttpResult {
+  status: number;
+  body: string;
+}
+
+export interface ModelRequest {
+  url: string;
+  headers?: Record<string, string>;
+  body?: string;
+  /** "opencode" or "opencode-go": Rust injects the key from the OpenCode login. */
+  authSource?: string;
+}
+
+export async function opencodeAuthStatus(): Promise<string[]> {
+  if (!IS_TAURI) return [];
+  try {
+    return await invoke<string[]>("opencode_auth_status");
+  } catch {
+    return [];
+  }
+}
+
+export async function modelHttp(
+  method: string,
+  request: ModelRequest,
+): Promise<ModelHttpResult> {
+  if (!IS_TAURI) {
+    const response = await fetch(request.url, {
+      method,
+      headers: request.headers,
+      body: request.body,
+    });
+    return { status: response.status, body: await response.text() };
+  }
+  return invoke<ModelHttpResult>("model_http", {
+    method,
+    url: request.url,
+    headers: request.headers ?? {},
+    body: request.body ?? null,
+    authSource: request.authSource ?? null,
+  });
+}
+
+export async function modelStream(
+  requestId: string,
+  request: ModelRequest & { body: string },
+  handlers: {
+    onChunk: (text: string) => void;
+    onDone: () => void;
+    onError: (message: string) => void;
+  },
+): Promise<void> {
+  if (!IS_TAURI) {
+    const response = await fetch(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: request.body,
+    });
+    if (!response.ok || !response.body) {
+      handlers.onError(`HTTP ${response.status}`);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handlers.onChunk(decoder.decode(value, { stream: true }));
+    }
+    handlers.onDone();
+    return;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+
+  // Rust emits the terminal event before the command returns, but event
+  // delivery to JS is asynchronous. Keep the chunk listener alive until the
+  // terminal event actually arrives, otherwise trailing tokens get dropped.
+  let settle: () => void = () => undefined;
+  const terminal = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  let reported = false;
+
+  const unlisten = await Promise.all([
+    listen<string>(`model:chunk:${requestId}`, (event) =>
+      handlers.onChunk(event.payload),
+    ),
+    listen(`model:done:${requestId}`, () => {
+      handlers.onDone();
+      settle();
+    }),
+    listen<string>(`model:error:${requestId}`, (event) => {
+      reported = true;
+      handlers.onError(event.payload);
+      settle();
+    }),
+  ]);
+
+  try {
+    await invoke("model_stream", {
+      requestId,
+      url: request.url,
+      headers: request.headers ?? {},
+      body: request.body,
+      authSource: request.authSource ?? null,
+    });
+  } catch (error) {
+    // Rust already emitted model:error for this; only report once.
+    if (!reported) {
+      reported = true;
+      handlers.onError(error instanceof Error ? error.message : String(error));
+    }
+    settle();
+  }
+
+  // Grace period in case a terminal event is lost, so a caller never hangs.
+  await Promise.race([
+    terminal,
+    new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+  ]);
+
+  for (const stop of unlisten) stop();
+}
+
+export async function modelAbort(requestId: string): Promise<void> {
+  if (!IS_TAURI) return;
+  try {
+    await invoke("model_abort", { requestId });
+  } catch {
+    // Nothing to abort.
+  }
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

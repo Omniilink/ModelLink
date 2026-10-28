@@ -2,10 +2,12 @@ import { McpModal } from "@/components/modals/McpModal";
 import { ProjectModal } from "@/components/modals/ProjectModal";
 import { PromptModal } from "@/components/modals/PromptModal";
 import { GoogleAuthModal } from "@/components/modals/GoogleAuthModal";
+import { ModelSelectorModal } from "@/components/modals/ModelSelectorModal";
 import { useApp } from "@/store/app";
 
 export function ModalHost() {
   const modal = useApp((state) => state.modal);
+  const closeModal = useApp((state) => state.closeModal);
 
   return (
     <>
@@ -21,6 +23,10 @@ export function ModalHost() {
       <GoogleAuthModal
         open={modal?.type === "google-auth"}
         url={modal?.type === "google-auth" ? modal.url : ""}
+      />
+      <ModelSelectorModal
+        open={modal?.type === "model-selector"}
+        onClose={closeModal}
       />
     </>
   );

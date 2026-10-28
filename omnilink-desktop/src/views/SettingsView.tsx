@@ -33,6 +33,7 @@ import {
 
   oauthStart,
   openUrl,
+  opencodeAuthStatus,
   runShellCommand,
   setSecret,
   workspaceDecrypt,
@@ -40,6 +41,12 @@ import {
   type OpenCodeInfo,
 } from "@/lib/tauri";
 import { useResolvedTheme } from "@/lib/theme";
+import {
+  listOllamaModels,
+  pickOllamaModel,
+  resolveAuthSource,
+  testModel,
+} from "@/lib/models";
 import {
   copyText,
   downloadJson,
@@ -393,6 +400,19 @@ function AppearanceSettings() {
   );
 }
 
+const PRESET_PROVIDERS = [
+  { name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash" },
+  { name: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o" },
+  { name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", model: "claude-sonnet-4-5" },
+  { name: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.1-70b-versatile" },
+  { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4" },
+  { name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "llama-3.1-70b" },
+  { name: "xAI", baseUrl: "https://api.x.ai/v1", model: "grok-beta" },
+];
+
+const OPENCODE_GO_BASE = "https://opencode.ai/inference/go/openai/v1";
+const OPENCODE_ZEN_BASE = "https://opencode.ai/inference/openai/v1";
+
 function ModelsSettings() {
   const providers = useApp((state) => state.providers);
   const activeProviderId = useApp((state) => state.activeProviderId);
@@ -427,35 +447,63 @@ function ModelsSettings() {
   }>({ status: "idle" });
   const [pullModel, setPullModel] = useState("");
   const [pulling, setPulling] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+  const [ocAuth, setOcAuth] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    void opencodeAuthStatus().then(setOcAuth).catch(() => setOcAuth([]));
+  }, []);
+
+  const runConnectionTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    const config = {
+      provider: modelProvider,
+      baseUrl: modelBaseUrl,
+      apiKey: modelApiKey,
+      model: modelName,
+      authSource: resolveAuthSource(modelBaseUrl),
+      sessionId: "omnilink-settings-test",
+    };
+    const result = await testModel(config);
+    setTesting(false);
+    if (result.ok) {
+      setTestResult({
+        ok: true,
+        message: `${result.latencyMs} ms · ${result.reply || "(empty reply)"}`,
+      });
+      pushToast({ title: "Model responded", tone: "success" });
+    } else {
+      setTestResult({ ok: false, message: result.error ?? "No response" });
+      pushToast({ title: "Model test failed", tone: "danger" });
+    }
+  };
 
   useEffect(() => {
     if (modelProvider !== "ollama") return;
     const base = modelBaseUrl.trim().replace(/\/+$/, "");
     if (!base) return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 3000);
-    fetch(`${base}/api/tags`, { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { models?: { name?: string }[] } | null) => {
-        if (!data) return;
-        const names = (data.models ?? [])
-          .map((m) => m.name)
-          .filter((n): n is string => Boolean(n));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entries = await listOllamaModels(base);
+        if (cancelled) return;
+        const names = entries.map((entry) => entry.name);
         setOllamaModels(names);
-        if (names.length) {
-          if (!modelName.trim() || modelName.trim().toLowerCase() === "auto") {
-            const chatModels = names.filter((n) => /gemma|llama|phi|mistral|qwen|deepseek|llava/i.test(n));
-            const pool = chatModels.length ? chatModels : names;
-            const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0];
-            setModelName(preferred ?? names[0]);
-          }
+        if (names.length && (!modelName.trim() || modelName.trim().toLowerCase() === "auto")) {
+          setModelName(pickOllamaModel(entries));
         }
-      })
-      .catch(() => setOllamaModels([]))
-      .finally(() => window.clearTimeout(timer));
+      } catch {
+        if (!cancelled) setOllamaModels([]);
+      }
+    })();
     return () => {
-      controller.abort();
-      window.clearTimeout(timer);
+      cancelled = true;
     };
   }, [modelProvider, modelBaseUrl]);
   const [copiedCommand, setCopiedCommand] = useState(false);
@@ -496,33 +544,18 @@ function ModelsSettings() {
 
   const checkOllama = async () => {
     setOllama({ status: "checking" });
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 3500);
     try {
-      const response = await fetch(
-        `${ollamaUrl.trim().replace(/\/+$/, "")}/api/tags`,
-        { signal: controller.signal },
-      );
-      if (!response.ok) {
-        throw new Error(`Ollama returned ${response.status}`);
-      }
-      const data = (await response.json()) as {
-        models?: { name?: string }[];
-      };
-      const models = (data.models ?? [])
-        .map((model) => model.name)
-        .filter((name): name is string => Boolean(name));
-      setOllama({ status: "online", models });
+      const entries = await listOllamaModels(ollamaUrl);
+      setOllama({
+        status: "online",
+        models: entries.map((entry) => entry.name),
+      });
     } catch (error) {
       setOllama({
         status: "offline",
         error:
-          error instanceof Error && error.name !== "AbortError"
-            ? error.message
-            : "No response before the timeout.",
+          error instanceof Error ? error.message : "Ollama is not reachable.",
       });
-    } finally {
-      window.clearTimeout(timer);
     }
   };
 
@@ -568,6 +601,26 @@ function ModelsSettings() {
             <p className="mt-1 max-w-[560px] text-[10.5px] leading-relaxed text-subtle">
               Manage multiple AI providers. Keys are stored in the OS keychain.
             </p>
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <p className="text-[10px] text-muted mb-2">Quick presets</p>
+          <div className="flex flex-wrap gap-1.5">
+            {PRESET_PROVIDERS.map((preset) => (
+              <button
+                key={preset.name}
+                type="button"
+                onClick={() => {
+                  setNewName(preset.name);
+                  setNewUrl(preset.baseUrl);
+                  setNewModel(preset.model);
+                }}
+                className="rounded border border-line px-2 py-1 text-[9.5px] text-muted hover:bg-[var(--bg-hover)] hover:text-fg"
+              >
+                {preset.name}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -738,6 +791,41 @@ function ModelsSettings() {
               </label>
             </div>
 
+            <div className="mt-2">
+              <p className="text-[10px] text-muted mb-2">OpenCode (uses your existing login)</p>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModelProvider("custom");
+                    setModelBaseUrl(OPENCODE_GO_BASE);
+                    setModelName("deepseek-v4.1-flash");
+                    setModelApiKey("");
+                  }}
+                  className="rounded border border-line px-2 py-1 text-[9.5px] text-muted hover:bg-[var(--bg-hover)] hover:text-fg"
+                >
+                  OpenCode Go
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModelProvider("custom");
+                    setModelBaseUrl(OPENCODE_ZEN_BASE);
+                    setModelName("big-pickle");
+                    setModelApiKey("");
+                  }}
+                  className="rounded border border-line px-2 py-1 text-[9.5px] text-muted hover:bg-[var(--bg-hover)] hover:text-fg"
+                >
+                  OpenCode Zen
+                </button>
+                <span className="self-center text-[9px] text-subtle">
+                  {ocAuth.length > 0
+                    ? `signed in: ${ocAuth.join(", ")}`
+                    : "no OpenCode login found"}
+                </span>
+              </div>
+            </div>
+
             <label className="mt-2 flex flex-col gap-1">
               <span className="text-[10px] font-medium text-muted">
                 Base URL
@@ -809,12 +897,33 @@ function ModelsSettings() {
               >
                 Save connection
               </button>
+              <button
+                type="button"
+                onClick={() => void runConnectionTest()}
+                disabled={testing}
+                className="btn btn-primary h-7 text-[10.5px]"
+              >
+                {testing ? "Testing…" : "Test"}
+              </button>
               <span className="text-[9.5px] text-subtle">
                 {modelProvider === "ollama"
                   ? "Streams from a local Ollama instance."
                   : "Uses an OpenAI-compatible chat completions endpoint."}
               </span>
             </div>
+
+            {testResult && (
+              <div
+                className={`mt-2 rounded-lg border px-2.5 py-2 text-[10px] leading-relaxed ${
+                  testResult.ok
+                    ? "border-[color-mix(in_srgb,var(--success)_35%,transparent)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] text-success"
+                    : "border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] text-danger"
+                }`}
+              >
+                {testResult.ok ? "Responded: " : "Failed: "}
+                <span className="font-mono">{testResult.message}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

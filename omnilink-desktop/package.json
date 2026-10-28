@@ -9,6 +9,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs",
+    "test:parser": "esbuild scripts/test-stream-parser.mjs --bundle --platform=node --format=esm --outfile=scripts/.test-parser.built.mjs --log-level=error && node scripts/.test-parser.built.mjs",
+    "test:models": "esbuild scripts/test-model-e2e.mjs --bundle --platform=node --format=esm --outfile=scripts/.test-e2e.built.mjs --alias:@/lib/tauri=./scripts/stub-tauri.mjs --alias:@=./src --log-level=error && node scripts/.test-e2e.built.mjs",
+    "test:release": "node scripts/test-release-app.mjs",
+    "test:release:opencode": "node scripts/test-release-opencode.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -10,6 +10,7 @@ import { TitleBar } from "@/components/shell/TitleBar";
 import { Toaster } from "@/components/ui/Toaster";
 import { TutorialOverlay } from "@/components/tutorial/TutorialOverlay";
 import { IS_TAURI, getSecret, showMainWindow } from "@/lib/tauri";
+import { ensureUsableModelConfig } from "@/lib/modelBootstrap";
 import { useResolvedTheme } from "@/lib/theme";
 import { useApp } from "@/store/app";
 import { AssetsView } from "@/views/AssetsView";
@@ -68,6 +69,31 @@ export default function App() {
       window.setTimeout(() => void showMainWindow(), 40);
     });
     return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  // Saved model settings can be stale or unusable; make sure a reply is
+  // actually possible before the user types anything.
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) void ensureUsableModelConfig();
+    };
+
+    const persistApi = useApp.persist;
+    if (!persistApi || persistApi.hasHydrated()) {
+      run();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const unsubscribe = persistApi.onFinishHydration(run);
+    const timer = window.setTimeout(run, 1500);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {

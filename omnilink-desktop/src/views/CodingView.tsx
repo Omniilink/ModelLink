@@ -2,8 +2,10 @@ import {
   Braces,
   Camera,
   Check,
+  ChevronDown,
   ChevronRight,
   Code2,
+  Cpu,
   Eye,
   File,
   FileCode2,
@@ -38,8 +40,8 @@ import {
 } from "@/lib/utils";
 import { useApp } from "@/store/app";
 import type { ProjectFile, ModelProvider } from "@/types";
-import { runShellCommand } from "@/lib/tauri";
-import { isModelConfigured, streamChat } from "@/lib/models";
+import { IS_TAURI, getSecret, runShellCommand } from "@/lib/tauri";
+import { isModelConfigured, resolveAuthSource, streamChat } from "@/lib/models";
 
 interface TreeDir {
   type: "dir";
@@ -245,10 +247,32 @@ export function CodingView() {
   const modelName = useApp((state) => state.modelName);
   const providers = useApp((state) => state.providers);
   const activeProviderId = useApp((state) => state.activeProviderId);
+  const activeProvider = providers.find((p) => p.id === activeProviderId);
+  const [providerKey, setProviderKey] = useState("");
+
+  useEffect(() => {
+    if (!activeProvider || !activeProvider.hasKey) {
+      setProviderKey("");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const value = IS_TAURI
+          ? await getSecret(`provider.${activeProvider.id}.apiKey`)
+          : window.localStorage.getItem(`provider.${activeProvider.id}.apiKey`);
+        if (!cancelled) setProviderKey(value ?? "");
+      } catch {
+        if (!cancelled) setProviderKey("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProvider?.id, activeProvider?.hasKey]);
 
   const runAgent = async () => {
     if (!project || agentRunning || !agentTask.trim()) return;
-    const activeProvider = providers.find((p) => p.id === activeProviderId);
     const config = activeProvider
       ? {
           provider: (activeProvider.baseUrl.includes("127.0.0.1") ||
@@ -256,14 +280,18 @@ export function CodingView() {
             ? "ollama"
             : "custom") as ModelProvider,
           baseUrl: activeProvider.baseUrl,
-          apiKey: "",
+          apiKey: providerKey,
           model: activeProvider.model,
+          sessionId: `coding-${project.id}`,
+          authSource: resolveAuthSource(activeProvider.baseUrl),
         }
       : {
           provider: modelProvider,
           baseUrl: modelBaseUrl,
           apiKey: modelApiKey,
           model: modelName,
+          sessionId: `coding-${project.id}`,
+          authSource: resolveAuthSource(modelBaseUrl),
         };
     if (!isModelConfigured(config)) {
       pushToast({ title: "Connect a model first", tone: "danger" });
@@ -510,17 +538,7 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
               </>
             )}
           </span>
-          <button
-            type="button"
-            onClick={() => setAgentMode(!agentMode)}
-            className={cn(
-              "btn h-7 gap-1 px-2 text-[10px]",
-              agentMode ? "btn-primary" : "btn-ghost",
-            )}
-          >
-            <Braces size={12} />
-            Agent
-          </button>
+
           <IconButton
             label="Git"
             onClick={async () => {
@@ -604,87 +622,6 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
           </IconButton>
         </div>
       </div>
-
-      {agentMode && (
-        <div className="flex min-h-0 flex-col gap-3 border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-medium text-fg">Agentic Workflow</span>
-            <span className="rounded border border-line px-1.5 py-px text-[8.5px] text-subtle">Plan → Act → Verify</span>
-          </div>
-          <textarea
-            value={agentTask}
-            onChange={(e) => setAgentTask(e.target.value)}
-            placeholder="Describe the task. The agent will plan, make edits, and verify..."
-            className="min-h-[80px] w-full resize-none rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2 text-[12.5px] text-fg outline-none"
-          />
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={agentRunning || !agentTask.trim()}
-              onClick={() => void runAgent()}
-              className="btn btn-primary h-8 text-[10.5px]"
-            >
-              {agentRunning ? "Running…" : "Run agent"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setAgentMode(false)}
-              className="btn btn-ghost h-8 text-[10.5px]"
-            >
-              Close
-            </button>
-          </div>
-          {agentLog && (
-            <pre className="scroll-thin max-h-64 overflow-auto rounded-lg border border-line bg-[var(--bg-base)] p-3 font-mono text-[10.5px] text-muted whitespace-pre-wrap">
-              {agentLog}
-            </pre>
-          )}
-          {agentPreview && (
-            <div className="rounded-lg border border-accent/40 bg-[var(--bg-base)] overflow-hidden">
-              <div className="flex items-center justify-between border-b border-line px-3 py-2">
-                <p className="text-[11px] font-medium text-fg">
-                  Diff preview — {agentPreview.path}
-                </p>
-                <span className="text-[9px] text-subtle">Plan → Act → Verify</span>
-              </div>
-              <div className="max-h-64 overflow-auto p-3">
-                <pre className="font-mono text-[10px] text-muted whitespace-pre-wrap">
-                  {agentPreview.content}
-                </pre>
-              </div>
-              <div className="flex gap-2 border-t border-line px-3 py-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (project) {
-                      const edits = (window as any).__agentEdits || [agentPreview];
-                      for (const edit of edits) {
-                        updateProjectFile(project.id, edit.path, edit.content);
-                      }
-                      pushToast({ title: `${edits.length} file(s) updated`, tone: "success" });
-                    }
-                    setAgentPreview(null);
-                    (window as any).__agentEdits = null;
-                  }}
-                  className="btn btn-primary h-7 text-[10.5px]"
-                >
-                  Accept all
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAgentPreview(null);
-                    (window as any).__agentEdits = null;
-                  }}
-                  className="btn btn-ghost h-7 text-[10.5px]"
-                >
-                  Reject
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[208px] flex-none flex-col border-r border-line bg-[color-mix(in_srgb,var(--bg-surface)_60%,transparent)]">
@@ -794,12 +731,8 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
         </div>
 
         {agentMode && (
-          <motion.aside
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 320, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 260, damping: 30 }}
-            className="flex w-[320px] flex-none flex-col border-l border-line bg-[color-mix(in_srgb,var(--bg-surface)_80%,transparent)] backdrop-blur-xl"
+          <aside
+            className="flex w-[320px] flex-none flex-col border-l border-line bg-[color-mix(in_srgb,var(--bg-surface)_80%,transparent)]"
           >
             <div className="flex h-9 flex-none items-center justify-between border-b border-line px-3">
               <div className="flex items-center gap-2">
@@ -816,21 +749,27 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
                   Plan • Act • Verify
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setAgentMode(false)}
-                className="btn btn-ghost h-6 px-2 text-[9.5px]"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => openModal({ type: "model-selector" })}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] text-muted hover:text-fg"
+                >
+                  <Cpu size={9} />
+                  <span className="max-w-[80px] truncate">{modelName || "auto"}</span>
+                  <ChevronDown size={8} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentMode(false)}
+                  className="btn btn-ghost h-6 px-2 text-[9.5px]"
+                >
+                  Close
+                </button>
+              </div>
             </div>
             <div className="scroll-thin min-h-0 flex-1 overflow-auto p-3 space-y-3">
-              <motion.div
-                initial={{ y: 10, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.05 }}
-                className="space-y-2 rounded-xl border border-line bg-[var(--bg-base)] p-2.5"
-              >
+              <div className="space-y-2 rounded-xl border border-line bg-[var(--bg-base)] p-2.5">
                 <label className="text-[10px] font-medium text-fg">Task</label>
                 <textarea
                   value={agentTask}
@@ -857,27 +796,17 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
                     "Run Agent"
                   )}
                 </button>
-              </motion.div>
+              </div>
               {agentLog && (
-                <motion.div
-                  initial={{ y: 10, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: 0.1 }}
-                  className="space-y-2"
-                >
+                <div className="space-y-2">
                   <label className="text-[10px] font-medium text-muted">Thoughts</label>
                   <pre className="max-h-96 overflow-auto rounded-xl border border-line bg-[var(--bg-base)] p-2.5 font-mono text-[9.5px] text-muted whitespace-pre-wrap">
                     {agentLog}
                   </pre>
-                </motion.div>
+                </div>
               )}
               {agentPreview && (
-                <motion.div
-                  initial={{ scale: 0.95, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                  className="rounded-xl border border-accent/40 bg-[var(--bg-base)] overflow-hidden shadow-lg shadow-accent/5"
-                >
+                <div className="rounded-xl border border-accent/40 bg-[var(--bg-base)] overflow-hidden">
                   <div className="border-b border-accent/20 bg-accent/5 px-2.5 py-1.5">
                     <p className="text-[10px] font-medium text-fg">Diff Preview</p>
                     <p className="text-[9px] text-subtle truncate">{agentPreview.path}</p>
@@ -916,10 +845,10 @@ Always be precise and minimal. If the task is complete, end with "DONE".`, creat
                       Reject
                     </button>
                   </div>
-                </motion.div>
+                </div>
               )}
             </div>
-          </motion.aside>
+          </aside>
         )}
       </div>
 

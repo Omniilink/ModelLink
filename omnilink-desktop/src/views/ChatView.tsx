@@ -28,7 +28,8 @@ import { useApp } from "@/store/app";
 import type { Message, ModelProvider } from "@/types";
 import { cn, copyText, formatTime } from "@/lib/utils";
 import { IS_TAURI, getSecret } from "@/lib/tauri";
-import { isModelConfigured, streamChat } from "@/lib/models";
+import { isModelConfigured, resolveAuthSource, streamChat } from "@/lib/models";
+import { ChevronDown } from "lucide-react";
 
 const suggestions = [
   {
@@ -412,6 +413,7 @@ function Composer({
 
 export function ChatView() {
   const conversations = useApp((state) => state.conversations);
+  const openModal = useApp((state) => state.openModal);
   const activeId = useApp((state) => state.activeConversationId);
   const deleteConversation = useApp((state) => state.deleteConversation);
   const newConversation = useApp((state) => state.newConversation);
@@ -475,12 +477,16 @@ export function ChatView() {
         baseUrl: activeProvider.baseUrl,
         apiKey: providerKey,
         model: activeProvider.model,
+        sessionId: conversation?.id,
+        authSource: resolveAuthSource(activeProvider.baseUrl),
       }
     : {
         provider: modelProvider,
         baseUrl: modelBaseUrl,
         apiKey: modelApiKey,
         model: modelName,
+        sessionId: conversation?.id,
+        authSource: resolveAuthSource(modelBaseUrl),
       };
   const noModel = !isModelConfigured(modelConfig);
 
@@ -699,6 +705,15 @@ export function ChatView() {
             <h1 className="truncate text-[13px] font-semibold tracking-[-0.01em] text-fg">
               {conversation.title}
             </h1>
+            <button
+              type="button"
+              onClick={() => openModal({ type: "model-selector" })}
+              className="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[9.5px] text-muted hover:text-fg"
+            >
+              <Cpu size={10} />
+              <span className="max-w-[120px] truncate">{modelName || "auto"}</span>
+              <ChevronDown size={9} />
+            </button>
             {isEmpty && (
               <span className="rounded border border-line px-1.5 py-px text-[8.5px] font-medium uppercase tracking-wide text-subtle">
                 draft

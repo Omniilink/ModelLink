@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -118,15 +118,18 @@ fn opencode_child() -> &'static Arc<Mutex<Option<std::process::Child>>> {
 fn opencode_start_background() -> Result<String, String> {
     let child_lock = opencode_child();
     let mut guard = child_lock.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Ok("already running".to_string());
+    if let Some(child) = guard.as_mut() {
+        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            return Ok("already running".to_string());
+        }
+        *guard = None;
     }
     let info = detect_opencode();
     let path = info.path.ok_or("OpenCode not found")?;
     let mut cmd = Command::new(&path);
     cmd.args(["serve", "--hostname", "127.0.0.1", "--port", "4096"]);
     #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000 | 0x00000200); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     let child = cmd.spawn().map_err(|e| e.to_string())?;
     *guard = Some(child);
     Ok("started".to_string())
@@ -1002,6 +1005,212 @@ fn workspace_decrypt(app: AppHandle) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// ---------------------------------------------------------------------------
+// Model transport
+//
+// The webview runs on http://tauri.localhost in release builds, and Ollama
+// rejects that origin with 403. All model traffic therefore goes through Rust,
+// which has no CORS restrictions. This also keeps provider keys out of JS.
+// ---------------------------------------------------------------------------
+
+fn opencode_auth_path() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        let p = PathBuf::from(xdg).join("opencode").join("auth.json");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let p = PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("auth.json");
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+fn opencode_auth_json() -> Option<serde_json::Value> {
+    let path = opencode_auth_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn opencode_key(provider: &str) -> Option<String> {
+    let json = opencode_auth_json()?;
+    json.get(provider)?
+        .get("key")?
+        .as_str()
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[tauri::command]
+fn opencode_auth_status() -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    if opencode_key("opencode").is_some() {
+        found.push("opencode".to_string());
+    }
+    if opencode_key("opencode-go").is_some() {
+        found.push("opencode-go".to_string());
+    }
+    Ok(found)
+}
+
+#[derive(serde::Serialize)]
+struct ModelHttpResponse {
+    status: u16,
+    body: String,
+}
+
+fn apply_auth(
+    mut request: reqwest::RequestBuilder,
+    auth_source: Option<&str>,
+) -> Result<reqwest::RequestBuilder, String> {
+    if let Some(source) = auth_source {
+        if !source.is_empty() {
+            let key = opencode_key(source).ok_or_else(|| {
+                format!(
+                    "No OpenCode credential for '{source}'. Sign in with the OpenCode CLI, or paste an API key."
+                )
+            })?;
+            request = request.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+    Ok(request)
+}
+
+#[tauri::command]
+async fn model_http(
+    method: String,
+    url: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+    auth_source: Option<String>,
+) -> Result<ModelHttpResponse, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("OmniLink/0.1.1")
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut request = client.request(
+        reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+            .map_err(|e| e.to_string())?,
+        &url,
+    );
+    for (key, value) in headers {
+        request = request.header(key, value);
+    }
+    request = apply_auth(request, auth_source.as_deref())?;
+    if let Some(payload) = body {
+        request = request.body(payload);
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    Ok(ModelHttpResponse { status, body: text })
+}
+
+fn model_cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static CANCELS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+async fn model_stream(
+    app: AppHandle,
+    request_id: String,
+    url: String,
+    headers: HashMap<String, String>,
+    body: String,
+    auth_source: Option<String>,
+) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = model_cancels().lock().map_err(|e| e.to_string())?;
+        guard.insert(request_id.clone(), cancel.clone());
+    }
+
+    let result = model_stream_inner(url, headers, body, auth_source, cancel, |text| {
+        let _ = app.emit(&format!("model:chunk:{request_id}"), text.to_string());
+    })
+    .await;
+
+    if let Ok(mut guard) = model_cancels().lock() {
+        guard.remove(&request_id);
+    }
+
+    match result {
+        Ok(()) => {
+            let _ = app.emit(&format!("model:done:{request_id}"), ());
+            Ok(())
+        }
+        Err(error) => {
+            let _ = app.emit(&format!("model:error:{request_id}"), error.clone());
+            Err(error)
+        }
+    }
+}
+
+async fn model_stream_inner<F>(
+    url: String,
+    headers: HashMap<String, String>,
+    body: String,
+    auth_source: Option<String>,
+    cancel: Arc<AtomicBool>,
+    mut on_chunk: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str),
+{
+    let client = reqwest::Client::builder()
+        .user_agent("OmniLink/0.1.1")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut request = client.post(&url);
+    for (key, value) in headers {
+        request = request.header(key, value);
+    }
+    request = apply_auth(request, auth_source.as_deref())?;
+
+    let mut response = request.body(body).send().await.map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status}: {text}"));
+    }
+
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let text = String::from_utf8_lossy(&chunk).to_string();
+        on_chunk(&text);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn model_abort(request_id: String) -> Result<(), String> {
+    if let Ok(guard) = model_cancels().lock() {
+        if let Some(flag) = guard.get(&request_id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -1051,8 +1260,121 @@ pub fn run() {
             workspace_encrypt,
             workspace_decrypt,
             run_shell_command,
-            http_request
+            http_request,
+            opencode_auth_status,
+            model_http,
+            model_stream,
+            model_abort
         ])
         .run(tauri::generate_context!())
         .expect("error while building OmniLink");
+}
+
+#[cfg(test)]
+mod model_transport_tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    #[test]
+    fn opencode_auth_is_discoverable() {
+        let status = opencode_auth_status().unwrap();
+        println!("opencode auth providers: {status:?}");
+    }
+
+    #[test]
+    fn ollama_lists_models_through_rust() {
+        let result = block_on(model_http(
+            "GET".into(),
+            "http://127.0.0.1:11434/api/tags".into(),
+            HashMap::new(),
+            None,
+            None,
+        ));
+        match result {
+            Ok(response) => {
+                assert_eq!(response.status, 200, "ollama tags status");
+                let json: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+                let count = json["models"].as_array().map(|m| m.len()).unwrap_or(0);
+                println!("ollama models found: {count}");
+                assert!(count > 0, "expected at least one local model");
+            }
+            Err(error) => println!("ollama not reachable in this environment: {error}"),
+        }
+    }
+
+    #[test]
+    fn ollama_streams_real_tokens_through_rust() {
+        let body = serde_json::json!({
+            "model": "merge-gemma-2b:latest",
+            "messages": [{ "role": "user", "content": "Say OK" }],
+            "stream": true
+        })
+        .to_string();
+
+        let mut collected = String::new();
+        let result = block_on(model_stream_inner(
+            "http://127.0.0.1:11434/api/chat".into(),
+            HashMap::new(),
+            body,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |chunk| collected.push_str(chunk),
+        ));
+
+        match result {
+            Ok(()) => {
+                println!("ollama stream bytes: {}", collected.len());
+                assert!(collected.contains("message"), "expected NDJSON message frames");
+            }
+            Err(error) => println!("ollama not reachable in this environment: {error}"),
+        }
+    }
+
+    #[test]
+    fn opencode_go_streams_real_tokens_through_rust() {
+        if opencode_key("opencode-go").is_none() {
+            println!("skipping: no opencode-go credential");
+            return;
+        }
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        headers.insert("x-opencode-session".to_string(), "omnilink-test".to_string());
+
+        let body = serde_json::json!({
+            "model": "iceman-contributor-free",
+            "messages": [{ "role": "user", "content": "Say OMNI OK" }],
+            "stream": true
+        })
+        .to_string();
+
+        let mut collected = String::new();
+        let result = block_on(model_stream_inner(
+            "https://opencode.ai/inference/go/openai/v1/chat/completions".into(),
+            headers,
+            body,
+            Some("opencode-go".to_string()),
+            Arc::new(AtomicBool::new(false)),
+            |chunk| collected.push_str(chunk),
+        ));
+
+        match result {
+            Ok(()) => {
+                println!("opencode stream bytes: {}", collected.len());
+                assert!(
+                    collected.contains("chat.completion.chunk"),
+                    "expected SSE chunks, got: {}",
+                    &collected[..collected.len().min(300)]
+                );
+            }
+            Err(error) => panic!("opencode go stream failed: {error}"),
+        }
+    }
 }
