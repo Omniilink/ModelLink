@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { Dialog } from "@/components/ui/Dialog";
 import { useApp } from "@/store/app";
-import { oauthPoll, oauthClear, setSecret } from "@/lib/tauri";
+import { oauthPoll, oauthClear, setSecret, showMainWindow } from "@/lib/tauri";
 
 export function GoogleAuthModal({
   open,
@@ -20,12 +20,6 @@ export function GoogleAuthModal({
     if (!open || !url) return;
     setStatus("waiting");
     let cancelled = false;
-    // Prevent any navigation
-    const preventNav = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', preventNav);
     const poll = async () => {
       // Extract port from URL or use default
       const port = 8765;
@@ -38,12 +32,15 @@ export function GoogleAuthModal({
             await setSecret("account.sessionToken", token);
             await oauthClear(port);
             setStatus("success");
+            try {
+              await showMainWindow();
+            } catch {}
             pushToast({
               title: "Signed in",
               description: "Google account connected.",
               tone: "success",
             });
-            setTimeout(() => closeModal(), 1000);
+            setTimeout(() => closeModal(), 1500);
             return;
           }
         } catch {}
@@ -55,7 +52,6 @@ export function GoogleAuthModal({
     void poll();
     return () => {
       cancelled = true;
-      window.removeEventListener('beforeunload', preventNav);
     };
   }, [open, url, closeModal, pushToast]);
 
