@@ -41,6 +41,15 @@ export async function deleteSecret(key: string): Promise<void> {
   if (!IS_TAURI) return;
   await invoke("secret_delete", { key });
 }
+export async function mcpProbeStdio(command: string, args: string): Promise<{ name: string; description?: string }[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_probe_stdio", { command, args });
+}
+
+export async function mcpProbeHttp(url: string): Promise<{ name: string; description?: string }[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_probe_http", { url });
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

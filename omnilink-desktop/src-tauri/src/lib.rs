@@ -346,6 +346,64 @@ fn secret_delete(app: AppHandle, key: String) -> Result<(), String> {
     secrets::delete(&app, &key)
 }
 
+#[derive(serde::Serialize, Debug)]
+pub struct McpTool {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[tauri::command]
+async fn mcp_probe_stdio(command: String, args: String) -> Result<Vec<McpTool>, String> {
+    mcp_probe_stdio_impl(command, args).await
+}
+
+pub async fn mcp_probe_stdio_impl(command: String, args: String) -> Result<Vec<McpTool>, String> {
+    use rmcp::{ServiceExt, transport::TokioChildProcess};
+
+    let mut cmd = tokio::process::Command::new(&command);
+    for a in args.split_whitespace() {
+        cmd.arg(a);
+    }
+    let transport = TokioChildProcess::new(cmd).map_err(|e| e.to_string())?;
+    let mut client = rmcp::service::serve_client((), transport)
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = client.list_tools(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result
+        .tools
+        .into_iter()
+        .map(|t| McpTool {
+            name: t.name.to_string(),
+            description: t.description.map(|d| d.to_string()),
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn mcp_probe_http(url: String) -> Result<Vec<McpTool>, String> {
+    mcp_probe_http_impl(url).await
+}
+
+pub async fn mcp_probe_http_impl(url: String) -> Result<Vec<McpTool>, String> {
+    use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
+
+    let transport = StreamableHttpClientTransport::from_uri(url);
+    let mut client = rmcp::service::serve_client((), transport)
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = client.list_tools(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result
+        .tools
+        .into_iter()
+        .map(|t| McpTool {
+            name: t.name.to_string(),
+            description: t.description.map(|d| d.to_string()),
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -367,7 +425,9 @@ pub fn run() {
             storage_keys,
             secret_set,
             secret_get,
-            secret_delete
+            secret_delete,
+            mcp_probe_stdio,
+            mcp_probe_http
         ])
         .run(tauri::generate_context!())
         .expect("error while building OmniLink");

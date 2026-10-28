@@ -5,6 +5,7 @@ import {
   Globe,
   Pencil,
   Plus,
+  Plug,
   Radio,
   Terminal,
   Trash2,
@@ -15,6 +16,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Switch } from "@/components/ui/Switch";
 import { copyText } from "@/lib/utils";
+import { mcpProbeHttp, mcpProbeStdio } from "@/lib/tauri";
 import { useApp } from "@/store/app";
 import type { McpServer, McpTransport } from "@/types";
 
@@ -72,6 +74,33 @@ function ServerRow({
 }) {
   const openModal = useApp((state) => state.openModal);
   const toggleMcpServer = useApp((state) => state.toggleMcpServer);
+  const pushToast = useApp((state) => state.pushToast);
+  const [probing, setProbing] = useState(false);
+
+  const testConnection = async () => {
+    setProbing(true);
+    try {
+      const tools =
+        server.transport === "stdio"
+          ? await mcpProbeStdio(server.command, server.args)
+          : await mcpProbeHttp(server.url);
+      pushToast({
+        title: `${server.name}: ${tools.length} tool${
+          tools.length === 1 ? "" : "s"
+        } available`,
+        description: tools.map((tool) => tool.name).slice(0, 6).join(", "),
+        tone: "success",
+      });
+    } catch (error) {
+      pushToast({
+        title: `${server.name}: connection failed`,
+        description: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      });
+    } finally {
+      setProbing(false);
+    }
+  };
 
   return (
     <div
@@ -129,6 +158,13 @@ function ServerRow({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
+        <IconButton
+          label="Test connection"
+          onClick={() => void testConnection()}
+          className="h-6 w-6"
+        >
+          <Plug size={12} className={probing ? "animate-pulse" : ""} />
+        </IconButton>
         <IconButton
           label="Edit server"
           onClick={() => openModal({ type: "mcp-edit", id: server.id })}
