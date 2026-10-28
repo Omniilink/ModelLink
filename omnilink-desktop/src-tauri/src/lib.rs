@@ -825,7 +825,7 @@ fn workspace_encrypt(app: AppHandle) -> Result<(), String> {
             pb_data: *mut u8,
         }
         #[link(name = "crypt32")]
-        extern "C" {
+        unsafe extern "C" {
             fn CryptProtectData(
                 p_data_in: *const DataBlob,
                 sz_data_desc: *const u16,
@@ -895,7 +895,7 @@ fn workspace_decrypt(app: AppHandle) -> Result<(), String> {
             pb_data: *mut u8,
         }
         #[link(name = "crypt32")]
-        extern "C" {
+        unsafe extern "C" {
             fn CryptUnprotectData(
                 p_data_in: *const DataBlob,
                 ppsz_data_desc: *mut *mut u16,
