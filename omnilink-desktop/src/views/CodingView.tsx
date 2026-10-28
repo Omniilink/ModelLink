@@ -18,6 +18,7 @@ import {
   Share2,
   Trash2,
 } from "lucide-react";
+import { motion } from "framer-motion";
 import {
   useCallback,
   useEffect,
@@ -275,7 +276,12 @@ export function CodingView() {
       .map((f) => `### ${f.path}\n${f.content}`)
       .join("\n\n");
     const messages = [
-      { role: "system" as const, content: "You are a coding agent. When you want to edit a file, respond with a JSON block: {\"edits\":[{\"path\":\"...\",\"content\":\"...\"}]}. Otherwise explain your plan in prose. End with DONE when finished." , createdAt: Date.now(), id: "sys" },
+      { role: "system" as const, content: `You are an expert coding agent. Follow this workflow:
+1. PLAN: First, outline your plan step by step.
+2. ACT: Make targeted edits to files. When you want to edit files, respond with a JSON block: {"edits":[{"path":"...","content":"..."}]}. You can edit multiple files in one response.
+3. VERIFY: After edits, explain what was changed and suggest verification steps.
+
+Always be precise and minimal. If the task is complete, end with "DONE".`, createdAt: Date.now(), id: "sys" },
       { role: "user" as const, content: `Project: ${project.name}\n\nFiles:\n${context}\n\nTask: ${agentTask}`, createdAt: Date.now(), id: "u1" },
     ];
     try {
@@ -283,13 +289,15 @@ export function CodingView() {
         accumulated += token;
         setAgentLog(accumulated);
       });
-      // Try to parse edits.
+      // Try to parse edits (multiple files)
       const match = accumulated.match(/\{[\s\S]*"edits"[\s\S]*\}/);
       if (match) {
         try {
           const parsed = JSON.parse(match[0]) as { edits: { path: string; content: string }[] };
           if (parsed.edits?.length) {
             setAgentPreview(parsed.edits[0]);
+            // Store all edits
+            (window as any).__agentEdits = parsed.edits;
           }
         } catch {
           // ignore parse errors
@@ -502,6 +510,17 @@ export function CodingView() {
               </>
             )}
           </span>
+          <button
+            type="button"
+            onClick={() => setAgentMode(!agentMode)}
+            className={cn(
+              "btn h-7 gap-1 px-2 text-[10px]",
+              agentMode ? "btn-primary" : "btn-ghost",
+            )}
+          >
+            <Braces size={12} />
+            Agent
+          </button>
           <IconButton
             label="Git"
             onClick={async () => {
@@ -587,11 +606,15 @@ export function CodingView() {
       </div>
 
       {agentMode && (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 border-b border-line px-5 py-4">
+        <div className="flex min-h-0 flex-col gap-3 border-b border-line px-5 py-4">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-medium text-fg">Agentic Workflow</span>
+            <span className="rounded border border-line px-1.5 py-px text-[8.5px] text-subtle">Plan → Act → Verify</span>
+          </div>
           <textarea
             value={agentTask}
             onChange={(e) => setAgentTask(e.target.value)}
-            placeholder="Describe the change you want the agent to make…"
+            placeholder="Describe the task. The agent will plan, make edits, and verify..."
             className="min-h-[80px] w-full resize-none rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2 text-[12.5px] text-fg outline-none"
           />
           <div className="flex items-center gap-2">
@@ -617,30 +640,45 @@ export function CodingView() {
             </pre>
           )}
           {agentPreview && (
-            <div className="rounded-lg border border-line bg-[var(--bg-base)] p-3">
-              <p className="mb-2 text-[11px] font-medium text-fg">
-                Proposed edit: {agentPreview.path}
-              </p>
-              <div className="flex gap-2">
+            <div className="rounded-lg border border-accent/40 bg-[var(--bg-base)] overflow-hidden">
+              <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                <p className="text-[11px] font-medium text-fg">
+                  Diff preview — {agentPreview.path}
+                </p>
+                <span className="text-[9px] text-subtle">Plan → Act → Verify</span>
+              </div>
+              <div className="max-h-64 overflow-auto p-3">
+                <pre className="font-mono text-[10px] text-muted whitespace-pre-wrap">
+                  {agentPreview.content}
+                </pre>
+              </div>
+              <div className="flex gap-2 border-t border-line px-3 py-2">
                 <button
                   type="button"
                   onClick={() => {
                     if (project) {
-                      updateProjectFile(project.id, agentPreview.path, agentPreview.content);
-                      pushToast({ title: "Edit applied", tone: "success" });
+                      const edits = (window as any).__agentEdits || [agentPreview];
+                      for (const edit of edits) {
+                        updateProjectFile(project.id, edit.path, edit.content);
+                      }
+                      pushToast({ title: `${edits.length} file(s) updated`, tone: "success" });
                     }
                     setAgentPreview(null);
+                    (window as any).__agentEdits = null;
                   }}
                   className="btn btn-primary h-7 text-[10.5px]"
                 >
-                  Apply
+                  Accept all
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAgentPreview(null)}
+                  onClick={() => {
+                    setAgentPreview(null);
+                    (window as any).__agentEdits = null;
+                  }}
                   className="btn btn-ghost h-7 text-[10.5px]"
                 >
-                  Discard
+                  Reject
                 </button>
               </div>
             </div>
@@ -700,6 +738,17 @@ export function CodingView() {
             </span>
             <button
               type="button"
+              onClick={() => setAgentMode(!agentMode)}
+              className={cn(
+                "btn h-7 gap-1.5 px-3 text-[10.5px] shadow-sm",
+                agentMode ? "btn-primary" : "btn-ghost",
+              )}
+            >
+              <Braces size={12} />
+              Agent
+            </button>
+            <button
+              type="button"
               onClick={saveNow}
               disabled={!dirty}
               className={cn(
@@ -743,6 +792,135 @@ export function CodingView() {
             )}
           </div>
         </div>
+
+        {agentMode && (
+          <motion.aside
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 320, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 260, damping: 30 }}
+            className="flex w-[320px] flex-none flex-col border-l border-line bg-[color-mix(in_srgb,var(--bg-surface)_80%,transparent)] backdrop-blur-xl"
+          >
+            <div className="flex h-9 flex-none items-center justify-between border-b border-line px-3">
+              <div className="flex items-center gap-2">
+                <motion.div
+                  animate={{ rotate: agentRunning ? 360 : 0 }}
+                  transition={{ duration: 2, repeat: agentRunning ? Infinity : 0, ease: "linear" }}
+                >
+                  <Braces size={12} className="text-accent-text" />
+                </motion.div>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-subtle">
+                  Agent
+                </span>
+                <span className="rounded-full border border-accent/30 bg-accent/10 px-1.5 py-px text-[8px] text-accent-text">
+                  Plan • Act • Verify
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAgentMode(false)}
+                className="btn btn-ghost h-6 px-2 text-[9.5px]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-auto p-3 space-y-3">
+              <motion.div
+                initial={{ y: 10, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.05 }}
+                className="space-y-2 rounded-xl border border-line bg-[var(--bg-base)] p-2.5"
+              >
+                <label className="text-[10px] font-medium text-fg">Task</label>
+                <textarea
+                  value={agentTask}
+                  onChange={(e) => setAgentTask(e.target.value)}
+                  placeholder="Describe what you want the agent to do..."
+                  className="min-h-[100px] w-full resize-none rounded-lg border border-line bg-[var(--bg-surface)] px-2.5 py-2 text-[11px] text-fg outline-none focus:border-accent/50"
+                />
+                <button
+                  type="button"
+                  disabled={agentRunning || !agentTask.trim()}
+                  onClick={() => void runAgent()}
+                  className="btn btn-primary h-7 w-full text-[10.5px] shadow-lg shadow-accent/10"
+                >
+                  {agentRunning ? (
+                    <span className="flex items-center gap-1.5">
+                      <motion.span
+                        animate={{ opacity: [0.4, 1, 0.4] }}
+                        transition={{ duration: 1.5, repeat: Infinity }}
+                      >
+                        Running
+                      </motion.span>
+                    </span>
+                  ) : (
+                    "Run Agent"
+                  )}
+                </button>
+              </motion.div>
+              {agentLog && (
+                <motion.div
+                  initial={{ y: 10, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.1 }}
+                  className="space-y-2"
+                >
+                  <label className="text-[10px] font-medium text-muted">Thoughts</label>
+                  <pre className="max-h-96 overflow-auto rounded-xl border border-line bg-[var(--bg-base)] p-2.5 font-mono text-[9.5px] text-muted whitespace-pre-wrap">
+                    {agentLog}
+                  </pre>
+                </motion.div>
+              )}
+              {agentPreview && (
+                <motion.div
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                  className="rounded-xl border border-accent/40 bg-[var(--bg-base)] overflow-hidden shadow-lg shadow-accent/5"
+                >
+                  <div className="border-b border-accent/20 bg-accent/5 px-2.5 py-1.5">
+                    <p className="text-[10px] font-medium text-fg">Diff Preview</p>
+                    <p className="text-[9px] text-subtle truncate">{agentPreview.path}</p>
+                  </div>
+                  <div className="max-h-48 overflow-auto p-2.5">
+                    <pre className="font-mono text-[9px] text-muted whitespace-pre-wrap">
+                      {agentPreview.content}
+                    </pre>
+                  </div>
+                  <div className="flex gap-1.5 border-t border-line px-2.5 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (project) {
+                          const edits = (window as any).__agentEdits || [agentPreview];
+                          for (const edit of edits) {
+                            updateProjectFile(project.id, edit.path, edit.content);
+                          }
+                          pushToast({ title: `${edits.length} file(s) updated`, tone: "success" });
+                        }
+                        setAgentPreview(null);
+                        (window as any).__agentEdits = null;
+                      }}
+                      className="btn btn-primary h-6 flex-1 text-[9.5px]"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAgentPreview(null);
+                        (window as any).__agentEdits = null;
+                      }}
+                      className="btn btn-ghost h-6 flex-1 text-[9.5px]"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </div>
+          </motion.aside>
+        )}
       </div>
 
       <ConfirmDialog

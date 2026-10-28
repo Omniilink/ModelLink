@@ -17,6 +17,21 @@ export async function detectOpenCode(): Promise<OpenCodeInfo> {
   return invoke<OpenCodeInfo>("detect_opencode");
 }
 
+export async function opencodeStartBackground(): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("opencode_start_background");
+}
+
+export async function opencodeStopBackground(): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke("opencode_stop_background");
+}
+
+export async function opencodeStatusBackground(): Promise<boolean> {
+  if (!IS_TAURI) return false;
+  return invoke("opencode_status_background");
+}
+
 export async function showMainWindow() {
   if (!IS_TAURI) return;
   try {

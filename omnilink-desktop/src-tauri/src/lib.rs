@@ -108,6 +108,61 @@ fn detect_opencode() -> OpenCodeInfo {
     }
 }
 
+static OPENCODE_CHILD: OnceLock<Arc<Mutex<Option<std::process::Child>>>> = OnceLock::new();
+
+fn opencode_child() -> &'static Arc<Mutex<Option<std::process::Child>>> {
+    OPENCODE_CHILD.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+#[tauri::command]
+fn opencode_start_background() -> Result<String, String> {
+    let child_lock = opencode_child();
+    let mut guard = child_lock.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Ok("already running".to_string());
+    }
+    let info = detect_opencode();
+    let path = info.path.ok_or("OpenCode not found")?;
+    let mut cmd = Command::new(&path);
+    cmd.args(["serve", "--hostname", "127.0.0.1", "--port", "4096"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    *guard = Some(child);
+    Ok("started".to_string())
+}
+
+#[tauri::command]
+fn opencode_stop_background() -> Result<String, String> {
+    let child_lock = opencode_child();
+    let mut guard = child_lock.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok("stopped".to_string())
+    } else {
+        Ok("not running".to_string())
+    }
+}
+
+#[tauri::command]
+fn opencode_status_background() -> Result<bool, String> {
+    let child_lock = opencode_child();
+    let mut guard = child_lock.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = guard.as_mut() {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                *guard = None;
+                Ok(false)
+            }
+            Ok(None) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    } else {
+        Ok(false)
+    }
+}
+
 // ------------------------------------------------------------------ *
 // Storage (SQLite WAL + key/value)
 // ------------------------------------------------------------------ *
@@ -968,6 +1023,9 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             detect_opencode,
+            opencode_start_background,
+            opencode_stop_background,
+            opencode_status_background,
             storage_get,
             storage_set,
             storage_delete,

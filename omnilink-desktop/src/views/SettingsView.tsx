@@ -30,8 +30,7 @@ import {
   detectOpenCode,
   IS_TAURI,
   deleteSecret,
-  oauthClear,
-  oauthPoll,
+
   oauthStart,
   openUrl,
   runShellCommand,
@@ -443,11 +442,13 @@ function ModelsSettings() {
           .map((m) => m.name)
           .filter((n): n is string => Boolean(n));
         setOllamaModels(names);
-        if (names.length && !modelName.trim()) {
-          const chatModels = names.filter((n) => /gemma|llama|phi|mistral/i.test(n));
-          const pool = chatModels.length ? chatModels : names;
-          const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0];
-          setModelName(preferred ?? names[0]);
+        if (names.length) {
+          if (!modelName.trim() || modelName.trim().toLowerCase() === "auto") {
+            const chatModels = names.filter((n) => /gemma|llama|phi|mistral|qwen|deepseek|llava/i.test(n));
+            const pool = chatModels.length ? chatModels : names;
+            const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0];
+            setModelName(preferred ?? names[0]);
+          }
         }
       })
       .catch(() => setOllamaModels([]))
@@ -458,12 +459,19 @@ function ModelsSettings() {
     };
   }, [modelProvider, modelBaseUrl]);
   const [copiedCommand, setCopiedCommand] = useState(false);
+  const [opencodeBg, setOpencodeBg] = useState(false);
 
   const checkOpenCode = async () => {
     setOpencode({ status: "checking" });
     try {
       const info = await detectOpenCode();
       setOpencode({ status: info.found ? "found" : "missing", info });
+      if (info.found) {
+        try {
+          const { opencodeStatusBackground } = await import("@/lib/tauri");
+          setOpencodeBg(await opencodeStatusBackground());
+        } catch {}
+      }
     } catch (error) {
       setOpencode({
         status: "missing",
@@ -478,7 +486,11 @@ function ModelsSettings() {
       return;
     }
     void checkOpenCode();
-    // Detection only runs when the Models pane opens.
+    // Keep checking periodically to maintain connection state
+    const interval = setInterval(() => {
+      void checkOpenCode();
+    }, 30000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -875,7 +887,7 @@ function ModelsSettings() {
               </div>
             )}
 
-            <div className="mt-3 flex items-center gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => void checkOpenCode()}
@@ -893,6 +905,45 @@ function ModelsSettings() {
                 />
                 {opencode.status === "found" ? "Check again" : "Detect OpenCode"}
               </button>
+              {opencode.status === "found" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const { opencodeStartBackground, opencodeStatusBackground } = await import("@/lib/tauri");
+                        await opencodeStartBackground();
+                        setOpencodeBg(await opencodeStatusBackground());
+                        pushToast({ title: opencodeBg ? "OpenCode already running" : "OpenCode server started in background", tone: "success" });
+                      } catch (e) {
+                        pushToast({ title: "Failed to start", description: e instanceof Error ? e.message : String(e), tone: "danger" });
+                      }
+                    }}
+                    className="btn btn-primary h-7 text-[10.5px]"
+                  >
+                    Start in background
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const { opencodeStopBackground, opencodeStatusBackground } = await import("@/lib/tauri");
+                        await opencodeStopBackground();
+                        setOpencodeBg(await opencodeStatusBackground());
+                        pushToast({ title: "OpenCode server stopped", tone: "success" });
+                      } catch (e) {
+                        pushToast({ title: "Failed to stop", description: e instanceof Error ? e.message : String(e), tone: "danger" });
+                      }
+                    }}
+                    className="btn h-7 text-[10.5px]"
+                  >
+                    Stop
+                  </button>
+                  <span className="text-[9.5px] text-subtle">
+                    {opencodeBg ? "Running in background (127.0.0.1:4096)" : "Not running"}
+                  </span>
+                </>
+              )}
               <span className="text-[9.5px] text-subtle">
                 {IS_TAURI
                   ? "Rescans PATH and the npm global directory."
@@ -941,7 +992,31 @@ function ModelsSettings() {
               />
               <button
                 type="button"
-                onClick={() => void checkOllama()}
+                onClick={() => {
+                  void checkOllama();
+                  // Also auto-detect into the models list
+                  const base = ollamaUrl.trim().replace(/\/+$/, "");
+                  if (base) {
+                    fetch(`${base}/api/tags`)
+                      .then((r) => (r.ok ? r.json() : null))
+                      .then((data: { models?: { name?: string }[] } | null) => {
+                        if (!data) return;
+                        const names = (data.models ?? [])
+                          .map((m) => m.name)
+                          .filter((n): n is string => Boolean(n));
+                        setOllamaModels(names);
+                        if (names.length) {
+                          if (!modelName.trim() || modelName.trim().toLowerCase() === "auto") {
+                            const chatModels = names.filter((n) => /gemma|llama|phi|mistral|qwen|deepseek|llava/i.test(n));
+                            const pool = chatModels.length ? chatModels : names;
+                            const preferred = pool.find((n) => n.includes(":latest")) ?? pool[0];
+                            setModelName(preferred ?? names[0]);
+                          }
+                        }
+                      })
+                      .catch(() => {});
+                  }
+                }}
                 disabled={ollama.status === "checking"}
                 className="btn h-7 text-[10.5px]"
               >
@@ -950,7 +1025,7 @@ function ModelsSettings() {
                 ) : (
                   <RefreshCw size={11} />
                 )}
-                Check connection
+                Auto-detect models
               </button>
               <input
                 value={pullModel}
@@ -994,20 +1069,20 @@ function ModelsSettings() {
                 Pull model
               </button>
             </div>
-            {ollama.status === "online" && (
+            {(ollama.status === "online" || ollamaModels.length > 0) && (
               <div className="mt-3 rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2">
                 <p className="text-[10px] font-medium text-fg">
-                  {ollama.models?.length ?? 0}{" "}
-                  {pluralize(ollama.models?.length ?? 0, "model")} available
+                  {(ollamaModels.length || ollama.models?.length || 0)}{" "}
+                  {pluralize(ollamaModels.length || ollama.models?.length || 0, "model")} available
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(ollama.models ?? []).map((m) => (
+                  {(ollamaModels.length > 0 ? ollamaModels : ollama.models ?? []).map((m) => (
                     <button
                       key={m}
                       type="button"
                       onClick={() => {
                         setModelProvider("ollama");
-                        setModelBaseUrl(ollamaUrl);
+                        setModelBaseUrl(ollamaUrl.trim());
                         setModelName(m);
                         pushToast({ title: `Using ${m}`, tone: "success" });
                       }}
@@ -1209,6 +1284,8 @@ function AccountSettings() {
     "https://omniilink.dpdns.org",
   );
 
+  const openModal = useApp((state) => state.openModal);
+
   const connectGoogle = async () => {
     if (!IS_TAURI) {
       pushToast({
@@ -1221,27 +1298,9 @@ function AccountSettings() {
     const port = 8765;
     try {
       const url = await oauthStart(port, serverUrl);
+      // Open in browser but don't let it navigate away
       await openUrl(url);
-      // Poll for the callback token.
-      for (let i = 0; i < 120; i++) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        const token = await oauthPoll(port);
-        if (token) {
-          await setSecret("account.sessionToken", token);
-          await oauthClear(port);
-          pushToast({
-            title: "Signed in",
-            description: "Google account connected.",
-            tone: "success",
-          });
-          setConnecting(false);
-          return;
-        }
-      }
-      pushToast({
-        title: "Sign-in timed out",
-        tone: "danger",
-      });
+      openModal({ type: "google-auth", url });
     } catch (error) {
       pushToast({
         title: "Sign-in failed",

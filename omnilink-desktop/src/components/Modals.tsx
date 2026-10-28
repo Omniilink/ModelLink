@@ -1,6 +1,7 @@
 import { McpModal } from "@/components/modals/McpModal";
 import { ProjectModal } from "@/components/modals/ProjectModal";
 import { PromptModal } from "@/components/modals/PromptModal";
+import { GoogleAuthModal } from "@/components/modals/GoogleAuthModal";
 import { useApp } from "@/store/app";
 
 export function ModalHost() {
@@ -16,6 +17,10 @@ export function ModalHost() {
       <McpModal
         open={modal?.type === "mcp-new" || modal?.type === "mcp-edit"}
         serverId={modal?.type === "mcp-edit" ? modal.id : undefined}
+      />
+      <GoogleAuthModal
+        open={modal?.type === "google-auth"}
+        url={modal?.type === "google-auth" ? modal.url : ""}
       />
     </>
   );

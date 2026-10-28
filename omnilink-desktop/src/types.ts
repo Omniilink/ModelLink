@@ -137,6 +137,7 @@ export type ModalState =
   | { type: "prompt-edit"; id: string }
   | { type: "mcp-new" }
   | { type: "mcp-edit"; id: string }
+  | { type: "google-auth"; url: string }
   | null;
 
 export interface Toast {
