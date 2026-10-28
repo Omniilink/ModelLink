@@ -216,6 +216,10 @@ function AppearanceSettings() {
   const setAccent = useApp((state) => state.setAccent);
   const reduceMotion = useApp((state) => state.reduceMotion);
   const setReduceMotion = useApp((state) => state.setReduceMotion);
+  const fontSize = useApp((state) => state.fontSize);
+  const setFontSize = useApp((state) => state.setFontSize);
+  const customCss = useApp((state) => state.customCss);
+  const setCustomCss = useApp((state) => state.setCustomCss);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
   const toggleContext = useApp((state) => state.toggleContext);
 
@@ -319,6 +323,38 @@ function AppearanceSettings() {
       </section>
 
       <section>
+        <GroupLabel>Typography</GroupLabel>
+        <Group>
+          <Row
+            title="Font size"
+            description="Base text size for the interface."
+          >
+            <input
+              type="range"
+              min={11}
+              max={16}
+              value={fontSize}
+              onChange={(event) => setFontSize(Number(event.target.value))}
+              className="w-32"
+            />
+            <span className="ml-2 font-mono text-[10px] text-subtle">
+              {fontSize}px
+            </span>
+          </Row>
+          <Row
+            title="Custom CSS"
+            description="Inject your own styles."
+          >
+            <textarea
+              value={customCss}
+              onChange={(event) => setCustomCss(event.target.value)}
+              placeholder="/* custom styles */"
+              className="field min-h-[80px] font-mono text-[10.5px]"
+            />
+          </Row>
+        </Group>
+      </section>
+     <section>
         <GroupLabel>Preview</GroupLabel>
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-[var(--bg-surface)] p-4">
           <button type="button" className="btn btn-primary">

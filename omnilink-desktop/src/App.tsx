@@ -33,7 +33,10 @@ export default function App() {
   const section = useApp((state) => state.section);
   const accent = useApp((state) => state.accent);
   const reduceMotion = useApp((state) => state.reduceMotion);
+  const fontSize = useApp((state) => state.fontSize);
+  const customCss = useApp((state) => state.customCss);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
+  const focusMode = useApp((state) => state.focusMode);
   const resolvedTheme = useResolvedTheme();
 
   useEffect(() => {
@@ -42,6 +45,20 @@ export default function App() {
     root.dataset.accent = accent;
     root.style.colorScheme = resolvedTheme;
   }, [accent, resolvedTheme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.fontSize = `${fontSize}px`;
+    // Remove old custom style
+    const old = document.getElementById("custom-css");
+    if (old) old.remove();
+    if (customCss.trim()) {
+      const style = document.createElement("style");
+      style.id = "custom-css";
+      style.textContent = customCss;
+      document.head.appendChild(style);
+    }
+  }, [fontSize, customCss]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -140,9 +157,10 @@ export default function App() {
       <div className="app-window">
         <TitleBar />
         <div className="app-body">
-          <Rail />
+          {!focusMode && <Rail />}
 
-          <motion.aside
+          {!focusMode && (
+            <motion.aside
             initial={false}
             animate={{
               width: contextCollapsed ? 0 : 268,
@@ -156,6 +174,7 @@ export default function App() {
               <ContextPane />
             </div>
           </motion.aside>
+          )}
 
           <main className="app-content">
             <AnimatePresence mode="wait" initial={false}>

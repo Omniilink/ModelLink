@@ -159,7 +159,7 @@ export default function MonacoEditor({
         fontSize: 12.5,
         lineHeight: 21,
         fontLigatures: true,
-        minimap: { enabled: false },
+        minimap: { enabled: true, scale: 1, showSlider: "mouseover" },
         scrollBeyondLastLine: false,
         smoothScrolling: true,
         cursorBlinking: "smooth",

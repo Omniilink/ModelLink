@@ -58,7 +58,10 @@ interface AppState {
   theme: ThemeMode;
   accent: Accent;
   reduceMotion: boolean;
+  fontSize: number;
+  customCss: string;
   contextCollapsed: boolean;
+  focusMode: boolean;
   paletteOpen: boolean;
   modal: ModalState;
   activeConversationId: string | null;
@@ -93,7 +96,10 @@ interface AppState {
   setTheme: (theme: ThemeMode) => void;
   setAccent: (accent: Accent) => void;
   setReduceMotion: (reduce: boolean) => void;
+  setFontSize: (size: number) => void;
+  setCustomCss: (css: string) => void;
   toggleContext: () => void;
+  toggleFocusMode: () => void;
   setPaletteOpen: (open: boolean) => void;
   openModal: (modal: ModalState) => void;
   closeModal: () => void;
@@ -187,7 +193,10 @@ export const useApp = create<AppState>()(
       theme: "dark",
       accent: "violet",
       reduceMotion: false,
+      fontSize: 13,
+      customCss: "",
       contextCollapsed: false,
+      focusMode: false,
       paletteOpen: false,
       modal: null,
       activeConversationId: welcomeConversation.id,
@@ -230,8 +239,12 @@ export const useApp = create<AppState>()(
       setTheme: (theme) => set({ theme }),
       setAccent: (accent) => set({ accent }),
       setReduceMotion: (reduceMotion) => set({ reduceMotion }),
+      setFontSize: (fontSize: number) => set({ fontSize }),
+      setCustomCss: (customCss: string) => set({ customCss }),
       toggleContext: () =>
         set((state) => ({ contextCollapsed: !state.contextCollapsed })),
+      toggleFocusMode: () =>
+        set((state) => ({ focusMode: !state.focusMode })),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
       openModal: (modal) => set({ modal }),
       closeModal: () => set({ modal: null }),
@@ -676,7 +689,10 @@ export const useApp = create<AppState>()(
         theme: state.theme,
         accent: state.accent,
         reduceMotion: state.reduceMotion,
+        fontSize: state.fontSize,
+        customCss: state.customCss,
         contextCollapsed: state.contextCollapsed,
+        focusMode: state.focusMode,
         activeConversationId: state.activeConversationId,
         activeProjectId: state.activeProjectId,
         workspaces: state.workspaces,

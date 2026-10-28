@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   CloudOff,
+  Maximize2,
   PanelLeft,
   Search,
 } from "lucide-react";
@@ -27,6 +28,8 @@ export function TitleBar() {
   const setPaletteOpen = useApp((state) => state.setPaletteOpen);
   const toggleContext = useApp((state) => state.toggleContext);
   const contextCollapsed = useApp((state) => state.contextCollapsed);
+  const focusMode = useApp((state) => state.focusMode);
+  const toggleFocusMode = useApp((state) => state.toggleFocusMode);
   const openSettings = useApp((state) => state.openSettings);
 
   return (
@@ -93,6 +96,15 @@ export function TitleBar() {
             className="icon-button pointer-events-auto h-7 w-7"
           >
             <PanelLeft size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={toggleFocusMode}
+            title={focusMode ? "Exit focus mode" : "Focus mode"}
+            aria-label={focusMode ? "Exit focus mode" : "Focus mode"}
+            className="icon-button pointer-events-auto h-7 w-7"
+          >
+            <Maximize2 size={14} />
           </button>
           <div className="mx-1 h-4 w-px bg-line" />
           <div className="pointer-events-auto h-full">

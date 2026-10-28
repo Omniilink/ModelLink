@@ -656,9 +656,15 @@ export function CodingView() {
         <div className="flex min-w-0 flex-1 flex-col" data-code-editor>
           <div className="flex h-9 flex-none items-center gap-2 border-b border-line pl-1 pr-2.5">
             {selectedFile ? (
-              <div className="flex h-full min-w-0 items-center gap-1.5 border-r border-line px-2.5 text-[11px] text-fg">
-                <FileGlyph path={selectedFile.path} size={11} />
-                <span className="truncate">{selectedFile.path.split("/").pop()}</span>
+              <div className="flex h-full min-w-0 items-center gap-1 border-r border-line px-2.5 text-[11px] text-fg">
+                {selectedFile.path.split("/").map((part, i, arr) => (
+                  <span key={i} className="flex items-center gap-1">
+                    {i > 0 && <ChevronRight size={10} className="text-subtle" />}
+                    <span className={i === arr.length - 1 ? "text-fg" : "text-muted"}>
+                      {part}
+                    </span>
+                  </span>
+                ))}
                 {dirty && (
                   <span className="ml-1 h-1.5 w-1.5 rounded-full bg-warning" />
                 )}
