@@ -1035,7 +1035,6 @@ pre{max-width:100%}
         <option value="providers">Providers</option>
         <option value="more">More Tools</option>
         <option value="agents">Agents</option>
-        <option value="robloxmcp">Roblox MCP</option>
         <option value="settings">Settings</option>
         <option value="tutorial">Help</option>
       </select>
@@ -1449,16 +1448,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
-      <div class="coding-view" id="robloxmcp-view">
-        <div class="coding-toolbar">
-          <h2 style="margin:0;font-size:14px">Roblox MCP</h2>
-          <div class="model-dropdown coding-model-dropdown" id="roblox-model-dropdown">
-            <button class="model-btn" id="roblox-model-btn" onclick="toggleRobloxModelMenu()">
-              <span id="roblox-model-btn-text">omniilink</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <div class="model-menu coding-model-menu" id="roblox-model-menu"></div>
-          </div>
           <select class="level-sel" id="roblox-effort" title="Effort" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
           <select class="level-sel" id="roblox-thinking" title="Think" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
           <select class="level-sel" id="roblox-prompt-detail" title="System prompt detail" onchange="robloxMcpRefreshServers()">
@@ -2620,7 +2609,6 @@ function switchView(view){
   document.getElementById('workspaces-view').classList.toggle('open',view==='workspaces');
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
-document.getElementById('robloxmcp-view').classList.toggle('open',view==='robloxmcp');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -2638,9 +2626,9 @@ document.getElementById('robloxmcp-view').classList.toggle('open',view==='roblox
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe',robloxmcp:'/robloxmcp'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',workspaces:'Workspaces',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me',robloxmcp:'Roblox MCP'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',workspaces:'Workspaces',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
@@ -17224,16 +17212,6 @@ console.log(response.choices[0].message.content);</code></pre></div></div>
           </div>
         </div>
       </div>
-      <div class="coding-view" id="robloxmcp-view">
-        <div class="coding-toolbar">
-          <h2 style="margin:0;font-size:14px">Roblox MCP</h2>
-          <div class="model-dropdown coding-model-dropdown" id="roblox-model-dropdown">
-            <button class="model-btn" id="roblox-model-btn" onclick="toggleRobloxModelMenu()">
-              <span id="roblox-model-btn-text">omniilink</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <div class="model-menu coding-model-menu" id="roblox-model-menu"></div>
-          </div>
           <select class="level-sel" id="roblox-effort" title="Effort" onchange="setLevelCtl('effort',this.value)"><option value="auto">Effort: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
           <select class="level-sel" id="roblox-thinking" title="Think" onchange="setLevelCtl('thinking',this.value)"><option value="auto">Think: auto</option><option value="minimum">minimum</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="xxhigh">xxhigh</option><option value="max">max</option></select>
           <select class="level-sel" id="roblox-prompt-detail" title="System prompt detail" onchange="robloxMcpRefreshServers()">
@@ -18388,7 +18366,6 @@ function switchView(view){
   document.getElementById('workspaces-view').classList.toggle('open',view==='workspaces');
   document.getElementById('more-view').classList.toggle('open',view==='more');
   document.getElementById('trademe-view').classList.toggle('open',view==='trademe');
-document.getElementById('robloxmcp-view').classList.toggle('open',view==='robloxmcp');
   document.getElementById('prompts-view').classList.toggle('open',view==='prompts');
   document.getElementById('usage-view').classList.toggle('open',view==='usage');
   document.getElementById('admin-view').classList.toggle('open',view==='admin');
@@ -18406,9 +18383,9 @@ document.getElementById('robloxmcp-view').classList.toggle('open',view==='roblox
   if(view!=='admin'&&typeof admClearTimer==='function'){try{admClearTimer('logs');admClearTimer('audit')}catch(e){}}
   if(window.innerWidth<=768){const sb=document.querySelector('.leftpanel');const ov=document.getElementById('leftpanel-overlay');if(!sb.classList.contains('hidden')){sb.classList.add('hidden');ov.classList.remove('open')}}
 }
-const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe',robloxmcp:'/robloxmcp'};
+const VIEW_ROUTES={chat:'/chat',coding:'/code',projects:'/projects',workspaces:'/workspaces',more:'/more',api:'/keys',providers:'/providers',assets:'/assets',public:'/public',forums:'/forums',terminal:'/terminal',usage:'/usage',settings:'/settings',prompts:'/prompts',tutorial:'/tutorial',admin:'/console',agents:'/agents',trademe:'/tools/trademe'};
 const TOOL_ROUTES={youtube:'/tools/youtube',convert:'/tools/convert'};
-const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',workspaces:'Workspaces',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me',robloxmcp:'Roblox MCP'};
+const VIEW_TITLES={chat:'Chat',coding:'Code',projects:'Projects',workspaces:'Workspaces',more:'More tools',api:'API keys',providers:'Providers',assets:'Assets',public:'Public',forums:'Forums',terminal:'Terminal',usage:'Usage',settings:'Settings',prompts:'Prompts',tutorial:'Help',admin:'Admin',agents:'Agents',trademe:'Trade Me'};
 function routeFromPath(path){
   path=String(path||'/').toLowerCase().split('?')[0].split('#')[0]||'/';
   if(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);
