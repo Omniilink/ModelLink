@@ -895,20 +895,26 @@ def mcp_start(srv):
         except Exception as e:
             _MCP_SERVERS[name] = {"cfg": srv, "proc": None, "tools": [], "status": "error: " + str(e)}
             return
-        resp, err = _mcp_rpc(proc, "initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
-                                                  "clientInfo": {"name": "omniilink", "version": "1.0"}}, 15)
-        if err or not resp:
+        ok = False
+        for _attempt in range(3):
+            resp, err = _mcp_rpc(proc, "initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                                      "clientInfo": {"name": "omniilink", "version": "1.0"}}, 15)
+            if not (err or not resp):
+                try:
+                    proc.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n").encode())
+                    proc.stdin.flush()
+                except Exception:
+                    pass
+                resp2, err2 = _mcp_rpc(proc, "tools/list", {}, 15)
+                tools = []
+                if resp2 and isinstance(resp2.get("result"), dict):
+                    tools = resp2["result"].get("tools", []) or []
+                    ok = True
+                    break
+            time.sleep(1)
+        if not ok:
             _MCP_SERVERS[name] = {"cfg": srv, "proc": proc, "tools": [], "status": "error: " + (err or "no response")}
             return
-        try:
-            proc.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n").encode())
-            proc.stdin.flush()
-        except Exception:
-            pass
-        resp, err = _mcp_rpc(proc, "tools/list", {}, 15)
-        tools = []
-        if resp and isinstance(resp.get("result"), dict):
-            tools = resp["result"].get("tools", []) or []
         _MCP_SERVERS[name] = {"cfg": srv, "proc": proc, "tools": tools, "status": "ready"}
     elif stype == "sse":
         _MCP_SERVERS[name] = {"cfg": srv, "proc": None, "tools": [], "status": "sse: " + srv.get("url", "")}
