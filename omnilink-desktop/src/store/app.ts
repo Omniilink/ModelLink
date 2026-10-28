@@ -96,6 +96,7 @@ interface AppState {
   deleteConversation: (id: string) => void;
   appendMessage: (conversationId: string, message: Message) => void;
   renameConversation: (id: string, title: string) => void;
+  togglePin: (conversationId: string, messageId: string) => void;
   editMessage: (conversationId: string, messageId: string, content: string) => void;
   truncateAfter: (conversationId: string, messageId: string) => void;
   setActiveConversation: (id: string | null) => void;
@@ -275,6 +276,22 @@ export const useApp = create<AppState>()(
             conversation.id === id
               ? { ...conversation, title: title.slice(0, 120), updatedAt: Date.now() }
               : conversation,
+          ),
+        })),
+
+      togglePin: (conversationId, messageId) =>
+        set((state) => ({
+          conversations: state.conversations.map((conversation) =>
+            conversation.id !== conversationId
+              ? conversation
+              : {
+                  ...conversation,
+                  messages: conversation.messages.map((message) =>
+                    message.id === messageId
+                      ? { ...message, pinned: !message.pinned }
+                      : message,
+                  ),
+                },
           ),
         })),
 

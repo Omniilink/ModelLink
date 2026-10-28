@@ -8,6 +8,7 @@ import {
   GitBranch,
   Map,
   Pencil,
+  Pin,
   RefreshCw,
   Search,
   Sparkles,
@@ -57,15 +58,18 @@ function MessageRow({
   message,
   onEdit,
   onRegenerate,
+  onPin,
   streaming,
 }: {
   message: Message;
   onEdit?: (message: Message) => void;
   onRegenerate?: (message: Message) => void;
+  onPin?: (message: Message) => void;
   streaming?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
+  const isPinned = message.pinned;
 
   const copy = async () => {
     try {
@@ -102,6 +106,16 @@ function MessageRow({
           <span className="text-[9.5px] text-subtle">
             {formatTime(message.createdAt)}
           </span>
+          <button
+            type="button"
+            aria-label={isPinned ? "Unpin" : "Pin message"}
+            onClick={() => onPin?.(message)}
+            className={`flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0 transition-opacity hover:text-fg group-hover:opacity-100 focus-visible:opacity-100 ${
+              isPinned ? "text-accent-text opacity-100" : ""
+            }`}
+          >
+            <Pin size={11} />
+          </button>
           <button
             type="button"
             aria-label="Copy message"
@@ -169,6 +183,7 @@ function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const openSettings = useApp((state) => state.openSettings);
   const pushToast = useApp((state) => state.pushToast);
+  const newConversation = useApp((state) => state.newConversation);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -179,6 +194,39 @@ function Composer({
 
   const submit = () => {
     if (!draft.trim() || streaming) return;
+    const text = draft.trim();
+    if (text.startsWith("/")) {
+      const [cmd] = text.slice(1).split(/\s+/);
+      switch (cmd.toLowerCase()) {
+        case "new":
+          newConversation();
+          pushToast({ title: "New conversation", tone: "success" });
+          break;
+        case "settings":
+          openSettings("appearance");
+          break;
+        case "models":
+          openSettings("models");
+          break;
+        case "clear":
+          onDraftChange("");
+          break;
+        case "help":
+          pushToast({
+            title: "Slash commands",
+            description: "/new /settings /models /clear /help",
+          });
+          break;
+        default:
+          pushToast({
+            title: "Unknown command",
+            description: `/${cmd}`,
+            tone: "danger",
+          });
+      }
+      onDraftChange("");
+      return;
+    }
     if (noModel) {
       pushToast({
         title: "Connect a model first",
@@ -187,7 +235,7 @@ function Composer({
       });
       return;
     }
-    onSend(draft.trim());
+    onSend(text);
     onDraftChange("");
   };
 
@@ -269,6 +317,7 @@ export function ChatView() {
   const updateMessage = useApp((state) => state.updateMessage);
   const editMessage = useApp((state) => state.editMessage);
   const truncateAfter = useApp((state) => state.truncateAfter);
+  const togglePin = useApp((state) => state.togglePin);
   const modelProvider = useApp((state) => state.modelProvider);
   const modelBaseUrl = useApp((state) => state.modelBaseUrl);
   const modelApiKey = useApp((state) => state.modelApiKey);
@@ -439,8 +488,23 @@ export function ChatView() {
   };
 
   useEffect(() => {
-    setDraft("");
-  }, [activeId]);
+    const handler = () => {
+      if (!navigator.onLine) {
+        pushToast({
+          title: "Offline",
+          description: "Using local model if available.",
+          tone: "danger",
+        });
+      }
+    };
+    window.addEventListener("offline", handler);
+    window.addEventListener("online", () =>
+      pushToast({ title: "Back online", tone: "success" }),
+    );
+    return () => {
+      window.removeEventListener("offline", handler);
+    };
+  }, []);
 
   useEffect(() => {
     const node = scrollRef.current;
@@ -602,6 +666,7 @@ export function ChatView() {
                   message={message}
                   onEdit={(m) => startEdit(m)}
                   onRegenerate={(m) => void regenerate(m)}
+                  onPin={(m) => togglePin(conversation.id, m.id)}
                   streaming={streaming}
                 />
               ))}

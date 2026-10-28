@@ -20,6 +20,7 @@ export interface Message {
   role: MessageRole;
   content: string;
   createdAt: number;
+  pinned?: boolean;
 }
 
 export interface Conversation {
