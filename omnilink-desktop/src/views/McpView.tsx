@@ -16,7 +16,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
 import { Switch } from "@/components/ui/Switch";
 import { copyText } from "@/lib/utils";
-import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp } from "@/lib/tauri";
+import { mcpProbeHttp, mcpProbeStdio, mcpCallToolStdio, mcpCallToolHttp, runShellCommand, httpRequest } from "@/lib/tauri";
 import { useApp } from "@/store/app";
 import type { McpServer, McpTransport } from "@/types";
 
@@ -203,6 +203,12 @@ export function McpView() {
   const [toolArgs, setToolArgs] = useState("{}");
   const [toolResult, setToolResult] = useState("");
   const [invoking, setInvoking] = useState(false);
+  const [customTools, setCustomTools] = useState<{ name: string; type: "shell" | "http"; command: string; url: string }[]>([]);
+  const [customName, setCustomName] = useState("");
+  const [customType, setCustomType] = useState<"shell" | "http">("shell");
+  const [customCommand, setCustomCommand] = useState("");
+  const [customUrl, setCustomUrl] = useState("");
+  const [customResult, setCustomResult] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<McpServer | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -390,6 +396,116 @@ export function McpView() {
               Server processes are supervised by the agent runtime when a
               session starts. Configuration itself is stored locally.
             </p>
+
+            <div className="mt-5 overflow-hidden rounded-xl border border-line bg-[var(--bg-surface)]">
+              <div className="border-b border-line px-4 py-2.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-subtle">
+                  Custom tools
+                </span>
+              </div>
+              <div className="p-4">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                    placeholder="Tool name"
+                    className="field h-8 text-[11px]"
+                  />
+                  <select
+                    value={customType}
+                    onChange={(e) => setCustomType(e.target.value as "shell" | "http")}
+                    className="field h-8 text-[11px]"
+                  >
+                    <option value="shell">Shell command</option>
+                    <option value="http">HTTP request</option>
+                  </select>
+                  {customType === "shell" ? (
+                    <input
+                      value={customCommand}
+                      onChange={(e) => setCustomCommand(e.target.value)}
+                      placeholder="Command (e.g. echo hello)"
+                      className="field h-8 text-[11px] sm:col-span-2"
+                    />
+                  ) : (
+                    <input
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                      placeholder="URL (https://...)"
+                      className="field h-8 text-[11px] sm:col-span-2"
+                    />
+                  )}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!customName.trim()) {
+                        pushToast({ title: "Name required", tone: "danger" });
+                        return;
+                      }
+                      setCustomTools((prev) => [
+                        ...prev,
+                        {
+                          name: customName.trim(),
+                          type: customType,
+                          command: customCommand,
+                          url: customUrl,
+                        },
+                      ]);
+                      setCustomName("");
+                      setCustomCommand("");
+                      setCustomUrl("");
+                      pushToast({ title: "Custom tool added", tone: "success" });
+                    }}
+                    className="btn btn-primary h-7 text-[10.5px]"
+                  >
+                    Add tool
+                  </button>
+                </div>
+                {customTools.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {customTools.map((ct, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 rounded-lg border border-line bg-[var(--bg-base)] px-3 py-2"
+                      >
+                        <span className="flex-1 truncate text-[11px] font-medium text-fg">
+                          {ct.name}
+                        </span>
+                        <span className="font-mono text-[9px] text-subtle">
+                          {ct.type}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setCustomResult("");
+                            try {
+                              const res =
+                                ct.type === "shell"
+                                  ? await runShellCommand(ct.command)
+                                  : await httpRequest("GET", ct.url, "");
+                              setCustomResult(res);
+                            } catch (e) {
+                              setCustomResult(
+                                e instanceof Error ? e.message : String(e),
+                              );
+                            }
+                          }}
+                          className="btn h-7 text-[10px]"
+                        >
+                          Run
+                        </button>
+                      </div>
+                    ))}
+                    {customResult && (
+                      <pre className="mt-2 max-h-40 overflow-auto rounded border border-line bg-[var(--bg-base)] p-2 font-mono text-[10px] text-muted whitespace-pre-wrap">
+                        {customResult}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -454,6 +570,12 @@ export function McpView() {
                                     toolArgs,
                                   );
                             setToolResult(res);
+                            useApp.getState().addAuditEntry({
+                              server: selectedServer.name,
+                              tool: tool.name,
+                              args: toolArgs,
+                              result: res.slice(0, 2000),
+                            });
                           } catch (e) {
                             setToolResult(
                               e instanceof Error ? e.message : String(e),

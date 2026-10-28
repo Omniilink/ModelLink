@@ -57,6 +57,7 @@ export interface McpServer {
   args: string;
   url: string;
   enabled: boolean;
+  allowedTools: string[];
   createdAt: number;
 }
 
@@ -93,6 +94,15 @@ export interface Asset {
   kind: "image" | "model" | "other";
   path: string;
   createdAt: number;
+}
+
+export interface ToolAuditEntry {
+  id: string;
+  server: string;
+  tool: string;
+  args: string;
+  result: string;
+  timestamp: number;
 }
 
 export type ModalState =

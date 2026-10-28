@@ -902,9 +902,23 @@ function ModelsSettings() {
                   {ollama.models?.length ?? 0}{" "}
                   {pluralize(ollama.models?.length ?? 0, "model")} available
                 </p>
-                <p className="mt-0.5 truncate font-mono text-[9.5px] text-subtle">
-                  {ollama.models?.slice(0, 5).join(" · ") || "No models installed"}
-                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(ollama.models ?? []).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => {
+                        setModelProvider("ollama");
+                        setModelBaseUrl(ollamaUrl);
+                        setModelName(m);
+                        pushToast({ title: `Using ${m}`, tone: "success" });
+                      }}
+                      className="rounded border border-line bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[9.5px] text-muted transition-colors hover:border-line-strong hover:text-fg"
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {ollama.status === "offline" && (

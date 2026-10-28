@@ -24,6 +24,7 @@ import type {
   ThemeMode,
   Toast,
   Workspace,
+  ToolAuditEntry,
 } from "@/types";
 import { uid } from "@/lib/utils";
 import { zustandStorage } from "@/lib/storage";
@@ -80,6 +81,7 @@ interface AppState {
   toasts: Toast[];
   assets: Asset[];
   analytics: Record<string, number>;
+  toolAuditLog: ToolAuditEntry[];
 
   setSection: (section: Section) => void;
   openSettings: (section: SettingsSection) => void;
@@ -145,6 +147,8 @@ interface AppState {
   addAsset: (asset: Omit<Asset, "id" | "createdAt">) => string;
   deleteAsset: (id: string) => void;
   trackEvent: (name: string) => void;
+  addAuditEntry: (entry: Omit<ToolAuditEntry, "id" | "timestamp">) => void;
+  clearAuditLog: () => void;
 
   setOllamaUrl: (url: string) => void;
   setModelProvider: (provider: ModelProvider) => void;
@@ -195,6 +199,7 @@ export const useApp = create<AppState>()(
       toasts: [],
       assets: [],
       analytics: {},
+      toolAuditLog: [],
 
       setSection: (section) =>
         set({ section, paletteOpen: false, modal: null }),
@@ -408,6 +413,7 @@ export const useApp = create<AppState>()(
           args: server.args,
           url: server.url,
           enabled: true,
+          allowedTools: [],
           createdAt: timestamp,
         };
         set((state) => ({
@@ -484,6 +490,15 @@ export const useApp = create<AppState>()(
           analytics: { ...state.analytics, [name]: (state.analytics[name] ?? 0) + 1 },
         })),
 
+      addAuditEntry: (entry) =>
+        set((state) => ({
+          toolAuditLog: [
+            { ...entry, id: uid("audit-"), timestamp: Date.now() },
+            ...state.toolAuditLog,
+          ].slice(0, 500),
+        })),
+      clearAuditLog: () => set({ toolAuditLog: [] }),
+
       setOllamaUrl: (ollamaUrl) => set({ ollamaUrl }),
       setModelProvider: (modelProvider) => set({ modelProvider }),
       setModelBaseUrl: (modelBaseUrl) => set({ modelBaseUrl }),
@@ -558,6 +573,7 @@ export const useApp = create<AppState>()(
           toasts: [],
       assets: [],
       analytics: {},
+      toolAuditLog: [],
         }),
     }),
     {
@@ -590,6 +606,7 @@ export const useApp = create<AppState>()(
         mcpServers: state.mcpServers,
         assets: state.assets,
         analytics: state.analytics,
+        toolAuditLog: state.toolAuditLog,
       }),
     },
   ),
