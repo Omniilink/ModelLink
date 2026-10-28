@@ -1224,6 +1224,8 @@ function UpdatesSettings() {
   const setAutoCheckUpdates = useApp((state) => state.setAutoCheckUpdates);
   const pushToast = useApp((state) => state.pushToast);
   const [checking, setChecking] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<any>(null);
+  const [installing, setInstalling] = useState(false);
 
   const checkNow = async () => {
     if (!IS_TAURI) {
@@ -1238,11 +1240,7 @@ function UpdatesSettings() {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {
-        pushToast({
-          title: `Update ${update.version} available`,
-          description: "Download and install from the release page.",
-          tone: "success",
-        });
+        setPendingUpdate(update);
       } else {
         pushToast({ title: "You are up to date", tone: "success" });
       }
@@ -1257,94 +1255,109 @@ function UpdatesSettings() {
     }
   };
 
+  const installUpdate = async () => {
+    if (!pendingUpdate) return;
+    setInstalling(true);
+    try {
+      await pendingUpdate.downloadAndInstall();
+      pushToast({ title: "Update installed", description: "Restarting…", tone: "success" });
+    } catch (error) {
+      pushToast({
+        title: "Update failed",
+        description: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      });
+    } finally {
+      setInstalling(false);
+      setPendingUpdate(null);
+    }
+  };
+
   return (
-    <div className="space-y-7">
-      <div className="flex items-center gap-4 rounded-xl border border-line bg-[var(--bg-surface)] px-5 py-5">
-        <div className="flex h-11 w-11 flex-none items-center justify-center rounded-xl border border-line bg-[var(--bg-elevated)] text-accent-text">
-          <Download size={19} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="text-[13.5px] font-semibold text-fg">
-              OmniLink Desktop
-            </p>
-            <span className="rounded border border-line px-1.5 py-px font-mono text-[9px] text-subtle">
-              v0.1.0
-            </span>
+    <>
+      <div className="space-y-7">
+        <div className="flex items-center gap-4 rounded-xl border border-line bg-[var(--bg-surface)] px-5 py-5">
+          <div className="flex h-11 w-11 flex-none items-center justify-center rounded-xl border border-line bg-[var(--bg-elevated)] text-accent-text">
+            <Download size={19} />
           </div>
-          <p className="mt-1 text-[10.5px] text-subtle">
-            You are on the latest development build.
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="text-[13.5px] font-semibold text-fg">
+                OmniLink Desktop
+              </p>
+              <span className="rounded border border-line px-1.5 py-px font-mono text-[9px] text-subtle">
+                v0.1.0
+              </span>
+            </div>
+            <p className="mt-1 text-[10.5px] text-subtle">
+              You are on the latest development build.
+            </p>
+          </div>
+          <span className="flex items-center gap-1.5 rounded-full border border-[color-mix(in_srgb,var(--success)_28%,transparent)] bg-[color-mix(in_srgb,var(--success)_9%,transparent)] px-2.5 py-1 text-[9.5px] font-medium text-success">
+            <CheckCircle2 size={11} />
+            Up to date
+          </span>
+        </div>
+
+        <section>
+          <GroupLabel>Release channel</GroupLabel>
+          <Group>
+            <Row
+              title="Channel"
+              description="Signed builds delivered through GitHub Releases."
+            >
+              <Segmented
+                value="stable"
+                onChange={() => undefined}
+                label="Release channel"
+                options={[{ value: "stable", label: "Stable" }]}
+              />
+            </Row>
+            <Row
+              title="Check automatically"
+              description="Look for updates when the app starts."
+            >
+              <Switch
+                checked={autoCheckUpdates}
+                onChange={setAutoCheckUpdates}
+                label="Check for updates automatically"
+              />
+            </Row>
+            <Row
+              title="Check now"
+              description="Queries the signed update feed."
+            >
+              <button
+                type="button"
+                onClick={() => void checkNow()}
+                disabled={checking}
+                className="btn h-7 text-[10.5px]"
+              >
+                {checking ? "Checking…" : "Check for updates"}
+              </button>
+            </Row>
+          </Group>
+        </section>
+
+        <div className="flex items-start gap-3 rounded-xl border border-line bg-[var(--bg-surface)] p-4">
+          <Lock size={14} className="mt-0.5 flex-none text-subtle" />
+          <p className="text-[10px] leading-relaxed text-subtle">
+            Updates install per machine and require administrator approval.
+            Artifacts are verified against a signed manifest before the installer
+            runs. {autoCheckUpdates ? "Automatic checks are on." : "Automatic checks are off."}
           </p>
         </div>
-        <span className="flex items-center gap-1.5 rounded-full border border-[color-mix(in_srgb,var(--success)_28%,transparent)] bg-[color-mix(in_srgb,var(--success)_9%,transparent)] px-2.5 py-1 text-[9.5px] font-medium text-success">
-          <CheckCircle2 size={11} />
-          Up to date
-        </span>
       </div>
 
-      <section>
-        <GroupLabel>Release channel</GroupLabel>
-        <Group>
-          <Row
-            title="Channel"
-            description="Signed builds delivered through GitHub Releases."
-          >
-            <Segmented
-              value="stable"
-              onChange={() => undefined}
-              label="Release channel"
-              options={[{ value: "stable", label: "Stable" }]}
-            />
-          </Row>
-          <Row
-            title="Check automatically"
-            description="Look for updates when the app starts."
-          >
-            <Switch
-              checked={autoCheckUpdates}
-              onChange={setAutoCheckUpdates}
-              label="Check for updates automatically"
-            />
-          </Row>
-          <Row
-            title="Check now"
-            description="Queries the signed update feed."
-          >
-            <button
-              type="button"
-              onClick={() => void checkNow()}
-              disabled={checking}
-              className="btn h-7 text-[10.5px]"
-            >
-              {checking ? "Checking…" : "Check for updates"}
-            </button>
-          </Row>
-        </Group>
-      </section>
-
-      <div className="flex items-start gap-3 rounded-xl border border-line bg-[var(--bg-surface)] p-4">
-        <Lock size={14} className="mt-0.5 flex-none text-subtle" />
-        <p className="text-[10px] leading-relaxed text-subtle">
-          Updates install per machine and require administrator approval.
-          Artifacts are verified against a signed manifest before the installer
-          runs. {autoCheckUpdates ? "Automatic checks are on." : "Automatic checks are off."}
-        </p>
-      </div>
-
-      <button
-        type="button"
-        className="btn btn-ghost h-7 text-[10.5px]"
-        onClick={() =>
-          pushToast({
-            title: "Update feed not configured",
-            description: "This development build has no release feed yet.",
-          })
-        }
-      >
-        <RefreshCw size={11} />
-        Recheck release feed
-      </button>
-    </div>
+      <ConfirmDialog
+        open={Boolean(pendingUpdate)}
+        title={`Update to ${pendingUpdate?.version ?? ""}?`}
+        description="A new version is available. Download and install now? The app will restart."
+        confirmLabel={installing ? "Installing…" : "Update now"}
+        onClose={() => setPendingUpdate(null)}
+        onConfirm={() => void installUpdate()}
+      />
+    </>
   );
 }
 
