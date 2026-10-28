@@ -34,6 +34,7 @@ import {
   oauthPoll,
   oauthStart,
   openUrl,
+  runShellCommand,
   setSecret,
   type OpenCodeInfo,
 } from "@/lib/tauri";
@@ -371,6 +372,8 @@ function ModelsSettings() {
     models?: string[];
     error?: string;
   }>({ status: "idle" });
+  const [pullModel, setPullModel] = useState("");
+  const [pulling, setPulling] = useState(false);
 
   useEffect(() => {
     if (modelProvider !== "ollama") return;
@@ -894,6 +897,47 @@ function ModelsSettings() {
                   <RefreshCw size={11} />
                 )}
                 Check connection
+              </button>
+              <input
+                value={pullModel}
+                onChange={(event) => setPullModel(event.target.value)}
+                placeholder="model to pull (e.g. llama3.2)"
+                className="field h-7 w-[200px] font-mono text-[10.5px]"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                disabled={!pullModel.trim() || pulling}
+                onClick={async () => {
+                  setPulling(true);
+                  try {
+                    const res = await runShellCommand(
+                      `ollama pull ${pullModel.trim()}`,
+                    );
+                    pushToast({
+                      title: "Pull finished",
+                      description: res.slice(0, 120),
+                      tone: "success",
+                    });
+                    await checkOllama();
+                  } catch (e) {
+                    pushToast({
+                      title: "Pull failed",
+                      description: e instanceof Error ? e.message : String(e),
+                      tone: "danger",
+                    });
+                  } finally {
+                    setPulling(false);
+                  }
+                }}
+                className="btn h-7 text-[10.5px]"
+              >
+                {pulling ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Download size={11} />
+                )}
+                Pull model
               </button>
             </div>
             {ollama.status === "online" && (

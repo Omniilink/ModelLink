@@ -198,6 +198,7 @@ export function McpView() {
   const openModal = useApp((state) => state.openModal);
   const pushToast = useApp((state) => state.pushToast);
   const deleteMcpServer = useApp((state) => state.deleteMcpServer);
+  const addMcpServer = useApp((state) => state.addMcpServer);
   const [toolsMap, setToolsMap] = useState<Record<string, { name: string; description?: string }[]>>({});
   const [resourcesMap, setResourcesMap] = useState<Record<string, { uri: string; name?: string; description?: string }[]>>({});
   const [selectedServer, setSelectedServer] = useState<McpServer | null>(null);
@@ -286,6 +287,46 @@ export function McpView() {
                 <Plus size={13} />
                 Add your first server
               </button>
+            </div>
+
+            <div className="mt-6">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-subtle">
+                Popular servers
+              </p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {[
+                  { name: "filesystem", command: "npx", args: "-y @modelcontextprotocol/server-filesystem ." },
+                  { name: "fetch", command: "uvx", args: "mcp-server-fetch" },
+                ].map((s) => (
+                  <div
+                    key={s.name}
+                    className="flex items-center justify-between rounded-lg border border-line bg-[var(--bg-surface)] px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[11.5px] font-medium text-fg">{s.name}</p>
+                      <p className="truncate font-mono text-[9px] text-subtle">
+                        {s.command} {s.args}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addMcpServer({
+                          name: s.name,
+                          transport: "stdio",
+                          command: s.command,
+                          args: s.args,
+                          url: "",
+                        });
+                        pushToast({ title: `${s.name} added`, tone: "success" });
+                      }}
+                      className="btn h-7 text-[10px]"
+                    >
+                      Add
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="mt-9 grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -535,6 +576,46 @@ export function McpView() {
               >
                 Close
               </button>
+            </div>
+
+            <div className="mt-6">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-subtle">
+                Popular servers
+              </p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {[
+                  { name: "filesystem", command: "npx", args: "-y @modelcontextprotocol/server-filesystem ." },
+                  { name: "fetch", command: "uvx", args: "mcp-server-fetch" },
+                ].map((s) => (
+                  <div
+                    key={s.name}
+                    className="flex items-center justify-between rounded-lg border border-line bg-[var(--bg-surface)] px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[11.5px] font-medium text-fg">{s.name}</p>
+                      <p className="truncate font-mono text-[9px] text-subtle">
+                        {s.command} {s.args}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addMcpServer({
+                          name: s.name,
+                          transport: "stdio",
+                          command: s.command,
+                          args: s.args,
+                          url: "",
+                        });
+                        pushToast({ title: `${s.name} added`, tone: "success" });
+                      }}
+                      className="btn h-7 text-[10px]"
+                    >
+                      Add
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
               {(toolsMap[selectedServer.id] ?? []).length === 0 ? (

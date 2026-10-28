@@ -27,6 +27,7 @@ export function McpModal({
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [allowedTools, setAllowedTools] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -36,6 +37,7 @@ export function McpModal({
     setCommand(existing?.command ?? "");
     setArgs(existing?.args ?? "");
     setUrl(existing?.url ?? "");
+    setAllowedTools((existing?.allowedTools ?? []).join(", "));
     setError("");
     // Only reset when the dialog opens for a specific server.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -66,6 +68,10 @@ export function McpModal({
       command: command.trim(),
       args: args.trim(),
       url: url.trim(),
+      allowedTools: allowedTools
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
     };
     if (existing) {
       updateMcpServer(existing.id, payload);
@@ -216,6 +222,23 @@ export function McpModal({
             </p>
           </div>
         )}
+
+        <div>
+          <label
+            htmlFor="mcp-allowed"
+            className="mb-1.5 block text-[11px] font-medium text-muted"
+          >
+            Allowed tools <span className="text-subtle">optional, comma-separated</span>
+          </label>
+          <input
+            id="mcp-allowed"
+            value={allowedTools}
+            onChange={(event) => setAllowedTools(event.target.value)}
+            placeholder="tool1, tool2 (empty = all)"
+            className="field font-mono text-[11px]"
+            spellCheck={false}
+          />
+        </div>
 
         {error && <p className="text-[11px] text-danger">{error}</p>}
 

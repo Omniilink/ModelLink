@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{AppHandle, Manager};
 
@@ -676,6 +677,135 @@ async fn http_request(method: String, url: String, body: String) -> Result<Strin
     Ok(format!("HTTP {}\n{}", status, text))
 }
 
+#[tauri::command]
+async fn mcp_list_prompts_stdio(command: String, args: String) -> Result<Vec<String>, String> {
+    use rmcp::{ServiceExt, transport::TokioChildProcess};
+
+    let mut cmd = tokio::process::Command::new(&command);
+    for a in args.split_whitespace() {
+        cmd.arg(a);
+    }
+    let transport = TokioChildProcess::new(cmd).map_err(|e| e.to_string())?;
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let result = client.list_prompts(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result.prompts.into_iter().map(|p| p.name.to_string()).collect())
+}
+
+#[tauri::command]
+async fn mcp_list_prompts_http(url: String) -> Result<Vec<String>, String> {
+    use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
+
+    let transport = StreamableHttpClientTransport::from_uri(url);
+    let mut client = rmcp::service::serve_client((), transport).await.map_err(|e| e.to_string())?;
+    let result = client.list_prompts(None).await.map_err(|e| e.to_string())?;
+    let _ = client.cancel().await;
+    Ok(result.prompts.into_iter().map(|p| p.name.to_string()).collect())
+}
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct WatchdogStatus {
+    pub running: bool,
+    pub restarts: u32,
+    pub last_error: Option<String>,
+}
+
+static WATCHDOGS: OnceLock<Mutex<HashMap<String, WatchdogHandle>>> = OnceLock::new();
+
+struct WatchdogHandle {
+    stop: Arc<AtomicBool>,
+    status: Arc<Mutex<WatchdogStatus>>,
+}
+
+fn watchdogs() -> &'static Mutex<HashMap<String, WatchdogHandle>> {
+    WATCHDOGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+fn watchdog_start(id: String, command: String, args: String) -> Result<(), String> {
+    watchdog_stop(id.clone()).ok();
+    let stop = Arc::new(AtomicBool::new(false));
+    let status = Arc::new(Mutex::new(WatchdogStatus {
+        running: true,
+        restarts: 0,
+        last_error: None,
+    }));
+    let stop_clone = stop.clone();
+    let status_clone = status.clone();
+    std::thread::spawn(move || {
+        let mut restarts = 0u32;
+        while !stop_clone.load(Ordering::Relaxed) {
+            let mut cmd = std::process::Command::new(&command);
+            for a in args.split_whitespace() {
+                cmd.arg(a);
+            }
+            let result = cmd.output();
+            match result {
+                Ok(output) if output.status.success() => break,
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    restarts += 1;
+                    if let Ok(mut s) = status_clone.lock() {
+                        s.restarts = restarts;
+                        s.last_error = Some(format!("exit {}: {}", output.status, stderr));
+                        s.running = true;
+                    }
+                }
+                Err(e) => {
+                    restarts += 1;
+                    if let Ok(mut s) = status_clone.lock() {
+                        s.restarts = restarts;
+                        s.last_error = Some(e.to_string());
+                        s.running = true;
+                    }
+                }
+            }
+            if stop_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        if let Ok(mut s) = status_clone.lock() {
+            s.running = false;
+        }
+    });
+    let mut map = watchdogs().lock().map_err(|e| e.to_string())?;
+    map.insert(
+        id,
+        WatchdogHandle {
+            stop,
+            status,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn watchdog_stop(id: String) -> Result<(), String> {
+    let mut map = watchdogs().lock().map_err(|e| e.to_string())?;
+    if let Some(handle) = map.remove(&id) {
+        handle.stop.store(true, Ordering::Relaxed);
+        if let Ok(mut s) = handle.status.lock() {
+            s.running = false;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn watchdog_status(id: String) -> Result<WatchdogStatus, String> {
+    let map = watchdogs().lock().map_err(|e| e.to_string())?;
+    if let Some(handle) = map.get(&id) {
+        let s = handle.status.lock().map_err(|e| e.to_string())?.clone();
+        Ok(s)
+    } else {
+        Ok(WatchdogStatus {
+            running: false,
+            restarts: 0,
+            last_error: None,
+        })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -709,6 +839,11 @@ pub fn run() {
             mcp_call_tool_http,
             mcp_list_resources_stdio,
             mcp_list_resources_http,
+            mcp_list_prompts_stdio,
+            mcp_list_prompts_http,
+            watchdog_start,
+            watchdog_stop,
+            watchdog_status,
             run_shell_command,
             http_request
         ])

@@ -100,6 +100,29 @@ export async function httpRequest(method: string, url: string, body: string): Pr
   if (!IS_TAURI) return "";
   return invoke("http_request", { method, url, body });
 }
+export async function mcpListPromptsStdio(command: string, args: string): Promise<string[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_list_prompts_stdio", { command, args });
+}
+
+export async function mcpListPromptsHttp(url: string): Promise<string[]> {
+  if (!IS_TAURI) return [];
+  return invoke("mcp_list_prompts_http", { url });
+}
+export async function watchdogStart(id: string, command: string, args: string): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("watchdog_start", { id, command, args });
+}
+
+export async function watchdogStop(id: string): Promise<void> {
+  if (!IS_TAURI) return;
+  await invoke("watchdog_stop", { id });
+}
+
+export async function watchdogStatus(id: string): Promise<{ running: boolean; restarts: number; lastError?: string }> {
+  if (!IS_TAURI) return { running: false, restarts: 0 };
+  return invoke("watchdog_status", { id });
+}
 export function windowControls() {
   if (!IS_TAURI) return null;
   const win = getCurrentWindow();

@@ -126,7 +126,7 @@ interface AppState {
   }) => void;
   updateMcpServer: (
     id: string,
-    patch: Partial<Pick<McpServer, "name" | "command" | "args" | "url" | "transport">>,
+    patch: Partial<Pick<McpServer, "name" | "command" | "args" | "url" | "transport" | "allowedTools">>,
   ) => void;
   toggleMcpServer: (id: string) => void;
   deleteMcpServer: (id: string) => void;
